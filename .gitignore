@@ -1,0 +1,20 @@
+bin/
+obj/
+.vs/
+*.user
+captures/
+artifacts/
+test-output/
+
+# Local research and capture tools are intentionally not part of the app repository.
+src/LandingStats.Analyzer/
+src/LandingStats.Probe/
+src/LandingStats.Probe.Launcher/
+docs/
+build-community.ps1
+MsfsLandingStats.sln
+src/LandingStats.Core/ContactPointAnalysis.cs
+src/LandingStats.Core/ContactPointResult.cs
+src/LandingStats.Core/TelemetryCsv.cs
+src/LandingStats.Core/TelemetryDeduplicator.cs
+src/LandingStats.Core/TelemetryDownsampler.cs

@@ -1,0 +1,106 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Resolve current MSFS 2024 SDK
+        id: sdk
+        shell: pwsh
+        run: |
+          $manifestUrl = "https://sdk.flightsimulator.com/msfs2024/files/sdk.json"
+          $manifest = Invoke-RestMethod -Uri $manifestUrl
+          $entry = $manifest.game_versions[0]
+          $relativeUrl = $entry.downloads_menu.'SDK Installer (Core)'.value
+          if ([string]::IsNullOrWhiteSpace($relativeUrl)) {
+            throw "The MSFS 2024 SDK manifest did not contain a Core installer."
+          }
+
+          $sdkVersion = ($relativeUrl -split '/')[1]
+          $downloadUrl = "https://sdk.flightsimulator.com/msfs2024/files/$relativeUrl"
+          "version=$sdkVersion" >> $env:GITHUB_OUTPUT
+          "download_url=$downloadUrl" >> $env:GITHUB_OUTPUT
+
+      - name: Cache SimConnect SDK
+        id: sdk-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}\msfs-simconnect-sdk
+          key: msfs2024-simconnect-${{ steps.sdk.outputs.version }}
+
+      - name: Download and extract SimConnect SDK
+        if: steps.sdk-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $archivePath = Join-Path $env:RUNNER_TEMP "msfs2024-sdk.zip"
+          $installerDirectory = Join-Path $env:RUNNER_TEMP "msfs2024-sdk-installer"
+          $adminDirectory = Join-Path $env:RUNNER_TEMP "msfs2024-sdk-admin"
+          $targetRoot = Join-Path $env:RUNNER_TEMP "msfs-simconnect-sdk"
+
+          Invoke-WebRequest -Uri "${{ steps.sdk.outputs.download_url }}" -OutFile $archivePath
+          Expand-Archive -LiteralPath $archivePath -DestinationPath $installerDirectory
+          $msi = Get-ChildItem $installerDirectory -Recurse -Filter '*.msi' | Select-Object -First 1
+          if ($null -eq $msi) {
+            throw "The MSFS 2024 SDK archive did not contain an MSI installer."
+          }
+
+          & msiexec.exe /a $msi.FullName /qn "TARGETDIR=$adminDirectory"
+          if ($LASTEXITCODE -ne 0) {
+            throw "MSFS 2024 SDK administrative extraction failed with exit code $LASTEXITCODE."
+          }
+
+          $managed = Get-ChildItem $adminDirectory -Recurse -Filter 'Microsoft.FlightSimulator.SimConnect.dll' |
+            Where-Object { $_.FullName -match '[\\/]managed[\\/]' } |
+            Select-Object -First 1
+          $native = Get-ChildItem $adminDirectory -Recurse -Filter 'SimConnect.dll' |
+            Where-Object { $_.FullName -notmatch '[\\/]managed[\\/]' } |
+            Select-Object -First 1
+          if ($null -eq $managed -or $null -eq $native) {
+            throw "The extracted SDK did not contain both managed and native SimConnect libraries."
+          }
+
+          $managedTarget = Join-Path $targetRoot 'SimConnect SDK\lib\managed'
+          $nativeTarget = Join-Path $targetRoot 'SimConnect SDK\lib'
+          New-Item -ItemType Directory -Force -Path $managedTarget | Out-Null
+          New-Item -ItemType Directory -Force -Path $nativeTarget | Out-Null
+          Copy-Item -LiteralPath $managed.FullName -Destination $managedTarget
+          Copy-Item -LiteralPath $native.FullName -Destination $nativeTarget
+
+      - name: Build single executable
+        shell: pwsh
+        run: |
+          .\build-app.ps1 -MsfsSdkRoot (Join-Path $env:RUNNER_TEMP 'msfs-simconnect-sdk')
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MSFS-Landing-Stats
+          path: artifacts/MSFS-Landing-Stats.exe
+          if-no-files-found: error
+
+      - name: Publish tagged release
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create $env:GITHUB_REF_NAME artifacts/MSFS-Landing-Stats.exe --generate-notes

@@ -1,0 +1,382 @@
+<Window x:Class="LandingStats.App.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:controls="clr-namespace:LandingStats.App.Controls"
+        Title="MSFS Landing Stats"
+        Width="1380"
+        Height="860"
+        MinWidth="1120"
+        MinHeight="720"
+        WindowStartupLocation="CenterScreen"
+        WindowStyle="None"
+        ResizeMode="CanResizeWithGrip"
+        UseLayoutRounding="True">
+    <Grid Background="{StaticResource AppBackgroundBrush}">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="64" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="210" />
+            <ColumnDefinition Width="*" />
+            <ColumnDefinition Width="310" />
+        </Grid.ColumnDefinitions>
+
+        <Border Grid.Row="0" Grid.ColumnSpan="3"
+                Background="{StaticResource SidebarBrush}"
+                BorderBrush="{StaticResource BorderBrush}"
+                BorderThickness="0,0,0,1"
+                MouseLeftButtonDown="OnTitleBarMouseDown">
+            <Grid Margin="18,0,10,0">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="192" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+
+                <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
+                    <Border Width="34" Height="34" CornerRadius="10" Background="{StaticResource AccentSoftBrush}">
+                        <TextBlock Text="LS" Foreground="{StaticResource AccentBrush}" FontWeight="Bold"
+                                   HorizontalAlignment="Center" VerticalAlignment="Center" />
+                    </Border>
+                    <TextBlock Text="Landing Stats" FontSize="15" FontWeight="SemiBold" Margin="10,0,0,0"
+                               VerticalAlignment="Center" />
+                </StackPanel>
+
+                <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                    <Ellipse x:Name="ConnectionStatusDot" Width="8" Height="8" Fill="{StaticResource AmberBrush}" />
+                    <TextBlock x:Name="ConnectionStatusText" Text="Waiting for MSFS" Foreground="{StaticResource MutedTextBrush}" Margin="8,0,0,0" />
+                    <Border Background="{StaticResource SurfaceRaisedBrush}" CornerRadius="8" Margin="14,0,0,0" Padding="9,4">
+                        <TextBlock Text="Landing Metric v1" Foreground="{StaticResource MutedTextBrush}" FontSize="11" />
+                    </Border>
+                </StackPanel>
+
+                <StackPanel Grid.Column="2" Orientation="Horizontal">
+                    <Button Content="—" Width="44" Height="36" Click="OnMinimizeClick"
+                            Background="Transparent" Foreground="{StaticResource MutedTextBrush}" BorderThickness="0" />
+                    <Button Content="×" Width="44" Height="36" Click="OnCloseClick"
+                            Background="Transparent" Foreground="{StaticResource MutedTextBrush}" BorderThickness="0" FontSize="18" />
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <Border Grid.Row="1" Grid.Column="0"
+                Background="{StaticResource SidebarBrush}"
+                BorderBrush="{StaticResource BorderBrush}"
+                BorderThickness="0,0,1,0">
+            <Grid Margin="14,20">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+                <StackPanel>
+                    <TextBlock Text="OVERVIEW" Style="{StaticResource SectionLabelStyle}" Margin="12,0,0,8" />
+                    <RadioButton Content="Dashboard" GroupName="Navigation" IsChecked="True" Style="{StaticResource NavButtonStyle}" />
+                    <RadioButton Content="Landing history" GroupName="Navigation" Style="{StaticResource NavButtonStyle}" />
+                    <RadioButton Content="Aircraft" GroupName="Navigation" Style="{StaticResource NavButtonStyle}" />
+                    <TextBlock Text="SYSTEM" Style="{StaticResource SectionLabelStyle}" Margin="12,28,0,8" />
+                    <RadioButton Content="Data &amp; storage" GroupName="Navigation" Style="{StaticResource NavButtonStyle}" />
+                    <RadioButton Content="Settings" GroupName="Navigation" Style="{StaticResource NavButtonStyle}" />
+                </StackPanel>
+
+                <Border Grid.Row="2" Style="{StaticResource CardStyle}" Padding="14" Background="{StaticResource SurfaceRaisedBrush}">
+                    <StackPanel>
+                        <TextBlock Text="LANDING BLACK BOX" Style="{StaticResource SectionLabelStyle}" />
+                        <TextBlock Text="From the descending 500 ft gate through 15 seconds of rollout. No full-flight track."
+                                   Foreground="{StaticResource MutedTextBrush}" TextWrapping="Wrap" Margin="0,8,0,0" FontSize="12" />
+                    </StackPanel>
+                </Border>
+            </Grid>
+        </Border>
+
+        <ScrollViewer Grid.Row="1" Grid.Column="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+            <Grid Margin="24,22,18,24">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+
+                <Grid Grid.Row="0" Margin="2,0,2,18">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <StackPanel>
+                        <TextBlock Text="Latest landing" FontSize="25" FontWeight="SemiBold" />
+                        <StackPanel Orientation="Horizontal" Margin="0,5,0,0">
+                            <TextBlock Text="{Binding AircraftTitle}" Foreground="{StaticResource MutedTextBrush}" />
+                            <TextBlock Text="  ·  " Foreground="{StaticResource MutedTextBrush}" />
+                            <TextBlock Text="{Binding LocationDisplay}" Foreground="{StaticResource MutedTextBrush}" />
+                            <TextBlock Text="  ·  " Foreground="{StaticResource MutedTextBrush}" />
+                            <TextBlock Text="{Binding TimestampDisplay}" Foreground="{StaticResource MutedTextBrush}" />
+                        </StackPanel>
+                    </StackPanel>
+                    <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                        <TextBlock x:Name="ZoomRangeText" Text="Drag across any chart to zoom"
+                                   Foreground="{StaticResource MutedTextBrush}" FontSize="11"
+                                   VerticalAlignment="Center" Margin="0,0,10,0" />
+                        <Button x:Name="ResetZoomButton" Content="Full range"
+                                Style="{StaticResource ChartButtonStyle}"
+                                Visibility="Collapsed" Click="OnResetZoomClick" Margin="0,0,10,0" />
+                        <Border Background="{StaticResource AccentSoftBrush}" CornerRadius="9" Padding="12,7">
+                            <TextBlock Text="{Binding ContactDisplay}" Foreground="{StaticResource AccentBrush}" FontWeight="SemiBold" />
+                        </Border>
+                    </StackPanel>
+                </Grid>
+
+                <Grid Grid.Row="1" Margin="0,0,0,14">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="1.35*" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+
+                    <Border Grid.Column="0" Style="{StaticResource CardStyle}" Margin="0,0,7,0">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="*" />
+                                <RowDefinition Height="Auto" />
+                            </Grid.RowDefinitions>
+                            <TextBlock Text="INERTIAL LANDING RATE" Style="{StaticResource SectionLabelStyle}" />
+                            <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,7,0,5" VerticalAlignment="Center">
+                                <TextBlock Text="{Binding InertialDisplay}" Foreground="{StaticResource AccentBrush}" FontSize="42" FontWeight="SemiBold" />
+                                <TextBlock Text=" fpm" Foreground="{StaticResource MutedTextBrush}" FontSize="16" VerticalAlignment="Bottom" Margin="2,0,0,8" />
+                            </StackPanel>
+                            <TextBlock Grid.Row="2" Text="WORLD Y at contact · climb + / descent −" Foreground="{StaticResource MutedTextBrush}" FontSize="12" />
+                        </Grid>
+                    </Border>
+
+                    <Border Grid.Column="1" Style="{StaticResource CardStyle}" Margin="7,0">
+                        <StackPanel>
+                            <TextBlock Text="MSFS SURFACE" Style="{StaticResource SectionLabelStyle}" />
+                            <TextBlock Text="{Binding SurfaceDisplay}" Style="{StaticResource MetricValueStyle}" Margin="0,12,0,4" />
+                            <TextBlock Text="{Binding DeltaDisplay}" Foreground="{StaticResource VioletBrush}" />
+                            <TextBlock Text="{Binding TerrainDisplay}" Foreground="{StaticResource MutedTextBrush}" FontSize="11" Margin="0,5,0,0" TextWrapping="Wrap" />
+                        </StackPanel>
+                    </Border>
+
+                    <Border Grid.Column="2" Style="{StaticResource CardStyle}" Margin="7,0">
+                        <StackPanel>
+                            <TextBlock Text="G · 150 MS" Style="{StaticResource SectionLabelStyle}" />
+                            <TextBlock Text="{Binding G150Display}" Style="{StaticResource MetricValueStyle}" Margin="0,12,0,4" />
+                            <TextBlock Text="{Binding G2SecondsDisplay}" Foreground="{StaticResource MutedTextBrush}" FontSize="12" />
+                        </StackPanel>
+                    </Border>
+
+                    <Border Grid.Column="3" Style="{StaticResource CardStyle}" Margin="7,0,0,0">
+                        <StackPanel>
+                            <TextBlock Text="TOUCHDOWN" Style="{StaticResource SectionLabelStyle}" />
+                            <TextBlock Text="{Binding AirspeedDisplay}" Style="{StaticResource MetricValueStyle}" Margin="0,12,0,4" />
+                            <TextBlock Text="{Binding AttitudeDisplay}" Foreground="{StaticResource MutedTextBrush}" FontSize="12" TextWrapping="Wrap" />
+                        </StackPanel>
+                    </Border>
+                </Grid>
+
+                <Border Grid.Row="2" Style="{StaticResource CardStyle}" Margin="0,0,0,14" Padding="18,15,18,12">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="235" />
+                        </Grid.RowDefinitions>
+                        <Grid Grid.Row="0" Margin="0,0,0,10">
+                            <StackPanel>
+                                <TextBlock Text="Vertical rate around contact" FontSize="15" FontWeight="SemiBold" />
+                                <TextBlock Text="Signed vertical velocity: climb +, descent −; impact is t = 0" Foreground="{StaticResource MutedTextBrush}" FontSize="11" Margin="0,3,0,0" />
+                            </StackPanel>
+                        </Grid>
+                        <controls:LandingChart x:Name="SpeedChart" Grid.Row="1" Mode="VerticalSpeed" />
+                    </Grid>
+                </Border>
+
+                <Border Grid.Row="3" Style="{StaticResource CardStyle}" Padding="18,15,18,12" Margin="0,0,0,14">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="165" />
+                        </Grid.RowDefinitions>
+                        <Grid Margin="0,0,0,8">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="Three-axis loads" FontSize="15" FontWeight="SemiBold" />
+                            <TextBlock Grid.Column="1" Text="vertical · longitudinal · lateral" Foreground="{StaticResource MutedTextBrush}" FontSize="11" VerticalAlignment="Center" />
+                        </Grid>
+                        <controls:LandingChart x:Name="GChart" Grid.Row="1" Mode="LoadFactors" />
+                    </Grid>
+                </Border>
+
+                <Grid Grid.Row="4" Margin="0,0,0,14">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+
+                    <Border Grid.Column="0" Style="{StaticResource CardStyle}" Padding="18,15,18,12" Margin="0,0,7,0">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="175" />
+                            </Grid.RowDefinitions>
+                            <Grid Margin="0,0,0,8">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="Flight controls" FontSize="15" FontWeight="SemiBold" />
+                                <TextBlock Grid.Column="1" Text="command · surface" Foreground="{StaticResource MutedTextBrush}" FontSize="11" />
+                            </Grid>
+                            <controls:LandingChart x:Name="ControlsChart" Grid.Row="1" Mode="FlightControls" />
+                        </Grid>
+                    </Border>
+
+                    <Border Grid.Column="1" Style="{StaticResource CardStyle}" Padding="18,15,18,12" Margin="7,0,0,0">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="175" />
+                            </Grid.RowDefinitions>
+                            <Grid Margin="0,0,0,8">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="Attitude &amp; flare" FontSize="15" FontWeight="SemiBold" />
+                                <TextBlock Grid.Column="1" Text="pitch · bank · AoA" Foreground="{StaticResource MutedTextBrush}" FontSize="11" />
+                            </Grid>
+                            <controls:LandingChart x:Name="AttitudeChart" Grid.Row="1" Mode="Attitude" />
+                        </Grid>
+                    </Border>
+                </Grid>
+
+                <Grid Grid.Row="5">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+
+                    <Border Grid.Column="0" Style="{StaticResource CardStyle}" Padding="18,15,18,12" Margin="0,0,7,0">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="175" />
+                            </Grid.RowDefinitions>
+                            <Grid Margin="0,0,0,8">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="Power &amp; rollout" FontSize="15" FontWeight="SemiBold" />
+                                <TextBlock Grid.Column="1" Text="N1/RPM · throttle · reverse" Foreground="{StaticResource MutedTextBrush}" FontSize="11" />
+                            </Grid>
+                            <controls:LandingChart x:Name="PowerChart" Grid.Row="1" Mode="Power" />
+                        </Grid>
+                    </Border>
+
+                    <Border Grid.Column="1" Style="{StaticResource CardStyle}" Padding="18,15,18,12" Margin="7,0,0,0">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="175" />
+                            </Grid.RowDefinitions>
+                            <Grid Margin="0,0,0,8">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="Gear contacts" FontSize="15" FontWeight="SemiBold" />
+                                <TextBlock Grid.Column="1" Text="active points only" Foreground="{StaticResource MutedTextBrush}" FontSize="11" />
+                            </Grid>
+                            <controls:LandingChart x:Name="GearChart" Grid.Row="1" Mode="Gear" />
+                        </Grid>
+                    </Border>
+                </Grid>
+            </Grid>
+        </ScrollViewer>
+
+        <Border Grid.Row="1" Grid.Column="2"
+                Background="{StaticResource SidebarBrush}"
+                BorderBrush="{StaticResource BorderBrush}"
+                BorderThickness="1,0,0,0">
+            <Grid Margin="18,22">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Text="Landing history" FontSize="17" FontWeight="SemiBold" />
+                    <TextBlock Grid.Column="1" x:Name="HistoryCountText" Foreground="{StaticResource MutedTextBrush}" VerticalAlignment="Center" />
+                </Grid>
+
+                <ListBox x:Name="LandingHistoryList" Grid.Row="1" Margin="0,16,0,14"
+                         Background="Transparent" BorderThickness="0"
+                         SelectionChanged="OnHistorySelectionChanged"
+                         ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                    <ListBox.ItemContainerStyle>
+                        <Style TargetType="ListBoxItem">
+                            <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                            <Setter Property="Margin" Value="0,0,0,8" />
+                            <Setter Property="Template">
+                                <Setter.Value>
+                                    <ControlTemplate TargetType="ListBoxItem">
+                                        <Border x:Name="ItemBorder" Background="{StaticResource SurfaceBrush}"
+                                                BorderBrush="{StaticResource BorderBrush}" BorderThickness="1"
+                                                CornerRadius="11" Padding="13">
+                                            <ContentPresenter />
+                                        </Border>
+                                        <ControlTemplate.Triggers>
+                                            <Trigger Property="IsSelected" Value="True">
+                                                <Setter TargetName="ItemBorder" Property="BorderBrush" Value="{StaticResource AccentBrush}" />
+                                                <Setter TargetName="ItemBorder" Property="Background" Value="{StaticResource AccentSoftBrush}" />
+                                            </Trigger>
+                                            <Trigger Property="IsMouseOver" Value="True">
+                                                <Setter TargetName="ItemBorder" Property="Background" Value="{StaticResource SurfaceRaisedBrush}" />
+                                            </Trigger>
+                                        </ControlTemplate.Triggers>
+                                    </ControlTemplate>
+                                </Setter.Value>
+                            </Setter>
+                        </Style>
+                    </ListBox.ItemContainerStyle>
+                    <ListBox.ItemTemplate>
+                        <DataTemplate>
+                            <Grid>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                </Grid.RowDefinitions>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="{Binding AircraftTitle}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+                                <TextBlock Grid.Column="1" Text="{Binding InertialDisplay}" Foreground="{StaticResource AccentBrush}" FontSize="16" FontWeight="SemiBold" />
+                                <TextBlock Grid.Row="1" Text="{Binding LocationDisplay}" Foreground="{StaticResource MutedTextBrush}" FontSize="11" Margin="0,4,0,0" />
+                                <TextBlock Grid.Row="1" Grid.Column="1" Text=" fpm" Foreground="{StaticResource MutedTextBrush}" FontSize="10" VerticalAlignment="Bottom" />
+                                <TextBlock Grid.Row="2" Text="{Binding TimestampDisplay}" Foreground="{StaticResource MutedTextBrush}" FontSize="11" Margin="0,7,0,0" />
+                                <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding G150Display, StringFormat={}{0} G}" Foreground="{StaticResource MutedTextBrush}" FontSize="11" Margin="0,7,0,0" />
+                            </Grid>
+                        </DataTemplate>
+                    </ListBox.ItemTemplate>
+                </ListBox>
+
+                <Border Grid.Row="2" Background="{StaticResource SurfaceRaisedBrush}" CornerRadius="10" Padding="12">
+                    <TextBlock x:Name="StoragePathText" Foreground="{StaticResource MutedTextBrush}" FontSize="11" TextWrapping="Wrap" />
+                </Border>
+            </Grid>
+        </Border>
+    </Grid>
+</Window>
