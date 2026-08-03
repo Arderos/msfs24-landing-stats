@@ -63,9 +63,16 @@ jobs:
             throw "The MSFS 2024 SDK archive did not contain an MSI installer."
           }
 
-          & msiexec.exe /a $msi.FullName /qn "TARGETDIR=$adminDirectory"
-          if ($LASTEXITCODE -ne 0) {
-            throw "MSFS 2024 SDK administrative extraction failed with exit code $LASTEXITCODE."
+          $arguments = @(
+            '/a',
+            "`"$($msi.FullName)`"",
+            '/qn',
+            "TARGETDIR=`"$adminDirectory`"",
+            'REBOOT=ReallySuppress'
+          )
+          $installer = Start-Process -FilePath 'msiexec.exe' -ArgumentList $arguments -Wait -PassThru
+          if ($installer.ExitCode -ne 0) {
+            throw "MSFS 2024 SDK administrative extraction failed with exit code $($installer.ExitCode)."
           }
 
           $managed = Get-ChildItem $adminDirectory -Recurse -Filter 'Microsoft.FlightSimulator.SimConnect.dll' |
