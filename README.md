@@ -79,4 +79,8 @@ Optional diagnostic captures are stored separately under:
 %LOCALAPPDATA%\MSFS Landing Stats\Raw Captures
 ```
 
+`DEBUG RAW` retains every received `SIM_FRAME` sample and rotates to a new ZIP
+every 30,000 frames. Rotation bounds memory use, but long captures can still
+consume substantial disk space; keep this mode for short diagnostic flights.
+
 See [CHANGELOG.md](CHANGELOG.md) for release history.

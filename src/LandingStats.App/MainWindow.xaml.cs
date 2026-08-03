@@ -175,14 +175,14 @@ public partial class MainWindow : Window
         ApplySessionFilter();
     }
 
-    private void ApplySessionFilter()
+    private void ApplySessionFilter(string? preferredSelectionId = null)
     {
         if (LandingHistoryList == null || HistoryCountText == null)
         {
             return;
         }
 
-        var selectedId = (LandingHistoryList.SelectedItem as LandingRecord)?.Id;
+        var selectedId = preferredSelectionId ?? (LandingHistoryList.SelectedItem as LandingRecord)?.Id;
         var query = SessionFilterBox?.Text?.Trim() ?? string.Empty;
         var filtered = string.IsNullOrWhiteSpace(query)
             ? _landings
@@ -397,14 +397,17 @@ public partial class MainWindow : Window
 
         try
         {
-            var touchdowns = TouchdownAnalysis.Analyze(eventArgs.Samples);
+            var samples = TelemetryDeduplicator.Deduplicate(eventArgs.Samples);
+            var touchdowns = TouchdownAnalysis.Analyze(samples);
             if (touchdowns.Count == 0)
             {
                 ConnectionStatusText.Text = "Capture ended, but no touchdown was detected";
                 ConnectionStatusDot.Fill = Brush("#FF8A6A");
+                RecorderModeText.Text = "armed";
                 return;
             }
 
+            var savedRecords = new List<LandingRecord>(touchdowns.Count);
             foreach (var touchdown in touchdowns)
             {
                 var aircraftType = eventArgs.AircraftType == "unknown"
@@ -412,7 +415,7 @@ public partial class MainWindow : Window
                     : eventArgs.AircraftType;
                 var record = LandingRecordFactory.Create(
                     touchdown,
-                    eventArgs.Samples,
+                    samples,
                     eventArgs.AircraftTitle,
                     aircraftType,
                     contactCount: touchdowns.Count,
@@ -421,20 +424,41 @@ public partial class MainWindow : Window
                 record.ControlInputSources = eventArgs.ControlInputSources.ToList();
                 TryResolveAirport(record, _airportFacilities);
                 _repository.Save(record);
+                savedRecords.Add(record);
             }
 
-            LoadHistory();
+            AddLandingRecords(savedRecords);
             var landingStatus = touchdowns.Count == 1
                 ? "Landing analyzed and saved"
                 : $"{touchdowns.Count} contacts analyzed and saved";
             ConnectionStatusText.Text = landingStatus;
             ConnectionStatusDot.Fill = Brush("#8FD6A8");
+            RecorderModeText.Text = "armed";
         }
         catch (Exception exception)
         {
             ConnectionStatusText.Text = $"Landing analysis failed: {exception.Message}";
             ConnectionStatusDot.Fill = Brush("#FF8A6A");
+            RecorderModeText.Text = "error";
         }
+    }
+
+    private void AddLandingRecords(IReadOnlyList<LandingRecord> records)
+    {
+        if (records.Count == 0)
+        {
+            return;
+        }
+
+        var addedIds = new HashSet<string>(records.Select(record => record.Id), StringComparer.Ordinal);
+        _landings = records
+            .Concat(_landings.Where(record => !addedIds.Contains(record.Id)))
+            .OrderByDescending(record => record.TimestampUtc)
+            .ToArray();
+
+        ApplySessionFilter(records[0].Id);
+        LandingContent.Visibility = Visibility.Visible;
+        EmptyState.Visibility = Visibility.Collapsed;
     }
 
     private void OnAirportFacilitiesUpdated(object? sender, AirportFacilitiesEventArgs eventArgs)
@@ -514,7 +538,7 @@ public partial class MainWindow : Window
         _recorder.SetRawDebugEnabled(enabled);
         if (enabled)
         {
-            RawDebugStatusText.Text = "LIVE · every SIM_FRAME sample · includes previous 15 seconds\n" + _rawCaptureRepository.RootPath;
+            RawDebugStatusText.Text = "LIVE · every SIM_FRAME sample · 15 s pre-roll · rotates every 30,000 frames\n" + _rawCaptureRepository.RootPath;
         }
         else if (!wasEnabled)
         {
@@ -534,7 +558,9 @@ public partial class MainWindow : Window
                 eventArgs.AircraftModel,
                 eventArgs.ControlInputSources,
                 eventArgs.StartedUtc);
-            RawDebugStatusText.Text = $"Saved {eventArgs.Samples.Count:N0} frames · {System.IO.Path.GetFileName(path)}";
+            RawDebugStatusText.Text = _recorder?.RawDebugEnabled == true
+                ? $"Saved chunk {eventArgs.Samples.Count:N0} frames · capture continues"
+                : $"Saved {eventArgs.Samples.Count:N0} frames · {System.IO.Path.GetFileName(path)}";
         }
         catch (Exception exception)
         {

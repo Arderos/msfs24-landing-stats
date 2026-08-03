@@ -12,9 +12,14 @@ internal sealed class WindowsJoystickReader
     private const uint JoyNoError = 0;
     private const int MaximumWinmmJoysticks = 16;
 
-    private readonly Slot[] _slots;
+    private Slot[] _slots = Array.Empty<Slot>();
 
     public WindowsJoystickReader()
+    {
+        Refresh();
+    }
+
+    public bool Refresh()
     {
         var slots = new List<Slot>();
         var supported = Math.Min(MaximumWinmmJoysticks, unchecked((int)joyGetNumDevs()));
@@ -45,7 +50,26 @@ internal sealed class WindowsJoystickReader
             slots.Add(new Slot(joystickId, minimum, maximum, name, axisCount));
         }
 
-        _slots = slots.ToArray();
+        var refreshed = slots.ToArray();
+        var changed = refreshed.Length != _slots.Length;
+        if (!changed)
+        {
+            for (var index = 0; index < refreshed.Length; index++)
+            {
+                if (refreshed[index].JoystickId != _slots[index].JoystickId ||
+                    refreshed[index].Minimum != _slots[index].Minimum ||
+                    refreshed[index].Maximum != _slots[index].Maximum ||
+                    refreshed[index].AxisCount != _slots[index].AxisCount ||
+                    !string.Equals(refreshed[index].Name, _slots[index].Name, StringComparison.Ordinal))
+                {
+                    changed = true;
+                    break;
+                }
+            }
+        }
+
+        _slots = refreshed;
+        return changed;
     }
 
     public bool TryReadYAxis(int slotIndex, out int joystickId, out double percent)

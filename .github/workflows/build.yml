@@ -97,6 +97,11 @@ jobs:
         run: |
           .\build-app.ps1 -MsfsSdkRoot (Join-Path $env:RUNNER_TEMP 'msfs-simconnect-sdk')
 
+      - name: Run regression tests
+        shell: pwsh
+        run: |
+          & .\tests\LandingStats.App.RegressionTests\bin\Release\net48\LandingStats.App.RegressionTests.exe
+
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:

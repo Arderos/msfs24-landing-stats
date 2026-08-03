@@ -2,6 +2,32 @@
 
 All notable changes to MSFS Landing Stats are documented in this file.
 
+## [0.4.2] - 2026-08-04
+
+### Fixed
+
+- Live landing analysis now deduplicates repeated simulation instants with the
+  same keep-last policy as the offline analyzer.
+- A five-minute approach-window timeout now immediately re-arms capture instead
+  of silently losing a later touchdown below 1,000 ft AGL.
+- Debug RAW capture rotates automatically every 30,000 frames, bounding memory
+  use while continuing into a new archive without a sampling gap.
+- Full airport-facility refreshes now begin after an episode instead of during
+  the 500 ft-to-touchdown recording window.
+- Joysticks connected after application startup are detected automatically,
+  and controller topology changes can no longer mix devices inside pre-roll.
+- A transient SimConnect exception no longer leaves the application status in
+  an error state after valid telemetry resumes.
+- New landing records are inserted into the in-memory history without loading,
+  resolving, and rewriting every stored landing on the UI thread.
+
+### Changed
+
+- Removed the obsolete SimConnect controller-enumeration path superseded by
+  direct WinMM polling.
+- Added regression checks for deduplication, approach timeout re-arming, RAW
+  rotation, status recovery, and removal of the legacy controller path.
+
 ## [0.4.1] - 2026-08-04
 
 ### Added

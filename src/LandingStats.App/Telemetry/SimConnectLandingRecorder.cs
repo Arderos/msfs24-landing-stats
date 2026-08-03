@@ -120,17 +120,8 @@ internal sealed class SimConnectLandingRecorder : IDisposable
     private const double PostContactSeconds = 15.0;
     private const double GoAroundResetAglFeet = 1000.0;
     private const double MaximumApproachSeconds = 300.0;
-
-    private sealed class ControllerAxisState
-    {
-        public uint DeviceId { get; set; }
-
-        public string Name { get; set; } = string.Empty;
-
-        public double YAxisPercent { get; set; }
-
-        public double ReceivedHostSeconds { get; set; } = double.NaN;
-    }
+    private const int RawDebugChunkMaximumSamples = 30000;
+    private static readonly TimeSpan JoystickRefreshInterval = TimeSpan.FromSeconds(5);
 
     private readonly IntPtr _windowHandle;
     private readonly Stopwatch _hostClock = Stopwatch.StartNew();
@@ -139,7 +130,6 @@ internal sealed class SimConnectLandingRecorder : IDisposable
     private readonly Dictionary<string, AirportFacility> _airportFacilities =
         new Dictionary<string, AirportFacility>(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<uint, string> _simConnectOperations = new Dictionary<uint, string>();
-    private readonly ControllerAxisState[] _controllerAxes = new ControllerAxisState[TelemetrySample.CapturedControllerCount];
     private readonly WindowsJoystickReader _windowsJoystickReader = new WindowsJoystickReader();
 
     private SimConnect? _simConnect;
@@ -147,6 +137,7 @@ internal sealed class SimConnectLandingRecorder : IDisposable
     private List<TelemetrySample>? _rawDebugSamples;
     private DateTime _rawDebugStartedUtc;
     private DateTime _lastConnectAttemptUtc = DateTime.MinValue;
+    private DateTime _nextJoystickRefreshUtc = DateTime.MinValue;
     private long _sequence;
     private double _lastSimulationTime = double.NaN;
     private double _episodeStartTime;
@@ -160,16 +151,13 @@ internal sealed class SimConnectLandingRecorder : IDisposable
     private string _aircraftModel = "unknown";
     private double _axisElevatorSetPercent;
     private double _axisElevatorSetReceivedHostSeconds = double.NaN;
+    private bool _recoverStatusAfterFrame;
     private bool _disposed;
 
     public SimConnectLandingRecorder(IntPtr windowHandle)
     {
         _windowHandle = windowHandle;
         _retryTimer.Tick += OnRetryTimerTick;
-        for (var index = 0; index < _controllerAxes.Length; index++)
-        {
-            _controllerAxes[index] = new ControllerAxisState();
-        }
     }
 
     public event EventHandler<RecorderStatusEventArgs>? StatusChanged;
@@ -199,8 +187,14 @@ internal sealed class SimConnectLandingRecorder : IDisposable
 
         if (enabled)
         {
+            if (_windowsJoystickReader.Refresh())
+            {
+                _preRoll.Clear();
+            }
+
+            _nextJoystickRefreshUtc = DateTime.UtcNow + JoystickRefreshInterval;
             _rawDebugStartedUtc = DateTime.UtcNow;
-            _rawDebugSamples = new List<TelemetrySample>(_preRoll.Count + 4096);
+            _rawDebugSamples = new List<TelemetrySample>(RawDebugChunkMaximumSamples);
             foreach (var sample in _preRoll)
             {
                 _rawDebugSamples.Add(sample);
@@ -244,7 +238,7 @@ internal sealed class SimConnectLandingRecorder : IDisposable
         _retryTimer.Stop();
         if (_lastContactTime.HasValue)
         {
-            CompleteEpisode();
+            CompleteEpisode(false);
         }
 
         CompleteRawDebugCapture();
@@ -256,7 +250,19 @@ internal sealed class SimConnectLandingRecorder : IDisposable
 
     private void OnRetryTimerTick(object? sender, EventArgs eventArgs)
     {
-        if (_simConnect == null && DateTime.UtcNow - _lastConnectAttemptUtc >= TimeSpan.FromSeconds(2))
+        var now = DateTime.UtcNow;
+        if (_episodeSamples == null && _rawDebugSamples == null && now >= _nextJoystickRefreshUtc)
+        {
+            if (_windowsJoystickReader.Refresh())
+            {
+                // A controller slot must never refer to two devices inside the same retained pre-roll.
+                _preRoll.Clear();
+            }
+
+            _nextJoystickRefreshUtc = now + JoystickRefreshInterval;
+        }
+
+        if (_simConnect == null && now - _lastConnectAttemptUtc >= TimeSpan.FromSeconds(2))
         {
             TryConnect();
         }
@@ -286,7 +292,6 @@ internal sealed class SimConnectLandingRecorder : IDisposable
             connection.OnRecvAirportList += OnRecvAirportList;
             connection.OnRecvEvent += OnRecvEvent;
             connection.OnRecvEventEx1 += OnRecvEventEx1;
-            connection.OnRecvControllersList += OnRecvControllersList;
             _simConnect = connection;
         }
         catch (COMException)
@@ -322,9 +327,9 @@ internal sealed class SimConnectLandingRecorder : IDisposable
             RequestAircraftMetadata(sender);
             RequestAirportFacilities(sender);
             RegisterControlEvents(sender);
-            TrackOperation(sender, "enumerate controllers", sender.EnumerateControllers);
 
             _simulator = string.IsNullOrWhiteSpace(data.szApplicationName) ? "MSFS" : data.szApplicationName.Trim();
+            _recoverStatusAfterFrame = false;
             SetStatus(RecorderState.Connected, "Connected — waiting for 500 ft AGL");
         }
         catch (Exception exception)
@@ -344,12 +349,7 @@ internal sealed class SimConnectLandingRecorder : IDisposable
         var operation = _simConnectOperations.TryGetValue(data.dwSendID, out var value)
             ? $" · {value}"
             : string.Empty;
-        if (value != null && value.StartsWith("map joystick:", StringComparison.Ordinal))
-        {
-            SetStatus(RecorderState.Connected, "Connected — waiting for 500 ft AGL");
-            return;
-        }
-
+        _recoverStatusAfterFrame = true;
         SetStatus(
             RecorderState.Error,
             $"SimConnect error {data.dwException} · send {data.dwSendID} · index {data.dwIndex}{operation}");
@@ -368,55 +368,13 @@ internal sealed class SimConnectLandingRecorder : IDisposable
     private void ProcessControlEvent(uint rawEventId, uint rawValue)
     {
         var eventId = (ControlEvents)rawEventId;
-        var hostSeconds = _hostClock.Elapsed.TotalSeconds;
-        if (eventId == ControlEvents.AxisElevatorSet)
-        {
-            _axisElevatorSetPercent = NormalizeElevatorEvent(rawValue);
-            _axisElevatorSetReceivedHostSeconds = hostSeconds;
-            return;
-        }
-
-        var firstRawEvent = (uint)ControlEvents.RawControllerY0;
-        var rawIndex = (long)rawEventId - firstRawEvent;
-        if (rawIndex < 0 || rawIndex >= _controllerAxes.Length)
+        if (eventId != ControlEvents.AxisElevatorSet)
         {
             return;
         }
 
-        var controller = _controllerAxes[(int)rawIndex];
-        controller.YAxisPercent = NormalizeJoystickAxis(rawValue);
-        controller.ReceivedHostSeconds = hostSeconds;
-    }
-
-    private void OnRecvControllersList(SimConnect sender, SIMCONNECT_RECV_CONTROLLERS_LIST data)
-    {
-        for (var index = 0; index < _controllerAxes.Length; index++)
-        {
-            _controllerAxes[index].DeviceId = 0;
-            _controllerAxes[index].Name = string.Empty;
-            _controllerAxes[index].YAxisPercent = 0;
-            _controllerAxes[index].ReceivedHostSeconds = double.NaN;
-        }
-
-        var slot = 0;
-        foreach (var value in data.rgData)
-        {
-            if (slot >= _controllerAxes.Length || value is not SIMCONNECT_CONTROLLER_ITEM item)
-            {
-                continue;
-            }
-
-            var deviceName = item.DeviceName?.Trim() ?? string.Empty;
-            if (string.Equals(deviceName, "Mouse", StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(deviceName, "Keyboard", StringComparison.OrdinalIgnoreCase))
-            {
-                continue;
-            }
-
-            _controllerAxes[slot].DeviceId = item.DeviceId;
-            _controllerAxes[slot].Name = deviceName;
-            slot++;
-        }
+        _axisElevatorSetPercent = NormalizeElevatorEvent(rawValue);
+        _axisElevatorSetReceivedHostSeconds = _hostClock.Elapsed.TotalSeconds;
     }
 
     private void OnRecvAirportList(SimConnect sender, SIMCONNECT_RECV_AIRPORT_LIST data)
@@ -475,6 +433,7 @@ internal sealed class SimConnectLandingRecorder : IDisposable
 
         if ((Requests)data.dwRequestID == Requests.Frame)
         {
+            RecoverStatusAfterFrame();
             ProcessSample(ToSample((SimFrameData)data.dwData[0]));
         }
     }
@@ -498,7 +457,7 @@ internal sealed class SimConnectLandingRecorder : IDisposable
 
         _lastSimulationTime = sample.SimulationTimeSeconds;
         AddToPreRoll(sample);
-        _rawDebugSamples?.Add(sample);
+        AddRawDebugSample(sample);
 
         if (!sample.OnGround)
         {
@@ -544,7 +503,8 @@ internal sealed class SimConnectLandingRecorder : IDisposable
         else if (_episodeSamples != null && !_lastContactTime.HasValue && sampleTime - _episodeStartTime >= MaximumApproachSeconds)
         {
             DiscardEpisode();
-            SetStatus(RecorderState.Connected, "Approach timed out — waiting for 500 ft AGL");
+            _armed = true;
+            SetStatus(RecorderState.Connected, "Approach window restarted — still armed");
         }
     }
 
@@ -562,7 +522,6 @@ internal sealed class SimConnectLandingRecorder : IDisposable
         if (_simConnect != null)
         {
             RequestAircraftMetadata(_simConnect);
-            RequestAirportFacilities(_simConnect);
         }
 
         SetStatus(
@@ -570,7 +529,7 @@ internal sealed class SimConnectLandingRecorder : IDisposable
             contactTriggered ? "Late start — contact capture in progress" : "Below 500 ft — landing capture in progress");
     }
 
-    private void CompleteEpisode()
+    private void CompleteEpisode(bool refreshAirportFacilities = true)
     {
         var samples = _episodeSamples;
         _episodeSamples = null;
@@ -592,6 +551,11 @@ internal sealed class SimConnectLandingRecorder : IDisposable
                 _aircraftModel,
                 new List<AirportFacility>(_airportFacilities.Values),
                 ControlInputSources()));
+
+        if (refreshAirportFacilities && _simConnect != null && !_disposed)
+        {
+            RequestAirportFacilities(_simConnect);
+        }
     }
 
     private void DiscardEpisode()
@@ -604,6 +568,31 @@ internal sealed class SimConnectLandingRecorder : IDisposable
     {
         var samples = _rawDebugSamples;
         _rawDebugSamples = null;
+        RaiseRawDebugCapture(samples, _rawDebugStartedUtc);
+    }
+
+    private void AddRawDebugSample(TelemetrySample sample)
+    {
+        if (_rawDebugSamples == null)
+        {
+            return;
+        }
+
+        _rawDebugSamples.Add(sample);
+        if (_rawDebugSamples.Count < RawDebugChunkMaximumSamples)
+        {
+            return;
+        }
+
+        var completed = _rawDebugSamples;
+        var startedUtc = _rawDebugStartedUtc;
+        _rawDebugStartedUtc = DateTime.UtcNow;
+        _rawDebugSamples = new List<TelemetrySample>(RawDebugChunkMaximumSamples);
+        RaiseRawDebugCapture(completed, startedUtc);
+    }
+
+    private void RaiseRawDebugCapture(IReadOnlyList<TelemetrySample>? samples, DateTime startedUtc)
+    {
         if (samples == null || samples.Count == 0)
         {
             return;
@@ -612,8 +601,8 @@ internal sealed class SimConnectLandingRecorder : IDisposable
         RawDebugCaptureCompleted?.Invoke(
             this,
             new RawDebugCaptureEventArgs(
-                samples.ToArray(),
-                _rawDebugStartedUtc,
+                samples,
+                startedUtc,
                 _simulator,
                 _aircraftTitle,
                 _aircraftType,
@@ -644,7 +633,7 @@ internal sealed class SimConnectLandingRecorder : IDisposable
     {
         if (_lastContactTime.HasValue)
         {
-            CompleteEpisode();
+            CompleteEpisode(false);
         }
         else
         {
@@ -653,6 +642,7 @@ internal sealed class SimConnectLandingRecorder : IDisposable
 
         _simConnect?.Dispose();
         _simConnect = null;
+        _recoverStatusAfterFrame = false;
         ResetFlightDetection();
         if (!_disposed)
         {
@@ -669,11 +659,6 @@ internal sealed class SimConnectLandingRecorder : IDisposable
         _lastSimulationTime = double.NaN;
         _axisElevatorSetPercent = 0;
         _axisElevatorSetReceivedHostSeconds = double.NaN;
-        foreach (var controller in _controllerAxes)
-        {
-            controller.YAxisPercent = 0;
-            controller.ReceivedHostSeconds = double.NaN;
-        }
     }
 
     private TelemetrySample ToSample(SimFrameData frame)
@@ -770,7 +755,7 @@ internal sealed class SimConnectLandingRecorder : IDisposable
             ? Math.Max(0, hostSeconds - _axisElevatorSetReceivedHostSeconds)
             : 0;
 
-        for (var index = 0; index < _controllerAxes.Length; index++)
+        for (var index = 0; index < TelemetrySample.CapturedControllerCount; index++)
         {
             sample.RawControllerYAxisValid[index] = _windowsJoystickReader.TryReadYAxis(
                 index,
@@ -834,6 +819,28 @@ internal sealed class SimConnectLandingRecorder : IDisposable
     private void SetStatus(RecorderState state, string message)
     {
         StatusChanged?.Invoke(this, new RecorderStatusEventArgs(state, message));
+    }
+
+    private void RecoverStatusAfterFrame()
+    {
+        if (!_recoverStatusAfterFrame)
+        {
+            return;
+        }
+
+        _recoverStatusAfterFrame = false;
+        if (_episodeSamples != null)
+        {
+            SetStatus(
+                RecorderState.Recording,
+                _lastContactTime.HasValue
+                    ? "Contact detected — recording rollout"
+                    : "Below 500 ft — landing capture in progress");
+        }
+        else
+        {
+            SetStatus(RecorderState.Connected, "Connected — waiting for 500 ft AGL");
+        }
     }
 
     private void ThrowIfDisposed()
@@ -1034,12 +1041,6 @@ internal sealed class SimConnectLandingRecorder : IDisposable
         return Math.Max(-100, Math.Min(100, normalized * 100.0));
     }
 
-    private static double NormalizeJoystickAxis(uint rawValue)
-    {
-        var signed = unchecked((int)rawValue);
-        return Math.Max(-100, Math.Min(100, signed / 32768.0 * 100.0));
-    }
-
     private enum Definitions
     {
         Frame,
@@ -1058,21 +1059,8 @@ internal sealed class SimConnectLandingRecorder : IDisposable
         ControlEvents,
     }
 
-    private enum InputGroups
-    {
-        RawControllers,
-    }
-
     private enum ControlEvents : uint
     {
         AxisElevatorSet = 1,
-        RawControllerY0 = 100,
-        RawControllerY1,
-        RawControllerY2,
-        RawControllerY3,
-        RawControllerY4,
-        RawControllerY5,
-        RawControllerY6,
-        RawControllerY7,
     }
 }

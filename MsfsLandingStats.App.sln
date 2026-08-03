@@ -8,6 +8,10 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "LandingStats.App", "src\Lan
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "LandingStats.App.Launcher", "src\LandingStats.App.Launcher\LandingStats.App.Launcher.csproj", "{7CBA16C2-FF8D-4EB0-8F74-7DF076605FF9}"
 EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{0AB3BF05-4346-4AA6-1389-037BE0695223}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "LandingStats.App.RegressionTests", "tests\LandingStats.App.RegressionTests\LandingStats.App.RegressionTests.csproj", "{C17E2E90-AC85-4F91-BC84-F6BC0E0CA165}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -26,5 +30,15 @@ Global
 		{7CBA16C2-FF8D-4EB0-8F74-7DF076605FF9}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{7CBA16C2-FF8D-4EB0-8F74-7DF076605FF9}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{7CBA16C2-FF8D-4EB0-8F74-7DF076605FF9}.Release|Any CPU.Build.0 = Release|Any CPU
+		{C17E2E90-AC85-4F91-BC84-F6BC0E0CA165}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{C17E2E90-AC85-4F91-BC84-F6BC0E0CA165}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{C17E2E90-AC85-4F91-BC84-F6BC0E0CA165}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{C17E2E90-AC85-4F91-BC84-F6BC0E0CA165}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{C17E2E90-AC85-4F91-BC84-F6BC0E0CA165} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
 	EndGlobalSection
 EndGlobal
