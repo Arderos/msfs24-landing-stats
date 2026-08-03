@@ -5,6 +5,7 @@ obj/
 captures/
 artifacts/
 test-output/
+src/LandingStats.App/*.zip
 
 # Local research and capture tools are intentionally not part of the app repository.
 src/LandingStats.Analyzer/

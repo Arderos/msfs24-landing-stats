@@ -69,7 +69,14 @@ public sealed class LandingRepository
             _serializer.WriteObject(gzip, record);
         }
 
-        File.Move(temporaryPath, path);
+        if (File.Exists(path))
+        {
+            File.Replace(temporaryPath, path, null);
+        }
+        else
+        {
+            File.Move(temporaryPath, path);
+        }
         return path;
     }
 }

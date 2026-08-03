@@ -3,346 +3,131 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:controls="clr-namespace:LandingStats.App.Controls"
         Title="MSFS Landing Stats"
-        Width="1380"
-        Height="860"
-        MinWidth="1120"
-        MinHeight="720"
+        Width="1680"
+        Height="940"
+        MinWidth="1180"
+        MinHeight="740"
         WindowStartupLocation="CenterScreen"
         WindowStyle="None"
         ResizeMode="CanResizeWithGrip"
+        Background="{StaticResource AppBackgroundBrush}"
         UseLayoutRounding="True">
+    <WindowChrome.WindowChrome>
+        <WindowChrome CaptionHeight="0"
+                      ResizeBorderThickness="6"
+                      GlassFrameThickness="0"
+                      CornerRadius="0"
+                      UseAeroCaptionButtons="False" />
+    </WindowChrome.WindowChrome>
     <Grid Background="{StaticResource AppBackgroundBrush}">
         <Grid.RowDefinitions>
-            <RowDefinition Height="64" />
+            <RowDefinition Height="44" />
             <RowDefinition Height="*" />
+            <RowDefinition Height="28" />
         </Grid.RowDefinitions>
         <Grid.ColumnDefinitions>
-            <ColumnDefinition Width="210" />
-            <ColumnDefinition Width="*" />
-            <ColumnDefinition Width="310" />
+            <ColumnDefinition Width="19*" MinWidth="272" MaxWidth="400" />
+            <ColumnDefinition Width="81*" />
         </Grid.ColumnDefinitions>
 
-        <Border Grid.Row="0" Grid.ColumnSpan="3"
-                Background="{StaticResource SidebarBrush}"
+        <Border Grid.Row="0" Grid.ColumnSpan="2"
+                Background="Transparent"
                 BorderBrush="{StaticResource BorderBrush}"
                 BorderThickness="0,0,0,1"
                 MouseLeftButtonDown="OnTitleBarMouseDown">
-            <Grid Margin="18,0,10,0">
+            <Grid Margin="16,0,8,0">
                 <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="192" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
-
-                <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
-                    <Border Width="34" Height="34" CornerRadius="10" Background="{StaticResource AccentSoftBrush}">
-                        <TextBlock Text="LS" Foreground="{StaticResource AccentBrush}" FontWeight="Bold"
-                                   HorizontalAlignment="Center" VerticalAlignment="Center" />
-                    </Border>
-                    <TextBlock Text="Landing Stats" FontSize="15" FontWeight="SemiBold" Margin="10,0,0,0"
-                               VerticalAlignment="Center" />
+                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                    <Border Width="15" Height="15" CornerRadius="3" Background="{StaticResource AccentBrush}" />
+                    <TextBlock Text="Landing Stats" FontSize="13" FontWeight="SemiBold" Margin="9,0,0,0" />
                 </StackPanel>
-
-                <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
-                    <Ellipse x:Name="ConnectionStatusDot" Width="8" Height="8" Fill="{StaticResource AmberBrush}" />
-                    <TextBlock x:Name="ConnectionStatusText" Text="Waiting for MSFS" Foreground="{StaticResource MutedTextBrush}" Margin="8,0,0,0" />
-                    <Border Background="{StaticResource SurfaceRaisedBrush}" CornerRadius="8" Margin="14,0,0,0" Padding="9,4">
-                        <TextBlock Text="Landing Metric v1" Foreground="{StaticResource MutedTextBrush}" FontSize="11" />
-                    </Border>
+                <Border Grid.Column="1" Width="1" Height="16" Background="#262321" Margin="14,0" />
+                <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                    <Ellipse x:Name="ConnectionStatusDot" Width="6" Height="6" Fill="{StaticResource AmberBrush}" />
+                    <TextBlock x:Name="ConnectionStatusText" Text="Waiting for MSFS" Foreground="{StaticResource MutedTextBrush}" FontSize="12" Margin="7,0,0,0" />
+                    <TextBlock Text="·" Foreground="{StaticResource LabelTextBrush}" Margin="9,0" />
+                    <TextBlock x:Name="RecorderModeText" Text="offline" Foreground="{StaticResource MutedTextBrush}" FontSize="12" />
                 </StackPanel>
-
-                <StackPanel Grid.Column="2" Orientation="Horizontal">
-                    <Button Content="—" Width="44" Height="36" Click="OnMinimizeClick"
-                            Background="Transparent" Foreground="{StaticResource MutedTextBrush}" BorderThickness="0" />
-                    <Button Content="×" Width="44" Height="36" Click="OnCloseClick"
-                            Background="Transparent" Foreground="{StaticResource MutedTextBrush}" BorderThickness="0" FontSize="18" />
+                <StackPanel Grid.Column="3" Orientation="Horizontal">
+                    <Button Content="—" Width="34" Height="28" Style="{StaticResource TopBarButtonStyle}" Click="OnMinimizeClick" />
+                    <Button Content="□" Width="34" Height="28" Style="{StaticResource TopBarButtonStyle}" Click="OnMaximizeClick" FontSize="10" />
+                    <Button Content="×" Width="34" Height="28" Style="{StaticResource TopBarButtonStyle}" Click="OnCloseClick" FontSize="13" />
                 </StackPanel>
             </Grid>
         </Border>
 
-        <Border Grid.Row="1" Grid.Column="0"
-                Background="{StaticResource SidebarBrush}"
-                BorderBrush="{StaticResource BorderBrush}"
-                BorderThickness="0,0,1,0">
-            <Grid Margin="14,20">
+        <Border Grid.Row="1" Grid.Column="0" BorderBrush="{StaticResource BorderBrush}" BorderThickness="0,0,1,0">
+            <Grid>
                 <Grid.RowDefinitions>
-                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="46" />
+                    <RowDefinition Height="42" />
                     <RowDefinition Height="*" />
-                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="26" />
                 </Grid.RowDefinitions>
-                <StackPanel>
-                    <TextBlock Text="OVERVIEW" Style="{StaticResource SectionLabelStyle}" Margin="12,0,0,8" />
-                    <RadioButton Content="Dashboard" GroupName="Navigation" IsChecked="True" Style="{StaticResource NavButtonStyle}" />
-                    <RadioButton Content="Landing history" GroupName="Navigation" Style="{StaticResource NavButtonStyle}" />
-                    <RadioButton Content="Aircraft" GroupName="Navigation" Style="{StaticResource NavButtonStyle}" />
-                    <TextBlock Text="SYSTEM" Style="{StaticResource SectionLabelStyle}" Margin="12,28,0,8" />
-                    <RadioButton Content="Data &amp; storage" GroupName="Navigation" Style="{StaticResource NavButtonStyle}" />
-                    <RadioButton Content="Settings" GroupName="Navigation" Style="{StaticResource NavButtonStyle}" />
-                </StackPanel>
-
-                <Border Grid.Row="2" Style="{StaticResource CardStyle}" Padding="14" Background="{StaticResource SurfaceRaisedBrush}">
-                    <StackPanel>
-                        <TextBlock Text="LANDING BLACK BOX" Style="{StaticResource SectionLabelStyle}" />
-                        <TextBlock Text="From the descending 500 ft gate through 15 seconds of rollout. No full-flight track."
-                                   Foreground="{StaticResource MutedTextBrush}" TextWrapping="Wrap" Margin="0,8,0,0" FontSize="12" />
-                    </StackPanel>
-                </Border>
-            </Grid>
-        </Border>
-
-        <ScrollViewer Grid.Row="1" Grid.Column="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
-            <Grid Margin="24,22,18,24">
-                <Grid.RowDefinitions>
-                    <RowDefinition Height="Auto" />
-                    <RowDefinition Height="Auto" />
-                    <RowDefinition Height="Auto" />
-                    <RowDefinition Height="Auto" />
-                    <RowDefinition Height="Auto" />
-                    <RowDefinition Height="Auto" />
-                </Grid.RowDefinitions>
-
-                <Grid Grid.Row="0" Margin="2,0,2,18">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="*" />
-                        <ColumnDefinition Width="Auto" />
-                    </Grid.ColumnDefinitions>
-                    <StackPanel>
-                        <TextBlock Text="Latest landing" FontSize="25" FontWeight="SemiBold" />
-                        <StackPanel Orientation="Horizontal" Margin="0,5,0,0">
-                            <TextBlock Text="{Binding AircraftTitle}" Foreground="{StaticResource MutedTextBrush}" />
-                            <TextBlock Text="  ·  " Foreground="{StaticResource MutedTextBrush}" />
-                            <TextBlock Text="{Binding LocationDisplay}" Foreground="{StaticResource MutedTextBrush}" />
-                            <TextBlock Text="  ·  " Foreground="{StaticResource MutedTextBrush}" />
-                            <TextBlock Text="{Binding TimestampDisplay}" Foreground="{StaticResource MutedTextBrush}" />
-                        </StackPanel>
-                    </StackPanel>
-                    <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
-                        <TextBlock x:Name="ZoomRangeText" Text="Drag across any chart to zoom"
-                                   Foreground="{StaticResource MutedTextBrush}" FontSize="11"
-                                   VerticalAlignment="Center" Margin="0,0,10,0" />
-                        <Button x:Name="ResetZoomButton" Content="Full range"
-                                Style="{StaticResource ChartButtonStyle}"
-                                Visibility="Collapsed" Click="OnResetZoomClick" Margin="0,0,10,0" />
-                        <Border Background="{StaticResource AccentSoftBrush}" CornerRadius="9" Padding="12,7">
-                            <TextBlock Text="{Binding ContactDisplay}" Foreground="{StaticResource AccentBrush}" FontWeight="SemiBold" />
-                        </Border>
-                    </StackPanel>
+                <Grid Grid.Row="0" Margin="16,0">
+                    <TextBlock Text="SESSIONS" Style="{StaticResource SectionLabelStyle}" Foreground="{StaticResource SubtleTextBrush}" VerticalAlignment="Center" />
+                    <TextBlock x:Name="HistoryCountText" HorizontalAlignment="Right" VerticalAlignment="Center"
+                               Foreground="{StaticResource SubtleTextBrush}" FontFamily="Cascadia Mono, Consolas" FontSize="11" />
                 </Grid>
-
-                <Grid Grid.Row="1" Margin="0,0,0,14">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="1.35*" />
-                        <ColumnDefinition Width="*" />
-                        <ColumnDefinition Width="*" />
-                        <ColumnDefinition Width="*" />
-                    </Grid.ColumnDefinitions>
-
-                    <Border Grid.Column="0" Style="{StaticResource CardStyle}" Margin="0,0,7,0">
-                        <Grid>
-                            <Grid.RowDefinitions>
-                                <RowDefinition Height="Auto" />
-                                <RowDefinition Height="*" />
-                                <RowDefinition Height="Auto" />
-                            </Grid.RowDefinitions>
-                            <TextBlock Text="INERTIAL LANDING RATE" Style="{StaticResource SectionLabelStyle}" />
-                            <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,7,0,5" VerticalAlignment="Center">
-                                <TextBlock Text="{Binding InertialDisplay}" Foreground="{StaticResource AccentBrush}" FontSize="42" FontWeight="SemiBold" />
-                                <TextBlock Text=" fpm" Foreground="{StaticResource MutedTextBrush}" FontSize="16" VerticalAlignment="Bottom" Margin="2,0,0,8" />
-                            </StackPanel>
-                            <TextBlock Grid.Row="2" Text="WORLD Y at contact · climb + / descent −" Foreground="{StaticResource MutedTextBrush}" FontSize="12" />
-                        </Grid>
-                    </Border>
-
-                    <Border Grid.Column="1" Style="{StaticResource CardStyle}" Margin="7,0">
-                        <StackPanel>
-                            <TextBlock Text="MSFS SURFACE" Style="{StaticResource SectionLabelStyle}" />
-                            <TextBlock Text="{Binding SurfaceDisplay}" Style="{StaticResource MetricValueStyle}" Margin="0,12,0,4" />
-                            <TextBlock Text="{Binding DeltaDisplay}" Foreground="{StaticResource VioletBrush}" />
-                            <TextBlock Text="{Binding TerrainDisplay}" Foreground="{StaticResource MutedTextBrush}" FontSize="11" Margin="0,5,0,0" TextWrapping="Wrap" />
-                        </StackPanel>
-                    </Border>
-
-                    <Border Grid.Column="2" Style="{StaticResource CardStyle}" Margin="7,0">
-                        <StackPanel>
-                            <TextBlock Text="G · 150 MS" Style="{StaticResource SectionLabelStyle}" />
-                            <TextBlock Text="{Binding G150Display}" Style="{StaticResource MetricValueStyle}" Margin="0,12,0,4" />
-                            <TextBlock Text="{Binding G2SecondsDisplay}" Foreground="{StaticResource MutedTextBrush}" FontSize="12" />
-                        </StackPanel>
-                    </Border>
-
-                    <Border Grid.Column="3" Style="{StaticResource CardStyle}" Margin="7,0,0,0">
-                        <StackPanel>
-                            <TextBlock Text="TOUCHDOWN" Style="{StaticResource SectionLabelStyle}" />
-                            <TextBlock Text="{Binding AirspeedDisplay}" Style="{StaticResource MetricValueStyle}" Margin="0,12,0,4" />
-                            <TextBlock Text="{Binding AttitudeDisplay}" Foreground="{StaticResource MutedTextBrush}" FontSize="12" TextWrapping="Wrap" />
-                        </StackPanel>
-                    </Border>
-                </Grid>
-
-                <Border Grid.Row="2" Style="{StaticResource CardStyle}" Margin="0,0,0,14" Padding="18,15,18,12">
+                <Border Grid.Row="1" Height="30" Margin="12,0,12,12" Background="{StaticResource SurfaceBrush}" CornerRadius="7">
                     <Grid>
-                        <Grid.RowDefinitions>
-                            <RowDefinition Height="Auto" />
-                            <RowDefinition Height="235" />
-                        </Grid.RowDefinitions>
-                        <Grid Grid.Row="0" Margin="0,0,0,10">
-                            <StackPanel>
-                                <TextBlock Text="Vertical rate around contact" FontSize="15" FontWeight="SemiBold" />
-                                <TextBlock Text="Signed vertical velocity: climb +, descent −; impact is t = 0" Foreground="{StaticResource MutedTextBrush}" FontSize="11" Margin="0,3,0,0" />
-                            </StackPanel>
-                        </Grid>
-                        <controls:LandingChart x:Name="SpeedChart" Grid.Row="1" Mode="VerticalSpeed" />
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="28" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <Ellipse Width="9" Height="9" Stroke="{StaticResource SubtleTextBrush}" StrokeThickness="1.3" />
+                        <TextBox x:Name="SessionFilterBox" Grid.Column="1"
+                                 Background="Transparent" BorderThickness="0"
+                                 Foreground="{StaticResource MutedTextBrush}"
+                                 CaretBrush="{StaticResource TextBrush}"
+                                 FontSize="12"
+                                 VerticalContentAlignment="Center"
+                                 Padding="0,0,8,0"
+                                 TextChanged="OnSessionFilterChanged"
+                                 ToolTip="Filter by aircraft or airport" />
+                        <TextBlock Grid.Column="1" Text="Filter by aircraft or airport"
+                                   Foreground="{StaticResource SubtleTextBrush}" FontSize="12"
+                                   VerticalAlignment="Center" IsHitTestVisible="False" Margin="1,0,0,0">
+                            <TextBlock.Style>
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="Visibility" Value="Collapsed" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding Text, ElementName=SessionFilterBox}" Value="">
+                                            <Setter Property="Visibility" Value="Visible" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </TextBlock.Style>
+                        </TextBlock>
                     </Grid>
                 </Border>
 
-                <Border Grid.Row="3" Style="{StaticResource CardStyle}" Padding="18,15,18,12" Margin="0,0,0,14">
-                    <Grid>
-                        <Grid.RowDefinitions>
-                            <RowDefinition Height="Auto" />
-                            <RowDefinition Height="165" />
-                        </Grid.RowDefinitions>
-                        <Grid Margin="0,0,0,8">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*" />
-                                <ColumnDefinition Width="Auto" />
-                            </Grid.ColumnDefinitions>
-                            <TextBlock Text="Three-axis loads" FontSize="15" FontWeight="SemiBold" />
-                            <TextBlock Grid.Column="1" Text="vertical · longitudinal · lateral" Foreground="{StaticResource MutedTextBrush}" FontSize="11" VerticalAlignment="Center" />
-                        </Grid>
-                        <controls:LandingChart x:Name="GChart" Grid.Row="1" Mode="LoadFactors" />
-                    </Grid>
-                </Border>
-
-                <Grid Grid.Row="4" Margin="0,0,0,14">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="*" />
-                        <ColumnDefinition Width="*" />
-                    </Grid.ColumnDefinitions>
-
-                    <Border Grid.Column="0" Style="{StaticResource CardStyle}" Padding="18,15,18,12" Margin="0,0,7,0">
-                        <Grid>
-                            <Grid.RowDefinitions>
-                                <RowDefinition Height="Auto" />
-                                <RowDefinition Height="175" />
-                            </Grid.RowDefinitions>
-                            <Grid Margin="0,0,0,8">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="*" />
-                                    <ColumnDefinition Width="Auto" />
-                                </Grid.ColumnDefinitions>
-                                <TextBlock Text="Flight controls" FontSize="15" FontWeight="SemiBold" />
-                                <TextBlock Grid.Column="1" Text="command · surface" Foreground="{StaticResource MutedTextBrush}" FontSize="11" />
-                            </Grid>
-                            <controls:LandingChart x:Name="ControlsChart" Grid.Row="1" Mode="FlightControls" />
-                        </Grid>
-                    </Border>
-
-                    <Border Grid.Column="1" Style="{StaticResource CardStyle}" Padding="18,15,18,12" Margin="7,0,0,0">
-                        <Grid>
-                            <Grid.RowDefinitions>
-                                <RowDefinition Height="Auto" />
-                                <RowDefinition Height="175" />
-                            </Grid.RowDefinitions>
-                            <Grid Margin="0,0,0,8">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="*" />
-                                    <ColumnDefinition Width="Auto" />
-                                </Grid.ColumnDefinitions>
-                                <TextBlock Text="Attitude &amp; flare" FontSize="15" FontWeight="SemiBold" />
-                                <TextBlock Grid.Column="1" Text="pitch · bank · AoA" Foreground="{StaticResource MutedTextBrush}" FontSize="11" />
-                            </Grid>
-                            <controls:LandingChart x:Name="AttitudeChart" Grid.Row="1" Mode="Attitude" />
-                        </Grid>
-                    </Border>
-                </Grid>
-
-                <Grid Grid.Row="5">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="*" />
-                        <ColumnDefinition Width="*" />
-                    </Grid.ColumnDefinitions>
-
-                    <Border Grid.Column="0" Style="{StaticResource CardStyle}" Padding="18,15,18,12" Margin="0,0,7,0">
-                        <Grid>
-                            <Grid.RowDefinitions>
-                                <RowDefinition Height="Auto" />
-                                <RowDefinition Height="175" />
-                            </Grid.RowDefinitions>
-                            <Grid Margin="0,0,0,8">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="*" />
-                                    <ColumnDefinition Width="Auto" />
-                                </Grid.ColumnDefinitions>
-                                <TextBlock Text="Power &amp; rollout" FontSize="15" FontWeight="SemiBold" />
-                                <TextBlock Grid.Column="1" Text="N1/RPM · throttle · reverse" Foreground="{StaticResource MutedTextBrush}" FontSize="11" />
-                            </Grid>
-                            <controls:LandingChart x:Name="PowerChart" Grid.Row="1" Mode="Power" />
-                        </Grid>
-                    </Border>
-
-                    <Border Grid.Column="1" Style="{StaticResource CardStyle}" Padding="18,15,18,12" Margin="7,0,0,0">
-                        <Grid>
-                            <Grid.RowDefinitions>
-                                <RowDefinition Height="Auto" />
-                                <RowDefinition Height="175" />
-                            </Grid.RowDefinitions>
-                            <Grid Margin="0,0,0,8">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="*" />
-                                    <ColumnDefinition Width="Auto" />
-                                </Grid.ColumnDefinitions>
-                                <TextBlock Text="Gear contacts" FontSize="15" FontWeight="SemiBold" />
-                                <TextBlock Grid.Column="1" Text="active points only" Foreground="{StaticResource MutedTextBrush}" FontSize="11" />
-                            </Grid>
-                            <controls:LandingChart x:Name="GearChart" Grid.Row="1" Mode="Gear" />
-                        </Grid>
-                    </Border>
-                </Grid>
-            </Grid>
-        </ScrollViewer>
-
-        <Border Grid.Row="1" Grid.Column="2"
-                Background="{StaticResource SidebarBrush}"
-                BorderBrush="{StaticResource BorderBrush}"
-                BorderThickness="1,0,0,0">
-            <Grid Margin="18,22">
-                <Grid.RowDefinitions>
-                    <RowDefinition Height="Auto" />
-                    <RowDefinition Height="*" />
-                    <RowDefinition Height="Auto" />
-                </Grid.RowDefinitions>
-                <Grid>
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="*" />
-                        <ColumnDefinition Width="Auto" />
-                    </Grid.ColumnDefinitions>
-                    <TextBlock Text="Landing history" FontSize="17" FontWeight="SemiBold" />
-                    <TextBlock Grid.Column="1" x:Name="HistoryCountText" Foreground="{StaticResource MutedTextBrush}" VerticalAlignment="Center" />
-                </Grid>
-
-                <ListBox x:Name="LandingHistoryList" Grid.Row="1" Margin="0,16,0,14"
+                <ListBox x:Name="LandingHistoryList" Grid.Row="2"
                          Background="Transparent" BorderThickness="0"
                          SelectionChanged="OnHistorySelectionChanged"
                          ScrollViewer.HorizontalScrollBarVisibility="Disabled">
                     <ListBox.ItemContainerStyle>
                         <Style TargetType="ListBoxItem">
                             <Setter Property="HorizontalContentAlignment" Value="Stretch" />
-                            <Setter Property="Margin" Value="0,0,0,8" />
+                            <Setter Property="Height" Value="58" />
                             <Setter Property="Template">
                                 <Setter.Value>
                                     <ControlTemplate TargetType="ListBoxItem">
-                                        <Border x:Name="ItemBorder" Background="{StaticResource SurfaceBrush}"
-                                                BorderBrush="{StaticResource BorderBrush}" BorderThickness="1"
-                                                CornerRadius="11" Padding="13">
-                                            <ContentPresenter />
+                                        <Border x:Name="Row" Background="Transparent" BorderBrush="Transparent" BorderThickness="2,0,0,0" Padding="14,0,16,0">
+                                            <ContentPresenter VerticalAlignment="Center" />
                                         </Border>
                                         <ControlTemplate.Triggers>
                                             <Trigger Property="IsSelected" Value="True">
-                                                <Setter TargetName="ItemBorder" Property="BorderBrush" Value="{StaticResource AccentBrush}" />
-                                                <Setter TargetName="ItemBorder" Property="Background" Value="{StaticResource AccentSoftBrush}" />
+                                                <Setter TargetName="Row" Property="Background" Value="{StaticResource SurfaceRaisedBrush}" />
+                                                <Setter TargetName="Row" Property="BorderBrush" Value="{StaticResource AccentBrush}" />
                                             </Trigger>
                                             <Trigger Property="IsMouseOver" Value="True">
-                                                <Setter TargetName="ItemBorder" Property="Background" Value="{StaticResource SurfaceRaisedBrush}" />
+                                                <Setter TargetName="Row" Property="Background" Value="{StaticResource SurfaceBrush}" />
                                             </Trigger>
                                         </ControlTemplate.Triggers>
                                     </ControlTemplate>
@@ -353,87 +138,269 @@
                     <ListBox.ItemTemplate>
                         <DataTemplate>
                             <Grid>
-                                <Grid.RowDefinitions>
-                                    <RowDefinition Height="Auto" />
-                                    <RowDefinition Height="Auto" />
-                                    <RowDefinition Height="Auto" />
-                                </Grid.RowDefinitions>
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="*" />
-                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="60" />
                                 </Grid.ColumnDefinitions>
-                                <TextBlock Text="{Binding AircraftTitle}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
-                                <TextBlock Grid.Column="1" Text="{Binding InertialDisplay}" Foreground="{StaticResource AccentBrush}" FontSize="16" FontWeight="SemiBold" />
-                                <TextBlock Grid.Row="1" Text="{Binding LocationDisplay}" Foreground="{StaticResource MutedTextBrush}" FontSize="11" Margin="0,4,0,0" />
-                                <TextBlock Grid.Row="1" Grid.Column="1" Text=" fpm" Foreground="{StaticResource MutedTextBrush}" FontSize="10" VerticalAlignment="Bottom" />
-                                <TextBlock Grid.Row="2" Text="{Binding TimestampDisplay}" Foreground="{StaticResource MutedTextBrush}" FontSize="11" Margin="0,7,0,0" />
-                                <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding G150Display, StringFormat={}{0} G}" Foreground="{StaticResource MutedTextBrush}" FontSize="11" Margin="0,7,0,0" />
+                                <StackPanel VerticalAlignment="Center">
+                                    <TextBlock Text="{Binding AircraftTitle}" FontSize="12" FontWeight="Medium" TextTrimming="CharacterEllipsis" />
+                                    <StackPanel Orientation="Horizontal" Margin="0,3,0,0">
+                                        <TextBlock Text="{Binding LocationDisplay}" Foreground="{StaticResource SubtleTextBrush}" FontSize="11" TextTrimming="CharacterEllipsis" />
+                                        <TextBlock Text="  ·  " Foreground="{StaticResource SubtleTextBrush}" FontSize="11" />
+                                        <TextBlock Text="{Binding TimestampDisplay}" Foreground="{StaticResource SubtleTextBrush}" FontSize="11" />
+                                    </StackPanel>
+                                </StackPanel>
+                                <StackPanel Grid.Column="1" VerticalAlignment="Center" HorizontalAlignment="Right">
+                                    <TextBlock Text="{Binding InertialDisplay}" FontFamily="Cascadia Mono, Consolas" FontSize="14" HorizontalAlignment="Right" />
+                                    <TextBlock Text="{Binding G150Display, StringFormat={}{0} G}" Foreground="{StaticResource SubtleTextBrush}"
+                                               FontFamily="Cascadia Mono, Consolas" FontSize="10" Margin="0,2,0,0" HorizontalAlignment="Right" />
+                                </StackPanel>
                             </Grid>
                         </DataTemplate>
                     </ListBox.ItemTemplate>
                 </ListBox>
 
-                <StackPanel Grid.Row="2">
-                    <Border Background="{StaticResource SurfaceRaisedBrush}" CornerRadius="10" Padding="12">
-                        <TextBlock x:Name="StoragePathText" Foreground="{StaticResource MutedTextBrush}" FontSize="11" TextWrapping="Wrap" />
-                    </Border>
+                <Grid Grid.Row="3" Margin="16,0" VerticalAlignment="Center">
+                    <TextBlock Text="Avg rate this month" Foreground="{StaticResource SubtleTextBrush}" FontSize="11" />
+                    <TextBlock x:Name="AverageRateText" HorizontalAlignment="Right" Foreground="{StaticResource MutedTextBrush}"
+                               FontFamily="Cascadia Mono, Consolas" FontSize="11" />
+                </Grid>
+            </Grid>
+        </Border>
 
-                    <ToggleButton x:Name="RawDebugToggle"
-                                  Content="DEBUG RAW · OFF"
-                                  Margin="0,8,0,0"
-                                  Padding="12,8"
-                                  HorizontalContentAlignment="Left"
-                                  Cursor="Hand"
-                                  Checked="OnRawDebugModeChanged"
-                                  Unchecked="OnRawDebugModeChanged"
-                                  ToolTip="Save every received SIM_FRAME sample for each landing episode">
-                        <ToggleButton.Style>
-                            <Style TargetType="ToggleButton">
-                                <Setter Property="Foreground" Value="{StaticResource DangerBrush}" />
-                                <Setter Property="Background" Value="{StaticResource SurfaceRaisedBrush}" />
-                                <Setter Property="BorderBrush" Value="{StaticResource DangerBrush}" />
-                                <Setter Property="BorderThickness" Value="1" />
-                                <Setter Property="Template">
-                                    <Setter.Value>
-                                        <ControlTemplate TargetType="ToggleButton">
-                                            <Border x:Name="Chrome"
-                                                    Background="{TemplateBinding Background}"
-                                                    BorderBrush="{TemplateBinding BorderBrush}"
-                                                    BorderThickness="{TemplateBinding BorderThickness}"
-                                                    CornerRadius="8"
-                                                    Padding="{TemplateBinding Padding}">
-                                                <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
-                                                                  VerticalAlignment="Center" />
-                                            </Border>
-                                            <ControlTemplate.Triggers>
-                                                <Trigger Property="IsMouseOver" Value="True">
-                                                    <Setter TargetName="Chrome" Property="Background" Value="{StaticResource DangerSoftBrush}" />
-                                                </Trigger>
-                                                <Trigger Property="IsChecked" Value="True">
-                                                    <Setter TargetName="Chrome" Property="Background" Value="{StaticResource DangerSoftBrush}" />
-                                                    <Setter TargetName="Chrome" Property="BorderBrush" Value="{StaticResource DangerBrush}" />
-                                                    <Setter Property="Foreground" Value="{StaticResource DangerBrush}" />
-                                                </Trigger>
-                                            </ControlTemplate.Triggers>
-                                        </ControlTemplate>
-                                    </Setter.Value>
-                                </Setter>
-                            </Style>
-                        </ToggleButton.Style>
-                    </ToggleButton>
-                    <TextBlock x:Name="RawDebugStatusText"
-                               Text="Full-rate capture is disabled"
-                               Foreground="{StaticResource MutedTextBrush}"
-                               FontSize="10"
-                               TextWrapping="Wrap"
-                               Margin="4,5,4,0" />
-                    <TextBlock Text="SHORT TEST FLIGHTS ONLY · DO NOT ENABLE ON LONG FLIGHTS"
-                               Foreground="{StaticResource DangerBrush}"
-                               FontSize="10"
-                               FontWeight="SemiBold"
-                               TextWrapping="Wrap"
-                               Margin="4,5,4,0" />
+        <Grid Grid.Row="1" Grid.Column="1">
+            <Grid x:Name="LandingContent">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="50*" MaxHeight="560" />
+                    <RowDefinition Height="8*" MinHeight="62" MaxHeight="100" />
+                    <RowDefinition Height="8*" MinHeight="62" MaxHeight="100" />
+                    <RowDefinition Height="8*" MinHeight="62" MaxHeight="100" />
+                    <RowDefinition Height="26" />
+                </Grid.RowDefinitions>
+
+                <Grid Grid.Row="0" Margin="24,18,24,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <StackPanel VerticalAlignment="Top">
+                        <TextBlock Text="{Binding LocationDisplay}" FontSize="19" FontWeight="SemiBold" />
+                        <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
+                            <TextBlock Text="{Binding AircraftTitle}" Foreground="{StaticResource SubtleTextBrush}" FontSize="12" />
+                            <TextBlock Text="  ·  " Foreground="{StaticResource SubtleTextBrush}" FontSize="12" />
+                            <TextBlock Text="{Binding TimestampDisplay}" Foreground="{StaticResource SubtleTextBrush}" FontSize="12" />
+                            <TextBlock Text="  ·  " Foreground="{StaticResource SubtleTextBrush}" FontSize="12" />
+                            <TextBlock Text="{Binding WeightDisplay}" Foreground="{StaticResource SubtleTextBrush}" FontSize="12" />
+                            <TextBlock Text="  ·  " Foreground="{StaticResource SubtleTextBrush}" FontSize="12" />
+                            <TextBlock Text="{Binding CgDisplay}" Foreground="{StaticResource SubtleTextBrush}" FontSize="12" />
+                            <TextBlock Text="  ·  " Foreground="{StaticResource SubtleTextBrush}" FontSize="12" />
+                            <TextBlock Text="{Binding ContactDisplay}" Foreground="{StaticResource SubtleTextBrush}" FontSize="12" />
+                        </StackPanel>
+                    </StackPanel>
+                    <Button x:Name="ChartWindowButton" Grid.Column="1" Height="28" Padding="11,0"
+                            Content="Contact view  −6 … +8s" Style="{StaticResource OutlineButtonStyle}"
+                            Click="OnChartWindowClick" VerticalAlignment="Top" FontSize="12" />
+                </Grid>
+
+                <Grid Grid.Row="1" Margin="24,18,24,20">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="45" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="45" />
+                        <ColumnDefinition Width="0.93*" />
+                        <ColumnDefinition Width="0.93*" />
+                        <ColumnDefinition Width="1.20*" />
+                        <ColumnDefinition Width="0.94*" />
+                    </Grid.ColumnDefinitions>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+
+                    <TextBlock Grid.Column="0" Text="INERTIAL RATE" Style="{StaticResource SectionLabelStyle}" Foreground="{StaticResource LabelTextBrush}" />
+                    <StackPanel Grid.Column="0" Grid.Row="1" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,7,0,0">
+                        <TextBlock Text="{Binding InertialDisplay}" FontSize="44" FontWeight="SemiBold" />
+                        <TextBlock Text="fpm" Foreground="{StaticResource MutedTextBrush}" FontSize="14" VerticalAlignment="Bottom" Margin="8,0,0,8" />
+                        <TextBlock Text="{Binding InertialQualityBadgeDisplay}" Foreground="{StaticResource SuccessBrush}" FontSize="9" FontWeight="SemiBold"
+                                   VerticalAlignment="Bottom" Margin="8,0,0,9" ToolTip="{Binding InertialQualityDisplay}" />
+                    </StackPanel>
+                    <TextBlock Grid.Column="0" Grid.Row="2" Text="WORLD Y at contact" Style="{StaticResource MetricSublineStyle}" />
+
+                    <Border Grid.Column="1" Grid.RowSpan="3" Width="1" HorizontalAlignment="Center" Background="{StaticResource BorderBrush}" />
+
+                    <StackPanel Grid.Column="2" Orientation="Horizontal">
+                        <TextBlock Text="MSFS SURFACE" Style="{StaticResource SectionLabelStyle}" Foreground="{StaticResource LabelTextBrush}" />
+                        <TextBlock Text="{Binding SurfaceQualityBadgeDisplay}" Foreground="{StaticResource SuccessBrush}" FontSize="8" FontWeight="SemiBold"
+                                   Margin="8,0,0,0" ToolTip="{Binding SurfaceQualityDisplay}" />
+                    </StackPanel>
+                    <StackPanel Grid.Column="2" Grid.Row="1" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,7,0,0">
+                        <TextBlock Text="{Binding SurfaceValueDisplay}" FontSize="44" FontWeight="SemiBold" />
+                        <TextBlock Text="{Binding SurfaceUnitDisplay}" Foreground="{StaticResource MutedTextBrush}"
+                                   FontSize="14" VerticalAlignment="Bottom" Margin="8,0,0,8" />
+                        <TextBlock Text="{Binding DeltaDisplay, StringFormat={}  Δ {0}}" Foreground="{StaticResource BlueBrush}"
+                                   FontFamily="Cascadia Mono, Consolas" FontSize="11" VerticalAlignment="Bottom" Margin="7,0,0,8" />
+                    </StackPanel>
+                    <TextBlock Grid.Column="2" Grid.Row="2" Text="{Binding TerrainDisplay}" Style="{StaticResource MetricSublineStyle}" />
+
+                    <Border Grid.Column="3" Grid.RowSpan="3" Width="1" HorizontalAlignment="Center" Background="{StaticResource BorderBrush}" />
+
+                    <TextBlock Grid.Column="4" Text="PEAK G · 150 MS" Style="{StaticResource SectionLabelStyle}" Foreground="{StaticResource LabelTextBrush}" />
+                    <TextBlock Grid.Column="4" Grid.Row="1" Text="{Binding G150Display}" FontSize="22" FontWeight="Medium" VerticalAlignment="Center" Margin="0,7,0,0" />
+                    <TextBlock Grid.Column="4" Grid.Row="2" Text="{Binding G2SecondsDisplay}" Style="{StaticResource MetricSublineStyle}" />
+
+                    <TextBlock Grid.Column="5" Text="IAS AT CONTACT" Style="{StaticResource SectionLabelStyle}" Foreground="{StaticResource LabelTextBrush}" Margin="22,0,0,0" />
+                    <TextBlock Grid.Column="5" Grid.Row="1" Text="{Binding AirspeedDisplay}" FontSize="22" FontWeight="Medium" VerticalAlignment="Center" Margin="22,7,0,0" />
+                    <TextBlock Grid.Column="5" Grid.Row="2" Text="indicated" Style="{StaticResource MetricSublineStyle}" Margin="22,7,0,0" />
+
+                    <TextBlock Grid.Column="6" Text="PITCH · BANK" Style="{StaticResource SectionLabelStyle}" Foreground="{StaticResource LabelTextBrush}" Margin="22,0,0,0" />
+                    <TextBlock Grid.Column="6" Grid.Row="1" Text="{Binding AttitudeDisplay}" FontSize="18" FontWeight="Medium" VerticalAlignment="Center" Margin="22,7,0,0" />
+                    <TextBlock Grid.Column="6" Grid.Row="2" Text="{Binding AngleOfAttackDisplay}" Style="{StaticResource MetricSublineStyle}" Margin="22,7,0,0" />
+
+                    <TextBlock Grid.Column="7" Text="GROUND SPEED" Style="{StaticResource SectionLabelStyle}" Foreground="{StaticResource LabelTextBrush}" Margin="22,0,0,0" />
+                    <TextBlock Grid.Column="7" Grid.Row="1" Text="{Binding GroundSpeedDisplay}" FontSize="22" FontWeight="Medium" VerticalAlignment="Center" Margin="22,7,0,0" />
+                    <TextBlock Grid.Column="7" Grid.Row="2" Text="at contact" Style="{StaticResource MetricSublineStyle}" Margin="22,7,0,0" />
+                </Grid>
+
+                <Grid Grid.Row="2" Margin="24,0,24,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <StackPanel Orientation="Horizontal" VerticalAlignment="Bottom">
+                        <RadioButton x:Name="VerticalRateTab" Content="Vertical rate" Tag="VerticalSpeed" GroupName="ChartMode" Style="{StaticResource ChartTabStyle}" Checked="OnChartModeChanged" />
+                        <RadioButton Content="Loads" Tag="LoadFactors" GroupName="ChartMode" Style="{StaticResource ChartTabStyle}" Checked="OnChartModeChanged" />
+                        <RadioButton Content="Controls" Tag="FlightControls" GroupName="ChartMode" Style="{StaticResource ChartTabStyle}" Checked="OnChartModeChanged" />
+                        <RadioButton Content="Attitude" Tag="Attitude" GroupName="ChartMode" Style="{StaticResource ChartTabStyle}" Checked="OnChartModeChanged" />
+                        <RadioButton Content="Power" Tag="Power" GroupName="ChartMode" Style="{StaticResource ChartTabStyle}" Checked="OnChartModeChanged" />
+                        <RadioButton Content="Gear" Tag="Gear" GroupName="ChartMode" Style="{StaticResource ChartTabStyle}" Checked="OnChartModeChanged" />
+                    </StackPanel>
+                    <TextBlock Grid.Column="2" x:Name="MainChartDescription" Text="signed velocity around contact"
+                               Foreground="{StaticResource SubtleTextBrush}" FontSize="11" VerticalAlignment="Bottom" Margin="0,0,0,10" />
+                    <Border Grid.Column="3" Width="1" Height="12" Background="#262321" Margin="22,0,22,10" VerticalAlignment="Bottom" />
+                    <StackPanel Grid.Column="4" Orientation="Horizontal" VerticalAlignment="Bottom">
+                        <Button x:Name="LegendButton0" Tag="0" Style="{StaticResource ChartLegendButtonStyle}" Click="OnMainLegendClick">
+                            <StackPanel Orientation="Horizontal">
+                                <Line x:Name="LegendLine0" X1="0" X2="14" Y1="0" Y2="0" StrokeThickness="2" VerticalAlignment="Center" />
+                                <TextBlock x:Name="LegendLabel0" FontSize="11" Foreground="{StaticResource MutedTextBrush}" Margin="7,0,0,0" />
+                            </StackPanel>
+                        </Button>
+                        <Button x:Name="LegendButton1" Tag="1" Style="{StaticResource ChartLegendButtonStyle}" Click="OnMainLegendClick" Margin="22,0,0,0">
+                            <StackPanel Orientation="Horizontal">
+                                <Line x:Name="LegendLine1" X1="0" X2="14" Y1="0" Y2="0" StrokeThickness="2" VerticalAlignment="Center" />
+                                <TextBlock x:Name="LegendLabel1" FontSize="11" Foreground="{StaticResource MutedTextBrush}" Margin="7,0,0,0" />
+                            </StackPanel>
+                        </Button>
+                        <Button x:Name="LegendButton2" Tag="2" Style="{StaticResource ChartLegendButtonStyle}" Click="OnMainLegendClick" Margin="22,0,0,0">
+                            <StackPanel Orientation="Horizontal">
+                                <Line x:Name="LegendLine2" X1="0" X2="14" Y1="0" Y2="0" StrokeThickness="2" VerticalAlignment="Center" />
+                                <TextBlock x:Name="LegendLabel2" FontSize="11" Foreground="{StaticResource MutedTextBrush}" Margin="7,0,0,0" />
+                            </StackPanel>
+                        </Button>
+                    </StackPanel>
+                    <Border Grid.ColumnSpan="5" Height="1" Background="{StaticResource BorderBrush}" VerticalAlignment="Bottom" Panel.ZIndex="-1" />
+                </Grid>
+
+                <Grid Grid.Row="3" Margin="0,12,24,6">
+                    <controls:LandingChart x:Name="MainChart" Mode="VerticalSpeed" ShowLegend="False" ShowXAxisLabels="False" />
+                    <TextBlock x:Name="ModeUnitText" Text="fpm" Foreground="{StaticResource LabelTextBrush}"
+                               FontFamily="Cascadia Mono, Consolas" FontSize="10"
+                               HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="24,0,0,8" />
+                </Grid>
+
+                <Border Grid.Row="4" BorderBrush="#1A1917" BorderThickness="0,1,0,0" Margin="0,0,24,0">
+                    <Grid>
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="96" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                        <StackPanel Margin="24,9,0,0">
+                            <TextBlock Text="Vertical G" Foreground="{StaticResource MutedTextBrush}" FontSize="11" />
+                        </StackPanel>
+                        <Grid Grid.Column="1" Margin="0,8,0,8">
+                            <controls:LandingChart x:Name="MiniGChart" Mode="LoadFactors" ShowLegend="False" ShowHoverTooltip="True" ShowXAxisLabels="False" CompactLane="True" />
+                            <TextBlock Text="0.8 – 1.6" HorizontalAlignment="Right" VerticalAlignment="Top" Foreground="{StaticResource LabelTextBrush}" FontFamily="Cascadia Mono, Consolas" FontSize="9" />
+                        </Grid>
+                    </Grid>
+                </Border>
+
+                <Border Grid.Row="5" BorderBrush="#1A1917" BorderThickness="0,1,0,0" Margin="0,0,24,0">
+                    <Grid>
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="96" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                        <StackPanel Margin="24,9,0,0">
+                            <TextBlock Text="N1" Foreground="{StaticResource MutedTextBrush}" FontSize="11" />
+                        </StackPanel>
+                        <Grid Grid.Column="1" Margin="0,8,0,8">
+                            <controls:LandingChart x:Name="MiniPowerChart" Mode="Power" ShowLegend="False" ShowHoverTooltip="True" ShowXAxisLabels="False" CompactLane="True" PowerShowThrottle="False" />
+                            <TextBlock Text="0 – 100%" HorizontalAlignment="Right" VerticalAlignment="Top" Foreground="{StaticResource LabelTextBrush}" FontFamily="Cascadia Mono, Consolas" FontSize="9" />
+                        </Grid>
+                    </Grid>
+                </Border>
+
+                <Border Grid.Row="6" BorderBrush="#1A1917" BorderThickness="0,1,0,0" Margin="0,0,24,0">
+                    <Grid>
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="96" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                        <StackPanel Margin="24,9,0,0">
+                            <TextBlock Text="Main gear" Foreground="{StaticResource MutedTextBrush}" FontSize="11" />
+                        </StackPanel>
+                        <Grid Grid.Column="1" Margin="0,8,0,8">
+                            <controls:LandingChart x:Name="MiniGearChart" Mode="Gear" ShowLegend="False" ShowHoverTooltip="True" ShowXAxisLabels="False" CompactLane="True" />
+                            <TextBlock Text="0 – 70%" HorizontalAlignment="Right" VerticalAlignment="Top" Foreground="{StaticResource LabelTextBrush}" FontFamily="Cascadia Mono, Consolas" FontSize="9" />
+                        </Grid>
+                    </Grid>
+                </Border>
+
+                <Border Grid.Row="7" BorderBrush="{StaticResource BorderBrush}" BorderThickness="0,1,0,0" Margin="0,0,24,0">
+                    <Grid>
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="96" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                        <TextBlock x:Name="HoverTimeText" Text="0.00s" Margin="24,0,0,0" VerticalAlignment="Center"
+                                   FontFamily="Cascadia Mono, Consolas" FontSize="11" />
+                        <controls:LandingTimeline x:Name="Timeline" Grid.Column="1" />
+                    </Grid>
+                </Border>
+            </Grid>
+
+            <Grid x:Name="EmptyState" Visibility="Collapsed">
+                <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" MaxWidth="470">
+                    <Border Width="15" Height="15" Background="{StaticResource AccentBrush}" CornerRadius="3" HorizontalAlignment="Center" />
+                    <TextBlock Text="NO LANDING SESSIONS" FontSize="19" FontWeight="SemiBold" HorizontalAlignment="Center" Margin="0,18,0,0" />
+                    <TextBlock Text="Start MSFS and descend through 500 ft AGL. Recording, analysis and storage happen automatically after touchdown."
+                               Foreground="{StaticResource MutedTextBrush}" FontSize="12" TextAlignment="Center" TextWrapping="Wrap" Margin="0,10,0,0" />
                 </StackPanel>
+            </Grid>
+        </Grid>
+
+        <Border Grid.Row="2" Grid.ColumnSpan="2" BorderBrush="{StaticResource BorderBrush}" BorderThickness="0,1,0,0">
+            <Grid Margin="16,0">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <TextBlock Text="Window: 500 ft gate → t+15 s" Foreground="{StaticResource LabelTextBrush}" FontSize="11" VerticalAlignment="Center" />
+                <TextBlock Grid.Column="1" Text="{Binding RecordSummaryDisplay}" Foreground="{StaticResource LabelTextBrush}" FontSize="11" VerticalAlignment="Center" Margin="16,0,0,0" />
+                <TextBlock Grid.Column="2" x:Name="VersionAuthorText" Foreground="{StaticResource LabelTextBrush}"
+                           FontFamily="Cascadia Mono, Consolas" FontSize="10" VerticalAlignment="Center"
+                           HorizontalAlignment="Center" />
+                <TextBlock Grid.Column="3" x:Name="RawDebugStatusText" Text="Raw capture disabled" Foreground="{StaticResource SubtleTextBrush}" FontSize="10" VerticalAlignment="Center" Margin="0,0,10,0" />
+                <StackPanel Grid.Column="4" Orientation="Horizontal" VerticalAlignment="Center">
+                    <ToggleButton x:Name="RawDebugToggle" Content="DEBUG RAW · OFF" Foreground="{StaticResource DangerBrush}"
+                                  Background="Transparent" BorderThickness="0" Cursor="Hand" FontSize="10"
+                                  Checked="OnRawDebugModeChanged" Unchecked="OnRawDebugModeChanged"
+                                  ToolTip="SHORT TEST FLIGHTS ONLY · DO NOT ENABLE ON LONG FLIGHTS" />
+                    <TextBlock Text="· NOT FOR LONG FLIGHTS" Foreground="{StaticResource DangerBrush}" FontSize="9"
+                               VerticalAlignment="Center" Margin="7,0,0,0" IsHitTestVisible="False" />
+                </StackPanel>
+                <TextBlock Grid.Column="5" x:Name="StoragePathText" Foreground="{StaticResource LabelTextBrush}"
+                           FontFamily="Cascadia Mono, Consolas" FontSize="10" VerticalAlignment="Center" Margin="16,0,0,0"
+                           TextTrimming="CharacterEllipsis" MaxWidth="310" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />
             </Grid>
         </Border>
     </Grid>

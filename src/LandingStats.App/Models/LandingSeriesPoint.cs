@@ -1,4 +1,5 @@
 using System.Runtime.Serialization;
+using LandingStats.Core;
 
 namespace LandingStats.App.Models;
 
@@ -97,4 +98,42 @@ public sealed class LandingSeriesPoint
 
     [DataMember(Order = 31)]
     public double LongitudinalAccelerationFps2 { get; set; }
+
+    [DataMember(Order = 32)]
+    public double ElevatorDeflectionPercent { get; set; }
+
+    [DataMember(Order = 33)]
+    public double AileronLeftDeflectionPercent { get; set; }
+
+    [DataMember(Order = 34)]
+    public double AileronRightDeflectionPercent { get; set; }
+
+    [DataMember(Order = 35)]
+    public double RudderDeflectionPercent { get; set; }
+
+    [DataMember(Order = 36)]
+    public double AxisElevatorSetPercent { get; set; }
+
+    [DataMember(Order = 37)]
+    public bool AxisElevatorSetValid { get; set; }
+
+    [DataMember(Order = 38)]
+    public double AxisElevatorSetAgeSeconds { get; set; }
+
+    [DataMember(Order = 39)]
+    public double[] RawControllerYAxisPercent { get; set; } = new double[TelemetrySample.CapturedControllerCount];
+
+    [DataMember(Order = 40)]
+    public bool[] RawControllerYAxisValid { get; set; } = new bool[TelemetrySample.CapturedControllerCount];
+
+    [DataMember(Order = 41)]
+    public double[] RawControllerYAxisAgeSeconds { get; set; } = new double[TelemetrySample.CapturedControllerCount];
+
+    [OnDeserialized]
+    private void OnDeserialized(StreamingContext context)
+    {
+        RawControllerYAxisPercent ??= new double[TelemetrySample.CapturedControllerCount];
+        RawControllerYAxisValid ??= new bool[TelemetrySample.CapturedControllerCount];
+        RawControllerYAxisAgeSeconds ??= new double[TelemetrySample.CapturedControllerCount];
+    }
 }

@@ -110,4 +110,16 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create $env:GITHUB_REF_NAME artifacts/MSFS-Landing-Stats.exe --generate-notes
+          $version = $env:GITHUB_REF_NAME.TrimStart('v')
+          $changelog = Get-Content -LiteralPath CHANGELOG.md -Raw
+          $escapedVersion = [Regex]::Escape($version)
+          $match = [Regex]::Match(
+            $changelog,
+            "(?ms)^## \[$escapedVersion\][^\r\n]*\r?\n(?<body>.*?)(?=^## \[|\z)")
+          if (-not $match.Success) {
+            throw "CHANGELOG.md does not contain release notes for $version."
+          }
+
+          $notesPath = Join-Path $env:RUNNER_TEMP "release-notes-$version.md"
+          $match.Groups['body'].Value.Trim() | Set-Content -LiteralPath $notesPath -Encoding utf8
+          gh release create $env:GITHUB_REF_NAME artifacts/MSFS-Landing-Stats.exe --notes-file $notesPath

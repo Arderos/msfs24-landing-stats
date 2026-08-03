@@ -57,17 +57,34 @@ public sealed class LandingChart : FrameworkElement
         public int SeriesIndex { get; }
     }
 
-    private static readonly Brush GridBrush = Brush("#22303C");
-    private static readonly Brush MutedBrush = Brush("#7F8D9C");
-    private static readonly Brush TextBrush = Brush("#EAF0F4");
-    private static readonly Brush AccentBrush = Brush("#55DFC0");
-    private static readonly Brush AmberBrush = Brush("#F5C66E");
-    private static readonly Brush VioletBrush = Brush("#A78BFA");
-    private static readonly Brush BlueBrush = Brush("#67B7F7");
-    private static readonly Brush PinkBrush = Brush("#F58BA7");
-    private static readonly Brush TooltipBrush = Brush("#F017202B");
-    private static readonly Brush FlareBrush = Brush("#D5F5C66E");
-    private static readonly Brush SelectionBrush = Brush("#3555DFC0");
+    private sealed class HoverFlag
+    {
+        public HoverFlag(string value, Brush brush, double y)
+        {
+            Value = value;
+            Brush = brush;
+            Y = y;
+        }
+
+        public string Value { get; }
+
+        public Brush Brush { get; }
+
+        public double Y { get; set; }
+    }
+
+    private static readonly Brush GridBrush = Brush("#201E1C");
+    private static readonly Brush MutedBrush = Brush("#8A837B");
+    private static readonly Brush TextBrush = Brush("#F5F3F0");
+    private static readonly Brush AccentBrush = Brush("#FF7A45");
+    private static readonly Brush AmberBrush = Brush("#D9C46A");
+    private static readonly Brush VioletBrush = Brush("#5FA8F5");
+    private static readonly Brush BlueBrush = Brush("#5FA8F5");
+    private static readonly Brush PinkBrush = Brush("#8FD6A8");
+    private static readonly Brush TooltipBrush = Brush("#1F1D1B");
+    private static readonly Brush FlareBrush = Brush("#D5A08050");
+    private static readonly Brush SelectionBrush = Brush("#33FF7A45");
+    private static readonly Brush LaneContactBrush = Brush("#2A2724");
     private static readonly Pen GridPen = Pen(GridBrush, 1);
     private static readonly Pen AccentPen = Pen(AccentBrush, 2.1);
     private static readonly Pen AmberPen = Pen(AmberBrush, 1.8);
@@ -78,12 +95,14 @@ public sealed class LandingChart : FrameworkElement
     private static readonly Pen AmberDashedPen = DashedPen(AmberBrush, 1.3, 5, 4);
     private static readonly Pen VioletDashedPen = DashedPen(VioletBrush, 1.3, 5, 4);
     private static readonly Pen BlueDashedPen = DashedPen(BlueBrush, 1.3, 5, 4);
-    private static readonly Pen ContactPen = DashedPen(VioletBrush, 1.2, 3, 4);
+    private static readonly Pen ContactPen = Pen(Brush("#33302C"), 1);
+    private static readonly Pen LaneContactPen = Pen(LaneContactBrush, 1);
     private static readonly Pen FlarePen = DashedPen(FlareBrush, 1.1, 2, 4);
     private static readonly Pen SurfacePen = DashedPen(VioletBrush, 1.4, 6, 4);
-    private static readonly Pen[] SolidPens = { AccentPen, AmberPen, VioletPen, BluePen, PinkPen };
-    private static readonly Pen[] DashedPens = { AccentDashedPen, AmberDashedPen, VioletDashedPen, BlueDashedPen };
-    private static readonly Brush[] SeriesBrushes = { AccentBrush, AmberBrush, VioletBrush, BlueBrush, PinkBrush };
+    private static readonly Pen HoverPen = Pen(Brush("#73F5F3F0"), 1);
+    private static readonly Pen[] SolidPens = { AccentPen, BluePen, AmberPen, PinkPen };
+    private static readonly Pen[] DashedPens = { AccentDashedPen, BlueDashedPen, AmberDashedPen };
+    private static readonly Brush[] SeriesBrushes = { AccentBrush, BlueBrush, AmberBrush, PinkBrush };
 
     private readonly List<LegendHitTarget> _legendHitTargets = new();
     private LandingRecord? _record;
@@ -94,6 +113,12 @@ public sealed class LandingChart : FrameworkElement
     private bool _isSelecting;
     private Point _selectionStart;
     private Point _selectionCurrent;
+    private LandingChartMode _mode;
+    private bool _showLegend = true;
+    private bool _showHoverTooltip = true;
+    private bool _showXAxisLabels = true;
+    private bool _compactLane;
+    private bool _powerShowThrottle = true;
 
     public LandingRecord? Record
     {
@@ -107,11 +132,86 @@ public sealed class LandingChart : FrameworkElement
         }
     }
 
-    public LandingChartMode Mode { get; set; }
+    public LandingChartMode Mode
+    {
+        get => _mode;
+        set
+        {
+            if (_mode == value)
+            {
+                return;
+            }
+
+            _mode = value;
+            _isolatedSeriesIndex = null;
+            InvalidateVisual();
+        }
+    }
+
+    public bool ShowLegend
+    {
+        get => _showLegend;
+        set
+        {
+            if (_showLegend == value)
+            {
+                return;
+            }
+
+            _showLegend = value;
+            InvalidateVisual();
+        }
+    }
+
+    public bool ShowHoverTooltip
+    {
+        get => _showHoverTooltip;
+        set
+        {
+            _showHoverTooltip = value;
+            InvalidateVisual();
+        }
+    }
+
+    public bool ShowXAxisLabels
+    {
+        get => _showXAxisLabels;
+        set
+        {
+            _showXAxisLabels = value;
+            InvalidateVisual();
+        }
+    }
+
+    public bool CompactLane
+    {
+        get => _compactLane;
+        set
+        {
+            _compactLane = value;
+            InvalidateVisual();
+        }
+    }
+
+    public bool PowerShowThrottle
+    {
+        get => _powerShowThrottle;
+        set
+        {
+            _powerShowThrottle = value;
+            InvalidateVisual();
+        }
+    }
 
     public event EventHandler<LandingChartHoverEventArgs>? HoverTimeChanged;
 
     public event EventHandler<LandingChartZoomEventArgs>? ZoomRangeSelected;
+
+    public void SetIsolatedSeries(int? seriesIndex)
+    {
+        _isolatedSeriesIndex = seriesIndex;
+        InvalidateVisual();
+    }
 
     public void SetHoverTime(double? timeSeconds)
     {
@@ -155,8 +255,10 @@ public sealed class LandingChart : FrameworkElement
     protected override void OnRender(DrawingContext context)
     {
         base.OnRender(context);
+        context.DrawRectangle(Brushes.Transparent, null, new Rect(0, 0, ActualWidth, ActualHeight));
         var points = _record?.Series;
-        if (points == null || points.Count < 2 || ActualWidth < 140 || ActualHeight < 90)
+        var minimumHeight = CompactLane ? 18 : 90;
+        if (points == null || points.Count < 2 || ActualWidth < 140 || ActualHeight < minimumHeight)
         {
             DrawText(context, "No chart data", new Point(18, 18), MutedBrush, 12);
             return;
@@ -176,10 +278,24 @@ public sealed class LandingChart : FrameworkElement
         var plot = PlotRect();
         GetValueRange(visiblePoints, out var minValue, out var maxValue);
 
-        DrawLegend(context);
-        DrawGrid(context, plot, minTime, maxTime, minValue, maxValue);
+        if (ShowLegend && !CompactLane)
+        {
+            DrawLegend(context);
+        }
+        else
+        {
+            _legendHitTargets.Clear();
+        }
+        if (CompactLane)
+        {
+            context.DrawLine(GridPen, new Point(plot.Left, plot.Bottom - 0.5), new Point(plot.Right, plot.Bottom - 0.5));
+        }
+        else
+        {
+            DrawGrid(context, plot, minTime, maxTime, minValue, maxValue);
+        }
         context.PushClip(new RectangleGeometry(plot));
-        DrawEventMarkers(context, plot, minTime, maxTime);
+        DrawEventMarkers(context, plot, minTime, maxTime, !CompactLane);
         DrawMode(context, visiblePoints, plot, minTime, maxTime, minValue, maxValue);
 
         if (_hoveredIndex >= 0 && _hoveredIndex < points.Count)
@@ -193,6 +309,13 @@ public sealed class LandingChart : FrameworkElement
         }
 
         context.Pop();
+    }
+
+    protected override HitTestResult? HitTestCore(PointHitTestParameters hitTestParameters)
+    {
+        return new Rect(RenderSize).Contains(hitTestParameters.HitPoint)
+            ? new PointHitTestResult(this, hitTestParameters.HitPoint)
+            : null;
     }
 
     protected override void OnMouseMove(MouseEventArgs eventArgs)
@@ -309,8 +432,14 @@ public sealed class LandingChart : FrameworkElement
 
     private Rect PlotRect()
     {
-        const double top = 31.0;
-        return new Rect(50, top, Math.Max(10, ActualWidth - 68), Math.Max(10, ActualHeight - top - 30));
+        if (CompactLane)
+        {
+            return new Rect(0, 0, Math.Max(10, ActualWidth), Math.Max(10, ActualHeight));
+        }
+
+        var top = ShowLegend ? 31.0 : 0.0;
+        var bottom = ShowXAxisLabels ? 30.0 : 0.0;
+        return new Rect(96, top, Math.Max(10, ActualWidth - 96), Math.Max(10, ActualHeight - top - bottom));
     }
 
     private void GetTimeRange(IReadOnlyList<LandingSeriesPoint> points, out double minimum, out double maximum)
@@ -367,7 +496,7 @@ public sealed class LandingChart : FrameworkElement
                 }
                 break;
             case LandingChartMode.FlightControls:
-                x = DrawLegendItem(context, x, "pitch", AccentPen, 0);
+                x = DrawLegendItem(context, x, _record?.HasRawPitchInput == true ? "pitch raw" : "pitch (sim)", AccentPen, 0);
                 x = DrawLegendItem(context, x, "roll", AmberPen, 1);
                 x = DrawLegendItem(context, x, "yaw", VioletPen, 2);
                 DrawText(context, "solid input · dashed surface", new Point(x + 4, 2), MutedBrush, 10);
@@ -422,8 +551,29 @@ public sealed class LandingChart : FrameworkElement
 
     private bool IsSeriesVisible(int seriesIndex) => !_isolatedSeriesIndex.HasValue || _isolatedSeriesIndex == seriesIndex;
 
+    private double PitchInput(LandingSeriesPoint point) => _record?.PitchInputPercent(point) ?? point.PilotPitchPercent;
+
     private void GetValueRange(IReadOnlyList<LandingSeriesPoint> points, out double minimum, out double maximum)
     {
+        if (CompactLane)
+        {
+            switch (Mode)
+            {
+                case LandingChartMode.LoadFactors:
+                    minimum = 0.8;
+                    maximum = 1.6;
+                    return;
+                case LandingChartMode.Power:
+                    minimum = 0;
+                    maximum = 100;
+                    return;
+                case LandingChartMode.Gear:
+                    minimum = 0;
+                    maximum = 70;
+                    return;
+            }
+        }
+
         switch (Mode)
         {
             case LandingChartMode.VerticalSpeed:
@@ -466,12 +616,12 @@ public sealed class LandingChart : FrameworkElement
             case LandingChartMode.FlightControls:
                 IEnumerable<double> controlValues = _isolatedSeriesIndex switch
                 {
-                    0 => points.SelectMany(point => new[] { point.PilotPitchPercent, point.ElevatorPercent }),
+                    0 => points.SelectMany(point => new[] { PitchInput(point), point.ElevatorPercent }),
                     1 => points.SelectMany(point => new[] { point.PilotRollPercent, point.AileronPercent }),
                     2 => points.SelectMany(point => new[] { point.PilotYawPercent, point.RudderPercent }),
                     _ => points.SelectMany(point => new[]
                     {
-                        point.PilotPitchPercent, point.PilotRollPercent, point.PilotYawPercent,
+                        PitchInput(point), point.PilotRollPercent, point.PilotYawPercent,
                         point.ElevatorPercent, point.AileronPercent, point.RudderPercent,
                     }),
                 };
@@ -492,10 +642,10 @@ public sealed class LandingChart : FrameworkElement
             case LandingChartMode.Attitude:
                 IEnumerable<double> attitudeValues = _isolatedSeriesIndex switch
                 {
-                    0 => points.Select(point => point.PitchDegrees),
+                    0 => points.Select(point => -point.PitchDegrees),
                     1 => points.Select(point => point.BankDegrees),
                     2 => points.Select(point => point.AngleOfAttackDegrees),
-                    _ => points.SelectMany(point => new[] { point.PitchDegrees, point.BankDegrees, point.AngleOfAttackDegrees }),
+                    _ => points.SelectMany(point => new[] { -point.PitchDegrees, point.BankDegrees, point.AngleOfAttackDegrees }),
                 };
                 minimum = Math.Floor(Math.Min(0, attitudeValues.Min()) - 1);
                 maximum = Math.Ceiling(Math.Max(0, attitudeValues.Max()) + 1);
@@ -551,11 +701,11 @@ public sealed class LandingChart : FrameworkElement
                 {
                     if (IsSeriesVisible(1))
                     {
-                        DrawSeries(context, points, point => point.TimeSeconds, point => point.LongitudinalLoadG, plot, minTime, maxTime, minValue, maxValue, AmberPen);
+                        DrawSeries(context, points, point => point.TimeSeconds, point => point.LongitudinalLoadG, plot, minTime, maxTime, minValue, maxValue, BluePen);
                     }
                     if (IsSeriesVisible(2))
                     {
-                        DrawSeries(context, points, point => point.TimeSeconds, point => point.LateralLoadG, plot, minTime, maxTime, minValue, maxValue, VioletPen);
+                        DrawSeries(context, points, point => point.TimeSeconds, point => point.LateralLoadG, plot, minTime, maxTime, minValue, maxValue, AmberPen);
                     }
                     if (_isolatedSeriesIndex != 0)
                     {
@@ -564,40 +714,40 @@ public sealed class LandingChart : FrameworkElement
                 }
                 if (IsSeriesVisible(0))
                 {
-                    DrawSeries(context, points, point => point.TimeSeconds, point => point.GForce, plot, minTime, maxTime, minValue, maxValue, AccentPen);
+                    DrawSeries(context, points, point => point.TimeSeconds, point => point.GForce, plot, minTime, maxTime, minValue, maxValue, CompactLane ? PinkPen : AccentPen);
                     DrawBaseline(context, plot, 1, minValue, maxValue);
                 }
                 break;
             case LandingChartMode.FlightControls:
                 if (IsSeriesVisible(0))
                 {
-                    DrawSeries(context, points, point => point.TimeSeconds, point => point.PilotPitchPercent, plot, minTime, maxTime, minValue, maxValue, AccentPen);
+                    DrawSeries(context, points, point => point.TimeSeconds, PitchInput, plot, minTime, maxTime, minValue, maxValue, AccentPen);
                     DrawSeries(context, points, point => point.TimeSeconds, point => point.ElevatorPercent, plot, minTime, maxTime, minValue, maxValue, AccentDashedPen);
                 }
                 if (IsSeriesVisible(1))
                 {
-                    DrawSeries(context, points, point => point.TimeSeconds, point => point.PilotRollPercent, plot, minTime, maxTime, minValue, maxValue, AmberPen);
-                    DrawSeries(context, points, point => point.TimeSeconds, point => point.AileronPercent, plot, minTime, maxTime, minValue, maxValue, AmberDashedPen);
+                    DrawSeries(context, points, point => point.TimeSeconds, point => point.PilotRollPercent, plot, minTime, maxTime, minValue, maxValue, BluePen);
+                    DrawSeries(context, points, point => point.TimeSeconds, point => point.AileronPercent, plot, minTime, maxTime, minValue, maxValue, BlueDashedPen);
                 }
                 if (IsSeriesVisible(2))
                 {
-                    DrawSeries(context, points, point => point.TimeSeconds, point => point.PilotYawPercent, plot, minTime, maxTime, minValue, maxValue, VioletPen);
-                    DrawSeries(context, points, point => point.TimeSeconds, point => point.RudderPercent, plot, minTime, maxTime, minValue, maxValue, VioletDashedPen);
+                    DrawSeries(context, points, point => point.TimeSeconds, point => point.PilotYawPercent, plot, minTime, maxTime, minValue, maxValue, AmberPen);
+                    DrawSeries(context, points, point => point.TimeSeconds, point => point.RudderPercent, plot, minTime, maxTime, minValue, maxValue, AmberDashedPen);
                 }
                 DrawBaseline(context, plot, 0, minValue, maxValue);
                 break;
             case LandingChartMode.Attitude:
                 if (IsSeriesVisible(1))
                 {
-                    DrawSeries(context, points, point => point.TimeSeconds, point => point.BankDegrees, plot, minTime, maxTime, minValue, maxValue, AmberPen);
+                    DrawSeries(context, points, point => point.TimeSeconds, point => point.BankDegrees, plot, minTime, maxTime, minValue, maxValue, BluePen);
                 }
                 if (IsSeriesVisible(2))
                 {
-                    DrawSeries(context, points, point => point.TimeSeconds, point => point.AngleOfAttackDegrees, plot, minTime, maxTime, minValue, maxValue, VioletPen);
+                    DrawSeries(context, points, point => point.TimeSeconds, point => point.AngleOfAttackDegrees, plot, minTime, maxTime, minValue, maxValue, AmberPen);
                 }
                 if (IsSeriesVisible(0))
                 {
-                    DrawSeries(context, points, point => point.TimeSeconds, point => point.PitchDegrees, plot, minTime, maxTime, minValue, maxValue, AccentPen);
+                    DrawSeries(context, points, point => point.TimeSeconds, point => -point.PitchDegrees, plot, minTime, maxTime, minValue, maxValue, AccentPen);
                 }
                 DrawBaseline(context, plot, 0, minValue, maxValue);
                 break;
@@ -625,15 +775,18 @@ public sealed class LandingChart : FrameworkElement
             }
 
             var engine = _record.Engines[index];
-            var solid = SolidPens[index % SolidPens.Length];
+            var solid = CompactLane ? BluePen : SolidPens[index % SolidPens.Length];
             var dashed = DashedPens[index % DashedPens.Length];
             var hasN1 = engine.Points.Any(point => Math.Abs(point.N1Percent) > 0.01);
             var maximumRpm = engine.Points.Count == 0 ? 1 : Math.Max(1, engine.Points.Max(point => point.Rpm));
             DrawSeries(context, engine.Points, point => point.TimeSeconds,
                 point => hasN1 ? point.N1Percent : point.Rpm / maximumRpm * 100.0,
                 plot, minTime, maxTime, minValue, maxValue, solid);
-            DrawSeries(context, engine.Points, point => point.TimeSeconds, point => point.ThrottlePercent,
-                plot, minTime, maxTime, minValue, maxValue, dashed);
+            if (PowerShowThrottle)
+            {
+                DrawSeries(context, engine.Points, point => point.TimeSeconds, point => point.ThrottlePercent,
+                    plot, minTime, maxTime, minValue, maxValue, dashed);
+            }
         }
     }
 
@@ -653,22 +806,30 @@ public sealed class LandingChart : FrameworkElement
 
             var contact = _record.ContactPoints[index];
             DrawSeries(context, contact.Points, point => point.TimeSeconds, point => point.CompressionPercent,
-                plot, minTime, maxTime, minValue, maxValue, SolidPens[index % SolidPens.Length]);
+                plot, minTime, maxTime, minValue, maxValue, CompactLane ? AmberPen : SolidPens[index % SolidPens.Length]);
         }
     }
 
-    private void DrawEventMarkers(DrawingContext context, Rect plot, double minTime, double maxTime)
+    private void DrawEventMarkers(DrawingContext context, Rect plot, double minTime, double maxTime, bool drawLabels)
     {
         if (minTime <= 0 && maxTime >= 0)
         {
             var touchdownX = MapX(0, plot, minTime, maxTime);
-            context.DrawLine(ContactPen, new Point(touchdownX, plot.Top), new Point(touchdownX, plot.Bottom));
+            context.DrawLine(CompactLane ? LaneContactPen : ContactPen, new Point(touchdownX, plot.Top), new Point(touchdownX, plot.Bottom));
+            if (drawLabels)
+            {
+                DrawText(context, "TOUCHDOWN", new Point(touchdownX + 6, plot.Top + 3), MutedBrush, 9);
+            }
         }
 
-        if (_record?.FlareStartSeconds is double flare && flare >= minTime && flare <= maxTime)
+        if (!CompactLane && _record?.FlareStartSeconds is double flare && flare >= minTime && flare <= maxTime)
         {
             var flareX = MapX(flare, plot, minTime, maxTime);
             context.DrawLine(FlarePen, new Point(flareX, plot.Top), new Point(flareX, plot.Bottom));
+            if (drawLabels)
+            {
+                DrawText(context, "FLARE", new Point(flareX + 6, plot.Top + 3), FlareBrush, 9);
+            }
         }
     }
 
@@ -685,7 +846,7 @@ public sealed class LandingChart : FrameworkElement
                 LandingChartMode.VerticalSpeed => value.ToString("+0;-0;0", CultureInfo.CurrentCulture),
                 _ => value.ToString("F0", CultureInfo.CurrentCulture),
             };
-            DrawText(context, valueLabel, new Point(5, y - 8), MutedBrush, 11);
+            DrawText(context, valueLabel, new Point(plot.Left, y - 8), MutedBrush, 10);
         }
 
         var tickInterval = maxTime - minTime > 35 ? 10.0 : 5.0;
@@ -695,7 +856,10 @@ public sealed class LandingChart : FrameworkElement
             var x = MapX(tick, plot, minTime, maxTime);
             context.DrawLine(GridPen, new Point(x, plot.Top), new Point(x, plot.Bottom));
             var label = tick == 0 ? "TD" : $"{tick:+0;-0;0}s";
-            DrawText(context, label, new Point(x - 10, plot.Bottom + 7), tick == 0 ? VioletBrush : MutedBrush, 11);
+            if (ShowXAxisLabels)
+            {
+                DrawText(context, label, new Point(x - 10, plot.Bottom + 7), tick == 0 ? TextBrush : MutedBrush, 10);
+            }
         }
     }
 
@@ -757,20 +921,17 @@ public sealed class LandingChart : FrameworkElement
         double maxValue)
     {
         var x = MapX(point.TimeSeconds, plot, minTime, maxTime);
-        context.DrawLine(new Pen(TextBrush, 1), new Point(x, plot.Top), new Point(x, plot.Bottom));
-        DrawHoverMarkers(context, point, x, plot, minValue, maxValue);
+        context.DrawLine(HoverPen, new Point(x, plot.Top), new Point(x, plot.Bottom));
 
-        var text = HoverText(point);
-        var formatted = Formatted(text, TextBrush, 11);
-        var width = formatted.Width + 18;
-        var height = formatted.Height + 12;
-        var left = Math.Max(plot.Left + 4, Math.Min(plot.Right - width - 4, x - width / 2));
-        var top = plot.Top + 6;
-        context.DrawRoundedRectangle(TooltipBrush, new Pen(GridBrush, 1), new Rect(left, top, width, height), 7, 7);
-        context.DrawText(formatted, new Point(left + 9, top + 6));
+        if (!ShowHoverTooltip)
+        {
+            return;
+        }
+
+        DrawHoverFlags(context, point, x, plot, minValue, maxValue);
     }
 
-    private void DrawHoverMarkers(
+    private void DrawHoverFlags(
         DrawingContext context,
         LandingSeriesPoint point,
         double x,
@@ -778,36 +939,43 @@ public sealed class LandingChart : FrameworkElement
         double minValue,
         double maxValue)
     {
+        var flags = new List<HoverFlag>();
+
+        void AddFlag(double value, Brush brush, bool visible)
+        {
+            if (visible)
+            {
+                flags.Add(new HoverFlag(FormatFlagValue(value), brush, MapY(value, plot, minValue, maxValue)));
+            }
+        }
+
         switch (Mode)
         {
             case LandingChartMode.VerticalSpeed:
-                DrawHoverMarker(context, x, -point.InertialFpm, plot, minValue, maxValue, AccentBrush, IsSeriesVisible(0));
-                DrawHoverMarker(context, x, -point.IndicatedFpm, plot, minValue, maxValue, AmberBrush, IsSeriesVisible(1));
+                AddFlag(-point.InertialFpm, AccentBrush, IsSeriesVisible(0));
+                AddFlag(-point.IndicatedFpm, AmberBrush, IsSeriesVisible(1));
                 if (HasSurfaceLatchData)
                 {
-                    DrawHoverMarker(context, x, -_record!.SurfaceFpm, plot, minValue, maxValue, VioletBrush, IsSeriesVisible(2));
+                    AddFlag(-_record!.SurfaceFpm, BlueBrush, IsSeriesVisible(2));
                 }
                 break;
             case LandingChartMode.LoadFactors:
-                DrawHoverMarker(context, x, point.GForce, plot, minValue, maxValue, AccentBrush, IsSeriesVisible(0));
+                AddFlag(point.GForce, CompactLane ? PinkBrush : AccentBrush, IsSeriesVisible(0));
                 if (HasHorizontalLoadData)
                 {
-                    DrawHoverMarker(context, x, point.LongitudinalLoadG, plot, minValue, maxValue, AmberBrush, IsSeriesVisible(1));
-                    DrawHoverMarker(context, x, point.LateralLoadG, plot, minValue, maxValue, VioletBrush, IsSeriesVisible(2));
+                    AddFlag(point.LongitudinalLoadG, BlueBrush, IsSeriesVisible(1));
+                    AddFlag(point.LateralLoadG, AmberBrush, IsSeriesVisible(2));
                 }
                 break;
             case LandingChartMode.FlightControls:
-                DrawHoverMarker(context, x, point.PilotPitchPercent, plot, minValue, maxValue, AccentBrush, IsSeriesVisible(0));
-                DrawHoverMarker(context, x, point.ElevatorPercent, plot, minValue, maxValue, AccentBrush, IsSeriesVisible(0), false);
-                DrawHoverMarker(context, x, point.PilotRollPercent, plot, minValue, maxValue, AmberBrush, IsSeriesVisible(1));
-                DrawHoverMarker(context, x, point.AileronPercent, plot, minValue, maxValue, AmberBrush, IsSeriesVisible(1), false);
-                DrawHoverMarker(context, x, point.PilotYawPercent, plot, minValue, maxValue, VioletBrush, IsSeriesVisible(2));
-                DrawHoverMarker(context, x, point.RudderPercent, plot, minValue, maxValue, VioletBrush, IsSeriesVisible(2), false);
+                AddFlag(PitchInput(point), AccentBrush, IsSeriesVisible(0));
+                AddFlag(point.PilotRollPercent, BlueBrush, IsSeriesVisible(1));
+                AddFlag(point.PilotYawPercent, AmberBrush, IsSeriesVisible(2));
                 break;
             case LandingChartMode.Attitude:
-                DrawHoverMarker(context, x, point.PitchDegrees, plot, minValue, maxValue, AccentBrush, IsSeriesVisible(0));
-                DrawHoverMarker(context, x, point.BankDegrees, plot, minValue, maxValue, AmberBrush, IsSeriesVisible(1));
-                DrawHoverMarker(context, x, point.AngleOfAttackDegrees, plot, minValue, maxValue, VioletBrush, IsSeriesVisible(2));
+                AddFlag(-point.PitchDegrees, AccentBrush, IsSeriesVisible(0));
+                AddFlag(point.BankDegrees, BlueBrush, IsSeriesVisible(1));
+                AddFlag(point.AngleOfAttackDegrees, AmberBrush, IsSeriesVisible(2));
                 break;
             case LandingChartMode.Power:
                 if (_record == null)
@@ -831,9 +999,7 @@ public sealed class LandingChart : FrameworkElement
                     var hasN1 = engine.Points.Any(candidate => Math.Abs(candidate.N1Percent) > 0.01);
                     var maximumRpm = engine.Points.Count == 0 ? 1 : Math.Max(1, engine.Points.Max(candidate => candidate.Rpm));
                     var power = hasN1 ? enginePoint.N1Percent : enginePoint.Rpm / maximumRpm * 100.0;
-                    var brush = SeriesBrushes[index % SeriesBrushes.Length];
-                    DrawHoverMarker(context, x, power, plot, minValue, maxValue, brush, true);
-                    DrawHoverMarker(context, x, enginePoint.ThrottlePercent, plot, minValue, maxValue, brush, true, false);
+                    AddFlag(power, CompactLane ? BlueBrush : SeriesBrushes[index % SeriesBrushes.Length], true);
                 }
                 break;
             case LandingChartMode.Gear:
@@ -851,105 +1017,69 @@ public sealed class LandingChart : FrameworkElement
                     var contactPoint = ContactPointAt(point.TimeSeconds, index);
                     if (contactPoint != null)
                     {
-                        DrawHoverMarker(context, x, contactPoint.CompressionPercent, plot, minValue, maxValue,
-                            SeriesBrushes[index % SeriesBrushes.Length], true);
+                        AddFlag(contactPoint.CompressionPercent, CompactLane ? AmberBrush : SeriesBrushes[index % SeriesBrushes.Length], true);
                     }
                 }
                 break;
         }
-    }
 
-    private static void DrawHoverMarker(
-        DrawingContext context,
-        double x,
-        double value,
-        Rect plot,
-        double minValue,
-        double maxValue,
-        Brush brush,
-        bool visible,
-        bool filled = true)
-    {
-        if (!visible)
+        if (flags.Count == 0)
         {
             return;
         }
 
-        var y = MapY(value, plot, minValue, maxValue);
-        context.DrawEllipse(filled ? brush : null, filled ? null : new Pen(brush, 1.5), new Point(x, y), 4, 4);
+        const double gap = 22;
+        flags.Sort((left, right) => left.Y.CompareTo(right.Y));
+        for (var index = 1; index < flags.Count; index++)
+        {
+            if (flags[index].Y - flags[index - 1].Y < gap)
+            {
+                flags[index].Y = flags[index - 1].Y + gap;
+            }
+        }
+
+        var maximumY = plot.Bottom - gap / 2;
+        var overflow = flags[flags.Count - 1].Y - maximumY;
+        if (overflow > 0)
+        {
+            foreach (var flag in flags)
+            {
+                flag.Y -= overflow;
+            }
+        }
+
+        var minimumY = plot.Top + gap / 2;
+        var underflow = minimumY - flags[0].Y;
+        if (underflow > 0)
+        {
+            foreach (var flag in flags)
+            {
+                flag.Y += underflow;
+            }
+        }
+
+        foreach (var flag in flags)
+        {
+            var formatted = FormattedMono(flag.Value, flag.Brush, 10);
+            var width = formatted.Width + 12;
+            var height = formatted.Height + 4;
+            var left = Math.Max(plot.Left, Math.Min(plot.Right - width, x - width / 2));
+            var top = flag.Y - height / 2;
+            context.DrawRoundedRectangle(TooltipBrush, null, new Rect(left, top, width, height), 4, 4);
+            context.DrawText(formatted, new Point(left + 6, top + 2));
+        }
     }
 
-    private string HoverText(LandingSeriesPoint point)
+    private string FormatFlagValue(double value)
     {
-        var time = $"{point.TimeSeconds:+0.00;-0.00;0.00}s";
-        switch (Mode)
+        return Mode switch
         {
-            case LandingChartMode.VerticalSpeed:
-                return _isolatedSeriesIndex switch
-                {
-                    0 => $"{time}   inertial {-point.InertialFpm:+0;-0;0} fpm",
-                    1 => $"{time}   VSI {-point.IndicatedFpm:+0;-0;0} fpm",
-                    2 when HasSurfaceLatchData => $"{time}   MSFS latch {-_record!.SurfaceFpm:+0;-0;0} fpm",
-                    _ when HasSurfaceLatchData => $"{time}   inertial {-point.InertialFpm:+0;-0;0}   VSI {-point.IndicatedFpm:+0;-0;0}   latch {-_record!.SurfaceFpm:+0;-0;0} fpm",
-                    _ => $"{time}   inertial {-point.InertialFpm:+0;-0;0}   VSI {-point.IndicatedFpm:+0;-0;0}   latch n/a",
-                };
-            case LandingChartMode.LoadFactors:
-                if (!HasHorizontalLoadData)
-                {
-                    return $"{time}   V {point.GForce:F3} G   horizontal G unavailable";
-                }
-                return _isolatedSeriesIndex switch
-                {
-                    0 => $"{time}   vertical {point.GForce:F3} G",
-                    1 => $"{time}   longitudinal {point.LongitudinalLoadG:+0.000;-0.000;0.000} G",
-                    2 => $"{time}   lateral {point.LateralLoadG:+0.000;-0.000;0.000} G",
-                    _ => $"{time}   V {point.GForce:F3} G   LONG {point.LongitudinalLoadG:+0.000;-0.000;0.000}   LAT {point.LateralLoadG:+0.000;-0.000;0.000}",
-                };
-            case LandingChartMode.FlightControls:
-                var controls = new List<string> { time };
-                if (IsSeriesVisible(0)) controls.Add($"PITCH input {point.PilotPitchPercent:+0;-0;0}% · surface {point.ElevatorPercent:+0;-0;0}%");
-                if (IsSeriesVisible(1)) controls.Add($"ROLL input {point.PilotRollPercent:+0;-0;0}% · surface {point.AileronPercent:+0;-0;0}%");
-                if (IsSeriesVisible(2)) controls.Add($"YAW input {point.PilotYawPercent:+0;-0;0}% · surface {point.RudderPercent:+0;-0;0}%");
-                return string.Join("\n", controls);
-            case LandingChartMode.Attitude:
-                var attitude = new List<string> { time };
-                if (IsSeriesVisible(0)) attitude.Add($"PITCH {point.PitchDegrees:+0.0;-0.0;0.0}°");
-                if (IsSeriesVisible(1)) attitude.Add($"BANK {point.BankDegrees:+0.0;-0.0;0.0}°");
-                if (IsSeriesVisible(2)) attitude.Add($"AoA {point.AngleOfAttackDegrees:F1}°");
-                return string.Join("   ", attitude);
-            case LandingChartMode.Power:
-                var power = new List<string> { time };
-                if (_record != null)
-                {
-                    for (var index = 0; index < _record.Engines.Count; index++)
-                    {
-                        if (!IsSeriesVisible(index)) continue;
-                        var engine = EnginePointAt(point.TimeSeconds, index);
-                        if (engine != null)
-                        {
-                            power.Add($"ENG {_record.Engines[index].EngineNumber} · N1 {engine.N1Percent:F1}% · THR {engine.ThrottlePercent:F1}% · REV {engine.ReversePercent:F1}%");
-                        }
-                    }
-                }
-                return power.Count == 1 ? $"{time}   no engine data" : string.Join("\n", power);
-            case LandingChartMode.Gear:
-                var gear = new List<string> { time };
-                if (_record != null)
-                {
-                    for (var index = 0; index < _record.ContactPoints.Count; index++)
-                    {
-                        if (!IsSeriesVisible(index)) continue;
-                        var contact = ContactPointAt(point.TimeSeconds, index);
-                        if (contact != null)
-                        {
-                            gear.Add($"CP {_record.ContactPoints[index].ContactPointIndex} · {contact.CompressionPercent:F1}% · {(contact.OnGround ? "CONTACT" : "AIR")}");
-                        }
-                    }
-                }
-                return gear.Count == 1 ? $"{time}   no gear data" : string.Join("\n", gear);
-            default:
-                return time;
-        }
+            LandingChartMode.LoadFactors => value.ToString("+0.00;-0.00;0.00", CultureInfo.CurrentCulture),
+            LandingChartMode.Attitude => value.ToString("+0.0;-0.0;0.0", CultureInfo.CurrentCulture),
+            LandingChartMode.Power => value.ToString("0.0", CultureInfo.CurrentCulture),
+            LandingChartMode.Gear => value.ToString("0.0", CultureInfo.CurrentCulture),
+            _ => value.ToString("+0;-0;0", CultureInfo.CurrentCulture),
+        };
     }
 
     private bool HasSurfaceLatchData => _record?.HasSurfaceLatchData == true;
@@ -1022,6 +1152,18 @@ public sealed class LandingChart : FrameworkElement
             CultureInfo.CurrentCulture,
             FlowDirection.LeftToRight,
             new Typeface("Segoe UI"),
+            size,
+            brush,
+            1.0);
+    }
+
+    private static FormattedText FormattedMono(string text, Brush brush, double size)
+    {
+        return new FormattedText(
+            text,
+            CultureInfo.CurrentCulture,
+            FlowDirection.LeftToRight,
+            new Typeface("Cascadia Mono"),
             size,
             brush,
             1.0);

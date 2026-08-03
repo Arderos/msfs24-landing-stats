@@ -12,6 +12,10 @@ public static class LandingRecordFactory
     private const double StoredSampleIntervalSeconds = 0.05;
     private const double ApproachGateFeet = 500.0;
     private const double StandardGravityFps2 = 32.17405;
+    private const double MinimumRawPitchRangePercent = 12.0;
+    private const double MinimumRawPitchCorrelation = 0.75;
+    private const double MaximumRawPitchLagSeconds = 0.8;
+    private const double RawPitchLagStepSeconds = 0.025;
 
     public static LandingRecord Create(
         TouchdownResult result,
@@ -42,6 +46,12 @@ public static class LandingRecordFactory
             PitchDegrees = result.PitchDegrees,
             BankDegrees = result.BankDegrees,
             AirspeedKnots = result.IndicatedAirspeedKnots,
+            GroundSpeedKnots = result.GroundSpeedKnots,
+            InertialExtrapolated = result.InertialVerticalExtrapolated,
+            InertialFitDurationSeconds = result.InertialFitDurationSeconds,
+            LatchUpdateDetected = result.LatchUpdateDetected,
+            LatchUpdateOffsetSeconds = result.LatchedUpdateOffsetSeconds,
+            ContactTimeEstimatedFromCompression = result.ContactTimeEstimatedFromCompression,
         };
 
         var contactTime = result.EstimatedContactTimeSeconds;
@@ -103,6 +113,16 @@ public static class LandingRecordFactory
                 OnGround = sample.OnGround,
                 LateralAccelerationFps2 = Math.Round(sample.AccelerationBodyXFps2, 4),
                 LongitudinalAccelerationFps2 = Math.Round(sample.AccelerationBodyZFps2, 4),
+                ElevatorDeflectionPercent = Math.Round(sample.ElevatorDeflectionPercentOver100 * 100.0, 2),
+                AileronLeftDeflectionPercent = Math.Round(sample.AileronLeftDeflectionPercentOver100 * 100.0, 2),
+                AileronRightDeflectionPercent = Math.Round(sample.AileronRightDeflectionPercentOver100 * 100.0, 2),
+                RudderDeflectionPercent = Math.Round(sample.RudderDeflectionPercentOver100 * 100.0, 2),
+                AxisElevatorSetPercent = Math.Round(sample.AxisElevatorSetPercent, 2),
+                AxisElevatorSetValid = sample.AxisElevatorSetValid,
+                AxisElevatorSetAgeSeconds = Math.Round(sample.AxisElevatorSetAgeSeconds, 4),
+                RawControllerYAxisPercent = RoundedCopy(sample.RawControllerYAxisPercent, 2),
+                RawControllerYAxisValid = (bool[])sample.RawControllerYAxisValid.Clone(),
+                RawControllerYAxisAgeSeconds = RoundedCopy(sample.RawControllerYAxisAgeSeconds, 4),
             });
         }
 
@@ -111,12 +131,189 @@ public static class LandingRecordFactory
             var contactSample = ClosestToContact(storedSamples).Sample;
             record.WeightPounds = Math.Round(contactSample.TotalWeightPounds, 1);
             record.CgPercent = Math.Round(contactSample.CgPercent, 2);
+            record.TouchdownLatitudeDegrees = contactSample.LatitudeDegrees;
+            record.TouchdownLongitudeDegrees = contactSample.LongitudeDegrees;
+            record.AngleOfAttackDegrees = Math.Round(contactSample.AngleOfAttackDegrees, 2);
         }
 
         AddEngineSeries(record, storedSamples);
         AddContactSeries(record, storedSamples);
+        RefreshRawPitchInputSelection(record);
 
         return record;
+    }
+
+    public static bool RefreshRawPitchInputSelection(LandingRecord record)
+    {
+        var previousSource = record.RawPitchInputSourceIndex;
+        var previousCorrelation = record.RawPitchInputCorrelation;
+        var previousLag = record.RawPitchInputLagSeconds;
+        record.RawPitchInputSourceIndex = -1;
+        record.RawPitchInputCorrelation = 0;
+        record.RawPitchInputLagSeconds = 0;
+
+        var bestAbsoluteCorrelation = 0.0;
+        var bestCorrelation = 0.0;
+        var bestLag = 0.0;
+        var bestSource = -1;
+
+        for (var sourceIndex = 0; sourceIndex < TelemetrySample.CapturedControllerCount; sourceIndex++)
+        {
+            var minimum = double.PositiveInfinity;
+            var maximum = double.NegativeInfinity;
+            var validCount = 0;
+            foreach (var point in record.Series)
+            {
+                if (point.OnGround || !HasRawControllerValue(point, sourceIndex))
+                {
+                    continue;
+                }
+
+                var value = point.RawControllerYAxisPercent[sourceIndex];
+                minimum = Math.Min(minimum, value);
+                maximum = Math.Max(maximum, value);
+                validCount++;
+            }
+
+            if (validCount < 20 || maximum - minimum < MinimumRawPitchRangePercent)
+            {
+                continue;
+            }
+
+            for (var lag = 0.0; lag <= MaximumRawPitchLagSeconds + 0.000001; lag += RawPitchLagStepSeconds)
+            {
+                if (!TryCorrelationAtLag(record.Series, sourceIndex, lag, out var correlation))
+                {
+                    continue;
+                }
+
+                var absoluteCorrelation = Math.Abs(correlation);
+                if (absoluteCorrelation <= bestAbsoluteCorrelation)
+                {
+                    continue;
+                }
+
+                bestAbsoluteCorrelation = absoluteCorrelation;
+                bestCorrelation = correlation;
+                bestLag = lag;
+                bestSource = sourceIndex;
+            }
+        }
+
+        if (bestSource < 0 || bestAbsoluteCorrelation < MinimumRawPitchCorrelation)
+        {
+            return previousSource != record.RawPitchInputSourceIndex ||
+                   Math.Abs(previousCorrelation - record.RawPitchInputCorrelation) > 0.000001 ||
+                   Math.Abs(previousLag - record.RawPitchInputLagSeconds) > 0.000001;
+        }
+
+        record.RawPitchInputSourceIndex = bestSource;
+        record.RawPitchInputCorrelation = Math.Round(bestCorrelation, 4);
+        record.RawPitchInputLagSeconds = Math.Round(bestLag, 4);
+        return previousSource != record.RawPitchInputSourceIndex ||
+               Math.Abs(previousCorrelation - record.RawPitchInputCorrelation) > 0.000001 ||
+               Math.Abs(previousLag - record.RawPitchInputLagSeconds) > 0.000001;
+    }
+
+    private static bool TryCorrelationAtLag(
+        IReadOnlyList<LandingSeriesPoint> points,
+        int sourceIndex,
+        double lagSeconds,
+        out double correlation)
+    {
+        var count = 0;
+        var sumX = 0.0;
+        var sumY = 0.0;
+        var sumXX = 0.0;
+        var sumYY = 0.0;
+        var sumXY = 0.0;
+
+        foreach (var point in points)
+        {
+            if (point.OnGround ||
+                !HasRawControllerValue(point, sourceIndex) ||
+                !TryInterpolateProcessedPitch(points, point.TimeSeconds + lagSeconds, out var processedPitch))
+            {
+                continue;
+            }
+
+            var rawPitch = point.RawControllerYAxisPercent[sourceIndex];
+            count++;
+            sumX += rawPitch;
+            sumY += processedPitch;
+            sumXX += rawPitch * rawPitch;
+            sumYY += processedPitch * processedPitch;
+            sumXY += rawPitch * processedPitch;
+        }
+
+        var xVariance = count * sumXX - sumX * sumX;
+        var yVariance = count * sumYY - sumY * sumY;
+        if (count < 20 || xVariance <= 0.000001 || yVariance <= 0.000001)
+        {
+            correlation = 0;
+            return false;
+        }
+
+        correlation = (count * sumXY - sumX * sumY) / Math.Sqrt(xVariance * yVariance);
+        return !double.IsNaN(correlation) && !double.IsInfinity(correlation);
+    }
+
+    private static bool TryInterpolateProcessedPitch(
+        IReadOnlyList<LandingSeriesPoint> points,
+        double timeSeconds,
+        out double value)
+    {
+        if (points.Count == 0 || timeSeconds < points[0].TimeSeconds || timeSeconds > points[points.Count - 1].TimeSeconds)
+        {
+            value = 0;
+            return false;
+        }
+
+        var low = 0;
+        var high = points.Count - 1;
+        while (low + 1 < high)
+        {
+            var middle = low + (high - low) / 2;
+            if (points[middle].TimeSeconds <= timeSeconds)
+            {
+                low = middle;
+            }
+            else
+            {
+                high = middle;
+            }
+        }
+
+        var before = points[low];
+        var after = points[high];
+        if (timeSeconds > 0 || before.OnGround || after.OnGround)
+        {
+            value = 0;
+            return false;
+        }
+
+        var duration = after.TimeSeconds - before.TimeSeconds;
+        if (duration <= 0.000001)
+        {
+            value = before.PilotPitchPercent;
+            return true;
+        }
+
+        var fraction = Math.Max(0, Math.Min(1, (timeSeconds - before.TimeSeconds) / duration));
+        value = before.PilotPitchPercent + fraction * (after.PilotPitchPercent - before.PilotPitchPercent);
+        return true;
+    }
+
+    private static bool HasRawControllerValue(LandingSeriesPoint point, int sourceIndex)
+    {
+        return point.RawControllerYAxisPercent != null &&
+               point.RawControllerYAxisValid != null &&
+               sourceIndex >= 0 &&
+               sourceIndex < point.RawControllerYAxisPercent.Length &&
+               sourceIndex < point.RawControllerYAxisValid.Length &&
+               point.RawControllerYAxisValid[sourceIndex] &&
+               !double.IsNaN(point.RawControllerYAxisPercent[sourceIndex]) &&
+               !double.IsInfinity(point.RawControllerYAxisPercent[sourceIndex]);
     }
 
     private static double FindApproachGateRelativeTime(IReadOnlyList<TelemetrySample> samples, double contactTime)
@@ -267,6 +464,17 @@ public static class LandingRecordFactory
         }
 
         return closest;
+    }
+
+    private static double[] RoundedCopy(double[] values, int digits)
+    {
+        var result = new double[values.Length];
+        for (var index = 0; index < values.Length; index++)
+        {
+            result[index] = Math.Round(values[index], digits);
+        }
+
+        return result;
     }
 
     private sealed class StoredSample

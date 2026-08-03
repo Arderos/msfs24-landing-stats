@@ -60,6 +60,10 @@ internal struct SimFrameData
     public double ElevatorTrimRadians;
     public double AileronPosition;
     public double RudderPosition;
+    public double ElevatorDeflectionPercentOver100;
+    public double AileronLeftDeflectionPercentOver100;
+    public double AileronRightDeflectionPercentOver100;
+    public double RudderDeflectionPercentOver100;
     public double SpoilersLeftPosition;
     public double SpoilersRightPosition;
     public double FlapsHandlePercent;

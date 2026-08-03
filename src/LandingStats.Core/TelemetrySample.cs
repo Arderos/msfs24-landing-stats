@@ -5,6 +5,8 @@ public sealed class TelemetrySample
     public const int CapturedContactPointCount = 64;
     public const int CapturedEngineCount = 4;
 
+    public const int CapturedControllerCount = 8;
+
     public long Sequence { get; set; }
 
     public double HostElapsedSeconds { get; set; }
@@ -117,6 +119,14 @@ public sealed class TelemetrySample
 
     public double RudderPosition { get; set; }
 
+    public double ElevatorDeflectionPercentOver100 { get; set; }
+
+    public double AileronLeftDeflectionPercentOver100 { get; set; }
+
+    public double AileronRightDeflectionPercentOver100 { get; set; }
+
+    public double RudderDeflectionPercentOver100 { get; set; }
+
     public double SpoilersLeftPosition { get; set; }
 
     public double SpoilersRightPosition { get; set; }
@@ -161,6 +171,12 @@ public sealed class TelemetrySample
 
     public double RudderPedalInputPercent { get; set; }
 
+    public double AxisElevatorSetPercent { get; set; }
+
+    public bool AxisElevatorSetValid { get; set; }
+
+    public double AxisElevatorSetAgeSeconds { get; set; }
+
     public double[] EngineThrottlePercent { get; } = new double[CapturedEngineCount];
 
     public double[] EngineN1Percent { get; } = new double[CapturedEngineCount];
@@ -168,6 +184,14 @@ public sealed class TelemetrySample
     public double[] EngineRpm { get; } = new double[CapturedEngineCount];
 
     public double[] EngineReversePercent { get; } = new double[CapturedEngineCount];
+
+    public int[] RawControllerDeviceId { get; } = new int[CapturedControllerCount];
+
+    public double[] RawControllerYAxisPercent { get; } = new double[CapturedControllerCount];
+
+    public bool[] RawControllerYAxisValid { get; } = new bool[CapturedControllerCount];
+
+    public double[] RawControllerYAxisAgeSeconds { get; } = new double[CapturedControllerCount];
 
     public double[] ContactPointCompression { get; } = new double[CapturedContactPointCount];
 

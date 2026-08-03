@@ -7,6 +7,7 @@ Microsoft Flight Simulator 2024 through SimConnect.
 
 - Automatic recording from the descending 500 ft AGL crossing through rollout.
 - Per-contact analysis for normal landings and bounces.
+- Automatic nearest-airport resolution that remains available after MSFS exits.
 - Inertial vertical speed at contact, MSFS surface-normal touchdown velocity,
   surface-relative delta, terrain contribution, and unresolved remainder.
 - Vertical, longitudinal, and lateral load-factor graphs.
@@ -14,6 +15,9 @@ Microsoft Flight Simulator 2024 through SimConnect.
   and landing-gear charts.
 - Flight-control inputs and surfaces, engine power and throttles, flare,
   attitude, wind, gear compression, and rollout data.
+- Hardware pitch-input capture with automatic source matching when SimConnect
+  exposes an aircraft-processed command instead of the pilot's controller axis.
+- Optional full-rate diagnostic capture with a 15-second pre-roll.
 - Compact local landing history containing only the data used by the dashboard.
 - One-file distribution for end users.
 
@@ -68,3 +72,11 @@ Landing records are stored under:
 
 The app does not upload flight data. Removing a landing from the local history
 removes its compact stored record.
+
+Optional diagnostic captures are stored separately under:
+
+```text
+%LOCALAPPDATA%\MSFS Landing Stats\Raw Captures
+```
+
+See [CHANGELOG.md](CHANGELOG.md) for release history.

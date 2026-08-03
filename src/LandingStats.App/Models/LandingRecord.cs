@@ -8,7 +8,7 @@ namespace LandingStats.App.Models;
 [DataContract]
 public sealed class LandingRecord
 {
-    public const int CurrentFormatVersion = 3;
+    public const int CurrentFormatVersion = 6;
 
     [DataMember(Order = 1)]
     public int FormatVersion { get; set; } = CurrentFormatVersion;
@@ -91,6 +91,48 @@ public sealed class LandingRecord
     [DataMember(Order = 27)]
     public double ApproachGateSeconds { get; set; } = -15.0;
 
+    [DataMember(Order = 28, EmitDefaultValue = false)]
+    public double? TouchdownLatitudeDegrees { get; set; }
+
+    [DataMember(Order = 29, EmitDefaultValue = false)]
+    public double? TouchdownLongitudeDegrees { get; set; }
+
+    [DataMember(Order = 30, EmitDefaultValue = false)]
+    public double? AirportDistanceNauticalMiles { get; set; }
+
+    [DataMember(Order = 31)]
+    public bool InertialExtrapolated { get; set; }
+
+    [DataMember(Order = 32)]
+    public double InertialFitDurationSeconds { get; set; }
+
+    [DataMember(Order = 33)]
+    public bool LatchUpdateDetected { get; set; }
+
+    [DataMember(Order = 34)]
+    public double LatchUpdateOffsetSeconds { get; set; }
+
+    [DataMember(Order = 35)]
+    public bool ContactTimeEstimatedFromCompression { get; set; }
+
+    [DataMember(Order = 36)]
+    public double GroundSpeedKnots { get; set; }
+
+    [DataMember(Order = 37)]
+    public double AngleOfAttackDegrees { get; set; }
+
+    [DataMember(Order = 38)]
+    public List<string> ControlInputSources { get; set; } = new List<string>();
+
+    [DataMember(Order = 39)]
+    public int RawPitchInputSourceIndex { get; set; } = -1;
+
+    [DataMember(Order = 40)]
+    public double RawPitchInputCorrelation { get; set; }
+
+    [DataMember(Order = 41)]
+    public double RawPitchInputLagSeconds { get; set; }
+
     public string TimestampDisplay => TimestampUtc.ToLocalTime().ToString("dd MMM · HH:mm", CultureInfo.CurrentCulture);
 
     public string LocationDisplay => Runway == "—" ? Airport : $"{Airport} · RWY {Runway}";
@@ -101,6 +143,10 @@ public sealed class LandingRecord
 
     public string SurfaceDisplay => HasSurfaceLatchData ? $"{-SurfaceFpm:+0;-0;0} fpm" : "n/a";
 
+    public string SurfaceValueDisplay => HasSurfaceLatchData ? $"{-SurfaceFpm:+0;-0;0}" : "n/a";
+
+    public string SurfaceUnitDisplay => HasSurfaceLatchData ? "fpm" : string.Empty;
+
     public string DeltaDisplay => !double.IsNaN(SurfaceDeltaFpm) ? $"{-SurfaceDeltaFpm:+0;-0;0} fpm" : "surface delta n/a";
 
     public string TerrainDisplay =>
@@ -110,11 +156,74 @@ public sealed class LandingRecord
 
     public string G2SecondsDisplay => $"{PeakG2Seconds:F2} peak / 2s";
 
-    public string AttitudeDisplay => $"{PitchDegrees:F1}° pitch · {BankDegrees:+0.0;-0.0;0.0}° bank";
+    public string AttitudeDisplay => $"{-PitchDegrees:+0.0;-0.0;0.0}° / {BankDegrees:+0.0;-0.0;0.0}°";
 
     public string AirspeedDisplay => $"{AirspeedKnots:F0} kt";
 
+    public string GroundSpeedDisplay => $"{GroundSpeedKnots:F0} kt";
+
+    public string AngleOfAttackDisplay => $"AoA {AngleOfAttackDegrees:F1}°";
+
     public string ContactDisplay => ContactCount > 1 ? $"Contact {ContactNumber} of {ContactCount}" : "Single contact";
+
+    public bool HasTouchdownCoordinates =>
+        TouchdownLatitudeDegrees.HasValue && TouchdownLongitudeDegrees.HasValue;
+
+    public bool HasRawPitchInput =>
+        FormatVersion >= 6 &&
+        RawPitchInputSourceIndex >= 0 &&
+        Math.Abs(RawPitchInputCorrelation) >= 0.75;
+
+    public string PitchInputSourceDisplay => HasRawPitchInput
+        ? $"RAW CONTROLLER {RawPitchInputSourceIndex} · r={Math.Abs(RawPitchInputCorrelation):F2} · {RawPitchInputLagSeconds * 1000.0:F0} MS"
+        : "SIMCONNECT PROCESSED COMMAND";
+
+    public string InertialQualityDisplay => FormatVersion < 4
+        ? "LEGACY · QUALITY UNKNOWN"
+        : InertialExtrapolated
+            ? $"EXTRAPOLATED · {InertialFitDurationSeconds:F2} S FIT"
+            : "RAW LAST AIRBORNE FRAME";
+
+    public string InertialQualityBadgeDisplay => FormatVersion < 4
+        ? "LEGACY"
+        : InertialExtrapolated
+            ? "EXTRAPOLATED"
+            : "RAW FRAME";
+
+    public string SurfaceQualityDisplay
+    {
+        get
+        {
+            if (FormatVersion < 4)
+            {
+                return "LEGACY · LATCH STATUS UNKNOWN";
+            }
+
+            if (!LatchUpdateDetected)
+            {
+                return "LATCH NOT VERIFIED · MAY BE STALE";
+            }
+
+            var milliseconds = LatchUpdateOffsetSeconds * 1000.0;
+            return Math.Abs(milliseconds) < 0.5
+                ? "LATCH VERIFIED · SAME FRAME"
+                : $"LATCH VERIFIED · {milliseconds:+0;-0;0} MS";
+        }
+    }
+
+    public string SurfaceQualityBadgeDisplay => FormatVersion < 4
+        ? "LEGACY"
+        : !LatchUpdateDetected
+            ? "UNVERIFIED"
+            : "VERIFIED";
+
+    public string WeightDisplay => WeightPounds > 0
+        ? $"{WeightPounds * 0.45359237:N0} kg"
+        : "n/a";
+
+    public string CgDisplay => CgPercent > 0 ? $"{CgPercent:F1}% CG" : "CG n/a";
+
+    public string RecordSummaryDisplay => $"Record v{FormatVersion} · {Series.Count} samples";
 
     [OnDeserialized]
     private void OnDeserialized(StreamingContext context)
@@ -122,6 +231,23 @@ public sealed class LandingRecord
         Series ??= new List<LandingSeriesPoint>();
         Engines ??= new List<LandingEngineSeries>();
         ContactPoints ??= new List<LandingContactSeries>();
+        ControlInputSources ??= new List<string>();
+    }
+
+    public double PitchInputPercent(LandingSeriesPoint point)
+    {
+        if (!HasRawPitchInput ||
+            point.RawControllerYAxisPercent == null ||
+            point.RawControllerYAxisValid == null ||
+            RawPitchInputSourceIndex >= point.RawControllerYAxisPercent.Length ||
+            RawPitchInputSourceIndex >= point.RawControllerYAxisValid.Length ||
+            !point.RawControllerYAxisValid[RawPitchInputSourceIndex])
+        {
+            return point.PilotPitchPercent;
+        }
+
+        var direction = RawPitchInputCorrelation < 0 ? -1.0 : 1.0;
+        return direction * point.RawControllerYAxisPercent[RawPitchInputSourceIndex];
     }
 
     private static string FormatSignedMetric(double value) =>

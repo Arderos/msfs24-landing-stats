@@ -7,7 +7,7 @@ namespace LandingStats.Core;
 
 public static class TelemetryCsv
 {
-    public const int SchemaVersion = 3;
+    public const int SchemaVersion = 4;
 
     public const string LegacyHeader =
         "sequence,host_elapsed_s,simulation_time_s,simulation_delta_s,on_ground,motion_simulation," +
@@ -15,11 +15,13 @@ public static class TelemetryCsv
         "g_force,max_g_force,semibody_loadfactor_y,acceleration_body_y_fps2,agl_ft,pitch_deg,bank_deg," +
         "latitude_deg,longitude_deg,airspeed_indicated_kt,ground_speed_kt,simulation_rate";
 
-    public static readonly string DiagnosticWithoutPositionHeader = BuildHeader(includeContactPosition: false, includeBlackBoxChannels: false);
+    public static readonly string DiagnosticWithoutPositionHeader = BuildHeader(includeContactPosition: false, includeBlackBoxChannels: false, includeControlDiagnostics: false);
 
-    public static readonly string PreviousHeader = BuildHeader(includeContactPosition: true, includeBlackBoxChannels: false);
+    public static readonly string PreviousHeader = BuildHeader(includeContactPosition: true, includeBlackBoxChannels: false, includeControlDiagnostics: false);
 
-    public static readonly string Header = BuildHeader(includeContactPosition: true, includeBlackBoxChannels: true);
+    public static readonly string BlackBoxV3Header = BuildHeader(includeContactPosition: true, includeBlackBoxChannels: true, includeControlDiagnostics: false);
+
+    public static readonly string Header = BuildHeader(includeContactPosition: true, includeBlackBoxChannels: true, includeControlDiagnostics: true);
 
     private static readonly CultureInfo Invariant = CultureInfo.InvariantCulture;
 
@@ -142,6 +144,22 @@ public static class TelemetryCsv
             values.Add(sample.ContactPointOnGround[index] ? "1" : "0");
         }
 
+        values.Add(Number(sample.ElevatorDeflectionPercentOver100));
+        values.Add(Number(sample.AileronLeftDeflectionPercentOver100));
+        values.Add(Number(sample.AileronRightDeflectionPercentOver100));
+        values.Add(Number(sample.RudderDeflectionPercentOver100));
+        values.Add(Number(sample.AxisElevatorSetPercent));
+        values.Add(sample.AxisElevatorSetValid ? "1" : "0");
+        values.Add(Number(sample.AxisElevatorSetAgeSeconds));
+
+        for (var index = 0; index < TelemetrySample.CapturedControllerCount; index++)
+        {
+            values.Add(sample.RawControllerDeviceId[index].ToString(Invariant));
+            values.Add(Number(sample.RawControllerYAxisPercent[index]));
+            values.Add(sample.RawControllerYAxisValid[index] ? "1" : "0");
+            values.Add(Number(sample.RawControllerYAxisAgeSeconds[index]));
+        }
+
         return string.Join(",", values);
     }
 
@@ -151,6 +169,7 @@ public static class TelemetryCsv
         using var reader = new StreamReader(path);
         var header = reader.ReadLine();
         if (!string.Equals(header, Header, StringComparison.Ordinal) &&
+            !string.Equals(header, BlackBoxV3Header, StringComparison.Ordinal) &&
             !string.Equals(header, PreviousHeader, StringComparison.Ordinal) &&
             !string.Equals(header, DiagnosticWithoutPositionHeader, StringComparison.Ordinal) &&
             !string.Equals(header, LegacyHeader, StringComparison.Ordinal))
@@ -186,9 +205,10 @@ public static class TelemetryCsv
         var isLegacy = values.Length == 22;
         var isDiagnosticWithoutPosition = values.Length == DiagnosticWithoutPositionHeader.Split(',').Length;
         var isPrevious = values.Length == PreviousHeader.Split(',').Length;
+        var isBlackBoxV3 = values.Length == BlackBoxV3Header.Split(',').Length;
         var expectedCurrentColumns = Header.Split(',').Length;
         var isCurrent = values.Length == expectedCurrentColumns;
-        if ((!isLegacy && !isDiagnosticWithoutPosition && !isPrevious && !isCurrent) ||
+        if ((!isLegacy && !isDiagnosticWithoutPosition && !isPrevious && !isBlackBoxV3 && !isCurrent) ||
             !long.TryParse(values[0], NumberStyles.Integer, Invariant, out var sequence) ||
             !TryNumber(values[1], out var hostElapsed) ||
             !TryNumber(values[2], out var simulationTime) ||
@@ -350,7 +370,7 @@ public static class TelemetryCsv
             sample.SurfaceCondition = surfaceCondition;
             sample.SpoilersArmed = spoilersArmed;
 
-            if (isCurrent)
+            if (isBlackBoxV3 || isCurrent)
             {
                 if (!int.TryParse(values[index++], NumberStyles.Integer, Invariant, out var numberOfEngines) ||
                     !TryNumber(values[index++], out var pilotRoll) ||
@@ -438,12 +458,50 @@ public static class TelemetryCsv
 
                 sample.ContactPointOnGround[contactIndex] = contactOnGround;
             }
+
+            if (isCurrent)
+            {
+                if (!TryNumber(values[index++], out var elevatorDeflection) ||
+                    !TryNumber(values[index++], out var aileronLeftDeflection) ||
+                    !TryNumber(values[index++], out var aileronRightDeflection) ||
+                    !TryNumber(values[index++], out var rudderDeflection) ||
+                    !TryNumber(values[index++], out var axisElevatorSet) ||
+                    !TryBoolean(values[index++], out var axisElevatorSetValid) ||
+                    !TryNumber(values[index++], out var axisElevatorSetAge))
+                {
+                    return false;
+                }
+
+                sample.ElevatorDeflectionPercentOver100 = elevatorDeflection;
+                sample.AileronLeftDeflectionPercentOver100 = aileronLeftDeflection;
+                sample.AileronRightDeflectionPercentOver100 = aileronRightDeflection;
+                sample.RudderDeflectionPercentOver100 = rudderDeflection;
+                sample.AxisElevatorSetPercent = axisElevatorSet;
+                sample.AxisElevatorSetValid = axisElevatorSetValid;
+                sample.AxisElevatorSetAgeSeconds = axisElevatorSetAge;
+
+                for (var controllerIndex = 0; controllerIndex < TelemetrySample.CapturedControllerCount; controllerIndex++)
+                {
+                    if (!int.TryParse(values[index++], NumberStyles.Integer, Invariant, out var deviceId) ||
+                        !TryNumber(values[index++], out var rawY) ||
+                        !TryBoolean(values[index++], out var rawYValid) ||
+                        !TryNumber(values[index++], out var rawYAge))
+                    {
+                        return false;
+                    }
+
+                    sample.RawControllerDeviceId[controllerIndex] = deviceId;
+                    sample.RawControllerYAxisPercent[controllerIndex] = rawY;
+                    sample.RawControllerYAxisValid[controllerIndex] = rawYValid;
+                    sample.RawControllerYAxisAgeSeconds[controllerIndex] = rawYAge;
+                }
+            }
         }
 
         return true;
     }
 
-    private static string BuildHeader(bool includeContactPosition, bool includeBlackBoxChannels)
+    private static string BuildHeader(bool includeContactPosition, bool includeBlackBoxChannels, bool includeControlDiagnostics)
     {
         var columns = new List<string>(LegacyHeader.Split(','))
         {
@@ -545,6 +603,25 @@ public static class TelemetryCsv
         for (var index = 0; index < TelemetrySample.CapturedContactPointCount; index++)
         {
             columns.Add($"contact_{index}_on_ground");
+        }
+
+        if (includeControlDiagnostics)
+        {
+            columns.Add("elevator_deflection_percent_over_100");
+            columns.Add("aileron_left_deflection_percent_over_100");
+            columns.Add("aileron_right_deflection_percent_over_100");
+            columns.Add("rudder_deflection_percent_over_100");
+            columns.Add("axis_elevator_set_percent");
+            columns.Add("axis_elevator_set_valid");
+            columns.Add("axis_elevator_set_age_s");
+
+            for (var index = 0; index < TelemetrySample.CapturedControllerCount; index++)
+            {
+                columns.Add($"controller_{index}_device_id");
+                columns.Add($"controller_{index}_raw_y_percent");
+                columns.Add($"controller_{index}_raw_y_valid");
+                columns.Add($"controller_{index}_raw_y_age_s");
+            }
         }
 
         return string.Join(",", columns);

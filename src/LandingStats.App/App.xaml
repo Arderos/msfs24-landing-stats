@@ -3,22 +3,26 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              StartupUri="MainWindow.xaml">
     <Application.Resources>
-        <SolidColorBrush x:Key="AppBackgroundBrush" Color="#090D12" />
-        <SolidColorBrush x:Key="SidebarBrush" Color="#0C1118" />
-        <SolidColorBrush x:Key="SurfaceBrush" Color="#111821" />
-        <SolidColorBrush x:Key="SurfaceRaisedBrush" Color="#161F2A" />
-        <SolidColorBrush x:Key="BorderBrush" Color="#25303D" />
-        <SolidColorBrush x:Key="TextBrush" Color="#F3F7FA" />
-        <SolidColorBrush x:Key="MutedTextBrush" Color="#8996A6" />
-        <SolidColorBrush x:Key="AccentBrush" Color="#55DFC0" />
-        <SolidColorBrush x:Key="AccentSoftBrush" Color="#1F3F3B" />
-        <SolidColorBrush x:Key="VioletBrush" Color="#A78BFA" />
-        <SolidColorBrush x:Key="AmberBrush" Color="#F5C66E" />
-        <SolidColorBrush x:Key="DangerBrush" Color="#FF6B7A" />
-        <SolidColorBrush x:Key="DangerSoftBrush" Color="#3A171E" />
+        <SolidColorBrush x:Key="AppBackgroundBrush" Color="#0D0C0B" />
+        <SolidColorBrush x:Key="SidebarBrush" Color="#100F0D" />
+        <SolidColorBrush x:Key="SurfaceBrush" Color="#161514" />
+        <SolidColorBrush x:Key="SurfaceRaisedBrush" Color="#1A1817" />
+        <SolidColorBrush x:Key="BorderBrush" Color="#201E1C" />
+        <SolidColorBrush x:Key="TextBrush" Color="#F5F3F0" />
+        <SolidColorBrush x:Key="MutedTextBrush" Color="#9A948D" />
+        <SolidColorBrush x:Key="LabelTextBrush" Color="#8A837B" />
+        <SolidColorBrush x:Key="SubtleTextBrush" Color="#6B655F" />
+        <SolidColorBrush x:Key="AccentBrush" Color="#FF7A45" />
+        <SolidColorBrush x:Key="AccentSoftBrush" Color="#2A1A12" />
+        <SolidColorBrush x:Key="SuccessBrush" Color="#8FD6A8" />
+        <SolidColorBrush x:Key="BlueBrush" Color="#5FA8F5" />
+        <SolidColorBrush x:Key="AmberBrush" Color="#D9C46A" />
+        <SolidColorBrush x:Key="VioletBrush" Color="#5FA8F5" />
+        <SolidColorBrush x:Key="DangerBrush" Color="#FF8A6A" />
+        <SolidColorBrush x:Key="DangerSoftBrush" Color="#3A1F17" />
 
         <Style TargetType="Window">
-            <Setter Property="FontFamily" Value="Segoe UI" />
+            <Setter Property="FontFamily" Value="Segoe UI Variable Text, Segoe UI" />
             <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
             <Setter Property="Background" Value="{StaticResource AppBackgroundBrush}" />
             <Setter Property="TextOptions.TextFormattingMode" Value="Display" />
@@ -29,12 +33,53 @@
             <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
         </Style>
 
-        <Style x:Key="ChartButtonStyle" TargetType="Button">
-            <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
-            <Setter Property="Background" Value="{StaticResource SurfaceRaisedBrush}" />
-            <Setter Property="BorderBrush" Value="{StaticResource BorderBrush}" />
-            <Setter Property="BorderThickness" Value="1" />
-            <Setter Property="Padding" Value="11,6" />
+        <Style x:Key="MonoTextStyle" TargetType="TextBlock">
+            <Setter Property="FontFamily" Value="Cascadia Mono, Consolas" />
+        </Style>
+
+        <Style x:Key="SectionLabelStyle" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="{StaticResource MutedTextBrush}" />
+            <Setter Property="FontSize" Value="10" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+        </Style>
+
+        <Style x:Key="MetricSublineStyle" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="{StaticResource LabelTextBrush}" />
+            <Setter Property="FontFamily" Value="Cascadia Mono, Consolas" />
+            <Setter Property="FontSize" Value="10" />
+            <Setter Property="LineHeight" Value="14" />
+            <Setter Property="LineStackingStrategy" Value="BlockLineHeight" />
+            <Setter Property="VerticalAlignment" Value="Top" />
+            <Setter Property="Margin" Value="0,7,0,0" />
+        </Style>
+
+        <Style x:Key="TopBarButtonStyle" TargetType="Button">
+            <Setter Property="Foreground" Value="{StaticResource MutedTextBrush}" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Chrome" Background="{TemplateBinding Background}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Chrome" Property="Background" Value="{StaticResource SurfaceRaisedBrush}" />
+                                <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="OutlineButtonStyle" TargetType="Button">
+            <Setter Property="Foreground" Value="{StaticResource MutedTextBrush}" />
+            <Setter Property="Background" Value="{StaticResource SurfaceBrush}" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Padding" Value="11,0" />
             <Setter Property="Cursor" Value="Hand" />
             <Setter Property="Template">
                 <Setter.Value>
@@ -43,13 +88,14 @@
                                 Background="{TemplateBinding Background}"
                                 BorderBrush="{TemplateBinding BorderBrush}"
                                 BorderThickness="{TemplateBinding BorderThickness}"
-                                CornerRadius="8"
+                                CornerRadius="7"
                                 Padding="{TemplateBinding Padding}">
                             <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="Chrome" Property="BorderBrush" Value="{StaticResource AccentBrush}" />
+                                <Setter TargetName="Chrome" Property="Background" Value="{StaticResource SurfaceRaisedBrush}" />
+                                <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -57,49 +103,48 @@
             </Setter>
         </Style>
 
-        <Style x:Key="CardStyle" TargetType="Border">
-            <Setter Property="Background" Value="{StaticResource SurfaceBrush}" />
-            <Setter Property="BorderBrush" Value="{StaticResource BorderBrush}" />
-            <Setter Property="BorderThickness" Value="1" />
-            <Setter Property="CornerRadius" Value="14" />
-            <Setter Property="Padding" Value="18" />
-        </Style>
-
-        <Style x:Key="SectionLabelStyle" TargetType="TextBlock">
-            <Setter Property="Foreground" Value="{StaticResource MutedTextBrush}" />
-            <Setter Property="FontSize" Value="11" />
-            <Setter Property="FontWeight" Value="SemiBold" />
-            <Setter Property="TextOptions.TextFormattingMode" Value="Ideal" />
-        </Style>
-
-        <Style x:Key="MetricValueStyle" TargetType="TextBlock">
-            <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
-            <Setter Property="FontSize" Value="28" />
-            <Setter Property="FontWeight" Value="SemiBold" />
-        </Style>
-
-        <Style x:Key="NavButtonStyle" TargetType="RadioButton">
+        <Style x:Key="ChartTabStyle" TargetType="RadioButton">
             <Setter Property="Foreground" Value="{StaticResource MutedTextBrush}" />
             <Setter Property="Background" Value="Transparent" />
             <Setter Property="BorderThickness" Value="0" />
-            <Setter Property="Padding" Value="14,10" />
-            <Setter Property="Margin" Value="0,2" />
-            <Setter Property="HorizontalContentAlignment" Value="Left" />
+            <Setter Property="Padding" Value="0,0,0,10" />
+            <Setter Property="Margin" Value="0,0,22,0" />
+            <Setter Property="Cursor" Value="Hand" />
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="RadioButton">
-                        <Border x:Name="Chrome" Background="{TemplateBinding Background}" CornerRadius="9" Padding="{TemplateBinding Padding}">
-                            <ContentPresenter VerticalAlignment="Center" />
-                        </Border>
+                        <Grid Background="{TemplateBinding Background}">
+                            <Border Padding="{TemplateBinding Padding}">
+                                <ContentPresenter VerticalAlignment="Center" />
+                            </Border>
+                            <Border x:Name="Indicator" Height="2" Background="Transparent" VerticalAlignment="Bottom" />
+                        </Grid>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsChecked" Value="True">
-                                <Setter TargetName="Chrome" Property="Background" Value="{StaticResource AccentSoftBrush}" />
-                                <Setter Property="Foreground" Value="{StaticResource AccentBrush}" />
+                                <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
+                                <Setter TargetName="Indicator" Property="Background" Value="{StaticResource AccentBrush}" />
                             </Trigger>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="Chrome" Property="Background" Value="{StaticResource SurfaceRaisedBrush}" />
+                                <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
                             </Trigger>
                         </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="ChartLegendButtonStyle" TargetType="Button">
+            <Setter Property="Foreground" Value="{StaticResource MutedTextBrush}" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Padding" Value="0,0,0,10" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border Background="{TemplateBinding Background}" Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Border>
                     </ControlTemplate>
                 </Setter.Value>
             </Setter>
