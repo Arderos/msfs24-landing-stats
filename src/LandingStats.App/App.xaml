@@ -14,6 +14,8 @@
         <SolidColorBrush x:Key="AccentSoftBrush" Color="#1F3F3B" />
         <SolidColorBrush x:Key="VioletBrush" Color="#A78BFA" />
         <SolidColorBrush x:Key="AmberBrush" Color="#F5C66E" />
+        <SolidColorBrush x:Key="DangerBrush" Color="#FF6B7A" />
+        <SolidColorBrush x:Key="DangerSoftBrush" Color="#3A171E" />
 
         <Style TargetType="Window">
             <Setter Property="FontFamily" Value="Segoe UI" />

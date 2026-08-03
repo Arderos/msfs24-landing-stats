@@ -16,6 +16,7 @@ namespace LandingStats.App;
 public partial class MainWindow : Window
 {
     private readonly LandingRepository _repository = new LandingRepository();
+    private readonly RawCaptureRepository _rawCaptureRepository = new RawCaptureRepository();
     private IReadOnlyList<LandingRecord> _landings = Array.Empty<LandingRecord>();
     private HwndSource? _messageSource;
     private SimConnectLandingRecorder? _recorder;
@@ -127,12 +128,37 @@ public partial class MainWindow : Window
 
     private void OnEpisodeCompleted(object? sender, LandingEpisodeEventArgs eventArgs)
     {
+        var episodeTimestampUtc = DateTime.UtcNow;
+        string? rawCapturePath = null;
+        string? rawCaptureError = null;
+        if (RawDebugToggle.IsChecked == true)
+        {
+            try
+            {
+                rawCapturePath = _rawCaptureRepository.Save(
+                    eventArgs.Samples,
+                    eventArgs.Simulator,
+                    eventArgs.AircraftTitle,
+                    eventArgs.AircraftType,
+                    eventArgs.AircraftModel,
+                    episodeTimestampUtc);
+                RawDebugStatusText.Text = $"Saved {eventArgs.Samples.Count:N0} frames · {System.IO.Path.GetFileName(rawCapturePath)}";
+            }
+            catch (Exception exception)
+            {
+                rawCaptureError = exception.Message;
+                RawDebugStatusText.Text = $"Raw capture failed: {exception.Message}";
+            }
+        }
+
         try
         {
             var touchdowns = TouchdownAnalysis.Analyze(eventArgs.Samples);
             if (touchdowns.Count == 0)
             {
-                ConnectionStatusText.Text = "Capture ended, but no touchdown was detected";
+                ConnectionStatusText.Text = rawCapturePath == null
+                    ? "Capture ended, but no touchdown was detected"
+                    : "Raw capture saved, but no touchdown was detected";
                 ConnectionStatusDot.Fill = Brush("#F58BA7");
                 return;
             }
@@ -148,22 +174,42 @@ public partial class MainWindow : Window
                     eventArgs.AircraftTitle,
                     aircraftType,
                     contactCount: touchdowns.Count,
-                    timestampUtc: DateTime.UtcNow);
+                    timestampUtc: episodeTimestampUtc);
                 record.Simulator = eventArgs.Simulator;
                 _repository.Save(record);
             }
 
             LoadHistory();
-            ConnectionStatusText.Text = touchdowns.Count == 1
+            var landingStatus = touchdowns.Count == 1
                 ? "Landing analyzed and saved"
                 : $"{touchdowns.Count} contacts analyzed and saved";
-            ConnectionStatusDot.Fill = Brush("#55DFC0");
+            if (rawCaptureError != null)
+            {
+                ConnectionStatusText.Text = $"{landingStatus} · raw failed: {rawCaptureError}";
+                ConnectionStatusDot.Fill = Brush("#F5C66E");
+            }
+            else
+            {
+                ConnectionStatusText.Text = rawCapturePath == null
+                    ? landingStatus
+                    : $"{landingStatus} · raw archive saved";
+                ConnectionStatusDot.Fill = Brush("#55DFC0");
+            }
         }
         catch (Exception exception)
         {
             ConnectionStatusText.Text = $"Landing analysis failed: {exception.Message}";
             ConnectionStatusDot.Fill = Brush("#F58BA7");
         }
+    }
+
+    private void OnRawDebugModeChanged(object sender, RoutedEventArgs eventArgs)
+    {
+        var enabled = RawDebugToggle.IsChecked == true;
+        RawDebugToggle.Content = enabled ? "DEBUG RAW · ON" : "DEBUG RAW · OFF";
+        RawDebugStatusText.Text = enabled
+            ? "Every SIM_FRAME sample will be archived after landing\n" + _rawCaptureRepository.RootPath
+            : "Full-rate capture is disabled";
     }
 
     private void OnWindowClosed(object? sender, EventArgs eventArgs)
