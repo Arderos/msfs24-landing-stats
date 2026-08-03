@@ -2,6 +2,13 @@
 
 All notable changes to MSFS Landing Stats are documented in this file.
 
+## [0.4.3] - 2026-08-04
+
+### Fixed
+
+- Included the keep-last telemetry deduplicator in clean source checkouts, so
+  the application and its regression suite build correctly on GitHub Actions.
+
 ## [0.4.2] - 2026-08-04
 
 ### Fixed
