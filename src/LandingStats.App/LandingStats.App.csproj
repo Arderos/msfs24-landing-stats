@@ -5,12 +5,15 @@
     <UseWPF>true</UseWPF>
     <PlatformTarget>x64</PlatformTarget>
     <Prefer32Bit>false</Prefer32Bit>
-    <InformationalVersion>0.4.0-live</InformationalVersion>
+    <InformationalVersion>0.4.1-live</InformationalVersion>
+    <ApplicationIcon>Assets\AppIcon.ico</ApplicationIcon>
     <MsfsSdkRoot Condition="'$(MsfsSdkRoot)' == '' and '$(MSFS_SDK)' != ''">$(MSFS_SDK)</MsfsSdkRoot>
     <MsfsSdkRoot Condition="'$(MsfsSdkRoot)' == ''">D:\MSFS 2024 SDK</MsfsSdkRoot>
   </PropertyGroup>
 
   <ItemGroup>
+    <None Remove="Assets\AppIcon.ico" />
+    <Resource Include="Assets\AppIcon.ico" />
     <ProjectReference Include="..\LandingStats.Core\LandingStats.Core.csproj" />
     <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies.net48" Version="1.0.3" PrivateAssets="all" />
     <Reference Include="Microsoft.FlightSimulator.SimConnect">

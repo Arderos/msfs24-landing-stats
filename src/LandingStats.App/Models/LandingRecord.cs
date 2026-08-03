@@ -184,11 +184,14 @@ public sealed class LandingRecord
             ? $"EXTRAPOLATED · {InertialFitDurationSeconds:F2} S FIT"
             : "RAW LAST AIRBORNE FRAME";
 
-    public string InertialQualityBadgeDisplay => FormatVersion < 4
-        ? "LEGACY"
-        : InertialExtrapolated
-            ? "EXTRAPOLATED"
-            : "RAW FRAME";
+    public string LandingFeelDisplay => Math.Abs(InertialFpm) <= 240.0
+        ? "SMOOTH"
+        : "FIRM";
+
+    public string LandingFeelTooltip =>
+        $"App classification from inertial touchdown rate: {LandingFeelDisplay}. " +
+        "SMOOTH is up to 240 fpm (4 ft/s); FIRM is above 240 fpm. " +
+        $"Measurement: {InertialQualityDisplay}.";
 
     public string SurfaceQualityDisplay
     {
@@ -210,12 +213,6 @@ public sealed class LandingRecord
                 : $"LATCH VERIFIED · {milliseconds:+0;-0;0} MS";
         }
     }
-
-    public string SurfaceQualityBadgeDisplay => FormatVersion < 4
-        ? "LEGACY"
-        : !LatchUpdateDetected
-            ? "UNVERIFIED"
-            : "VERIFIED";
 
     public string WeightDisplay => WeightPounds > 0
         ? $"{WeightPounds * 0.45359237:N0} kg"

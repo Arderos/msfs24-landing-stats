@@ -10,6 +10,7 @@
         WindowStartupLocation="CenterScreen"
         WindowStyle="None"
         ResizeMode="CanResizeWithGrip"
+        Icon="Assets/AppIcon.ico"
         Background="{StaticResource AppBackgroundBrush}"
         UseLayoutRounding="True">
     <WindowChrome.WindowChrome>
@@ -43,7 +44,7 @@
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
                 <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                    <Border Width="15" Height="15" CornerRadius="3" Background="{StaticResource AccentBrush}" />
+                    <Image Source="Assets/AppIcon.ico" Width="18" Height="18" SnapsToDevicePixels="True" />
                     <TextBlock Text="Landing Stats" FontSize="13" FontWeight="SemiBold" Margin="9,0,0,0" />
                 </StackPanel>
                 <Border Grid.Column="1" Width="1" Height="16" Background="#262321" Margin="14,0" />
@@ -226,18 +227,26 @@
                     <StackPanel Grid.Column="0" Grid.Row="1" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,7,0,0">
                         <TextBlock Text="{Binding InertialDisplay}" FontSize="44" FontWeight="SemiBold" />
                         <TextBlock Text="fpm" Foreground="{StaticResource MutedTextBrush}" FontSize="14" VerticalAlignment="Bottom" Margin="8,0,0,8" />
-                        <TextBlock Text="{Binding InertialQualityBadgeDisplay}" Foreground="{StaticResource SuccessBrush}" FontSize="9" FontWeight="SemiBold"
-                                   VerticalAlignment="Bottom" Margin="8,0,0,9" ToolTip="{Binding InertialQualityDisplay}" />
+                        <TextBlock Text="{Binding LandingFeelDisplay}" FontSize="9" FontWeight="SemiBold"
+                                   VerticalAlignment="Bottom" Margin="8,0,0,9" ToolTip="{Binding LandingFeelTooltip}">
+                            <TextBlock.Style>
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="Foreground" Value="{StaticResource SuccessBrush}" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding LandingFeelDisplay}" Value="FIRM">
+                                            <Setter Property="Foreground" Value="{StaticResource AccentBrush}" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </TextBlock.Style>
+                        </TextBlock>
                     </StackPanel>
                     <TextBlock Grid.Column="0" Grid.Row="2" Text="WORLD Y at contact" Style="{StaticResource MetricSublineStyle}" />
 
                     <Border Grid.Column="1" Grid.RowSpan="3" Width="1" HorizontalAlignment="Center" Background="{StaticResource BorderBrush}" />
 
-                    <StackPanel Grid.Column="2" Orientation="Horizontal">
-                        <TextBlock Text="MSFS SURFACE" Style="{StaticResource SectionLabelStyle}" Foreground="{StaticResource LabelTextBrush}" />
-                        <TextBlock Text="{Binding SurfaceQualityBadgeDisplay}" Foreground="{StaticResource SuccessBrush}" FontSize="8" FontWeight="SemiBold"
-                                   Margin="8,0,0,0" ToolTip="{Binding SurfaceQualityDisplay}" />
-                    </StackPanel>
+                    <TextBlock Grid.Column="2" Text="MSFS SURFACE" Style="{StaticResource SectionLabelStyle}"
+                               Foreground="{StaticResource LabelTextBrush}" ToolTip="{Binding SurfaceQualityDisplay}" />
                     <StackPanel Grid.Column="2" Grid.Row="1" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,7,0,0">
                         <TextBlock Text="{Binding SurfaceValueDisplay}" FontSize="44" FontWeight="SemiBold" />
                         <TextBlock Text="{Binding SurfaceUnitDisplay}" Foreground="{StaticResource MutedTextBrush}"

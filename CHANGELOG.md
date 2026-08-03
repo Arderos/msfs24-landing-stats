@@ -2,6 +2,19 @@
 
 All notable changes to MSFS Landing Stats are documented in this file.
 
+## [0.4.1] - 2026-08-04
+
+### Added
+
+- A purpose-built multi-resolution application icon embedded in the launcher,
+  executable, taskbar window, and application title bar.
+
+### Changed
+
+- Replaced the visible measurement-status badges with the landing-character
+  labels `SMOOTH` (up to 240 fpm) and `FIRM` (above 240 fpm); detailed data
+  provenance remains available in tooltips.
+
 ## [0.4.0] - 2026-08-04
 
 ### Added
