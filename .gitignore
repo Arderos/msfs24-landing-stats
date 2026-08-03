@@ -15,6 +15,5 @@ build-community.ps1
 MsfsLandingStats.sln
 src/LandingStats.Core/ContactPointAnalysis.cs
 src/LandingStats.Core/ContactPointResult.cs
-src/LandingStats.Core/TelemetryCsv.cs
 src/LandingStats.Core/TelemetryDeduplicator.cs
 src/LandingStats.Core/TelemetryDownsampler.cs
