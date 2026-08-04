@@ -143,6 +143,42 @@ public sealed class LandingRecord
     [DataMember(Order = 44)]
     public double WindDirectionDegreesAtContact { get; set; }
 
+    [DataMember(Order = 45)]
+    public string ClosureReconstructionModel { get; set; } = string.Empty;
+
+    [DataMember(Order = 46)]
+    public bool ClosureReconstructionAvailable { get; set; }
+
+    [DataMember(Order = 47)]
+    public double ReconstructedClosureFpm { get; set; } = double.NaN;
+
+    [DataMember(Order = 48)]
+    public double ReconstructedInertialFpm { get; set; } = double.NaN;
+
+    [DataMember(Order = 49)]
+    public double ReconstructedTerrainFpm { get; set; } = double.NaN;
+
+    [DataMember(Order = 50)]
+    public double ReconstructedPitchFpm { get; set; } = double.NaN;
+
+    [DataMember(Order = 51)]
+    public double ClosureReconstructionResidualFpm { get; set; } = double.NaN;
+
+    [DataMember(Order = 52)]
+    public double ClosureReconstructionUncertaintyFpm { get; set; } = double.NaN;
+
+    [DataMember(Order = 53)]
+    public int ClosureReconstructionFitPointCount { get; set; }
+
+    [DataMember(Order = 54)]
+    public double ClosureReconstructionLongitudinalArmFeet { get; set; } = double.NaN;
+
+    [DataMember(Order = 55)]
+    public double ClosureReconstructionGeometryQuality { get; set; } = double.NaN;
+
+    [DataMember(Order = 56)]
+    public bool ClosureReconstructionArmRecoveredFromTelemetry { get; set; }
+
     [IgnoreDataMember]
     public bool IsSummaryOnly { get; set; }
 
@@ -153,6 +189,52 @@ public sealed class LandingRecord
     public string InertialDisplay => $"{-InertialFpm:+0;-0;0}";
 
     public bool HasSurfaceLatchData => !double.IsNaN(SurfaceFpm);
+
+    public bool HasClosureReconstruction =>
+        ClosureReconstructionAvailable &&
+        IsFinite(ReconstructedClosureFpm);
+
+    public string ClosureModeledDisplay => HasClosureReconstruction
+        ? $"{-ReconstructedClosureFpm:+0;-0;0} fpm"
+        : "n/a";
+
+    public string ClosureResidualDisplay => HasClosureReconstruction && IsFinite(ClosureReconstructionResidualFpm)
+        ? $"{-ClosureReconstructionResidualFpm:+0;-0;0} fpm"
+        : "n/a";
+
+    public string ClosureComponentsDisplay => HasClosureReconstruction
+        ? $"{FormatSignedMetric(-ReconstructedInertialFpm)} inertial · " +
+          $"{FormatSignedMetric(-ReconstructedTerrainFpm)} terrain · " +
+          $"{FormatSignedMetric(-ReconstructedPitchFpm)} pitch"
+        : "reconstruction unavailable";
+
+    public string ClosureUncertaintyDisplay => HasClosureReconstruction &&
+                                               IsFinite(ClosureReconstructionUncertaintyFpm)
+        ? $"±{Math.Abs(ClosureReconstructionUncertaintyFpm):0} fpm"
+        : "n/a";
+
+    public string ClosureGeometryDisplay
+    {
+        get
+        {
+            if (!HasClosureReconstruction || !IsFinite(ClosureReconstructionLongitudinalArmFeet))
+            {
+                return "geometry unavailable";
+            }
+
+            var source = ClosureReconstructionArmRecoveredFromTelemetry ? "telemetry" : "provided";
+            var quality = ClosureReconstructionArmRecoveredFromTelemetry &&
+                          IsFinite(ClosureReconstructionGeometryQuality)
+                ? $" · {ClosureReconstructionGeometryQuality:P0} quality"
+                : string.Empty;
+            return $"{ClosureReconstructionLongitudinalArmFeet:+0.0;-0.0;0.0} ft arm · {source}{quality}";
+        }
+    }
+
+    public string ClosureModelDisplay => HasClosureReconstruction &&
+                                         !string.IsNullOrWhiteSpace(ClosureReconstructionModel)
+        ? ClosureReconstructionModel
+        : "reconstruction unavailable";
 
     public string SurfaceDisplay => HasSurfaceLatchData ? $"{-SurfaceFpm:+0;-0;0} fpm" : "n/a";
 
@@ -276,6 +358,7 @@ public sealed class LandingRecord
         ContactPoints ??= new List<LandingContactSeries>();
         ControlInputSources ??= new List<string>();
         RawControllerSourceIndices ??= new List<int>();
+        ClosureReconstructionModel ??= string.Empty;
     }
 
     public double PitchInputPercent(LandingSeriesPoint point)
@@ -307,7 +390,9 @@ public sealed class LandingRecord
     }
 
     private static string FormatSignedMetric(double value) =>
-        double.IsNaN(value) ? "n/a" : value.ToString("+0;-0;0", CultureInfo.CurrentCulture);
+        !IsFinite(value) ? "n/a" : value.ToString("+0;-0;0", CultureInfo.CurrentCulture);
+
+    private static bool IsFinite(double value) => !double.IsNaN(value) && !double.IsInfinity(value);
 
     public static IReadOnlyList<LandingRecord> CreateDemoHistory()
     {

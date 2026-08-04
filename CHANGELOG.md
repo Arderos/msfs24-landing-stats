@@ -2,6 +2,33 @@
 
 All notable changes to MSFS Landing Stats are documented in this file.
 
+## [0.6.0] - 2026-08-05
+
+### Added
+
+- Added an experimental surface-closure reconstruction that combines a frozen
+  pre-contact temporal model, local terrain motion, pitch rotation, and a signed
+  main-gear arm recovered entirely from telemetry.
+- Added a reconstruction detail panel with modeled closure, raw-minus-model
+  residual, components, uncertainty, geometry provenance, and dark inline help
+  tooltips; the raw simulator latch remains the headline surface value.
+- Landing history v7 now persists the optional reconstruction result while
+  remaining compatible with existing v7 files that do not contain those fields.
+- Expanded the public methodology with the frozen equation, effective timing,
+  telemetry-only geometry calibration, validation corpus, and accuracy limits.
+
+### Changed
+
+- Reconstruction no longer assigns nose/main roles from contact-point indices.
+  It infers a sustained two- or three-main sequence followed by the nose, rejects
+  nose-first and ambiguous contacts, and leaves all legacy metrics unchanged.
+- Quadratic reconstruction now requires at least five pre-contact timestamps;
+  sparse 3-4 frame fits are reported as unavailable instead of extrapolating
+  quantization noise with a primary uncertainty label.
+- Rigid-body world-vertical projection is shared by geometry calibration and
+  reconstruction, while the validated v1 model explicitly keeps its `omega_y`
+  term disabled.
+
 ## [0.5.0] - 2026-08-04
 
 ### Added

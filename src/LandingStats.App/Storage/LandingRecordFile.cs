@@ -101,6 +101,14 @@ internal sealed class LandingRecordFile
         summary.RawPitchInputLagSeconds = Store(summary.RawPitchInputLagSeconds);
         summary.WindSpeedKnotsAtContact = Store(summary.WindSpeedKnotsAtContact);
         summary.WindDirectionDegreesAtContact = Store(summary.WindDirectionDegreesAtContact);
+        summary.ReconstructedClosureFpm = Store(summary.ReconstructedClosureFpm);
+        summary.ReconstructedInertialFpm = Store(summary.ReconstructedInertialFpm);
+        summary.ReconstructedTerrainFpm = Store(summary.ReconstructedTerrainFpm);
+        summary.ReconstructedPitchFpm = Store(summary.ReconstructedPitchFpm);
+        summary.ClosureReconstructionResidualFpm = Store(summary.ClosureReconstructionResidualFpm);
+        summary.ClosureReconstructionUncertaintyFpm = Store(summary.ClosureReconstructionUncertaintyFpm);
+        summary.ClosureReconstructionLongitudinalArmFeet = Store(summary.ClosureReconstructionLongitudinalArmFeet);
+        summary.ClosureReconstructionGeometryQuality = Store(summary.ClosureReconstructionGeometryQuality);
         return summary;
     }
 
@@ -131,6 +139,14 @@ internal sealed class LandingRecordFile
         summary.RawPitchInputLagSeconds = Restore(summary.RawPitchInputLagSeconds);
         summary.WindSpeedKnotsAtContact = Restore(summary.WindSpeedKnotsAtContact);
         summary.WindDirectionDegreesAtContact = Restore(summary.WindDirectionDegreesAtContact);
+        summary.ReconstructedClosureFpm = Restore(summary.ReconstructedClosureFpm);
+        summary.ReconstructedInertialFpm = Restore(summary.ReconstructedInertialFpm);
+        summary.ReconstructedTerrainFpm = Restore(summary.ReconstructedTerrainFpm);
+        summary.ReconstructedPitchFpm = Restore(summary.ReconstructedPitchFpm);
+        summary.ClosureReconstructionResidualFpm = Restore(summary.ClosureReconstructionResidualFpm);
+        summary.ClosureReconstructionUncertaintyFpm = Restore(summary.ClosureReconstructionUncertaintyFpm);
+        summary.ClosureReconstructionLongitudinalArmFeet = Restore(summary.ClosureReconstructionLongitudinalArmFeet);
+        summary.ClosureReconstructionGeometryQuality = Restore(summary.ClosureReconstructionGeometryQuality);
     }
 
     internal static double Store(double value) => double.IsNaN(value) || double.IsInfinity(value) ? LandingRecord.NonFiniteStorageSentinel : value;

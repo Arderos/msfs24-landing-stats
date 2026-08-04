@@ -2,6 +2,12 @@ namespace LandingStats.Core;
 
 public sealed class TouchdownResult
 {
+    /// <summary>
+    /// Frozen reconstruction model used by the optional experimental detail.
+    /// The raw simulator latch remains in <see cref="LatchedNormalFpm"/>.
+    /// </summary>
+    public string ClosureReconstructionModel { get; set; } = string.Empty;
+
     public int EpisodeNumber { get; set; }
 
     public int ContactNumber { get; set; }
@@ -37,6 +43,28 @@ public sealed class TouchdownResult
     public double TerrainContributionFpm { get; set; }
 
     public double UnresolvedSurfaceDeltaFpm { get; set; }
+
+    public bool ClosureReconstructionAvailable { get; set; }
+
+    public double ReconstructedClosureFpm { get; set; } = double.NaN;
+
+    public double ReconstructedInertialFpm { get; set; } = double.NaN;
+
+    public double ReconstructedTerrainFpm { get; set; } = double.NaN;
+
+    public double ReconstructedPitchFpm { get; set; } = double.NaN;
+
+    public double ClosureReconstructionResidualFpm { get; set; } = double.NaN;
+
+    public double ClosureReconstructionUncertaintyFpm { get; set; } = double.NaN;
+
+    public int ClosureReconstructionFitPointCount { get; set; }
+
+    public double ClosureReconstructionLongitudinalArmFeet { get; set; } = double.NaN;
+
+    public double ClosureReconstructionGeometryQuality { get; set; } = double.NaN;
+
+    public bool ClosureReconstructionArmRecoveredFromTelemetry { get; set; }
 
     public double LastAirToFirstGroundSeconds { get; set; }
 

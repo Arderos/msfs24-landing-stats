@@ -24,7 +24,12 @@ public static class TouchdownAnalysis
     private const double GroundFitWindowSeconds = 0.2;
     private const double GroundOutlierThresholdFeet = 5.0;
 
-    public static IReadOnlyList<TouchdownResult> Analyze(IReadOnlyList<TelemetrySample> samples)
+    public static IReadOnlyList<TouchdownResult> Analyze(IReadOnlyList<TelemetrySample> samples) =>
+        Analyze(samples, null);
+
+    public static IReadOnlyList<TouchdownResult> Analyze(
+        IReadOnlyList<TelemetrySample> samples,
+        TouchdownAnalysisOptions? options)
     {
         var candidates = new List<ContactCandidate>();
         var hasBeenAirborne = false;
@@ -70,6 +75,31 @@ public static class TouchdownAnalysis
             previousOnGround = current.OnGround;
         }
 
+        var longitudinalArmFeet = double.NaN;
+        var geometryQuality = double.NaN;
+        var armRecoveredFromTelemetry = false;
+        TelemetryGearTopology? gearTopology = null;
+        if (candidates.Count > 0 &&
+            TelemetryGeometryCalibration.TryDetectConventionalTopology(samples, out var detectedTopology))
+        {
+            gearTopology = detectedTopology;
+        }
+
+        if (gearTopology != null &&
+            options?.LongitudinalMainGearArmFeet is double passportArm &&
+            IsFinite(passportArm))
+        {
+            longitudinalArmFeet = passportArm;
+        }
+        else if (gearTopology != null &&
+                 (options == null || options.RecoverLongitudinalMainGearArmFromTelemetry) &&
+                 TelemetryGeometryCalibration.TryCalibrate(samples, out var calibration))
+        {
+            longitudinalArmFeet = calibration.LongitudinalArmFeet;
+            geometryQuality = calibration.Quality;
+            armRecoveredFromTelemetry = true;
+        }
+
         var results = new List<TouchdownResult>(candidates.Count);
         for (var index = 0; index < candidates.Count; index++)
         {
@@ -86,7 +116,11 @@ public static class TouchdownAnalysis
                 candidate.PreviousAirborneIndex,
                 candidate.EpisodeNumber,
                 candidate.ContactNumber,
-                exclusiveEndTime));
+                exclusiveEndTime,
+                longitudinalArmFeet,
+                geometryQuality,
+                armRecoveredFromTelemetry,
+                gearTopology));
         }
 
         return results;
@@ -98,7 +132,11 @@ public static class TouchdownAnalysis
         int previousAirborneIndex,
         int episodeNumber,
         int contactNumber,
-        double exclusiveEndTime)
+        double exclusiveEndTime,
+        double longitudinalArmFeet,
+        double geometryQuality,
+        bool armRecoveredFromTelemetry,
+        TelemetryGearTopology? gearTopology)
     {
         var contact = samples[contactIndex];
         var lastAirborne = samples[previousAirborneIndex];
@@ -130,9 +168,24 @@ public static class TouchdownAnalysis
             : double.NaN;
         var terrainContributionFpm = EstimateTerrainContributionFpm(samples, previousAirborneIndex);
         var peakG = FindPeakG(samples, contactIndex, GWindowAfterSeconds, exclusiveEndTime, out var peakGTime);
+        var reconstruction = new TouchdownClosureEstimate();
+        var reconstructed = gearTopology != null &&
+                            TelemetryGeometryCalibration.IsSustainedMainContact(
+                                samples,
+                                contactIndex,
+                                previousAirborneIndex,
+                                gearTopology) &&
+                            IsFinite(longitudinalArmFeet) &&
+                            TouchdownClosureReconstruction.TryEstimate(
+                                samples,
+                                previousAirborneIndex,
+                                estimatedContactTime,
+                                longitudinalArmFeet,
+                                out reconstruction);
 
         return new TouchdownResult
         {
+            ClosureReconstructionModel = TouchdownClosureReconstruction.ModelName,
             EpisodeNumber = episodeNumber,
             ContactNumber = contactNumber,
             Sequence = contact.Sequence,
@@ -153,6 +206,26 @@ public static class TouchdownAnalysis
             UnresolvedSurfaceDeltaFpm = double.IsNaN(terrainContributionFpm)
                 ? double.NaN
                 : surfaceRelativeDeltaFpm - terrainContributionFpm,
+            ClosureReconstructionAvailable = reconstructed,
+            ReconstructedClosureFpm = reconstructed ? reconstruction.ClosureFpm : double.NaN,
+            ReconstructedInertialFpm = reconstructed ? reconstruction.InertialFpm : double.NaN,
+            ReconstructedTerrainFpm = reconstructed ? reconstruction.TerrainFpm : double.NaN,
+            ReconstructedPitchFpm = reconstructed ? reconstruction.PitchFpm : double.NaN,
+            ClosureReconstructionResidualFpm = reconstructed && latchUpdateDetected
+                ? latchedNormalFpm - reconstruction.ClosureFpm
+                : double.NaN,
+            ClosureReconstructionUncertaintyFpm = reconstructed
+                ? contactTimeEstimatedFromCompression &&
+                  contactNumber == 1 &&
+                  double.IsPositiveInfinity(exclusiveEndTime) &&
+                  gearTopology!.MainContactPointCount == 2
+                    ? TouchdownClosureReconstruction.PrimaryUncertaintyFpm
+                    : TouchdownClosureReconstruction.FallbackUncertaintyFpm
+                : double.NaN,
+            ClosureReconstructionFitPointCount = reconstructed ? reconstruction.FitPointCount : 0,
+            ClosureReconstructionLongitudinalArmFeet = reconstructed ? longitudinalArmFeet : double.NaN,
+            ClosureReconstructionGeometryQuality = reconstructed ? geometryQuality : double.NaN,
+            ClosureReconstructionArmRecoveredFromTelemetry = reconstructed && armRecoveredFromTelemetry,
             LastAirToFirstGroundSeconds = contactTime - TimeOf(lastAirborne),
             FirstGroundToNextFrameSeconds = FindNextFrameDuration(samples, contactIndex),
             LastAirborneIndicatedFpm = ToDescentFpm(lastAirborne.VerticalSpeedFps),
@@ -567,4 +640,6 @@ public static class TouchdownAnalysis
             ? sample.HostElapsedSeconds
             : sample.SimulationTimeSeconds;
     }
+
+    private static bool IsFinite(double value) => !double.IsNaN(value) && !double.IsInfinity(value);
 }

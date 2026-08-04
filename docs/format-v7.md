@@ -12,6 +12,13 @@ The root object contains a discriminator and four payload members:
 - `engines`: one column set per active engine;
 - `contacts`: one column set per active contact point.
 
+The `summary` object may also contain the optional closure-reconstruction scalar
+set: model identifier, availability, modeled closure and its inertial/terrain/
+pitch components, raw-minus-model residual, uncertainty band, fit-point count,
+signed gear arm, geometry quality, and arm provenance. These are ordinary
+`LandingRecord` data members; they do not add or change any time-series column.
+Older v7 files omit them and are read as reconstruction unavailable.
+
 Series are stored column-wise. For example, `t`, `iv`, `vsi`, and `g` are parallel arrays for time, inertial vertical rate, indicated vertical rate, and vertical load. The complete key-to-property mapping is defined by the `DataMember(Name=...)` declarations in `LandingRecordFile.cs`.
 
 All columns inside one series must have exactly the same length. Writers validate this invariant before serialization; readers validate it before constructing point objects. A mismatched file is rejected as damaged rather than partially interpreted.

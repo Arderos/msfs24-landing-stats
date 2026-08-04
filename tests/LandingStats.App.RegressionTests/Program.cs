@@ -32,9 +32,21 @@ internal static class Program
         Run("telemetry schema v5 reads current and v4 rows", TelemetrySchemaReadsCurrentAndV4Rows);
         Run("header wind uses the contact-time sample", HeaderWindUsesContactTimeSample);
         Run("landing history uses lazy columnar v7 details", LandingHistoryUsesLazyColumnarDetails);
+        Run("closure reconstruction survives history round-trip", ClosureReconstructionSurvivesHistoryRoundTrip);
         Run("bounce history shows the latest contact first", BounceHistoryShowsLatestContactFirst);
         Run("columnar v7 is smaller than the object layout", ColumnarV7IsSmallerThanObjectLayout);
         Run("stored controller columns retain only live sources", StoredControllerColumnsAreCompact);
+        Run("closure reconstruction keeps the raw latch independent", ClosureReconstructionKeepsRawLatchIndependent);
+        Run("closure reconstruction requires five fit points", ClosureReconstructionRequiresFiveFitPoints);
+        Run("closure reconstruction is unavailable without geometry", ClosureReconstructionRequiresGeometry);
+        Run("closure reconstruction marks last-air contact-time fallback", ClosureReconstructionMarksContactTimeFallback);
+        Run("closure reconstruction accepts permuted staggered mains", ClosureReconstructionAcceptsPermutedStaggeredMains);
+        Run("closure reconstruction accepts A340 center main conservatively", ClosureReconstructionAcceptsCenterMainConservatively);
+        Run("closure reconstruction rejects five-point topology", ClosureReconstructionRejectsFivePointTopology);
+        Run("closure reconstruction keeps sustained main-gear bounces", ClosureReconstructionKeepsMainGearBounces);
+        Run("closure reconstruction rejects mixed main-nose contact", ClosureReconstructionRejectsMixedMainNoseContact);
+        Run("closure reconstruction rejects nose-first contact without changing raw metrics", ClosureReconstructionRejectsNoseFirstContact);
+        Run("telemetry geometry recovers an analytic arm from permuted points", TelemetryGeometryRecoversAnalyticArm);
 
         Console.WriteLine(_failures == 0
             ? "All regression tests passed."
@@ -329,6 +341,546 @@ internal static class Program
         Equal(5, record.RawPitchInputSourceIndex, "pitch selector retains original source index");
     }
 
+    private static void ClosureReconstructionSurvivesHistoryRoundTrip()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "landing-stats-reconstruction-history-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var result = new TouchdownResult
+            {
+                ContactNumber = 1,
+                EstimatedContactTimeSeconds = 0,
+                ClosureReconstructionModel = "quad250-tc-minus-75ms-pitch-v1",
+                ClosureReconstructionAvailable = true,
+                ReconstructedClosureFpm = 300.0,
+                ReconstructedInertialFpm = 270.0,
+                ReconstructedTerrainFpm = 20.0,
+                ReconstructedPitchFpm = 10.0,
+                ClosureReconstructionResidualFpm = 7.0,
+                ClosureReconstructionUncertaintyFpm = 10.0,
+                ClosureReconstructionFitPointCount = 7,
+                ClosureReconstructionLongitudinalArmFeet = -7.5,
+                ClosureReconstructionGeometryQuality = 0.84,
+                ClosureReconstructionArmRecoveredFromTelemetry = true,
+            };
+            var record = LandingRecordFactory.Create(result, Array.Empty<TelemetrySample>(), "Test", "TEST");
+
+            Equal(true, record.HasClosureReconstruction, "factory reconstruction availability");
+            Equal(result.ClosureReconstructionModel, record.ClosureReconstructionModel, "factory model id");
+            Near(result.ReconstructedClosureFpm, record.ReconstructedClosureFpm, 1e-12, "factory modeled closure");
+            Equal(true, record.ClosureGeometryDisplay.Contains("telemetry"), "telemetry geometry provenance display");
+
+            var repository = new LandingRepository(root);
+            repository.Save(record);
+            var summary = repository.LoadAll().Single();
+            Equal(true, summary.HasClosureReconstruction, "summary reconstruction availability");
+            Near(7.0, summary.ClosureReconstructionResidualFpm, 1e-12, "summary residual");
+            Near(0.84, summary.ClosureReconstructionGeometryQuality, 1e-12, "summary geometry quality");
+            AssertNoStorageSentinel(summary);
+
+            var detail = repository.LoadDetail(summary) ?? throw new InvalidOperationException("reconstruction detail did not load");
+            Equal(result.ClosureReconstructionModel, detail.ClosureReconstructionModel, "detail model id");
+            Near(300.0, detail.ReconstructedClosureFpm, 1e-12, "detail modeled closure");
+            Near(270.0, detail.ReconstructedInertialFpm, 1e-12, "detail inertial component");
+            Near(20.0, detail.ReconstructedTerrainFpm, 1e-12, "detail terrain component");
+            Near(10.0, detail.ReconstructedPitchFpm, 1e-12, "detail pitch component");
+            Near(10.0, detail.ClosureReconstructionUncertaintyFpm, 1e-12, "detail uncertainty");
+            Equal(7, detail.ClosureReconstructionFitPointCount, "detail fit point count");
+            Near(-7.5, detail.ClosureReconstructionLongitudinalArmFeet, 1e-12, "detail longitudinal arm");
+            Equal(true, detail.ClosureReconstructionArmRecoveredFromTelemetry, "detail arm provenance");
+            AssertNoStorageSentinel(detail);
+
+            var legacyPath = Path.Combine(root, "20260804-000000Z-legacy-missing-reconstruction.landing.json.gz");
+            using (var file = File.Create(legacyPath))
+            using (var gzip = new GZipStream(file, CompressionLevel.Optimal, false))
+            using (var writer = new StreamWriter(gzip))
+            {
+                writer.Write("{\"layout\":7,\"summary\":{\"FormatVersion\":7,\"Id\":\"legacy-missing-reconstruction\",\"TimestampUtc\":\"\\/Date(0)\\/\"}}");
+            }
+
+            File.Delete(repository.IndexPath);
+            var rebuilt = new LandingRepository(root);
+            var legacy = rebuilt.LoadAll().Single(item => item.Id == "legacy-missing-reconstruction");
+            Equal(false, legacy.HasClosureReconstruction, "legacy reconstruction availability");
+            Equal("reconstruction unavailable", legacy.ClosureModelDisplay, "legacy reconstruction display");
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
+    private static void ClosureReconstructionKeepsRawLatchIndependent()
+    {
+        const double armFeet = -8.0;
+        const double contactTime = 0.010;
+        const double evaluationOffset = -0.075;
+        var expectedInertial = -Velocity(evaluationOffset) * 60.0;
+        var expectedTerrain = GroundDerivative(evaluationOffset) * 60.0;
+        var expectedPitch = PitchRate(evaluationOffset) * armFeet *
+                            Math.Cos(PitchRadians(evaluationOffset)) *
+                            Math.Cos(BankRadians(evaluationOffset)) * 60.0;
+        var expectedClosure = expectedInertial + expectedTerrain + expectedPitch;
+        var rawLatch = expectedClosure + 7.0;
+        var samples = ReconstructionSamples(contactTime, rawLatch);
+
+        var result = TouchdownAnalysis.Analyze(
+            samples,
+            new TouchdownAnalysisOptions
+            {
+                LongitudinalMainGearArmFeet = armFeet,
+                RecoverLongitudinalMainGearArmFromTelemetry = false,
+            }).Single();
+
+        Equal(true, result.ContactTimeEstimatedFromCompression, "compression contact time");
+        Near(contactTime, result.EstimatedContactTimeSeconds, 1e-9, "estimated contact time");
+        Equal(true, result.ClosureReconstructionAvailable, "reconstruction availability");
+        Equal("quad250-tc-minus-75ms-pitch-v1", result.ClosureReconstructionModel, "frozen model id");
+        Near(expectedInertial, result.ReconstructedInertialFpm, 1e-8, "reconstructed inertial component");
+        Near(expectedTerrain, result.ReconstructedTerrainFpm, 1e-8, "reconstructed terrain component");
+        Near(expectedPitch, result.ReconstructedPitchFpm, 1e-8, "reconstructed pitch component");
+        Near(expectedClosure, result.ReconstructedClosureFpm, 1e-8, "reconstructed closure");
+        Near(rawLatch, result.LatchedNormalFpm, 1e-8, "raw simulator latch");
+        Near(7.0, result.ClosureReconstructionResidualFpm, 1e-8, "model residual");
+        Near(10.0, result.ClosureReconstructionUncertaintyFpm, 1e-8, "primary uncertainty");
+        Near(armFeet, result.ClosureReconstructionLongitudinalArmFeet, 1e-8, "passport arm");
+        Equal(true, double.IsNaN(result.ClosureReconstructionGeometryQuality), "passport geometry quality");
+        Equal(false, result.ClosureReconstructionArmRecoveredFromTelemetry, "passport arm provenance");
+
+        var changedLatch = TouchdownAnalysis.Analyze(
+            ReconstructionSamples(contactTime, rawLatch + 100.0),
+            new TouchdownAnalysisOptions
+            {
+                LongitudinalMainGearArmFeet = armFeet,
+                RecoverLongitudinalMainGearArmFromTelemetry = false,
+            }).Single();
+        Near(result.ReconstructedClosureFpm, changedLatch.ReconstructedClosureFpm, 1e-10, "target-independent model");
+        Near(rawLatch + 100.0, changedLatch.LatchedNormalFpm, 1e-8, "changed raw latch");
+
+        var nonzeroOmegaY = ReconstructionSamples(contactTime, rawLatch);
+        foreach (var sample in nonzeroOmegaY)
+        {
+            sample.RotationVelocityBodyYRadiansPerSecond = 0.75;
+        }
+
+        var frozenWithoutYawBank = TouchdownAnalysis.Analyze(
+            nonzeroOmegaY,
+            new TouchdownAnalysisOptions
+            {
+                LongitudinalMainGearArmFeet = armFeet,
+                RecoverLongitudinalMainGearArmFromTelemetry = false,
+            }).Single();
+        Near(
+            result.ReconstructedClosureFpm,
+            frozenWithoutYawBank.ReconstructedClosureFpm,
+            1e-10,
+            "v1 deliberately omits omega-Y yaw-bank term");
+    }
+
+    private static void ClosureReconstructionRequiresGeometry()
+    {
+        var samples = ReconstructionSamples(0.010, 280.0);
+        var result = TouchdownAnalysis.Analyze(
+            samples,
+            new TouchdownAnalysisOptions
+            {
+                RecoverLongitudinalMainGearArmFromTelemetry = false,
+            }).Single();
+
+        Equal(false, result.ClosureReconstructionAvailable, "reconstruction without an arm");
+        Equal(true, double.IsNaN(result.ReconstructedClosureFpm), "unavailable modeled closure");
+        Near(280.0, result.LatchedNormalFpm, 1e-8, "raw latch remains available");
+    }
+
+    private static void ClosureReconstructionRequiresFiveFitPoints()
+    {
+        const double armFeet = -8.0;
+        var options = new TouchdownAnalysisOptions
+        {
+            LongitudinalMainGearArmFeet = armFeet,
+            RecoverLongitudinalMainGearArmFromTelemetry = false,
+        };
+
+        var fourPoint = TouchdownAnalysis.Analyze(
+            SparseReconstructionSamples(4),
+            options).Single();
+        Equal(false, fourPoint.ClosureReconstructionAvailable, "four-point reconstruction availability");
+        Equal(0, fourPoint.ClosureReconstructionFitPointCount, "four-point fit count");
+
+        var fivePoint = TouchdownAnalysis.Analyze(
+            SparseReconstructionSamples(5),
+            options).Single();
+        Equal(true, fivePoint.ClosureReconstructionAvailable, "five-point reconstruction availability");
+        Equal(5, fivePoint.ClosureReconstructionFitPointCount, "five-point fit count");
+    }
+
+    private static void ClosureReconstructionMarksContactTimeFallback()
+    {
+        const double armFeet = -8.0;
+        var samples = ReconstructionSamples(0.010, 280.0);
+        foreach (var sample in samples)
+        {
+            Array.Clear(sample.ContactPointCompression, 0, sample.ContactPointCompression.Length);
+        }
+
+        var result = TouchdownAnalysis.Analyze(
+            samples,
+            new TouchdownAnalysisOptions
+            {
+                LongitudinalMainGearArmFeet = armFeet,
+                RecoverLongitudinalMainGearArmFromTelemetry = false,
+            }).Single();
+
+        Equal(false, result.ContactTimeEstimatedFromCompression, "last-air contact-time provenance");
+        Equal(true, result.ClosureReconstructionAvailable, "fallback reconstruction availability");
+        Near(15.0, result.ClosureReconstructionUncertaintyFpm, 1e-8, "fallback uncertainty");
+    }
+
+    private static void ClosureReconstructionAcceptsPermutedStaggeredMains()
+    {
+        const double armFeet = -8.0;
+        var samples = ReconstructionSamples(
+            0.010,
+            280.0,
+            firstMainIndex: 17,
+            secondMainIndex: 4,
+            noseIndex: 11,
+            secondMainDelaySeconds: 2.50,
+            noseContactTime: 4.80,
+            sampleEndTime: 5.20);
+
+        var result = TouchdownAnalysis.Analyze(
+            samples,
+            new TouchdownAnalysisOptions
+            {
+                LongitudinalMainGearArmFeet = armFeet,
+                RecoverLongitudinalMainGearArmFromTelemetry = false,
+            }).Single();
+
+        Equal(true, result.ClosureReconstructionAvailable, "permuted staggered-main reconstruction");
+        Near(armFeet, result.ClosureReconstructionLongitudinalArmFeet, 1e-12, "permuted topology arm");
+    }
+
+    private static void ClosureReconstructionAcceptsCenterMainConservatively()
+    {
+        var samples = ReconstructionSamples(0.010, 280.0);
+        AddSettledMainPoint(samples, 7);
+
+        var result = TouchdownAnalysis.Analyze(
+            samples,
+            new TouchdownAnalysisOptions
+            {
+                LongitudinalMainGearArmFeet = -8.0,
+                RecoverLongitudinalMainGearArmFromTelemetry = false,
+            }).Single();
+
+        Equal(true, result.ClosureReconstructionAvailable, "four-point reconstruction availability");
+        Near(15.0, result.ClosureReconstructionUncertaintyFpm, 1e-12, "center-main uncertainty");
+    }
+
+    private static void ClosureReconstructionRejectsFivePointTopology()
+    {
+        var samples = ReconstructionSamples(0.010, 280.0);
+        AddSettledMainPoint(samples, 7);
+        AddSettledMainPoint(samples, 8);
+
+        var result = TouchdownAnalysis.Analyze(
+            samples,
+            new TouchdownAnalysisOptions
+            {
+                LongitudinalMainGearArmFeet = -8.0,
+                RecoverLongitudinalMainGearArmFromTelemetry = false,
+            }).Single();
+
+        Equal(false, result.ClosureReconstructionAvailable, "five-point reconstruction availability");
+        Near(280.0, result.LatchedNormalFpm, 1e-8, "five-point raw latch fallback");
+    }
+
+    private static void AddSettledMainPoint(IReadOnlyList<TelemetrySample> samples, int point)
+    {
+        foreach (var sample in samples)
+        {
+            if (!sample.OnGround)
+            {
+                continue;
+            }
+
+            sample.ContactPointOnGround[point] = true;
+            sample.ContactPointCompression[point] = (sample.SimulationTimeSeconds - 0.010) * 100.0;
+        }
+    }
+
+    private static void ClosureReconstructionKeepsMainGearBounces()
+    {
+        const double armFeet = -8.0;
+        var samples = ReconstructionSamples(0.010, 280.0, noseContactTime: 0.575);
+        foreach (var sample in samples)
+        {
+            var time = sample.SimulationTimeSeconds;
+            var firstMainContact = time >= 0.025 - 1e-9 && time <= 0.100 + 1e-9;
+            var settledMainContact = time >= 0.275 - 1e-9;
+            var mainContact = firstMainContact || settledMainContact;
+            sample.OnGround = mainContact;
+            sample.TouchdownNormalVelocityFps = mainContact ? 280.0 / 60.0 : 0.0;
+            Array.Clear(sample.ContactPointOnGround, 0, sample.ContactPointOnGround.Length);
+            Array.Clear(sample.ContactPointCompression, 0, sample.ContactPointCompression.Length);
+            if (mainContact)
+            {
+                sample.ContactPointOnGround[1] = true;
+                sample.ContactPointOnGround[2] = true;
+                var crossing = firstMainContact ? 0.010 : 0.260;
+                sample.ContactPointCompression[1] = (time - crossing) * 100.0;
+                sample.ContactPointCompression[2] = (time - crossing) * 100.0;
+            }
+
+            if (time >= 0.575 - 1e-9)
+            {
+                sample.ContactPointOnGround[0] = true;
+            }
+        }
+
+        var results = TouchdownAnalysis.Analyze(
+            samples,
+            new TouchdownAnalysisOptions
+            {
+                LongitudinalMainGearArmFeet = armFeet,
+                RecoverLongitudinalMainGearArmFromTelemetry = false,
+            });
+
+        Equal(2, results.Count, "main-bounce contact count");
+        Equal(true, results[0].ClosureReconstructionAvailable, "first main contact reconstruction");
+        Equal(true, results[1].ClosureReconstructionAvailable, "main recontact reconstruction");
+        Near(15.0, results[0].ClosureReconstructionUncertaintyFpm, 1e-12, "pre-bounce uncertainty");
+        Near(15.0, results[1].ClosureReconstructionUncertaintyFpm, 1e-12, "recontact uncertainty");
+    }
+
+    private static void ClosureReconstructionRejectsNoseFirstContact()
+    {
+        const double rawLatchFpm = 280.0;
+        var samples = ReconstructionSamples(0.010, rawLatchFpm);
+        foreach (var sample in samples)
+        {
+            var time = sample.SimulationTimeSeconds;
+            Array.Clear(sample.ContactPointOnGround, 0, sample.ContactPointOnGround.Length);
+            Array.Clear(sample.ContactPointCompression, 0, sample.ContactPointCompression.Length);
+            if (!sample.OnGround)
+            {
+                continue;
+            }
+
+            sample.ContactPointOnGround[11] = true;
+            sample.ContactPointCompression[11] = (time - 0.010) * 100.0;
+            if (time >= 0.350 - 1e-9)
+            {
+                sample.ContactPointOnGround[4] = true;
+                sample.ContactPointOnGround[17] = true;
+                sample.ContactPointCompression[4] = (time - 0.335) * 100.0;
+                sample.ContactPointCompression[17] = (time - 0.335) * 100.0;
+            }
+        }
+
+        var legacy = TouchdownAnalysis.Analyze(samples).Single();
+        var result = TouchdownAnalysis.Analyze(
+            samples,
+            new TouchdownAnalysisOptions
+            {
+                LongitudinalMainGearArmFeet = -8.0,
+                RecoverLongitudinalMainGearArmFromTelemetry = false,
+            }).Single();
+
+        Equal(false, result.ClosureReconstructionAvailable, "nose-first reconstruction availability");
+        Near(rawLatchFpm, result.LatchedNormalFpm, 1e-8, "nose-first raw latch");
+        Near(legacy.LatchedNormalFpm, result.LatchedNormalFpm, 1e-12, "raw latch independent of topology gate");
+        Near(legacy.InertialVerticalFpm, result.InertialVerticalFpm, 1e-12, "inertial metric independent of topology gate");
+        Near(legacy.PeakG, result.PeakG, 1e-12, "peak G independent of topology gate");
+    }
+
+    private static void ClosureReconstructionRejectsMixedMainNoseContact()
+    {
+        const double rawLatchFpm = 280.0;
+        var samples = ReconstructionSamples(0.010, rawLatchFpm);
+        foreach (var sample in samples)
+        {
+            var time = sample.SimulationTimeSeconds;
+            if (time >= 0.050 - 1e-9 && time <= 0.100 + 1e-9)
+            {
+                sample.ContactPointOnGround[0] = true;
+                sample.ContactPointCompression[0] = (time - 0.035) * 100.0;
+            }
+        }
+
+        var result = TouchdownAnalysis.Analyze(
+            samples,
+            new TouchdownAnalysisOptions
+            {
+                LongitudinalMainGearArmFeet = -8.0,
+                RecoverLongitudinalMainGearArmFromTelemetry = false,
+            }).Single();
+
+        Equal(false, result.ClosureReconstructionAvailable, "mixed main-nose reconstruction availability");
+        Near(rawLatchFpm, result.LatchedNormalFpm, 1e-8, "mixed main-nose raw latch fallback");
+    }
+
+    private static void TelemetryGeometryRecoversAnalyticArm()
+    {
+        const double pitchArmFeet = -12.0;
+        const double datumOffsetFeet = 4.0;
+        const double expectedArmFeet = pitchArmFeet + datumOffsetFeet;
+        const double groundAltitudeFeet = 100.0;
+        const double baseHeightFeet = 14.0;
+        const double compressionCoefficient = -0.02;
+        const double step = 0.025;
+        const int firstMainIndex = 17;
+        const int secondMainIndex = 4;
+        const int noseIndex = 11;
+        var samples = new List<TelemetrySample>();
+        var integratedPlane = 0.0;
+        var integratedPlaneAtContact = double.NaN;
+        var previousVertical = 0.0;
+
+        for (var index = 0; index <= 200; index++)
+        {
+            var time = -4.0 + index * step;
+            var onGround = time >= -1e-9;
+            var pitch = onGround ? 0.05 + 0.02 * Math.Sin(5.0 * time) + 0.05 * time : 0.0;
+            var compression = onGround ? 20.0 + 5.0 * Math.Cos(7.0 * time) : 0.0;
+            var omegaX = 0.01 + 0.004 * Math.Sin(1.7 * time) + 0.001 * time;
+            var worldY = -4.0 + 0.15 * Math.Sin(0.9 * time);
+            var rigidVerticalPerFoot = -omegaX;
+            var verticalAtDatum = worldY + datumOffsetFeet * rigidVerticalPerFoot;
+            if (index > 0)
+            {
+                integratedPlane += 0.5 * step * (previousVertical + verticalAtDatum);
+            }
+
+            previousVertical = verticalAtDatum;
+            var sample = new TelemetrySample
+            {
+                Sequence = index,
+                SimulationTimeSeconds = time,
+                OnGround = onGround,
+                VelocityWorldYFps = worldY,
+                RotationVelocityBodyXRadiansPerSecond = omegaX,
+                PitchDegrees = pitch * 180.0 / Math.PI,
+                GroundAltitudeFeet = groundAltitudeFeet,
+                PlaneAltitudeFeet = integratedPlane,
+            };
+            if (onGround)
+            {
+                if (double.IsNaN(integratedPlaneAtContact))
+                {
+                    integratedPlaneAtContact = integratedPlane;
+                }
+
+                sample.ContactPointOnGround[noseIndex] = time >= 0.60;
+                sample.ContactPointOnGround[firstMainIndex] = true;
+                sample.ContactPointOnGround[secondMainIndex] = true;
+                sample.ContactPointCompression[firstMainIndex] = compression;
+                sample.ContactPointCompression[secondMainIndex] = compression;
+                sample.PlaneAltitudeFeet = groundAltitudeFeet + baseHeightFeet +
+                                           pitchArmFeet * pitch +
+                                           compressionCoefficient * compression;
+            }
+
+            samples.Add(sample);
+        }
+
+        var contactIndex = samples.FindIndex(sample => sample.OnGround);
+        var contactPlane = samples[contactIndex].PlaneAltitudeFeet;
+        var airborneShift = contactPlane - integratedPlaneAtContact;
+        for (var index = 0; index < contactIndex; index++)
+        {
+            samples[index].PlaneAltitudeFeet += airborneShift;
+        }
+
+        Equal(true, TelemetryGeometryCalibration.TryCalibrate(samples, out var calibration), "geometry calibration");
+        Near(pitchArmFeet, calibration.PitchArmFeet, 1e-8, "pitch arm");
+        Near(datumOffsetFeet, calibration.DatumOffsetFeet, 1e-8, "datum offset");
+        Near(expectedArmFeet, calibration.LongitudinalArmFeet, 1e-8, "longitudinal arm");
+        Equal(4, calibration.DatumPhaseCount, "datum phase count");
+        Equal(true, calibration.Quality >= 0.20 && calibration.Quality <= 1.0, "geometry quality range");
+    }
+
+    private static List<TelemetrySample> ReconstructionSamples(
+        double contactTime,
+        double rawLatchFpm,
+        int firstMainIndex = 1,
+        int secondMainIndex = 2,
+        int noseIndex = 0,
+        double secondMainDelaySeconds = 0.0,
+        double noseContactTime = 0.30,
+        double sampleEndTime = 0.70)
+    {
+        var samples = new List<TelemetrySample>();
+        var finalIndex = (int)Math.Ceiling((sampleEndTime + 0.30) / 0.025);
+        for (var index = 0; index <= finalIndex; index++)
+        {
+            var time = -0.30 + index * 0.025;
+            var x = time - contactTime;
+            var onGround = time >= 0.025 - 1e-9;
+            var pitchDegrees = PitchRadians(x) * 180.0 / Math.PI;
+            if (onGround)
+            {
+                pitchDegrees += 2.5 * (time - 0.025);
+            }
+
+            var sample = new TelemetrySample
+            {
+                Sequence = index,
+                SimulationTimeSeconds = time,
+                OnGround = onGround,
+                TouchdownNormalVelocityFps = onGround ? rawLatchFpm / 60.0 : 0.0,
+                VelocityWorldYFps = Velocity(x),
+                GroundAltitudeFeet = GroundAltitude(x),
+                PlaneAltitudeFeet = GroundAltitude(x) + 10.0,
+                RotationVelocityBodyXRadiansPerSecond = PitchRate(x),
+                PitchDegrees = pitchDegrees,
+                BankDegrees = BankRadians(x) * 180.0 / Math.PI,
+            };
+            if (onGround)
+            {
+                sample.ContactPointOnGround[firstMainIndex] = true;
+                sample.ContactPointCompression[firstMainIndex] = (time - contactTime) * 100.0;
+                if (time >= 0.025 + secondMainDelaySeconds - 1e-9)
+                {
+                    sample.ContactPointOnGround[secondMainIndex] = true;
+                    sample.ContactPointCompression[secondMainIndex] =
+                        (time - contactTime - secondMainDelaySeconds) * 100.0;
+                }
+
+                if (time >= noseContactTime - 1e-9)
+                {
+                    sample.ContactPointOnGround[noseIndex] = true;
+                    sample.ContactPointCompression[noseIndex] = (time - noseContactTime) * 100.0;
+                }
+            }
+
+            samples.Add(sample);
+        }
+
+        return samples;
+    }
+
+    private static List<TelemetrySample> SparseReconstructionSamples(int airbornePointCount)
+    {
+        var full = ReconstructionSamples(0.010, 280.0);
+        var airborne = full.Where(sample => !sample.OnGround).ToList();
+        var selected = airborne.Skip(Math.Max(0, airborne.Count - airbornePointCount));
+        return selected.Concat(full.Where(sample => sample.OnGround)).ToList();
+    }
+
+    private static double Velocity(double x) => -4.0 + 2.0 * x + 3.0 * x * x;
+
+    private static double GroundAltitude(double x) => 100.0 + 0.4 * x + 0.2 * x * x;
+
+    private static double GroundDerivative(double x) => 0.4 + 0.4 * x;
+
+    private static double PitchRate(double x) => 0.01 + 0.02 * x - 0.01 * x * x;
+
+    private static double PitchRadians(double x) => 0.08 + 0.01 * x + 0.01 * x * x;
+
+    private static double BankRadians(double x) => 0.02 - 0.005 * x;
+
     private static void ColumnarV7IsSmallerThanObjectLayout()
     {
         var root = Path.Combine(Path.GetTempPath(), "landing-stats-size-test-" + Guid.NewGuid().ToString("N"));
@@ -494,6 +1046,15 @@ internal static class Program
         if (!EqualityComparer<T>.Default.Equals(expected, (T)actual!))
         {
             throw new InvalidOperationException($"{message}: expected {expected}, got {actual}");
+        }
+    }
+
+    private static void Near(double expected, double actual, double tolerance, string message)
+    {
+        if (double.IsNaN(actual) || Math.Abs(expected - actual) > tolerance)
+        {
+            throw new InvalidOperationException(
+                $"{message}: expected {expected:R} ± {tolerance:R}, got {actual:R}");
         }
     }
 

@@ -19,6 +19,7 @@ behind them:
 | --- | --- | --- |
 | Landing rate | One FPM value | Aircraft vertical rate and surface closure rate, with explicit signs and definitions |
 | Sloped or uneven scenery | Can be folded into the displayed FPM | Local terrain contribution is measured and shown separately |
+| Simulator latch differences | Left unexplained | Experimental telemetry reconstruction separates effective timing, terrain, and pitch rotation with an explicit uncertainty band |
 | Bounces | Often only the first or last contact survives | Every contact is analyzed and retained as its own event |
 | G-load | One value with an unspecified sampling window | Peaks are calculated in declared 150 ms and 2 s windows, bounded by the next contact |
 | Evidence | Summary values only | Synchronized black-box traces for motion, loads, controls, power, attitude, and gear |
@@ -35,8 +36,11 @@ for the formulas, timing rules, validation traces, and known limitations.
 - Automatic recording from the descending 500 ft AGL crossing through rollout.
 - Per-contact analysis for normal landings and bounces.
 - Automatic nearest-airport resolution that remains available after MSFS exits.
-- Inertial vertical speed at contact, MSFS surface-normal touchdown velocity,
-  surface-relative delta, terrain contribution, and unresolved remainder.
+- Inertial vertical speed at contact and the raw MSFS surface-normal touchdown
+  velocity remain separate headline measurements.
+- Experimental detail reconstructs the raw latch from effective timing, local
+  terrain motion, and pitch rotation around a telemetry-recovered gear arm; it
+  reports the remaining residual and a conservative uncertainty band.
 - Vertical, longitudinal, and lateral load-factor graphs.
 - Synchronized hover and zoom across flight-path, controls, attitude, engine,
   and landing-gear charts.

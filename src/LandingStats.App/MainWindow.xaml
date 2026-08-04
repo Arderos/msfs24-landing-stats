@@ -13,6 +13,53 @@
         Icon="Assets/AppIcon.ico"
         Background="{StaticResource AppBackgroundBrush}"
         UseLayoutRounding="True">
+    <Window.Resources>
+        <BooleanToVisibilityConverter x:Key="BooleanToVisibilityConverter" />
+        <Style x:Key="ReconstructionInfoIconStyle" TargetType="{x:Type ContentControl}">
+            <Setter Property="Width" Value="15" />
+            <Setter Property="Height" Value="15" />
+            <Setter Property="Margin" Value="5,0,0,0" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+            <Setter Property="Cursor" Value="Help" />
+            <Setter Property="Focusable" Value="False" />
+            <Setter Property="IsTabStop" Value="False" />
+            <Setter Property="ToolTipService.InitialShowDelay" Value="150" />
+            <Setter Property="ToolTipService.BetweenShowDelay" Value="100" />
+            <Setter Property="ToolTipService.ShowDuration" Value="30000" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type ContentControl}">
+                        <Border x:Name="InfoRing" Width="15" Height="15"
+                                Background="Transparent"
+                                BorderBrush="{StaticResource MutedTextBrush}"
+                                BorderThickness="1"
+                                CornerRadius="8"
+                                SnapsToDevicePixels="True">
+                            <TextBlock x:Name="InfoGlyph" Text="i"
+                                       Foreground="{StaticResource MutedTextBrush}"
+                                       FontFamily="Segoe UI"
+                                       FontSize="9"
+                                       FontWeight="SemiBold"
+                                       TextAlignment="Center"
+                                       VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="InfoRing" Property="BorderBrush" Value="{StaticResource TextBrush}" />
+                                <Setter TargetName="InfoGlyph" Property="Foreground" Value="{StaticResource TextBrush}" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <Style x:Key="ReconstructionToolTipTextStyle" TargetType="{x:Type TextBlock}">
+            <Setter Property="MaxWidth" Value="390" />
+            <Setter Property="TextWrapping" Value="Wrap" />
+            <Setter Property="FontSize" Value="11" />
+            <Setter Property="LineHeight" Value="16" />
+        </Style>
+    </Window.Resources>
     <WindowChrome.WindowChrome>
         <WindowChrome CaptionHeight="0"
                       ResizeBorderThickness="6"
@@ -175,6 +222,7 @@
                     <RowDefinition Height="Auto" />
                     <RowDefinition Height="Auto" />
                     <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
                     <RowDefinition Height="50*" MaxHeight="560" />
                     <RowDefinition Height="8*" MinHeight="62" MaxHeight="100" />
                     <RowDefinition Height="8*" MinHeight="62" MaxHeight="100" />
@@ -277,7 +325,183 @@
                     <TextBlock Grid.Column="7" Grid.Row="2" Text="at contact" Style="{StaticResource MetricSublineStyle}" Margin="22,7,0,0" />
                 </Grid>
 
-                <Grid Grid.Row="2" Margin="24,0,24,0">
+                <Border x:Name="ClosureReconstructionPanel"
+                        Grid.Row="2"
+                        Margin="24,0,24,18"
+                        Padding="14,10"
+                        Background="{StaticResource SurfaceBrush}"
+                        BorderBrush="{StaticResource BorderBrush}"
+                        BorderThickness="1"
+                        CornerRadius="7">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+                        <Grid Grid.Row="0" Margin="0,0,0,9">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                <TextBlock Text="EXPERIMENTAL CLOSURE RECONSTRUCTION"
+                                           Style="{StaticResource SectionLabelStyle}"
+                                           Foreground="{StaticResource LabelTextBrush}"
+                                           VerticalAlignment="Center" />
+                                <ContentControl Style="{StaticResource ReconstructionInfoIconStyle}"
+                                                AutomationProperties.Name="Reconstruction information"
+                                                AutomationProperties.HelpText="Explains how to interpret the experimental reconstruction panel.">
+                                    <ContentControl.ToolTip>
+                                        <TextBlock Style="{StaticResource ReconstructionToolTipTextStyle}"
+                                                   Text="Diagnostic reconstruction of the simulator touchdown latch from recorded telemetry. It never replaces the headline Surface Closure Rate. Displayed FPM use the app convention: negative means downward or closing." />
+                                    </ContentControl.ToolTip>
+                                </ContentControl>
+                            </StackPanel>
+                            <TextBlock Grid.Column="1" Text="{Binding ClosureModelDisplay}"
+                                       Foreground="{StaticResource SubtleTextBrush}"
+                                       FontFamily="Cascadia Mono, Consolas" FontSize="9"
+                                       TextTrimming="CharacterEllipsis"
+                                       HorizontalAlignment="Right" VerticalAlignment="Center" />
+                            <ContentControl Grid.Column="2"
+                                            Style="{StaticResource ReconstructionInfoIconStyle}"
+                                            AutomationProperties.Name="Reconstruction model information"
+                                            AutomationProperties.HelpText="Explains the frozen reconstruction model identifier.">
+                                <ContentControl.ToolTip>
+                                    <TextBlock Style="{StaticResource ReconstructionToolTipTextStyle}"
+                                               Text="Frozen model identifier. quad250 means quadratic fits over 250 ms; tc-minus-75ms means evaluation 75 ms before estimated contact; pitch-v1 includes pitch rotation. Its parameters are not tuned against this landing's latch." />
+                                </ContentControl.ToolTip>
+                            </ContentControl>
+                        </Grid>
+
+                        <Grid Grid.Row="1"
+                              Visibility="{Binding HasClosureReconstruction, Converter={StaticResource BooleanToVisibilityConverter}}">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="1.05*" />
+                                <ColumnDefinition Width="1.05*" />
+                                <ColumnDefinition Width="2.15*" />
+                                <ColumnDefinition Width="1.25*" />
+                                <ColumnDefinition Width="1.85*" />
+                            </Grid.ColumnDefinitions>
+
+                            <StackPanel Grid.Column="0">
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock Text="MODELED CLOSURE" Style="{StaticResource SectionLabelStyle}"
+                                               Foreground="{StaticResource SubtleTextBrush}" />
+                                    <ContentControl Style="{StaticResource ReconstructionInfoIconStyle}"
+                                                    AutomationProperties.Name="Modeled closure information"
+                                                    AutomationProperties.HelpText="Explains the modeled closure value.">
+                                        <ContentControl.ToolTip>
+                                            <TextBlock Style="{StaticResource ReconstructionToolTipTextStyle}"
+                                                       Text="Expected surface closure at the latch's effective sampling time. It is the sum of inertial, terrain, and pitch below. Read it as a cross-check of the raw simulator value, not a replacement." />
+                                        </ContentControl.ToolTip>
+                                    </ContentControl>
+                                </StackPanel>
+                                <TextBlock Text="{Binding ClosureModeledDisplay}" Margin="0,3,0,0"
+                                           FontFamily="Cascadia Mono, Consolas" FontSize="18" FontWeight="Medium" />
+                            </StackPanel>
+
+                            <StackPanel Grid.Column="1" Margin="18,0,0,0">
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock Text="RAW − MODEL" Style="{StaticResource SectionLabelStyle}"
+                                               Foreground="{StaticResource SubtleTextBrush}" />
+                                    <ContentControl Style="{StaticResource ReconstructionInfoIconStyle}"
+                                                    AutomationProperties.Name="Raw minus model information"
+                                                    AutomationProperties.HelpText="Explains the reconstruction residual.">
+                                        <ContentControl.ToolTip>
+                                            <TextBlock Style="{StaticResource ReconstructionToolTipTextStyle}"
+                                                       Text="Raw Surface Closure Rate minus Modeled Closure. Closer to zero means stronger agreement. Treat a residual inside the stated uncertainty as explained by the model." />
+                                        </ContentControl.ToolTip>
+                                    </ContentControl>
+                                </StackPanel>
+                                <TextBlock Text="{Binding ClosureResidualDisplay}" Margin="0,3,0,0"
+                                           Foreground="{StaticResource BlueBrush}"
+                                           FontFamily="Cascadia Mono, Consolas" FontSize="16" FontWeight="Medium" />
+                            </StackPanel>
+
+                            <StackPanel Grid.Column="2" Margin="18,0,0,0">
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock Text="MODELED COMPONENTS" Style="{StaticResource SectionLabelStyle}"
+                                               Foreground="{StaticResource SubtleTextBrush}" />
+                                    <ContentControl Style="{StaticResource ReconstructionInfoIconStyle}"
+                                                    AutomationProperties.Name="Modeled components information"
+                                                    AutomationProperties.HelpText="Explains inertial, terrain, and pitch components.">
+                                        <ContentControl.ToolTip>
+                                            <TextBlock Style="{StaticResource ReconstructionToolTipTextStyle}"
+                                                       Text="The three values add up to Modeled Closure. Inertial uses a 250 ms quadratic fit evaluated 75 ms before estimated wheel contact, so it can differ from Aircraft Vertical Rate above, which uses a 200 ms linear fit extrapolated to contact. Terrain is local runway elevation motion; pitch is main-gear motion caused by aircraft rotation." />
+                                        </ContentControl.ToolTip>
+                                    </ContentControl>
+                                </StackPanel>
+                                <TextBlock Text="{Binding ClosureComponentsDisplay}" Margin="0,4,0,0"
+                                           Foreground="{StaticResource MutedTextBrush}"
+                                           FontFamily="Cascadia Mono, Consolas" FontSize="11"
+                                           TextWrapping="Wrap" />
+                            </StackPanel>
+
+                            <StackPanel Grid.Column="3" Margin="18,0,0,0">
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock Text="UNCERTAINTY" Style="{StaticResource SectionLabelStyle}"
+                                               Foreground="{StaticResource SubtleTextBrush}" />
+                                    <ContentControl Style="{StaticResource ReconstructionInfoIconStyle}"
+                                                    AutomationProperties.Name="Reconstruction uncertainty information"
+                                                    AutomationProperties.HelpText="Explains the reconstruction uncertainty envelope.">
+                                        <ContentControl.ToolTip>
+                                            <TextBlock Style="{StaticResource ReconstructionToolTipTextStyle}"
+                                                       Text="Conservative validation envelope: ±10 fpm for a well-timed primary two-main-gear contact; ±15 fpm for a bounce, fallback timing, or three-main-gear layout. It is not an error bar on the raw simulator latch." />
+                                        </ContentControl.ToolTip>
+                                    </ContentControl>
+                                </StackPanel>
+                                <TextBlock Text="{Binding ClosureUncertaintyDisplay}" Margin="0,4,0,0"
+                                           Foreground="{StaticResource MutedTextBrush}"
+                                           FontFamily="Cascadia Mono, Consolas" FontSize="11"
+                                           TextWrapping="Wrap" />
+                            </StackPanel>
+
+                            <StackPanel Grid.Column="4" Margin="18,0,0,0">
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock Text="GEOMETRY SOURCE" Style="{StaticResource SectionLabelStyle}"
+                                               Foreground="{StaticResource SubtleTextBrush}" />
+                                    <ContentControl Style="{StaticResource ReconstructionInfoIconStyle}"
+                                                    AutomationProperties.Name="Geometry source information"
+                                                    AutomationProperties.HelpText="Explains the recovered gear geometry and quality score.">
+                                        <ContentControl.ToolTip>
+                                            <TextBlock Style="{StaticResource ReconstructionToolTipTextStyle}"
+                                                       Text="Longitudinal main-gear arm relative to the simulator's velocity reference. 'Telemetry' means it was recovered from rollout data; quality is an identifiability score, not a probability. No aircraft configuration file is required." />
+                                        </ContentControl.ToolTip>
+                                    </ContentControl>
+                                </StackPanel>
+                                <TextBlock Text="{Binding ClosureGeometryDisplay}" Margin="0,4,0,0"
+                                           Foreground="{StaticResource MutedTextBrush}"
+                                           FontFamily="Cascadia Mono, Consolas" FontSize="11"
+                                           TextWrapping="Wrap" />
+                            </StackPanel>
+                        </Grid>
+
+                        <Grid Grid.Row="1" MinHeight="41">
+                            <Grid.Style>
+                                <Style TargetType="Grid">
+                                    <Setter Property="Visibility" Value="Visible" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding HasClosureReconstruction}" Value="True">
+                                            <Setter Property="Visibility" Value="Collapsed" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Grid.Style>
+                            <StackPanel VerticalAlignment="Center">
+                                <TextBlock Text="RECONSTRUCTION UNAVAILABLE FOR THIS RECORD"
+                                           Style="{StaticResource SectionLabelStyle}"
+                                           Foreground="{StaticResource SubtleTextBrush}" />
+                                <TextBlock Margin="0,4,0,0"
+                                           Text="This landing was saved before the model was added, or its telemetry did not contain enough geometry or pre-contact samples. Raw measurements above are unchanged."
+                                           Foreground="{StaticResource MutedTextBrush}"
+                                           FontSize="11" TextWrapping="Wrap" />
+                            </StackPanel>
+                        </Grid>
+                    </Grid>
+                </Border>
+
+                <Grid Grid.Row="3" Margin="24,0,24,0">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="Auto" />
                         <ColumnDefinition Width="*" />
@@ -319,14 +543,14 @@
                     <Border Grid.ColumnSpan="5" Height="1" Background="{StaticResource BorderBrush}" VerticalAlignment="Bottom" Panel.ZIndex="-1" />
                 </Grid>
 
-                <Grid Grid.Row="3" Margin="0,12,24,6">
+                <Grid Grid.Row="4" Margin="0,12,24,6">
                     <controls:LandingChart x:Name="MainChart" Mode="VerticalSpeed" ShowLegend="False" ShowXAxisLabels="False" />
                     <TextBlock x:Name="ModeUnitText" Text="fpm" Foreground="{StaticResource LabelTextBrush}"
                                FontFamily="Cascadia Mono, Consolas" FontSize="10"
                                HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="24,0,0,8" />
                 </Grid>
 
-                <Border Grid.Row="4" BorderBrush="#1A1917" BorderThickness="0,1,0,0" Margin="0,0,24,0">
+                <Border Grid.Row="5" BorderBrush="#1A1917" BorderThickness="0,1,0,0" Margin="0,0,24,0">
                     <Grid>
                         <Grid.ColumnDefinitions><ColumnDefinition Width="96" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
                         <StackPanel Margin="24,9,0,0">
@@ -339,7 +563,7 @@
                     </Grid>
                 </Border>
 
-                <Border Grid.Row="5" BorderBrush="#1A1917" BorderThickness="0,1,0,0" Margin="0,0,24,0">
+                <Border Grid.Row="6" BorderBrush="#1A1917" BorderThickness="0,1,0,0" Margin="0,0,24,0">
                     <Grid>
                         <Grid.ColumnDefinitions><ColumnDefinition Width="96" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
                         <StackPanel Margin="24,9,0,0">
@@ -352,7 +576,7 @@
                     </Grid>
                 </Border>
 
-                <Border Grid.Row="6" BorderBrush="#1A1917" BorderThickness="0,1,0,0" Margin="0,0,24,0">
+                <Border Grid.Row="7" BorderBrush="#1A1917" BorderThickness="0,1,0,0" Margin="0,0,24,0">
                     <Grid>
                         <Grid.ColumnDefinitions><ColumnDefinition Width="96" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
                         <StackPanel Margin="24,9,0,0">
@@ -365,7 +589,7 @@
                     </Grid>
                 </Border>
 
-                <Border Grid.Row="7" BorderBrush="{StaticResource BorderBrush}" BorderThickness="0,1,0,0" Margin="0,0,24,0">
+                <Border Grid.Row="8" BorderBrush="{StaticResource BorderBrush}" BorderThickness="0,1,0,0" Margin="0,0,24,0">
                     <Grid>
                         <Grid.ColumnDefinitions><ColumnDefinition Width="96" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
                         <TextBlock x:Name="HoverTimeText" Text="0.00s" Margin="24,0,0,0" VerticalAlignment="Center"

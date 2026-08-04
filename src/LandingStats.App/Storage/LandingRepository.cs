@@ -309,6 +309,18 @@ public sealed class LandingRepository
             RawControllerSourceIndices = new List<int>(source.RawControllerSourceIndices ?? new List<int>()),
             WindSpeedKnotsAtContact = source.WindSpeedKnotsAtContact,
             WindDirectionDegreesAtContact = source.WindDirectionDegreesAtContact,
+            ClosureReconstructionModel = source.ClosureReconstructionModel,
+            ClosureReconstructionAvailable = source.ClosureReconstructionAvailable,
+            ReconstructedClosureFpm = source.ReconstructedClosureFpm,
+            ReconstructedInertialFpm = source.ReconstructedInertialFpm,
+            ReconstructedTerrainFpm = source.ReconstructedTerrainFpm,
+            ReconstructedPitchFpm = source.ReconstructedPitchFpm,
+            ClosureReconstructionResidualFpm = source.ClosureReconstructionResidualFpm,
+            ClosureReconstructionUncertaintyFpm = source.ClosureReconstructionUncertaintyFpm,
+            ClosureReconstructionFitPointCount = source.ClosureReconstructionFitPointCount,
+            ClosureReconstructionLongitudinalArmFeet = source.ClosureReconstructionLongitudinalArmFeet,
+            ClosureReconstructionGeometryQuality = source.ClosureReconstructionGeometryQuality,
+            ClosureReconstructionArmRecoveredFromTelemetry = source.ClosureReconstructionArmRecoveredFromTelemetry,
             IsSummaryOnly = true,
         };
 

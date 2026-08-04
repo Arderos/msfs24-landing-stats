@@ -52,6 +52,18 @@ public static class LandingRecordFactory
             LatchUpdateDetected = result.LatchUpdateDetected,
             LatchUpdateOffsetSeconds = result.LatchedUpdateOffsetSeconds,
             ContactTimeEstimatedFromCompression = result.ContactTimeEstimatedFromCompression,
+            ClosureReconstructionModel = result.ClosureReconstructionModel,
+            ClosureReconstructionAvailable = result.ClosureReconstructionAvailable,
+            ReconstructedClosureFpm = result.ReconstructedClosureFpm,
+            ReconstructedInertialFpm = result.ReconstructedInertialFpm,
+            ReconstructedTerrainFpm = result.ReconstructedTerrainFpm,
+            ReconstructedPitchFpm = result.ReconstructedPitchFpm,
+            ClosureReconstructionResidualFpm = result.ClosureReconstructionResidualFpm,
+            ClosureReconstructionUncertaintyFpm = result.ClosureReconstructionUncertaintyFpm,
+            ClosureReconstructionFitPointCount = result.ClosureReconstructionFitPointCount,
+            ClosureReconstructionLongitudinalArmFeet = result.ClosureReconstructionLongitudinalArmFeet,
+            ClosureReconstructionGeometryQuality = result.ClosureReconstructionGeometryQuality,
+            ClosureReconstructionArmRecoveredFromTelemetry = result.ClosureReconstructionArmRecoveredFromTelemetry,
         };
 
         var contactTime = result.EstimatedContactTimeSeconds;
