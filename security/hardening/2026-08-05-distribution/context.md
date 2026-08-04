@@ -1,17 +1,20 @@
 # Local evidence context
 
 Analysis date: 2026-08-05. Source root: `D:\Users\ezaytsev\Documents\git\fallensky\msfs-landing-stats`.
-Baseline revision: `0648d11` (`Release v0.6.0 closure reconstruction`) plus the updater and telemetry-ingress working tree.
+Baseline revision: `6bfd769` (`Release v0.7.0`) plus the format-2 updater remediation working tree.
 
-The evidence collection digest is SHA-256 `00a602196a04684087c9dd0e67a16bf03c2874926ec10e6c60c95cf0894a7ce2` over these canonical `path sha256` lines:
+The evidence collection digest is SHA-256 `c79b70529ffee0f0d89d216eae67d666e0d01e4e282a1dac29140b9bd8d13b9c` over these canonical `path sha256` lines:
 
 ```text
-.github/workflows/build.yml ef9356063ea739046888818c53280c9450ddc47a017e984c5c9484c552fb4645
-src/LandingStats.App.Launcher/Program.cs 2064f8ee1a669848dd4b80c446750e67fd1c97e0657c31fd7c00b8fda6b1c160
+.github/workflows/build.yml ffab63064a1e7fc0d11dc71feace194573e1c1cf7677222dd277956347a529ad
+build-app.ps1 a2672e619a7750ed9ba9ea67f32c350a2c8681685c431a3c6546b455fe37425d
+src/LandingStats.App.Updater/Program.cs b204fb53efcf3510ad24936b22207b7c27f87337b13c873c5b495043c55e8627
+src/LandingStats.UpdateProtocol/UpdateProtocol.cs a9a714b2d8470eed6987e1d2e0f225bfa703d16d67d2c548da666858385d4e39
+src/LandingStats.App/MainWindow.xaml.cs c9d102dc6f41d6e6fed3f18ee6d6cb7df4e8ad2c965a513c3972bfadaa7b770a
 src/LandingStats.App/Storage/RawCaptureRepository.cs 4c9725235586df66365b8cc3255af1b60118f394a4290070e6fb36d13bd3856f
 src/LandingStats.App/TelemetryUpload/TelemetryUploadClient.cs 3f48c63ac1224a8643a5188a0203649c68e9140a7deac9c31e655c17f3feeb69
 src/LandingStats.App/TelemetryUpload/TelemetryUploadIdentityStore.cs f722cd68d1de72983931b8dd72b3f6ef138e056557f28db54f002d1ea7000299
-src/LandingStats.App/Updates/ReleaseUpdater.cs 14632bfddf0880c897b03ae898267c36ae8b91fdd524c9b91125f110514c14ab
+src/LandingStats.App/Updates/ReleaseUpdater.cs fb947bf3998bf5953acdd78119a375bc59e91541baa03a2a9e2595faca073451
 server/telemetry-ingest/Dockerfile bc5556e5eca5e4deb204ccf30334d69d28c800cbfdf42d2a4a8a2f71127b9262
 server/telemetry-ingest/docker-compose.yml d404fa6d115776092941bc0f76917d75acab166399f9cc5b9738ba0461c9fa00
 server/telemetry-ingest/app/main.py 95a8f40797bd0a1cd3fed15cc77da84c133b75c2d4d366e3a6cbbccd3f5beebe

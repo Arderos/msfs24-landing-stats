@@ -6,7 +6,7 @@ The selected design uses a DPAPI-protected RSA key per Windows account, invitati
 
 ## Source Revision And Drift Check
 
-Evidence digest: `00a602196a04684087c9dd0e67a16bf03c2874926ec10e6c60c95cf0894a7ce2`. The final inventory in `../context.md` includes the client identity, byte-budget store, container, and deployed ingress policy; no relevant source drift remains.
+Evidence digest: `c79b70529ffee0f0d89d216eae67d666e0d01e4e282a1dac29140b9bd8d13b9c`. The final inventory in `../context.md` includes the client identity, byte-budget store, container, deployed ingress policy, and format-2 updater remediation; no relevant source drift remains.
 
 ## Affected Components
 

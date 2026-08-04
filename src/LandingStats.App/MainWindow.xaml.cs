@@ -78,13 +78,15 @@ public partial class MainWindow : Window
 
     private async void OnWindowLoaded(object sender, RoutedEventArgs eventArgs)
     {
+        ReleaseUpdater.BeginCompletedUpdateCleanup(Environment.GetCommandLineArgs());
         var version = typeof(MainWindow).Assembly.GetName().Version ?? new Version(0, 0, 0);
         var result = await _releaseUpdater.CheckAndInstallAsync(version, _lifetimeCancellation.Token);
         VersionAuthorText.ToolTip = result.Path == null ? result.Message : result.Message + "\n" + result.Path;
-        if (result.State == ReleaseUpdateState.Installed && result.Version != null)
+        if (result.State == ReleaseUpdateState.UpdateStarted && result.Version != null)
         {
-            VersionAuthorRun.Text += $" · v{result.Version} ready";
+            VersionAuthorRun.Text += $" · updating to v{result.Version}";
             VersionAuthorText.Foreground = Brush("#8FD6A8");
+            Application.Current.Shutdown();
         }
         else if (result.State == ReleaseUpdateState.Rejected)
         {

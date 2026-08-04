@@ -2,6 +2,32 @@
 
 All notable changes to MSFS Landing Stats are documented in this file.
 
+## [0.7.1] - 2026-08-05
+
+### Fixed
+
+- Replaced the custom self-extracting launcher, which Microsoft Defender could
+  classify as `Wacatac`/`Sabsik`, with a normal portable ZIP and standalone
+  updater. Both executable roles now scan clean with Internet Zone metadata.
+- A successfully verified update now shuts down the old process, transactionally
+  replaces the five application files, starts the new version, and removes its
+  temporary updater without invoking a shell.
+
+### Security
+
+- Introduced a strict format-2 release manifest binding both the portable ZIP
+  and updater by name, size, and SHA-256 under the pinned RSA release key.
+- The updater independently repeats manifest verification from the immutable
+  versioned release URL, verifies its own signed hash, accepts only the exact
+  five-file package with bounded expansion, confirms the requesting PID and EXE,
+  checks the installed assembly version, and rolls back partial replacement.
+
+### Changed
+
+- v0.7.0 used the removed format-1 self-extracting bundle and therefore needs a
+  one-time manual extraction of v0.7.1. Automatic update-and-restart applies to
+  subsequent format-2 releases.
+
 ## [0.7.0] - 2026-08-05
 
 ### Added

@@ -2,7 +2,7 @@
 
 ## Evidence Basis
 
-I inspected the v0.6 launcher/release path, the DEBUG RAW lifecycle, and the new client/server working tree. I also exercised a signed enrollment and capture through the public Cloudflare hostname. The synthetic record was removed after the test. This review distinguishes code present in the working tree from a released control: the first updater-capable release and its GitHub signing secret are still rollout gates.
+I inspected the released v0.7.0 path, the replacement format-2 updater, the DEBUG RAW lifecycle, and the client/server tree. I also exercised a signed enrollment and capture through the public Cloudflare hostname and removed the synthetic record. The v0.7.0 custom SFX launcher was independently isolated as the Defender ML trigger; the normal application and standalone updater scan clean with Internet Zone metadata.
 
 ## Constraints
 
@@ -13,7 +13,7 @@ The client is public and runs on an untrusted Windows machine, so it cannot prov
 | Opportunity | Evidence | Options | Recommendation | Proposal |
 | --- | --- | --- | --- | --- |
 | Own the telemetry-ingress trust boundary | RAW ZIP lifecycle, public hostile endpoint, signed E2E experiment | Shared binary credential; per-install key with invitation | Per-install DPAPI key, one-time invitation, strict bounded validator | [Telemetry ingress](proposals/telemetry-ingress-trust.md) |
-| Authenticate self-updates independently of transport | v0.6 manual release path and unsigned workflow assets | HTTPS plus hash; signed canonical manifest | Pinned release public key and atomic launcher replacement | [Release authenticity](proposals/release-authenticity.md) |
+| Authenticate self-updates independently of transport | v0.7.0 signed format-1 SFX path, removed after Defender ML detection | HTTPS plus hash; signed canonical two-asset manifest | Pinned release key, independently verifying helper, transactional five-file replacement | [Release authenticity](proposals/release-authenticity.md) |
 
 ## Recommendation Summary
 
@@ -21,4 +21,4 @@ I recommend the two selected structural options together. They use asymmetric ke
 
 ## Next Decisions
 
-Configure the GitHub `RELEASE_SIGNING_KEY_PKCS8_B64` secret, issue invitation codes deliberately, publish the privacy/retention statement, and treat the first updater-capable build as a manual bootstrap release. Rotate the tunnel token that appeared in chat after deployment verification.
+Publish v0.7.1 as the one-time clean ZIP bootstrap, exercise the first format-2-to-format-2 update, issue invitation codes deliberately, publish the privacy/retention statement, and rotate the tunnel token that appeared in chat after deployment verification.

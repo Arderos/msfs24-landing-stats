@@ -5,8 +5,8 @@
   "sourceEvidence": {
     "kind": "document_collection",
     "label": "MSFS Landing Stats distribution and telemetry-ingress source evidence",
-    "collectionSha256": "00a602196a04684087c9dd0e67a16bf03c2874926ec10e6c60c95cf0894a7ce2",
-    "artifactCount": 11,
+    "collectionSha256": "c79b70529ffee0f0d89d216eae67d666e0d01e4e282a1dac29140b9bd8d13b9c",
+    "artifactCount": 14,
     "sourceDrift": "none"
   },
   "assessment": {
@@ -83,13 +83,13 @@
     {
       "opportunityId":"release-authenticity",
       "title":"Authenticate self-updates independently of transport",
-      "summary":"Require a signed canonical release manifest before replacing the launcher.",
+      "summary":"Require a signed canonical two-asset manifest and an independently verifying updater before replacing application files.",
       "diagnosis":"HTTPS and a hash served from the same compromised release account do not provide an independent authenticity decision.",
       "evidence":[
-        {"claimType":"observed","sourceKind":"source","evidenceId":"E004","path":"src/LandingStats.App.Launcher/Program.cs","claim":"The single-file launcher exits after starting an extracted child, permitting safe replacement of the original launcher."},
-        {"claimType":"observed","sourceKind":"source","evidenceId":"E005","path":".github/workflows/build.yml","claim":"The v0.6 workflow published only the executable and release notes."}
+        {"claimType":"observed","sourceKind":"source","evidenceId":"E004","path":"src/LandingStats.App.Updater/Program.cs","claim":"The standalone updater re-verifies the signed versioned manifest, its own hash, the package, target identity, archive topology, and assembly version before transactional replacement."},
+        {"claimType":"observed","sourceKind":"source","evidenceId":"E005","path":".github/workflows/build.yml","claim":"The workflow publishes a portable ZIP and updater bound by one signed format-2 manifest."}
       ],
-      "desiredInvariants":["No downloaded executable replaces the launcher without a signature from the pinned release key.","Signed size and SHA-256 bind the exact asset.","Replacement is atomic and a previous launcher remains available."],
+      "desiredInvariants":["No downloaded helper or package is trusted without a signature from the pinned release key.","Signed sizes and SHA-256 values bind both exact assets.","The updater confirms the requesting PID and path before shutdown.","Partial multi-file replacement rolls back to the previous application."],
       "proposalPath":"proposals/release-authenticity.md",
       "options":[
         {
@@ -110,21 +110,21 @@
         {
           "optionId":"pinned-signed-manifest","title":"Pinned signed release manifest","kind":"structural","summary":"Sign a canonical manifest in CI and verify it with a pinned public key before download installation.",
           "diagramPaths":{"before":"diagrams/release-authenticity-before.mmd","after":"diagrams/release-authenticity-pinned-signed-manifest-after.mmd"},
-          "evidenceCoverage":[{"evidenceId":"E004","effect":"addresses","tacticalFixRequired":false,"rationale":"The exited launcher is safely replaceable."},{"evidenceId":"E005","effect":"addresses","tacticalFixRequired":false,"rationale":"The workflow gains signed manifest assets."}],
+          "evidenceCoverage":[{"evidenceId":"E004","effect":"addresses","tacticalFixRequired":false,"rationale":"The verified standalone helper owns replacement after an identity handshake."},{"evidenceId":"E005","effect":"addresses","tacticalFixRequired":false,"rationale":"The workflow signs both stable release assets together."}],
           "tradeoffs":[
             {"dimension":"security","direction":"improves","confidence":"high","basis":"source-derived","assessment":"GitHub asset substitution is rejected without the separate signing key.","validationPlan":"Serve a modified manifest and asset."},
             {"dimension":"performance","direction":"neutral","confidence":"medium","basis":"source-derived","assessment":"Startup adds small metadata requests; asset download happens only for a newer version.","validationPlan":"Measure cold check latency."},
             {"dimension":"memory","direction":"neutral","confidence":"high","basis":"source-derived","assessment":"Manifest and file hashing are bounded.","validationPlan":"Inspect buffers and working set."},
-            {"dimension":"reliability","direction":"improves","confidence":"medium","basis":"source-derived","assessment":"Bundle verification, atomic replacement, and backup reduce partial-update failure.","validationPlan":"Kill the process before and after replacement."},
+            {"dimension":"reliability","direction":"improves","confidence":"high","basis":"source-derived","assessment":"Exact archive validation, identity handshake, transaction backup, and reverse rollback reduce partial-update failure.","validationPlan":"Interrupt each replacement phase and verify restoration."},
             {"dimension":"operability","direction":"regresses","confidence":"high","basis":"source-derived","assessment":"The signing secret needs backup, access control, and rotation procedure.","validationPlan":"Perform a key-loss and rotation tabletop."},
-            {"dimension":"migration","direction":"neutral","confidence":"high","basis":"source-derived","assessment":"One manual bootstrap release is unavoidable for v0.6 clients.","validationPlan":"Upgrade an updater-capable prior build."}
+            {"dimension":"migration","direction":"neutral","confidence":"high","basis":"source-derived","assessment":"v0.7.0 needs one manual ZIP bootstrap because its removed format-1 SFX client cannot consume format 2.","validationPlan":"Upgrade from v0.7.1 to the next signed format-2 build."}
           ],
           "residualRisks":["A compromise of both GitHub publishing authority and the release signing key remains fatal.","There is no automatic rollback after a semantically broken but correctly signed release."],
-          "implementationReadiness":{"affectedComponents":["src/LandingStats.App/Updates","src/LandingStats.App.Launcher",".github/workflows/build.yml"],"workPackages":["Provision CI secret.","Publish bootstrap release.","Exercise next-version update."],"acceptanceCriteria":["Signed update installs; manifest, hash, and bundle tampering are rejected."],"migrationNotes":["v0.6 users install the bootstrap manually."],"rollback":"Restore the `.previous` launcher and remove the faulty GitHub release."}
+          "implementationReadiness":{"affectedComponents":["src/LandingStats.App/Updates","src/LandingStats.App.Updater","src/LandingStats.UpdateProtocol",".github/workflows/build.yml"],"workPackages":["Publish the clean ZIP bootstrap.","Exercise the next format-2 update.","Maintain the offline signing key."],"acceptanceCriteria":["Both EXEs scan clean; signed update restarts; manifest, helper, package, topology, identity, and version tampering are rejected; partial replacement rolls back."],"migrationNotes":["v0.7.0 users extract v0.7.1 manually."],"rollback":"Preserve the transaction backup, remove the faulty release from latest, and publish a corrected higher version."}
         }
       ],
       "recommendedOptionId":"pinned-signed-manifest",
-      "recommendation":"Use the signed manifest; Authenticode can be added later for Windows reputation but is not required for this independent update decision."
+      "recommendation":"Use the signed two-asset manifest and standalone verified helper; add Authenticode later for reputation, while retaining the independent pinned-key decision."
     }
   ],
   "openQuestions":["Where will the offline backup of the release private key be kept?","What retention/privacy text will be shown outside the one-time consent dialog?"]

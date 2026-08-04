@@ -1,6 +1,7 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
@@ -18,6 +19,7 @@ using LandingStats.App.Storage;
 using LandingStats.App.TelemetryUpload;
 using LandingStats.App.Updates;
 using LandingStats.Core;
+using UpdaterProgram = LandingStats.App.Updater.Program;
 
 namespace LandingStats.App.RegressionTests;
 
@@ -34,6 +36,9 @@ internal static class Program
         Run("raw debug streams into a temporary queue zip", RawDebugStreamsIntoZip);
         Run("telemetry identity is stable, protected, and signs", TelemetryIdentityIsStableAndSigns);
         Run("updater accepts a signed manifest and rejects tampering", UpdaterVerifiesSignedManifest);
+        Run("updater cleanup refuses paths outside its private root", UpdaterCleanupRefusesUnsafePath);
+        Run("updater rejects unsafe package entries", UpdaterRejectsUnsafePackageEntries);
+        Run("updater rolls back an incomplete replacement", UpdaterRollsBackIncompleteReplacement);
         Run("valid frame clears transient error state", ValidFrameClearsTransientErrorState);
         Run("legacy SimConnect controller path is absent", LegacyControllerPathIsAbsent);
         Run("compact frame matches the SimConnect payload contract", CompactFrameMatchesPayloadContract);
@@ -179,17 +184,135 @@ internal static class Program
 
     private static void UpdaterVerifiesSignedManifest()
     {
-        const string manifest = "format=1\nversion=0.6.0\nasset=MSFS-Landing-Stats.exe\nsize=1\nsha256=0000000000000000000000000000000000000000000000000000000000000000\n";
-        const string signature = "EW7RTAPkdDEycl3YJJP6sQF1eVM1V1wAcUJgY8esySpX4n4jYPR0uUcUYfEB6m2qjW2hAMUKZ4nyO8MDmyC80jkIe5bDywLZChZp/as0k6sBcMAHzByzTGGRegejxITQkan6KcLpcYLR9KXFQ5ZM1BUbQvDLMV2gwAj8VQwmJQAemqUTT/RlQwYAnSnf0oGha44pMJbPQt6bOfzt6+Xw4q4+kGtD27MFLUxvOvUmIwhCM1IS+oleJS7+7xOh3MuOXAFONXRe4HcSdWKCR5VQVodCCYg8EmR/1TQdvW/Dx/FASxjD0RHBZHBPLzpDgIhu4/3PbO17hFC1R05oPithEUUI1l+8URJkhmXCQuMKKARoXXv6XTsHZ/Sejomjfy4in1rUdbBl04sQIN2w/1vSSPuazHDrI3YuuIb7cMAZ3qqf0ZkzRVT2fJnTHfhXNhGW/NbKuhLLdzwpnwda2/CIELl0kbgXTy50ywnGf/PdOqKJUxLmeno0vOf15MR4rI4m";
+        const string manifest = "format=2\nversion=0.7.1\npackage=MSFS-Landing-Stats.zip\npackage-size=1\npackage-sha256=0000000000000000000000000000000000000000000000000000000000000000\nupdater=MSFS-Landing-Stats.Updater.exe\nupdater-size=1\nupdater-sha256=1111111111111111111111111111111111111111111111111111111111111111\n";
+        const string signature = "c7UOGSyNQQxx5454aO2GCoPkhosnnvRrN9G0T3d8T1ZtRr2tK9lEHtCrF5iIS0zhSsQMwPctBKhnSBlajnMakvSbttgLQTrlV72eWO4JWB/gCciFZIs9uJYmTQxHaALJAdAiKP8huIdXgaeEENJvHQDSvcfv395T/ydSRKL4BFuKqnksCf7GrjUNuoGAnInmRG15NqdxvdsFkMYnenhOABM2G/NJ1ECRZ9LHB5fPUoEBHHYBzSROO6glbHQhW4tU8JR/X03acQ2WpZk57ty3fsBClkju4HO0FHAd6j2Huy/Szzj867MJMHuICRjVzUfkR7L+qnMTSdlWYsbLQSO7WLqYD0EmZ6i7T7axQrsqm3vt6Js6P+HWmtYntvOskgmlsPkiRxV+kdBEF9GkIiNuB4ox/9sW6yxBYvPli7z1qUXVXWZ86P39hlKiwJ8iCdi3/ipF5DV1VYnCMRmqTQsKnEs4a2eQvYMa1+tm4sf7HZXVbGPovwxAuvHo8oeuIb8U";
         using (var updater = new ReleaseUpdater(new UpdateFixtureHandler(manifest, signature)))
         {
-            var result = updater.CheckAndInstallAsync(new Version(0, 6, 0), CancellationToken.None).GetAwaiter().GetResult();
+            var result = updater.CheckAndInstallAsync(new Version(0, 7, 1), CancellationToken.None).GetAwaiter().GetResult();
             Equal(ReleaseUpdateState.Current, result.State, "signed manifest state");
         }
-        using (var updater = new ReleaseUpdater(new UpdateFixtureHandler(manifest.Replace("0.6.0", "9.9.9"), signature)))
+        using (var updater = new ReleaseUpdater(new UpdateFixtureHandler(manifest.Replace("0.7.1", "9.9.9"), signature)))
         {
-            var result = updater.CheckAndInstallAsync(new Version(0, 6, 0), CancellationToken.None).GetAwaiter().GetResult();
+            var result = updater.CheckAndInstallAsync(new Version(0, 7, 1), CancellationToken.None).GetAwaiter().GetResult();
             Equal(ReleaseUpdateState.Rejected, result.State, "tampered manifest state");
+        }
+    }
+
+    private static void UpdaterCleanupRefusesUnsafePath()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "landing-stats-unsafe-cleanup-test-" + Guid.NewGuid().ToString("N"));
+        var marker = Path.Combine(directory, "keep.txt");
+        try
+        {
+            Directory.CreateDirectory(directory);
+            File.WriteAllText(marker, "keep");
+            ReleaseUpdater.BeginCompletedUpdateCleanup(new[] { "app", "--finish-update", "1", directory });
+            Equal(true, File.Exists(marker), "unsafe cleanup marker");
+        }
+        finally
+        {
+            if (Directory.Exists(directory))
+            {
+                Directory.Delete(directory, true);
+            }
+        }
+    }
+
+    private static void UpdaterRejectsUnsafePackageEntries()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "landing-stats-package-validation-test-" + Guid.NewGuid().ToString("N"));
+        var validPackage = Path.Combine(root, "valid.zip");
+        var invalidPackage = Path.Combine(root, "invalid.zip");
+        var extracted = Path.Combine(root, "extracted");
+        var expected = new[]
+        {
+            "MSFS-Landing-Stats.exe",
+            "MSFS-Landing-Stats.exe.config",
+            "LandingStats.Core.dll",
+            "Microsoft.FlightSimulator.SimConnect.dll",
+            "SimConnect.dll",
+        };
+        try
+        {
+            Directory.CreateDirectory(root);
+            WriteTestPackage(validPackage, expected);
+            UpdaterProgram.ExtractValidatedPackage(validPackage, extracted);
+            Equal(expected.Length, Directory.GetFiles(extracted).Length, "validated package file count");
+
+            WriteTestPackage(invalidPackage, expected.Skip(1).Concat(new[] { "../MSFS-Landing-Stats.exe" }));
+            var rejected = false;
+            try
+            {
+                UpdaterProgram.ExtractValidatedPackage(invalidPackage, Path.Combine(root, "invalid-extracted"));
+            }
+            catch (InvalidDataException)
+            {
+                rejected = true;
+            }
+            Equal(true, rejected, "unsafe package rejection");
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
+    private static void UpdaterRollsBackIncompleteReplacement()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "landing-stats-update-rollback-test-" + Guid.NewGuid().ToString("N"));
+        var target = Path.Combine(root, "target");
+        var staging = Path.Combine(target, ".staging");
+        var backup = Path.Combine(target, ".backup");
+        var files = new[]
+        {
+            "MSFS-Landing-Stats.exe",
+            "MSFS-Landing-Stats.exe.config",
+            "LandingStats.Core.dll",
+            "Microsoft.FlightSimulator.SimConnect.dll",
+            "SimConnect.dll",
+        };
+        try
+        {
+            Directory.CreateDirectory(target);
+            Directory.CreateDirectory(staging);
+            foreach (var file in files)
+            {
+                File.WriteAllText(Path.Combine(target, file), "old-" + file);
+            }
+            foreach (var file in files.Take(files.Length - 1))
+            {
+                File.WriteAllText(Path.Combine(staging, file), "new-" + file);
+            }
+
+            var failed = false;
+            try
+            {
+                UpdaterProgram.InstallTransactionally(staging, backup, target);
+            }
+            catch (IOException)
+            {
+                failed = true;
+            }
+            Equal(true, failed, "incomplete transaction failure");
+            foreach (var file in files)
+            {
+                Equal("old-" + file, File.ReadAllText(Path.Combine(target, file)), "rollback content " + file);
+            }
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
+    private static void WriteTestPackage(string path, IEnumerable<string> entries)
+    {
+        using var archive = ZipFile.Open(path, ZipArchiveMode.Create);
+        foreach (var name in entries)
+        {
+            var entry = archive.CreateEntry(name);
+            using var writer = new StreamWriter(entry.Open(), new UTF8Encoding(false));
+            writer.Write("test");
         }
     }
 
@@ -1216,6 +1339,7 @@ internal static class Program
                 : _manifest;
             return System.Threading.Tasks.Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
             {
+                RequestMessage = request,
                 Content = new ByteArrayContent(bytes),
             });
         }

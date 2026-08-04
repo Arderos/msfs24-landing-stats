@@ -92,7 +92,7 @@ jobs:
           Copy-Item -LiteralPath $managed.FullName -Destination $managedTarget
           Copy-Item -LiteralPath $native.FullName -Destination $nativeTarget
 
-      - name: Build single executable
+      - name: Build portable package and updater
         shell: pwsh
         run: |
           .\build-app.ps1 -MsfsSdkRoot (Join-Path $env:RUNNER_TEMP 'msfs-simconnect-sdk')
@@ -106,7 +106,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: MSFS-Landing-Stats
-          path: artifacts/MSFS-Landing-Stats.exe
+          path: |
+            artifacts/MSFS-Landing-Stats.zip
+            artifacts/MSFS-Landing-Stats.Updater.exe
           if-no-files-found: error
 
       - name: Publish tagged release
@@ -121,17 +123,28 @@ jobs:
             throw "RELEASE_SIGNING_KEY_PKCS8_B64 is not configured. Refusing to publish an unsigned update."
           }
 
-          $assetPath = Join-Path $env:GITHUB_WORKSPACE 'artifacts\MSFS-Landing-Stats.exe'
-          $asset = Get-Item -LiteralPath $assetPath
-          $sha256 = (Get-FileHash -LiteralPath $assetPath -Algorithm SHA256).Hash.ToLowerInvariant()
+          $packagePath = Join-Path $env:GITHUB_WORKSPACE 'artifacts\MSFS-Landing-Stats.zip'
+          $updaterPath = Join-Path $env:GITHUB_WORKSPACE 'artifacts\MSFS-Landing-Stats.Updater.exe'
+          $package = Get-Item -LiteralPath $packagePath
+          $updater = Get-Item -LiteralPath $updaterPath
+          $assemblyVersion = [Reflection.AssemblyName]::GetAssemblyName($updaterPath).Version
+          $builtVersion = "$($assemblyVersion.Major).$($assemblyVersion.Minor).$($assemblyVersion.Build)"
+          if ($version -cne $builtVersion) {
+            throw "Tag version $version does not match built updater version $builtVersion."
+          }
+          $packageSha256 = (Get-FileHash -LiteralPath $packagePath -Algorithm SHA256).Hash.ToLowerInvariant()
+          $updaterSha256 = (Get-FileHash -LiteralPath $updaterPath -Algorithm SHA256).Hash.ToLowerInvariant()
           $manifestPath = Join-Path $env:GITHUB_WORKSPACE 'artifacts\update-manifest.txt'
           $signaturePath = Join-Path $env:GITHUB_WORKSPACE 'artifacts\update-manifest.sig'
           $manifest = @(
-            'format=1'
+            'format=2'
             "version=$version"
-            'asset=MSFS-Landing-Stats.exe'
-            "size=$($asset.Length)"
-            "sha256=$sha256"
+            'package=MSFS-Landing-Stats.zip'
+            "package-size=$($package.Length)"
+            "package-sha256=$packageSha256"
+            'updater=MSFS-Landing-Stats.Updater.exe'
+            "updater-size=$($updater.Length)"
+            "updater-sha256=$updaterSha256"
           ) -join "`n"
           $manifest += "`n"
           $manifestBytes = [Text.UTF8Encoding]::new($false).GetBytes($manifest)
@@ -171,7 +184,8 @@ jobs:
           $notesPath = Join-Path $env:RUNNER_TEMP "release-notes-$version.md"
           $match.Groups['body'].Value.Trim() | Set-Content -LiteralPath $notesPath -Encoding utf8
           gh release create $env:GITHUB_REF_NAME `
-            artifacts/MSFS-Landing-Stats.exe `
+            artifacts/MSFS-Landing-Stats.zip `
+            artifacts/MSFS-Landing-Stats.Updater.exe `
             artifacts/update-manifest.txt `
             artifacts/update-manifest.sig `
             --notes-file $notesPath

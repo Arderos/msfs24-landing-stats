@@ -12,18 +12,18 @@ Option 1, **HTTPS plus release hash**, is operationally simple. Option 2, **Pinn
 
 | Evidence | Finding or document | What it establishes |
 | --- | --- | --- |
-| `E004` | Single-file launcher lifecycle | The launcher exits after starting the extracted child, so the original EXE can be replaced. |
-| `E005` | v0.6 release workflow | The workflow published no independently signed metadata. |
+| `E004` | Standalone updater lifecycle | The application verifies a separate helper, confirms identity through a handshake, then exits so the helper can transactionally replace five files. |
+| `E005` | Release workflow | The workflow signs a canonical manifest binding both updater and package. |
 
 I inspected both paths. The compromise scenarios below are threat-model reasoning; no GitHub compromise was observed.
 
 ## Current Design And Failure Mode
 
-v0.6 requires a manual download. A naïve updater that trusts an EXE and hash from the same GitHub publisher account detects truncation but gives an account compromise authority over both values.
+The original v0.7.0 SFX build demonstrated that a custom self-extracting executable can be indistinguishable from a dropper to Defender ML. A naïve updater that trusts an EXE and hash from the same GitHub publisher account also gives an account compromise authority over both values.
 
 ## Desired Invariants
 
-Only a manifest signed by the pinned release key may authorize installation. It must bind version, exact asset name, size, and SHA-256. The bundle must verify, replacement must be atomic, and failure must preserve the current launcher.
+Only a manifest signed by the pinned release key may authorize installation. It binds version plus the exact names, sizes, and SHA-256 hashes of the standalone updater and portable ZIP. The updater independently repeats verification from the immutable versioned release, validates the exact archive, and a failed transaction preserves the current app.
 
 ## Constraints And Non-Goals
 
@@ -35,7 +35,7 @@ The app targets .NET Framework 4.8. Authenticode reputation is useful future wor
 flowchart LR
   G["GitHub release account"] --> E["Unsigned EXE"]
   E --> U["Manual user download"]
-  U --> L["Single-file launcher"]
+  U --> L["Portable application folder"]
 ```
 
 ## Options
@@ -61,7 +61,7 @@ Its rollback is simply disabling checks, but publisher compromise remains unchan
 
 ### Option 2: Pinned signed release manifest
 
-CI signs a canonical five-line manifest. The client embeds only the RSA public parameters, verifies before download installation, hashes while streaming, executes the launcher's bundle verifier, copies to a same-directory temporary path, and atomically replaces the exited launcher while retaining `.previous`.
+CI signs a canonical eight-line format-2 manifest. The client embeds only the RSA public parameters, verifies the manifest and updater before launch, and waits for an identity-confirmation handshake. The updater independently verifies the versioned manifest, its own signed hash, the streamed ZIP hash, exact five-file topology, and assembly version. Replacement uses a same-directory transaction backup and reverse-order rollback.
 
 ```mermaid
 flowchart LR
@@ -71,8 +71,8 @@ flowchart LR
   P["Pinned public key"] --> U["Updater verifier"]
   M --> U
   E --> U
-  U -->|"signature + size + hash + bundle"| L["Atomic launcher replacement"]
-  U -->|"failure"| X["Keep current launcher"]
+  U -->|"signature + two hashes + exact ZIP"| L["Transactional file replacement"]
+  U -->|"failure"| X["Restore current app"]
 ```
 
 | Change | Before | After | Security consequence | Cost |
@@ -88,7 +88,7 @@ The key operational risk moves to secret custody. A semantically broken signed r
 | --- | --- | --- |
 | Security | Corruption detection | Independent publisher authentication |
 | Performance | Hash | Signature plus hash; both off the UI-critical path |
-| Reliability | Reject corrupt bytes | Also verifies bundle and atomic replacement |
+| Reliability | Reject corrupt bytes | Also verifies archive topology, version, identity handshake, and rollback |
 | Operability | Minimal | Key secret, backup, rotation |
 | Migration | Simple | Manual updater bootstrap |
 
@@ -98,7 +98,7 @@ I recommend Option 2. If the project cannot custody the private key reliably, Op
 
 ## Evidence Coverage And Residual Risk
 
-`E004 — Single-file launcher lifecycle` enables safe replacement. `E005 — v0.6 release workflow` is directly addressed by publishing manifest and signature assets. Compromise of both GitHub authority and the signing key remains residual.
+`E004 — standalone updater lifecycle` enables replacement after the target process identity is confirmed. `E005 — release workflow` is addressed by publishing the package, helper, manifest, and signature together. Compromise of both GitHub authority and the signing key remains residual.
 
 ## Migration And Rollout
 
@@ -106,11 +106,11 @@ Provision the secret, publish one manual bootstrap build, then validate bootstra
 
 ## Validation Plan
 
-Use a known signed fixture; tamper manifest, signature, size, hash, and bundle; interrupt download and replacement; test unwritable install directories and rollback.
+Use a known signed fixture; tamper manifest, signature, sizes, hashes, ZIP entries, parent identity, and version; interrupt download and replacement; test unwritable install directories, rollback, and Defender with Internet Zone metadata.
 
 ## Implementation Work Packages
 
-Release key provisioning, workflow signing, launcher-path handoff, background client updater, atomic replacement, and release runbook.
+Release key provisioning, workflow signing, verified-helper handshake, standalone updater, transactional replacement, cleanup, and release runbook.
 
 ## Open Questions
 
