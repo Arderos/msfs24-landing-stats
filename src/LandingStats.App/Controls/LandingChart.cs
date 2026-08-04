@@ -469,17 +469,17 @@ public sealed class LandingChart : FrameworkElement
         switch (Mode)
         {
             case LandingChartMode.VerticalSpeed:
-                x = DrawLegendItem(context, x, "inertial", AccentPen, 0);
-                x = DrawLegendItem(context, x, "VSI", AmberPen, 1);
+                x = DrawLegendItem(context, x, "aircraft", AccentPen, 0);
+                x = DrawLegendItem(context, x, "VSI (lagged)", AmberPen, 1);
                 if (HasSurfaceLatchData)
                 {
-                    DrawLegendItem(context, x, "MSFS latch", SurfacePen, 2);
+                    DrawLegendItem(context, x, "surface closure", SurfacePen, 2);
                 }
                 else
                 {
                     context.PushOpacity(0.45);
                     context.DrawLine(SurfacePen, new Point(x, 9), new Point(x + 14, 9));
-                    DrawText(context, "MSFS latch n/a", new Point(x + 19, 2), MutedBrush, 10);
+                    DrawText(context, "surface closure n/a", new Point(x + 19, 2), MutedBrush, 10);
                     context.Pop();
                 }
                 break;
@@ -815,7 +815,10 @@ public sealed class LandingChart : FrameworkElement
         if (minTime <= 0 && maxTime >= 0)
         {
             var touchdownX = MapX(0, plot, minTime, maxTime);
-            context.DrawLine(CompactLane ? LaneContactPen : ContactPen, new Point(touchdownX, plot.Top), new Point(touchdownX, plot.Bottom));
+            var touchdownPen = Mode == LandingChartMode.VerticalSpeed && HasSurfaceLatchData && IsSeriesVisible(2)
+                ? SurfacePen
+                : CompactLane ? LaneContactPen : ContactPen;
+            context.DrawLine(touchdownPen, new Point(touchdownX, plot.Top), new Point(touchdownX, plot.Bottom));
             if (drawLabels)
             {
                 DrawText(context, "TOUCHDOWN", new Point(touchdownX + 6, plot.Top + 3), MutedBrush, 9);
@@ -941,11 +944,12 @@ public sealed class LandingChart : FrameworkElement
     {
         var flags = new List<HoverFlag>();
 
-        void AddFlag(double value, Brush brush, bool visible)
+        void AddFlag(double value, Brush brush, bool visible, string? label = null)
         {
             if (visible)
             {
-                flags.Add(new HoverFlag(FormatFlagValue(value), brush, MapY(value, plot, minValue, maxValue)));
+                var text = FormatFlagValue(value);
+                flags.Add(new HoverFlag(label == null ? text : $"{label} {text}", brush, MapY(value, plot, minValue, maxValue)));
             }
         }
 
@@ -956,7 +960,7 @@ public sealed class LandingChart : FrameworkElement
                 AddFlag(-point.IndicatedFpm, AmberBrush, IsSeriesVisible(1));
                 if (HasSurfaceLatchData)
                 {
-                    AddFlag(-_record!.SurfaceFpm, BlueBrush, IsSeriesVisible(2));
+                    AddFlag(-_record!.SurfaceFpm, BlueBrush, IsSeriesVisible(2), "surface");
                 }
                 break;
             case LandingChartMode.LoadFactors:
@@ -971,6 +975,9 @@ public sealed class LandingChart : FrameworkElement
                 AddFlag(PitchInput(point), AccentBrush, IsSeriesVisible(0));
                 AddFlag(point.PilotRollPercent, BlueBrush, IsSeriesVisible(1));
                 AddFlag(point.PilotYawPercent, AmberBrush, IsSeriesVisible(2));
+                AddFlag(point.ElevatorPercent, AccentBrush, IsSeriesVisible(0), "elev");
+                AddFlag(point.AileronPercent, BlueBrush, IsSeriesVisible(1), "ail");
+                AddFlag(point.RudderPercent, AmberBrush, IsSeriesVisible(2), "rud");
                 break;
             case LandingChartMode.Attitude:
                 AddFlag(-point.PitchDegrees, AccentBrush, IsSeriesVisible(0));
@@ -999,7 +1006,12 @@ public sealed class LandingChart : FrameworkElement
                     var hasN1 = engine.Points.Any(candidate => Math.Abs(candidate.N1Percent) > 0.01);
                     var maximumRpm = engine.Points.Count == 0 ? 1 : Math.Max(1, engine.Points.Max(candidate => candidate.Rpm));
                     var power = hasN1 ? enginePoint.N1Percent : enginePoint.Rpm / maximumRpm * 100.0;
-                    AddFlag(power, CompactLane ? BlueBrush : SeriesBrushes[index % SeriesBrushes.Length], true);
+                    var brush = CompactLane ? BlueBrush : SeriesBrushes[index % SeriesBrushes.Length];
+                    AddFlag(power, brush, true);
+                    if (PowerShowThrottle)
+                    {
+                        AddFlag(enginePoint.ThrottlePercent, brush, true, "thr");
+                    }
                 }
                 break;
             case LandingChartMode.Gear:

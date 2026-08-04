@@ -159,8 +159,6 @@ public static class TouchdownAnalysis
             FirstGroundIndicatedFpm = ToDescentFpm(contact.VerticalSpeedFps),
             LastAirborneWorldFpm = ToDescentFpm(lastAirborne.VelocityWorldYFps),
             FirstGroundWorldFpm = ToDescentFpm(contact.VelocityWorldYFps),
-            LastAirborneBodyFpm = ToDescentFpm(lastAirborne.VelocityBodyYFps),
-            FirstGroundBodyFpm = ToDescentFpm(contact.VelocityBodyYFps),
             AglAverage100MsFpm = CalculateAglRate(samples, previousAirborneIndex, contactTime, 0.1),
             AglAverage150MsFpm = CalculateAglRate(samples, previousAirborneIndex, contactTime, 0.15),
             GAtFirstGroundSample = contact.GForce,

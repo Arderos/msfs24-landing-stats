@@ -2,6 +2,50 @@
 
 All notable changes to MSFS Landing Stats are documented in this file.
 
+## [0.5.0] - 2026-08-04
+
+### Added
+
+- The landing header now shows wind direction and speed from the sample nearest
+  the selected contact.
+- Added a rebuildable summary index so history opens without inflating every
+  landing detail, while the selected record is loaded lazily.
+- Documented the strict columnar landing-detail format v7, including non-finite
+  value encoding, column-length invariants, and v1-v6 read compatibility.
+- The footer version and author now link directly to the GitHub Releases page.
+- Added a current application screenshot and a feature-by-feature comparison to
+  the README.
+- Added a public measurement-methodology document covering contact timing,
+  aircraft and surface-relative rates, terrain decomposition, G windows,
+  validation evidence, and known limitations.
+
+### Changed
+
+- Reduced the full-rate SimConnect frame from more than 2 KB to 892 bytes and
+  123 values by removing channels unused by analysis, storage, or charts.
+- Reduced contact-point capture from 64 speculative indices to the documented
+  SimConnect range of 0 through 19 while retaining all four supported engines.
+- Debug RAW telemetry now uses schema v5; schema v4 captures with 64 contact
+  columns remain readable.
+- A 32-byte guard request now runs continuously; the full 892-byte request is
+  enabled below 3,000 ft AGL and disabled above 3,500 ft, with DEBUG RAW as an
+  explicit override.
+- Aircraft metadata uses SimConnect's changed-only delivery, and the persisted
+  airport cache avoids a world facility-list request unless it is empty or no
+  cached airport lies within 20 NM of the landing.
+- Debug RAW frames stream through a bounded queue directly into rotating ZIP
+  archives instead of accumulating an entire chunk in application memory.
+- Landing detail v7 stores time series in parallel columns and stores only raw
+  controller sources that were live during the recorded window.
+- Bounced landings are ordered newest-contact-first, with the last contact at
+  the top of the history and selected by default.
+- Replaced internal SimConnect terminology in the dashboard with aircraft
+  vertical rate and surface closure rate; shortened the raw-pitch source label.
+- The surface closure metric now forms a matching dashed horizontal/vertical
+  marker at touchdown, and dashed control-surface/throttle curves have hover
+  readouts.
+- DEBUG RAW uses an explicit dark-red checked state with high-contrast text.
+
 ## [0.4.3] - 2026-08-04
 
 ### Fixed

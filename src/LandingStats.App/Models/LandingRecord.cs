@@ -8,7 +8,8 @@ namespace LandingStats.App.Models;
 [DataContract]
 public sealed class LandingRecord
 {
-    public const int CurrentFormatVersion = 6;
+    public const int CurrentFormatVersion = 7;
+    public const double NonFiniteStorageSentinel = -1.7976931348623157E+308;
 
     [DataMember(Order = 1)]
     public int FormatVersion { get; set; } = CurrentFormatVersion;
@@ -133,6 +134,18 @@ public sealed class LandingRecord
     [DataMember(Order = 41)]
     public double RawPitchInputLagSeconds { get; set; }
 
+    [DataMember(Order = 42)]
+    public List<int> RawControllerSourceIndices { get; set; } = new List<int>();
+
+    [DataMember(Order = 43)]
+    public double WindSpeedKnotsAtContact { get; set; }
+
+    [DataMember(Order = 44)]
+    public double WindDirectionDegreesAtContact { get; set; }
+
+    [IgnoreDataMember]
+    public bool IsSummaryOnly { get; set; }
+
     public string TimestampDisplay => TimestampUtc.ToLocalTime().ToString("dd MMM · HH:mm", CultureInfo.CurrentCulture);
 
     public string LocationDisplay => Runway == "—" ? Airport : $"{Airport} · RWY {Runway}";
@@ -175,7 +188,7 @@ public sealed class LandingRecord
         Math.Abs(RawPitchInputCorrelation) >= 0.75;
 
     public string PitchInputSourceDisplay => HasRawPitchInput
-        ? $"RAW CONTROLLER {RawPitchInputSourceIndex} · r={Math.Abs(RawPitchInputCorrelation):F2} · {RawPitchInputLagSeconds * 1000.0:F0} MS"
+        ? $"RAW C{RawPitchInputSourceIndex} · {RawPitchInputLagSeconds * 1000.0:F0} MS"
         : "SIMCONNECT PROCESSED COMMAND";
 
     public string InertialQualityDisplay => FormatVersion < 4
@@ -220,6 +233,39 @@ public sealed class LandingRecord
 
     public string CgDisplay => CgPercent > 0 ? $"{CgPercent:F1}% CG" : "CG n/a";
 
+    public string WindDisplay
+    {
+        get
+        {
+            var speed = WindSpeedKnotsAtContact;
+            var direction = WindDirectionDegreesAtContact;
+            if ((FormatVersion < 7 || (Math.Abs(speed) < 0.000001 && Math.Abs(direction) < 0.000001)) &&
+                Series != null && Series.Count > 0)
+            {
+                var closest = Series[0];
+                for (var index = 1; index < Series.Count; index++)
+                {
+                    if (Math.Abs(Series[index].TimeSeconds) < Math.Abs(closest.TimeSeconds))
+                    {
+                        closest = Series[index];
+                    }
+                }
+
+                speed = closest.WindSpeedKnots;
+                direction = closest.WindDirectionDegrees;
+            }
+
+            if (double.IsNaN(speed) || double.IsInfinity(speed) ||
+                double.IsNaN(direction) || double.IsInfinity(direction))
+            {
+                return "wind n/a";
+            }
+
+            direction = (direction % 360.0 + 360.0) % 360.0;
+            return $"wind {direction:000}°/{speed:0} kt";
+        }
+    }
+
     public string RecordSummaryDisplay => $"Record v{FormatVersion} · {Series.Count} samples";
 
     [OnDeserialized]
@@ -229,22 +275,35 @@ public sealed class LandingRecord
         Engines ??= new List<LandingEngineSeries>();
         ContactPoints ??= new List<LandingContactSeries>();
         ControlInputSources ??= new List<string>();
+        RawControllerSourceIndices ??= new List<int>();
     }
 
     public double PitchInputPercent(LandingSeriesPoint point)
     {
+        var storedSourceIndex = StoredRawControllerIndex(RawPitchInputSourceIndex);
         if (!HasRawPitchInput ||
+            storedSourceIndex < 0 ||
             point.RawControllerYAxisPercent == null ||
             point.RawControllerYAxisValid == null ||
-            RawPitchInputSourceIndex >= point.RawControllerYAxisPercent.Length ||
-            RawPitchInputSourceIndex >= point.RawControllerYAxisValid.Length ||
-            !point.RawControllerYAxisValid[RawPitchInputSourceIndex])
+            storedSourceIndex >= point.RawControllerYAxisPercent.Length ||
+            storedSourceIndex >= point.RawControllerYAxisValid.Length ||
+            !point.RawControllerYAxisValid[storedSourceIndex])
         {
             return point.PilotPitchPercent;
         }
 
         var direction = RawPitchInputCorrelation < 0 ? -1.0 : 1.0;
-        return direction * point.RawControllerYAxisPercent[RawPitchInputSourceIndex];
+        return direction * point.RawControllerYAxisPercent[storedSourceIndex];
+    }
+
+    public int StoredRawControllerIndex(int sourceIndex)
+    {
+        if (sourceIndex < 0 || RawControllerSourceIndices == null || RawControllerSourceIndices.Count == 0)
+        {
+            return sourceIndex;
+        }
+
+        return RawControllerSourceIndices.IndexOf(sourceIndex);
     }
 
     private static string FormatSignedMetric(double value) =>

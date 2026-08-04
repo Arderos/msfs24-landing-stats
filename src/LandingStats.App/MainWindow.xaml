@@ -198,6 +198,8 @@
                             <TextBlock Text="  ·  " Foreground="{StaticResource SubtleTextBrush}" FontSize="12" />
                             <TextBlock Text="{Binding CgDisplay}" Foreground="{StaticResource SubtleTextBrush}" FontSize="12" />
                             <TextBlock Text="  ·  " Foreground="{StaticResource SubtleTextBrush}" FontSize="12" />
+                            <TextBlock Text="{Binding WindDisplay}" Foreground="{StaticResource SubtleTextBrush}" FontSize="12" />
+                            <TextBlock Text="  ·  " Foreground="{StaticResource SubtleTextBrush}" FontSize="12" />
                             <TextBlock Text="{Binding ContactDisplay}" Foreground="{StaticResource SubtleTextBrush}" FontSize="12" />
                         </StackPanel>
                     </StackPanel>
@@ -223,7 +225,7 @@
                         <RowDefinition Height="Auto" />
                     </Grid.RowDefinitions>
 
-                    <TextBlock Grid.Column="0" Text="INERTIAL RATE" Style="{StaticResource SectionLabelStyle}" Foreground="{StaticResource LabelTextBrush}" />
+                    <TextBlock Grid.Column="0" Text="AIRCRAFT VERTICAL RATE" Style="{StaticResource SectionLabelStyle}" Foreground="{StaticResource LabelTextBrush}" />
                     <StackPanel Grid.Column="0" Grid.Row="1" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,7,0,0">
                         <TextBlock Text="{Binding InertialDisplay}" FontSize="44" FontWeight="SemiBold" />
                         <TextBlock Text="fpm" Foreground="{StaticResource MutedTextBrush}" FontSize="14" VerticalAlignment="Bottom" Margin="8,0,0,8" />
@@ -241,11 +243,11 @@
                             </TextBlock.Style>
                         </TextBlock>
                     </StackPanel>
-                    <TextBlock Grid.Column="0" Grid.Row="2" Text="WORLD Y at contact" Style="{StaticResource MetricSublineStyle}" />
+                    <TextBlock Grid.Column="0" Grid.Row="2" Text="vertical speed at contact" Style="{StaticResource MetricSublineStyle}" />
 
                     <Border Grid.Column="1" Grid.RowSpan="3" Width="1" HorizontalAlignment="Center" Background="{StaticResource BorderBrush}" />
 
-                    <TextBlock Grid.Column="2" Text="MSFS SURFACE" Style="{StaticResource SectionLabelStyle}"
+                    <TextBlock Grid.Column="2" Text="SURFACE CLOSURE RATE" Style="{StaticResource SectionLabelStyle}"
                                Foreground="{StaticResource LabelTextBrush}" ToolTip="{Binding SurfaceQualityDisplay}" />
                     <StackPanel Grid.Column="2" Grid.Row="1" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,7,0,0">
                         <TextBlock Text="{Binding SurfaceValueDisplay}" FontSize="44" FontWeight="SemiBold" />
@@ -291,7 +293,7 @@
                         <RadioButton Content="Power" Tag="Power" GroupName="ChartMode" Style="{StaticResource ChartTabStyle}" Checked="OnChartModeChanged" />
                         <RadioButton Content="Gear" Tag="Gear" GroupName="ChartMode" Style="{StaticResource ChartTabStyle}" Checked="OnChartModeChanged" />
                     </StackPanel>
-                    <TextBlock Grid.Column="2" x:Name="MainChartDescription" Text="signed velocity around contact"
+                    <TextBlock Grid.Column="2" x:Name="MainChartDescription" Text="vertical speed · climb + / descent −"
                                Foreground="{StaticResource SubtleTextBrush}" FontSize="11" VerticalAlignment="Bottom" Margin="0,0,0,10" />
                     <Border Grid.Column="3" Width="1" Height="12" Background="#262321" Margin="22,0,22,10" VerticalAlignment="Bottom" />
                     <StackPanel Grid.Column="4" Orientation="Horizontal" VerticalAlignment="Bottom">
@@ -397,11 +399,15 @@
                 <TextBlock Grid.Column="1" Text="{Binding RecordSummaryDisplay}" Foreground="{StaticResource LabelTextBrush}" FontSize="11" VerticalAlignment="Center" Margin="16,0,0,0" />
                 <TextBlock Grid.Column="2" x:Name="VersionAuthorText" Foreground="{StaticResource LabelTextBrush}"
                            FontFamily="Cascadia Mono, Consolas" FontSize="10" VerticalAlignment="Center"
-                           HorizontalAlignment="Center" />
+                           HorizontalAlignment="Center">
+                    <Hyperlink NavigateUri="https://github.com/Arderos/msfs24-landing-stats/releases"
+                               RequestNavigate="OnReleasesLinkNavigate" Foreground="{StaticResource LabelTextBrush}">
+                        <Run x:Name="VersionAuthorRun" />
+                    </Hyperlink>
+                </TextBlock>
                 <TextBlock Grid.Column="3" x:Name="RawDebugStatusText" Text="Raw capture disabled" Foreground="{StaticResource SubtleTextBrush}" FontSize="10" VerticalAlignment="Center" Margin="0,0,10,0" />
                 <StackPanel Grid.Column="4" Orientation="Horizontal" VerticalAlignment="Center">
-                    <ToggleButton x:Name="RawDebugToggle" Content="DEBUG RAW · OFF" Foreground="{StaticResource DangerBrush}"
-                                  Background="Transparent" BorderThickness="0" Cursor="Hand" FontSize="10"
+                    <ToggleButton x:Name="RawDebugToggle" Content="DEBUG RAW · OFF" Style="{StaticResource RawDebugToggleStyle}" FontSize="10"
                                   Checked="OnRawDebugModeChanged" Unchecked="OnRawDebugModeChanged"
                                   ToolTip="SHORT TEST FLIGHTS ONLY · DO NOT ENABLE ON LONG FLIGHTS" />
                     <TextBlock Text="· NOT FOR LONG FLIGHTS" Foreground="{StaticResource DangerBrush}" FontSize="9"

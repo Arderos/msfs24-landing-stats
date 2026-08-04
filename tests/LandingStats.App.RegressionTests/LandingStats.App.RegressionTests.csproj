@@ -10,5 +10,7 @@
     <ProjectReference Include="..\..\src\LandingStats.App\LandingStats.App.csproj" />
     <ProjectReference Include="..\..\src\LandingStats.Core\LandingStats.Core.csproj" />
     <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies.net48" Version="1.0.3" PrivateAssets="all" />
+    <Reference Include="System.IO.Compression" />
+    <Reference Include="System.IO.Compression.FileSystem" />
   </ItemGroup>
 </Project>

@@ -77,6 +77,19 @@ public static class LandingRecordFactory
             nextStoredTime = relativeTime + StoredSampleIntervalSeconds;
         }
 
+        for (var sourceIndex = 0; sourceIndex < TelemetrySample.CapturedControllerCount; sourceIndex++)
+        {
+            foreach (var stored in storedSamples)
+            {
+                if (sourceIndex < stored.Sample.RawControllerYAxisValid.Length &&
+                    stored.Sample.RawControllerYAxisValid[sourceIndex])
+                {
+                    record.RawControllerSourceIndices.Add(sourceIndex);
+                    break;
+                }
+            }
+        }
+
         foreach (var stored in storedSamples)
         {
             var sample = stored.Sample;
@@ -120,9 +133,9 @@ public static class LandingRecordFactory
                 AxisElevatorSetPercent = Math.Round(sample.AxisElevatorSetPercent, 2),
                 AxisElevatorSetValid = sample.AxisElevatorSetValid,
                 AxisElevatorSetAgeSeconds = Math.Round(sample.AxisElevatorSetAgeSeconds, 4),
-                RawControllerYAxisPercent = RoundedCopy(sample.RawControllerYAxisPercent, 2),
-                RawControllerYAxisValid = (bool[])sample.RawControllerYAxisValid.Clone(),
-                RawControllerYAxisAgeSeconds = RoundedCopy(sample.RawControllerYAxisAgeSeconds, 4),
+                RawControllerYAxisPercent = RoundedSelectedCopy(sample.RawControllerYAxisPercent, record.RawControllerSourceIndices, 2),
+                RawControllerYAxisValid = SelectedCopy(sample.RawControllerYAxisValid, record.RawControllerSourceIndices),
+                RawControllerYAxisAgeSeconds = RoundedSelectedCopy(sample.RawControllerYAxisAgeSeconds, record.RawControllerSourceIndices, 4),
             });
         }
 
@@ -134,6 +147,8 @@ public static class LandingRecordFactory
             record.TouchdownLatitudeDegrees = contactSample.LatitudeDegrees;
             record.TouchdownLongitudeDegrees = contactSample.LongitudeDegrees;
             record.AngleOfAttackDegrees = Math.Round(contactSample.AngleOfAttackDegrees, 2);
+            record.WindSpeedKnotsAtContact = Math.Round(contactSample.AmbientWindVelocityKnots, 2);
+            record.WindDirectionDegreesAtContact = Math.Round(contactSample.AmbientWindDirectionDegrees, 2);
         }
 
         AddEngineSeries(record, storedSamples);
@@ -157,19 +172,25 @@ public static class LandingRecordFactory
         var bestLag = 0.0;
         var bestSource = -1;
 
-        for (var sourceIndex = 0; sourceIndex < TelemetrySample.CapturedControllerCount; sourceIndex++)
+        var storedSourceCount = record.RawControllerSourceIndices.Count > 0
+            ? record.RawControllerSourceIndices.Count
+            : TelemetrySample.CapturedControllerCount;
+        for (var storedSourceIndex = 0; storedSourceIndex < storedSourceCount; storedSourceIndex++)
         {
+            var sourceIndex = record.RawControllerSourceIndices.Count > 0
+                ? record.RawControllerSourceIndices[storedSourceIndex]
+                : storedSourceIndex;
             var minimum = double.PositiveInfinity;
             var maximum = double.NegativeInfinity;
             var validCount = 0;
             foreach (var point in record.Series)
             {
-                if (point.OnGround || !HasRawControllerValue(point, sourceIndex))
+                if (point.OnGround || !HasRawControllerValue(point, storedSourceIndex))
                 {
                     continue;
                 }
 
-                var value = point.RawControllerYAxisPercent[sourceIndex];
+                var value = point.RawControllerYAxisPercent[storedSourceIndex];
                 minimum = Math.Min(minimum, value);
                 maximum = Math.Max(maximum, value);
                 validCount++;
@@ -182,7 +203,7 @@ public static class LandingRecordFactory
 
             for (var lag = 0.0; lag <= MaximumRawPitchLagSeconds + 0.000001; lag += RawPitchLagStepSeconds)
             {
-                if (!TryCorrelationAtLag(record.Series, sourceIndex, lag, out var correlation))
+                if (!TryCorrelationAtLag(record.Series, storedSourceIndex, lag, out var correlation))
                 {
                     continue;
                 }
@@ -472,6 +493,36 @@ public static class LandingRecordFactory
         for (var index = 0; index < values.Length; index++)
         {
             result[index] = Math.Round(values[index], digits);
+        }
+
+        return result;
+    }
+
+    private static double[] RoundedSelectedCopy(double[] values, IReadOnlyList<int> sourceIndices, int digits)
+    {
+        var result = new double[sourceIndices.Count];
+        for (var index = 0; index < sourceIndices.Count; index++)
+        {
+            var sourceIndex = sourceIndices[index];
+            if (sourceIndex >= 0 && sourceIndex < values.Length)
+            {
+                result[index] = Math.Round(values[sourceIndex], digits);
+            }
+        }
+
+        return result;
+    }
+
+    private static bool[] SelectedCopy(bool[] values, IReadOnlyList<int> sourceIndices)
+    {
+        var result = new bool[sourceIndices.Count];
+        for (var index = 0; index < sourceIndices.Count; index++)
+        {
+            var sourceIndex = sourceIndices[index];
+            if (sourceIndex >= 0 && sourceIndex < values.Length)
+            {
+                result[index] = values[sourceIndex];
+            }
         }
 
         return result;

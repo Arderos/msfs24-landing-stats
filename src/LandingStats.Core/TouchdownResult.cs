@@ -50,10 +50,6 @@ public sealed class TouchdownResult
 
     public double FirstGroundWorldFpm { get; set; }
 
-    public double LastAirborneBodyFpm { get; set; }
-
-    public double FirstGroundBodyFpm { get; set; }
-
     public double AglAverage100MsFpm { get; set; }
 
     public double AglAverage150MsFpm { get; set; }

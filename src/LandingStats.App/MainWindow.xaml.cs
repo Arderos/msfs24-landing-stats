@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Reflection;
 using System.Windows;
@@ -7,6 +8,7 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
+using System.Windows.Navigation;
 using LandingStats.App.Controls;
 using LandingStats.App.Models;
 using LandingStats.App.Storage;
@@ -22,8 +24,10 @@ public partial class MainWindow : Window
     private readonly AirportFacilityRepository _airportFacilityRepository = new AirportFacilityRepository();
     private IReadOnlyList<LandingRecord> _landings = Array.Empty<LandingRecord>();
     private IReadOnlyList<AirportFacility> _airportFacilities = Array.Empty<AirportFacility>();
+    private readonly Dictionary<string, LandingRecord> _loadedDetails = new Dictionary<string, LandingRecord>(StringComparer.Ordinal);
     private HwndSource? _messageSource;
     private SimConnectLandingRecorder? _recorder;
+    private RawCaptureSession? _rawCaptureSession;
     private LandingChart[] _charts = Array.Empty<LandingChart>();
     private bool _showFullApproach;
     private int _primaryGearSeriesIndex;
@@ -35,7 +39,7 @@ public partial class MainWindow : Window
         var assembly = typeof(MainWindow).Assembly;
         var version = assembly.GetName().Version;
         var company = assembly.GetCustomAttribute<AssemblyCompanyAttribute>()?.Company ?? "Evgeniy Zaytsev";
-        VersionAuthorText.Text = $"v{version?.Major ?? 0}.{version?.Minor ?? 0}.{version?.Build ?? 0} · {company}";
+        VersionAuthorRun.Text = $"v{version?.Major ?? 0}.{version?.Minor ?? 0}.{version?.Build ?? 0} · {company}";
         _airportFacilities = _airportFacilityRepository.Load();
         LoadHistory();
         _charts = new[] { MainChart, MiniGChart, MiniPowerChart, MiniGearChart };
@@ -54,7 +58,7 @@ public partial class MainWindow : Window
         MainChart.Mode = LandingChartMode.VerticalSpeed;
         _mainIsolatedSeriesIndex = null;
         MainChart.SetIsolatedSeries(null);
-        MainChartDescription.Text = "signed velocity around contact";
+        MainChartDescription.Text = "vertical speed · climb + / descent −";
         ModeUnitText.Text = "fpm";
         UpdateMainLegend(LandingChartMode.VerticalSpeed);
 
@@ -68,14 +72,9 @@ public partial class MainWindow : Window
         foreach (var record in stored)
         {
             var changed = TryResolveAirport(record, _airportFacilities);
-            if (record.FormatVersion >= 6 && LandingRecordFactory.RefreshRawPitchInputSelection(record))
-            {
-                changed = true;
-            }
-
             if (changed)
             {
-                _repository.Save(record);
+                _repository.UpdateSummary(record);
             }
         }
 
@@ -103,22 +102,44 @@ public partial class MainWindow : Window
 
     private void SelectRecord(LandingRecord selected)
     {
-        DataContext = selected;
-        MainChart.Record = selected;
-        MiniGChart.Record = selected;
-        MiniPowerChart.Record = selected;
-        MiniGearChart.Record = selected;
-        Timeline.Record = selected;
+        var detail = selected;
+        if (selected.IsSummaryOnly)
+        {
+            if (_loadedDetails.TryGetValue(selected.Id, out var cachedDetail))
+            {
+                detail = cachedDetail;
+            }
+            else
+            {
+                detail = _repository.LoadDetail(selected) ?? selected;
+                if (!detail.IsSummaryOnly)
+                {
+                    if (detail.FormatVersion >= 6 && LandingRecordFactory.RefreshRawPitchInputSelection(detail))
+                    {
+                        _repository.Save(detail);
+                    }
+
+                    _loadedDetails[selected.Id] = detail;
+                }
+            }
+        }
+
+        DataContext = detail;
+        MainChart.Record = detail;
+        MiniGChart.Record = detail;
+        MiniPowerChart.Record = detail;
+        MiniGearChart.Record = detail;
+        Timeline.Record = detail;
         MiniGChart.SetIsolatedSeries(0);
-        MiniPowerChart.SetIsolatedSeries(selected.Engines.Count > 0 ? 0 : (int?)null);
-        _primaryGearSeriesIndex = PrimaryGearSeriesIndex(selected);
-        MiniGearChart.SetIsolatedSeries(selected.ContactPoints.Count > 0 ? _primaryGearSeriesIndex : (int?)null);
+        MiniPowerChart.SetIsolatedSeries(detail.Engines.Count > 0 ? 0 : (int?)null);
+        _primaryGearSeriesIndex = PrimaryGearSeriesIndex(detail);
+        MiniGearChart.SetIsolatedSeries(detail.ContactPoints.Count > 0 ? _primaryGearSeriesIndex : (int?)null);
         _mainIsolatedSeriesIndex = null;
         MainChart.SetIsolatedSeries(null);
         UpdateMainLegend(MainChart.Mode);
         UpdateChartDescription(MainChart.Mode);
         ApplyZoom(_showFullApproach ? null : -6, _showFullApproach ? null : 8);
-        UpdateLaneReadouts(selected, 0);
+        UpdateLaneReadouts(detail, 0);
     }
 
     private void OnChartHoverTimeChanged(object? sender, LandingChartHoverEventArgs eventArgs)
@@ -242,10 +263,10 @@ public partial class MainWindow : Window
         var record = DataContext as LandingRecord;
         MainChartDescription.Text = mode switch
         {
-            LandingChartMode.VerticalSpeed => "signed velocity around contact",
+            LandingChartMode.VerticalSpeed => "vertical speed · climb + / descent −",
             LandingChartMode.LoadFactors => "three axes at the strut",
             LandingChartMode.FlightControls when record?.HasRawPitchInput == true =>
-                $"pitch raw controller {record.RawPitchInputSourceIndex} · r={Math.Abs(record.RawPitchInputCorrelation):F2} · lag {record.RawPitchInputLagSeconds * 1000.0:F0} ms · dashed surfaces",
+                $"raw pitch C{record.RawPitchInputSourceIndex} · {record.RawPitchInputLagSeconds * 1000.0:F0} ms · dashed surfaces",
             LandingChartMode.FlightControls => "processed SimConnect commands · dashed surfaces",
             LandingChartMode.Attitude => "pitch, bank and AoA",
             LandingChartMode.Power => "solid N1, dashed lever",
@@ -280,7 +301,7 @@ public partial class MainWindow : Window
         switch (mode)
         {
             case LandingChartMode.VerticalSpeed:
-                labels = new[] { "inertial", "VSI", "MSFS surface" };
+                labels = new[] { "aircraft", "VSI (lagged)", "surface closure" };
                 colors = new[] { "#FF7A45", "#D9C46A", "#5FA8F5" };
                 dashed = new[] { false, false, true };
                 break;
@@ -347,7 +368,10 @@ public partial class MainWindow : Window
         _recorder.StatusChanged += OnRecorderStatusChanged;
         _recorder.EpisodeCompleted += OnEpisodeCompleted;
         _recorder.AirportFacilitiesUpdated += OnAirportFacilitiesUpdated;
-        _recorder.RawDebugCaptureCompleted += OnRawDebugCaptureCompleted;
+        _recorder.RawDebugCaptureStarted += OnRawDebugCaptureStarted;
+        _recorder.RawDebugSampleReceived += OnRawDebugSampleReceived;
+        _recorder.RawDebugCaptureStopped += OnRawDebugCaptureStopped;
+        _recorder.SeedAirportFacilities(_airportFacilities);
         _recorder.Start();
         if (RawDebugToggle.IsChecked == true)
         {
@@ -424,6 +448,7 @@ public partial class MainWindow : Window
                 record.ControlInputSources = eventArgs.ControlInputSources.ToList();
                 TryResolveAirport(record, _airportFacilities);
                 _repository.Save(record);
+                _loadedDetails[record.Id] = record;
                 savedRecords.Add(record);
             }
 
@@ -451,12 +476,17 @@ public partial class MainWindow : Window
         }
 
         var addedIds = new HashSet<string>(records.Select(record => record.Id), StringComparer.Ordinal);
-        _landings = records
+        var newestFirst = records
+            .OrderByDescending(record => record.TimestampUtc)
+            .ThenByDescending(record => record.ContactNumber)
+            .ToArray();
+        _landings = newestFirst
             .Concat(_landings.Where(record => !addedIds.Contains(record.Id)))
             .OrderByDescending(record => record.TimestampUtc)
+            .ThenByDescending(record => record.ContactNumber)
             .ToArray();
 
-        ApplySessionFilter(records[0].Id);
+        ApplySessionFilter(newestFirst[0].Id);
         LandingContent.Visibility = Visibility.Visible;
         EmptyState.Visibility = Visibility.Collapsed;
     }
@@ -484,16 +514,24 @@ public partial class MainWindow : Window
                 continue;
             }
 
-            _repository.Save(record);
+            _repository.UpdateSummary(record);
+            if (_loadedDetails.TryGetValue(record.Id, out var detail))
+            {
+                detail.Airport = record.Airport;
+                detail.Runway = record.Runway;
+                detail.AirportDistanceNauticalMiles = record.AirportDistanceNauticalMiles;
+            }
             changed = true;
         }
 
         if (changed)
         {
-            var selected = LandingHistoryList.SelectedItem;
+            var selected = LandingHistoryList.SelectedItem as LandingRecord;
             LandingHistoryList.Items.Refresh();
-            DataContext = null;
-            DataContext = selected;
+            if (selected != null)
+            {
+                SelectRecord(selected);
+            }
         }
     }
 
@@ -538,7 +576,7 @@ public partial class MainWindow : Window
         _recorder.SetRawDebugEnabled(enabled);
         if (enabled)
         {
-            RawDebugStatusText.Text = "LIVE · every SIM_FRAME sample · 15 s pre-roll · rotates every 30,000 frames\n" + _rawCaptureRepository.RootPath;
+            RawDebugStatusText.Text = "LIVE · streaming to disk · every SIM_FRAME sample · 15 s pre-roll\n" + _rawCaptureRepository.RootPath;
         }
         else if (!wasEnabled)
         {
@@ -546,26 +584,88 @@ public partial class MainWindow : Window
         }
     }
 
-    private void OnRawDebugCaptureCompleted(object? sender, RawDebugCaptureEventArgs eventArgs)
+    private void OnRawDebugCaptureStarted(object? sender, RawDebugCaptureStartedEventArgs eventArgs)
     {
         try
         {
-            var path = _rawCaptureRepository.Save(
-                eventArgs.Samples,
+            StopRawCaptureSession();
+            _rawCaptureSession = _rawCaptureRepository.StartCapture(
+                eventArgs.InitialSamples,
                 eventArgs.Simulator,
                 eventArgs.AircraftTitle,
                 eventArgs.AircraftType,
                 eventArgs.AircraftModel,
                 eventArgs.ControlInputSources,
                 eventArgs.StartedUtc);
-            RawDebugStatusText.Text = _recorder?.RawDebugEnabled == true
-                ? $"Saved chunk {eventArgs.Samples.Count:N0} frames · capture continues"
-                : $"Saved {eventArgs.Samples.Count:N0} frames · {System.IO.Path.GetFileName(path)}";
+            _rawCaptureSession.ChunkCompleted += OnRawCaptureChunkCompleted;
+            _rawCaptureSession.Failed += OnRawCaptureFailed;
+            if (_rawCaptureSession.Failure != null)
+            {
+                OnRawCaptureFailed(_rawCaptureSession.Failure);
+            }
+            RawDebugStatusText.Text = "LIVE · streaming to disk · every SIM_FRAME sample · 15 s pre-roll\n" + _rawCaptureRepository.RootPath;
         }
         catch (Exception exception)
         {
             RawDebugStatusText.Text = $"Raw capture failed: {exception.Message}";
         }
+    }
+
+    private void OnRawDebugSampleReceived(object? sender, RawDebugSampleEventArgs eventArgs)
+    {
+        _rawCaptureSession?.Write(eventArgs.Sample);
+    }
+
+    private void OnRawDebugCaptureStopped(object? sender, EventArgs eventArgs)
+    {
+        StopRawCaptureSession();
+        RawDebugStatusText.Text = "Full-rate capture is disabled";
+    }
+
+    private void StopRawCaptureSession()
+    {
+        var session = _rawCaptureSession;
+        _rawCaptureSession = null;
+        if (session == null)
+        {
+            return;
+        }
+
+        try
+        {
+            session.Dispose();
+        }
+        catch (Exception exception)
+        {
+            RawDebugStatusText.Text = $"Raw capture failed: {exception.Message}";
+        }
+        finally
+        {
+            session.ChunkCompleted -= OnRawCaptureChunkCompleted;
+            session.Failed -= OnRawCaptureFailed;
+        }
+    }
+
+    private void OnRawCaptureChunkCompleted(object? sender, RawCaptureChunkEventArgs eventArgs)
+    {
+        Dispatcher.BeginInvoke(new Action(() =>
+        {
+            RawDebugStatusText.Text = eventArgs.CaptureContinues && _recorder?.RawDebugEnabled == true
+                ? $"Saved chunk {eventArgs.SampleCount:N0} frames · streaming continues"
+                : $"Saved {eventArgs.SampleCount:N0} frames · {System.IO.Path.GetFileName(eventArgs.Path)}";
+        }));
+    }
+
+    private void OnRawCaptureFailed(Exception exception)
+    {
+        Dispatcher.BeginInvoke(new Action(() =>
+        {
+            if (RawDebugToggle.IsChecked == true)
+            {
+                RawDebugToggle.IsChecked = false;
+            }
+            RawDebugStatusText.Text = $"Raw capture failed: {exception.Message}";
+        }));
     }
 
     private static int PrimaryGearSeriesIndex(LandingRecord record)
@@ -613,9 +713,13 @@ public partial class MainWindow : Window
             _recorder.StatusChanged -= OnRecorderStatusChanged;
             _recorder.EpisodeCompleted -= OnEpisodeCompleted;
             _recorder.AirportFacilitiesUpdated -= OnAirportFacilitiesUpdated;
-            _recorder.RawDebugCaptureCompleted -= OnRawDebugCaptureCompleted;
+            _recorder.RawDebugCaptureStarted -= OnRawDebugCaptureStarted;
+            _recorder.RawDebugSampleReceived -= OnRawDebugSampleReceived;
+            _recorder.RawDebugCaptureStopped -= OnRawDebugCaptureStopped;
             _recorder = null;
         }
+
+        StopRawCaptureSession();
 
         if (_messageSource != null)
         {
@@ -667,5 +771,11 @@ public partial class MainWindow : Window
     private void OnCloseClick(object sender, RoutedEventArgs eventArgs)
     {
         Close();
+    }
+
+    private void OnReleasesLinkNavigate(object sender, RequestNavigateEventArgs eventArgs)
+    {
+        Process.Start(new ProcessStartInfo(eventArgs.Uri.AbsoluteUri) { UseShellExecute = true });
+        eventArgs.Handled = true;
     }
 }

@@ -11,7 +11,9 @@ src/LandingStats.App/*.zip
 src/LandingStats.Analyzer/
 src/LandingStats.Probe/
 src/LandingStats.Probe.Launcher/
-docs/
+docs/*
+!docs/format-v7.md
+!docs/methodology.md
 build-community.ps1
 MsfsLandingStats.sln
 src/LandingStats.Core/ContactPointAnalysis.cs

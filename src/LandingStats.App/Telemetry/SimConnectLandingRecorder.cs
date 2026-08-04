@@ -75,10 +75,10 @@ internal sealed class AirportFacilitiesEventArgs : EventArgs
     public IReadOnlyList<AirportFacility> Facilities { get; }
 }
 
-internal sealed class RawDebugCaptureEventArgs : EventArgs
+internal sealed class RawDebugCaptureStartedEventArgs : EventArgs
 {
-    public RawDebugCaptureEventArgs(
-        IReadOnlyList<TelemetrySample> samples,
+    public RawDebugCaptureStartedEventArgs(
+        IReadOnlyList<TelemetrySample> initialSamples,
         DateTime startedUtc,
         string simulator,
         string aircraftTitle,
@@ -86,7 +86,7 @@ internal sealed class RawDebugCaptureEventArgs : EventArgs
         string aircraftModel,
         IReadOnlyList<string> controlInputSources)
     {
-        Samples = samples;
+        InitialSamples = initialSamples;
         StartedUtc = startedUtc;
         Simulator = simulator;
         AircraftTitle = aircraftTitle;
@@ -95,7 +95,7 @@ internal sealed class RawDebugCaptureEventArgs : EventArgs
         ControlInputSources = controlInputSources;
     }
 
-    public IReadOnlyList<TelemetrySample> Samples { get; }
+    public IReadOnlyList<TelemetrySample> InitialSamples { get; }
 
     public DateTime StartedUtc { get; }
 
@@ -110,6 +110,16 @@ internal sealed class RawDebugCaptureEventArgs : EventArgs
     public IReadOnlyList<string> ControlInputSources { get; }
 }
 
+internal sealed class RawDebugSampleEventArgs : EventArgs
+{
+    public RawDebugSampleEventArgs(TelemetrySample sample)
+    {
+        Sample = sample;
+    }
+
+    public TelemetrySample Sample { get; }
+}
+
 internal sealed class SimConnectLandingRecorder : IDisposable
 {
     public const int WindowMessage = 0x0403;
@@ -120,7 +130,9 @@ internal sealed class SimConnectLandingRecorder : IDisposable
     private const double PostContactSeconds = 15.0;
     private const double GoAroundResetAglFeet = 1000.0;
     private const double MaximumApproachSeconds = 300.0;
-    private const int RawDebugChunkMaximumSamples = 30000;
+    private const double FullTelemetryEnableAglFeet = 3000.0;
+    private const double FullTelemetryDisableAglFeet = 3500.0;
+    private const double AirportCacheMaximumDistanceNauticalMiles = 20.0;
     private static readonly TimeSpan JoystickRefreshInterval = TimeSpan.FromSeconds(5);
 
     private readonly IntPtr _windowHandle;
@@ -134,12 +146,12 @@ internal sealed class SimConnectLandingRecorder : IDisposable
 
     private SimConnect? _simConnect;
     private List<TelemetrySample>? _episodeSamples;
-    private List<TelemetrySample>? _rawDebugSamples;
-    private DateTime _rawDebugStartedUtc;
+    private bool _rawDebugEnabled;
     private DateTime _lastConnectAttemptUtc = DateTime.MinValue;
     private DateTime _nextJoystickRefreshUtc = DateTime.MinValue;
     private long _sequence;
     private double _lastSimulationTime = double.NaN;
+    private double _lastGuardAglFeet = double.NaN;
     private double _episodeStartTime;
     private double? _lastContactTime;
     private bool _hasBeenAirborne;
@@ -152,6 +164,8 @@ internal sealed class SimConnectLandingRecorder : IDisposable
     private double _axisElevatorSetPercent;
     private double _axisElevatorSetReceivedHostSeconds = double.NaN;
     private bool _recoverStatusAfterFrame;
+    private bool _fullTelemetryEnabled;
+    private bool _airportFacilityRequestPending;
     private bool _disposed;
 
     public SimConnectLandingRecorder(IntPtr windowHandle)
@@ -166,9 +180,25 @@ internal sealed class SimConnectLandingRecorder : IDisposable
 
     public event EventHandler<AirportFacilitiesEventArgs>? AirportFacilitiesUpdated;
 
-    public event EventHandler<RawDebugCaptureEventArgs>? RawDebugCaptureCompleted;
+    public event EventHandler<RawDebugCaptureStartedEventArgs>? RawDebugCaptureStarted;
 
-    public bool RawDebugEnabled => _rawDebugSamples != null;
+    public event EventHandler<RawDebugSampleEventArgs>? RawDebugSampleReceived;
+
+    public event EventHandler? RawDebugCaptureStopped;
+
+    public bool RawDebugEnabled => _rawDebugEnabled;
+
+    public void SeedAirportFacilities(IEnumerable<AirportFacility> facilities)
+    {
+        ThrowIfDisposed();
+        foreach (var facility in facilities ?? Array.Empty<AirportFacility>())
+        {
+            if (!string.IsNullOrWhiteSpace(facility.Ident))
+            {
+                _airportFacilities[facility.Key] = facility;
+            }
+        }
+    }
 
     public void Start()
     {
@@ -193,17 +223,25 @@ internal sealed class SimConnectLandingRecorder : IDisposable
             }
 
             _nextJoystickRefreshUtc = DateTime.UtcNow + JoystickRefreshInterval;
-            _rawDebugStartedUtc = DateTime.UtcNow;
-            _rawDebugSamples = new List<TelemetrySample>(RawDebugChunkMaximumSamples);
-            foreach (var sample in _preRoll)
-            {
-                _rawDebugSamples.Add(sample);
-            }
+            _rawDebugEnabled = true;
+            SetFullTelemetryEnabled(true);
+            RawDebugCaptureStarted?.Invoke(
+                this,
+                new RawDebugCaptureStartedEventArgs(
+                    _preRoll.ToArray(),
+                    DateTime.UtcNow,
+                    _simulator,
+                    _aircraftTitle,
+                    _aircraftType,
+                    _aircraftModel,
+                    ControlInputSources()));
 
             return;
         }
 
-        CompleteRawDebugCapture();
+        _rawDebugEnabled = false;
+        RawDebugCaptureStopped?.Invoke(this, EventArgs.Empty);
+        SetFullTelemetryForAgl(double.NaN);
     }
 
     public IntPtr HandleWindowMessage(int message, ref bool handled)
@@ -241,7 +279,11 @@ internal sealed class SimConnectLandingRecorder : IDisposable
             CompleteEpisode(false);
         }
 
-        CompleteRawDebugCapture();
+        if (_rawDebugEnabled)
+        {
+            _rawDebugEnabled = false;
+            RawDebugCaptureStopped?.Invoke(this, EventArgs.Empty);
+        }
 
         _simConnect?.Dispose();
         _simConnect = null;
@@ -251,7 +293,7 @@ internal sealed class SimConnectLandingRecorder : IDisposable
     private void OnRetryTimerTick(object? sender, EventArgs eventArgs)
     {
         var now = DateTime.UtcNow;
-        if (_episodeSamples == null && _rawDebugSamples == null && now >= _nextJoystickRefreshUtc)
+        if (_episodeSamples == null && !RawDebugEnabled && now >= _nextJoystickRefreshUtc)
         {
             if (_windowsJoystickReader.Refresh())
             {
@@ -308,6 +350,8 @@ internal sealed class SimConnectLandingRecorder : IDisposable
     {
         try
         {
+            RegisterGuardDefinition(sender);
+            sender.RegisterDataDefineStruct<SimGuardData>(Definitions.Guard);
             RegisterFrameDefinition(sender);
             sender.RegisterDataDefineStruct<SimFrameData>(Definitions.Frame);
             sender.AddToDataDefinition(Definitions.Metadata, "TITLE", null, SIMCONNECT_DATATYPE.STRING256, 0, SimConnect.SIMCONNECT_UNUSED);
@@ -316,16 +360,29 @@ internal sealed class SimConnectLandingRecorder : IDisposable
             AddMetadataString(sender, "CATEGORY");
             sender.RegisterDataDefineStruct<AircraftMetadata>(Definitions.Metadata);
             sender.RequestDataOnSimObject(
-                Requests.Frame,
-                Definitions.Frame,
+                Requests.Guard,
+                Definitions.Guard,
                 SimConnect.SIMCONNECT_OBJECT_ID_USER,
                 SIMCONNECT_PERIOD.SIM_FRAME,
                 SIMCONNECT_DATA_REQUEST_FLAG.DEFAULT,
                 0,
                 0,
                 0);
+            _fullTelemetryEnabled = RawDebugEnabled;
+            sender.RequestDataOnSimObject(
+                Requests.Frame,
+                Definitions.Frame,
+                SimConnect.SIMCONNECT_OBJECT_ID_USER,
+                _fullTelemetryEnabled ? SIMCONNECT_PERIOD.SIM_FRAME : SIMCONNECT_PERIOD.NEVER,
+                SIMCONNECT_DATA_REQUEST_FLAG.DEFAULT,
+                0,
+                0,
+                0);
             RequestAircraftMetadata(sender);
-            RequestAirportFacilities(sender);
+            if (_airportFacilities.Count == 0)
+            {
+                RequestAirportFacilities(sender);
+            }
             RegisterControlEvents(sender);
 
             _simulator = string.IsNullOrWhiteSpace(data.szApplicationName) ? "MSFS" : data.szApplicationName.Trim();
@@ -409,6 +466,7 @@ internal sealed class SimConnectLandingRecorder : IDisposable
 
         if (data.dwOutOf == 0 || data.dwEntryNumber + 1 >= data.dwOutOf)
         {
+            _airportFacilityRequestPending = false;
             AirportFacilitiesUpdated?.Invoke(
                 this,
                 new AirportFacilitiesEventArgs(new List<AirportFacility>(_airportFacilities.Values)));
@@ -428,6 +486,14 @@ internal sealed class SimConnectLandingRecorder : IDisposable
             _aircraftTitle = ValueOrUnknown(metadata.Title, "Unknown aircraft");
             _aircraftType = ValueOrUnknown(metadata.AtcType, "unknown");
             _aircraftModel = ValueOrUnknown(metadata.AtcModel, "unknown");
+            return;
+        }
+
+        if ((Requests)data.dwRequestID == Requests.Guard)
+        {
+            var guard = (SimGuardData)data.dwData[0];
+            RecoverStatusAfterFrame();
+            SetFullTelemetryForAgl(guard.AboveGroundLevelFeet);
             return;
         }
 
@@ -457,7 +523,10 @@ internal sealed class SimConnectLandingRecorder : IDisposable
 
         _lastSimulationTime = sample.SimulationTimeSeconds;
         AddToPreRoll(sample);
-        AddRawDebugSample(sample);
+        if (_rawDebugEnabled)
+        {
+            RawDebugSampleReceived?.Invoke(this, new RawDebugSampleEventArgs(sample));
+        }
 
         if (!sample.OnGround)
         {
@@ -552,7 +621,7 @@ internal sealed class SimConnectLandingRecorder : IDisposable
                 new List<AirportFacility>(_airportFacilities.Values),
                 ControlInputSources()));
 
-        if (refreshAirportFacilities && _simConnect != null && !_disposed)
+        if (refreshAirportFacilities && _simConnect != null && !_disposed && ShouldRefreshAirportFacilities(samples))
         {
             RequestAirportFacilities(_simConnect);
         }
@@ -564,52 +633,6 @@ internal sealed class SimConnectLandingRecorder : IDisposable
         _lastContactTime = null;
     }
 
-    private void CompleteRawDebugCapture()
-    {
-        var samples = _rawDebugSamples;
-        _rawDebugSamples = null;
-        RaiseRawDebugCapture(samples, _rawDebugStartedUtc);
-    }
-
-    private void AddRawDebugSample(TelemetrySample sample)
-    {
-        if (_rawDebugSamples == null)
-        {
-            return;
-        }
-
-        _rawDebugSamples.Add(sample);
-        if (_rawDebugSamples.Count < RawDebugChunkMaximumSamples)
-        {
-            return;
-        }
-
-        var completed = _rawDebugSamples;
-        var startedUtc = _rawDebugStartedUtc;
-        _rawDebugStartedUtc = DateTime.UtcNow;
-        _rawDebugSamples = new List<TelemetrySample>(RawDebugChunkMaximumSamples);
-        RaiseRawDebugCapture(completed, startedUtc);
-    }
-
-    private void RaiseRawDebugCapture(IReadOnlyList<TelemetrySample>? samples, DateTime startedUtc)
-    {
-        if (samples == null || samples.Count == 0)
-        {
-            return;
-        }
-
-        RawDebugCaptureCompleted?.Invoke(
-            this,
-            new RawDebugCaptureEventArgs(
-                samples,
-                startedUtc,
-                _simulator,
-                _aircraftTitle,
-                _aircraftType,
-                _aircraftModel,
-                ControlInputSources()));
-    }
-
     private void AddToPreRoll(TelemetrySample sample)
     {
         _preRoll.Enqueue(sample);
@@ -618,6 +641,73 @@ internal sealed class SimConnectLandingRecorder : IDisposable
         {
             _preRoll.Dequeue();
         }
+    }
+
+    private void SetFullTelemetryForAgl(double aglFeet)
+    {
+        if (!double.IsNaN(aglFeet) && !double.IsInfinity(aglFeet))
+        {
+            _lastGuardAglFeet = aglFeet;
+        }
+
+        var enabled = RawDebugEnabled ||
+                      _episodeSamples != null ||
+                      (!double.IsNaN(_lastGuardAglFeet) &&
+                       (_fullTelemetryEnabled
+                           ? _lastGuardAglFeet <= FullTelemetryDisableAglFeet
+                           : _lastGuardAglFeet <= FullTelemetryEnableAglFeet));
+        SetFullTelemetryEnabled(enabled);
+    }
+
+    private void SetFullTelemetryEnabled(bool enabled)
+    {
+        if (_fullTelemetryEnabled == enabled)
+        {
+            return;
+        }
+
+        _fullTelemetryEnabled = enabled;
+        if (_simConnect == null)
+        {
+            return;
+        }
+
+        _simConnect.RequestDataOnSimObject(
+            Requests.Frame,
+            Definitions.Frame,
+            SimConnect.SIMCONNECT_OBJECT_ID_USER,
+            enabled ? SIMCONNECT_PERIOD.SIM_FRAME : SIMCONNECT_PERIOD.NEVER,
+            SIMCONNECT_DATA_REQUEST_FLAG.DEFAULT,
+            0,
+            0,
+            0);
+    }
+
+    private bool ShouldRefreshAirportFacilities(IReadOnlyList<TelemetrySample> samples)
+    {
+        if (_airportFacilityRequestPending || _airportFacilities.Count == 0)
+        {
+            return !_airportFacilityRequestPending;
+        }
+
+        for (var index = samples.Count - 1; index >= 0; index--)
+        {
+            var sample = samples[index];
+            if (double.IsNaN(sample.LatitudeDegrees) || double.IsInfinity(sample.LatitudeDegrees) ||
+                double.IsNaN(sample.LongitudeDegrees) || double.IsInfinity(sample.LongitudeDegrees))
+            {
+                continue;
+            }
+
+            var nearest = AirportResolver.FindNearest(
+                sample.LatitudeDegrees,
+                sample.LongitudeDegrees,
+                new List<AirportFacility>(_airportFacilities.Values),
+                out var distanceNauticalMiles);
+            return nearest == null || distanceNauticalMiles > AirportCacheMaximumDistanceNauticalMiles;
+        }
+
+        return false;
     }
 
     private static bool ShouldStartEpisode(TelemetrySample sample)
@@ -642,6 +732,8 @@ internal sealed class SimConnectLandingRecorder : IDisposable
 
         _simConnect?.Dispose();
         _simConnect = null;
+        _fullTelemetryEnabled = false;
+        _airportFacilityRequestPending = false;
         _recoverStatusAfterFrame = false;
         ResetFlightDetection();
         if (!_disposed)
@@ -657,6 +749,7 @@ internal sealed class SimConnectLandingRecorder : IDisposable
         _previousOnGround = true;
         _armed = true;
         _lastSimulationTime = double.NaN;
+        _lastGuardAglFeet = double.NaN;
         _axisElevatorSetPercent = 0;
         _axisElevatorSetReceivedHostSeconds = double.NaN;
     }
@@ -674,11 +767,7 @@ internal sealed class SimConnectLandingRecorder : IDisposable
             TouchdownNormalVelocityFps = frame.TouchdownNormalVelocityFps,
             VerticalSpeedFps = frame.VerticalSpeedFps,
             VelocityWorldYFps = frame.VelocityWorldYFps,
-            VelocityBodyYFps = frame.VelocityBodyYFps,
             GForce = frame.GForce,
-            MaxGForce = frame.MaxGForce,
-            SemibodyLoadFactorY = frame.SemibodyLoadFactorY,
-            AccelerationBodyYFps2 = frame.AccelerationBodyYFps2,
             AboveGroundLevelFeet = frame.AboveGroundLevelFeet,
             PitchDegrees = frame.PitchDegrees,
             BankDegrees = frame.BankDegrees,
@@ -686,33 +775,14 @@ internal sealed class SimConnectLandingRecorder : IDisposable
             LongitudeDegrees = frame.LongitudeDegrees,
             IndicatedAirspeedKnots = frame.IndicatedAirspeedKnots,
             GroundSpeedKnots = frame.GroundSpeedKnots,
-            SimulationRate = frame.SimulationRate,
             PlaneAltitudeFeet = frame.PlaneAltitudeFeet,
             GroundAltitudeFeet = frame.GroundAltitudeFeet,
-            AboveGroundMinusCgFeet = frame.AboveGroundMinusCgFeet,
-            AccelerationWorldYFps2 = frame.AccelerationWorldYFps2,
             RotationVelocityBodyXRadiansPerSecond = frame.RotationVelocityBodyXRadiansPerSecond,
             RotationVelocityBodyYRadiansPerSecond = frame.RotationVelocityBodyYRadiansPerSecond,
             RotationVelocityBodyZRadiansPerSecond = frame.RotationVelocityBodyZRadiansPerSecond,
-            TouchdownPitchDegrees = frame.TouchdownPitchDegrees,
-            TouchdownBankDegrees = frame.TouchdownBankDegrees,
-            VelocityWorldXFps = frame.VelocityWorldXFps,
-            VelocityWorldZFps = frame.VelocityWorldZFps,
-            VelocityBodyXFps = frame.VelocityBodyXFps,
-            VelocityBodyZFps = frame.VelocityBodyZFps,
-            AccelerationWorldXFps2 = frame.AccelerationWorldXFps2,
-            AccelerationWorldZFps2 = frame.AccelerationWorldZFps2,
             AccelerationBodyXFps2 = frame.AccelerationBodyXFps2,
             AccelerationBodyZFps2 = frame.AccelerationBodyZFps2,
-            RotationAccelerationBodyXRadiansPerSecond2 = frame.RotationAccelerationBodyXRadiansPerSecond2,
-            RotationAccelerationBodyYRadiansPerSecond2 = frame.RotationAccelerationBodyYRadiansPerSecond2,
-            RotationAccelerationBodyZRadiansPerSecond2 = frame.RotationAccelerationBodyZRadiansPerSecond2,
-            SemibodyLoadFactorX = frame.SemibodyLoadFactorX,
-            SemibodyLoadFactorZ = frame.SemibodyLoadFactorZ,
-            SemibodyLoadFactorYDot = frame.SemibodyLoadFactorYDot,
             HeadingTrueDegrees = frame.HeadingTrueDegrees,
-            TrueAirspeedKnots = frame.TrueAirspeedKnots,
-            Mach = frame.Mach,
             AngleOfAttackDegrees = frame.AngleOfAttackDegrees,
             SideslipDegrees = frame.SideslipDegrees,
             AmbientWindVelocityKnots = frame.AmbientWindVelocityKnots,
@@ -727,22 +797,12 @@ internal sealed class SimConnectLandingRecorder : IDisposable
             RudderDeflectionPercentOver100 = frame.RudderDeflectionPercentOver100,
             SpoilersLeftPosition = frame.SpoilersLeftPosition,
             SpoilersRightPosition = frame.SpoilersRightPosition,
-            FlapsHandlePercent = frame.FlapsHandlePercent,
             FlapsLeftPercent = frame.FlapsLeftPercent,
             FlapsRightPercent = frame.FlapsRightPercent,
             BrakeLeftPosition = frame.BrakeLeftPosition,
             BrakeRightPosition = frame.BrakeRightPosition,
-            GearHandlePosition = frame.GearHandlePosition,
-            GearTotalPercentExtended = frame.GearTotalPercentExtended,
-            GearCenterPosition = frame.GearCenterPosition,
-            GearLeftPosition = frame.GearLeftPosition,
-            GearRightPosition = frame.GearRightPosition,
             TotalWeightPounds = frame.TotalWeightPounds,
             CgPercent = frame.CgPercent,
-            OnAnyRunway = frame.OnAnyRunway != 0,
-            SurfaceType = frame.SurfaceType,
-            SurfaceCondition = frame.SurfaceCondition,
-            SpoilersArmed = frame.SpoilersArmed != 0,
             NumberOfEngines = frame.NumberOfEngines,
             PilotRollInputPercent = frame.PilotRollInputPercent,
             PilotPitchInputPercent = frame.PilotPitchInputPercent,
@@ -851,6 +911,15 @@ internal sealed class SimConnectLandingRecorder : IDisposable
         }
     }
 
+    private static void RegisterGuardDefinition(SimConnect connection)
+    {
+        connection.AddToDataDefinition(Definitions.Guard, "SIMULATION TIME", "seconds", SIMCONNECT_DATATYPE.FLOAT64, 0, SimConnect.SIMCONNECT_UNUSED);
+        connection.AddToDataDefinition(Definitions.Guard, "PLANE ALT ABOVE GROUND", "Feet", SIMCONNECT_DATATYPE.FLOAT64, 0, SimConnect.SIMCONNECT_UNUSED);
+        connection.AddToDataDefinition(Definitions.Guard, "SIM ON GROUND", "Bool", SIMCONNECT_DATATYPE.INT32, 0, SimConnect.SIMCONNECT_UNUSED);
+        connection.AddToDataDefinition(Definitions.Guard, "VELOCITY WORLD Y", "Feet per second", SIMCONNECT_DATATYPE.FLOAT64, 0, SimConnect.SIMCONNECT_UNUSED);
+        connection.AddToDataDefinition(Definitions.Guard, "MOTION SIMULATION", "Bool", SIMCONNECT_DATATYPE.INT32, 0, SimConnect.SIMCONNECT_UNUSED);
+    }
+
     private static void RegisterFrameDefinition(SimConnect connection)
     {
         AddDouble(connection, "SIMULATION TIME", "seconds");
@@ -860,11 +929,7 @@ internal sealed class SimConnectLandingRecorder : IDisposable
         AddDouble(connection, "PLANE TOUCHDOWN NORMAL VELOCITY", "Feet per second");
         AddDouble(connection, "VERTICAL SPEED", "Feet per second");
         AddDouble(connection, "VELOCITY WORLD Y", "Feet per second");
-        AddDouble(connection, "VELOCITY BODY Y", "Feet per second");
         AddDouble(connection, "G FORCE", "GForce");
-        AddDouble(connection, "MAX G FORCE", "GForce");
-        AddDouble(connection, "SEMIBODY LOADFACTOR Y", "Number");
-        AddDouble(connection, "ACCELERATION BODY Y", "Feet per second squared");
         AddDouble(connection, "PLANE ALT ABOVE GROUND", "Feet");
         AddDouble(connection, "PLANE PITCH DEGREES", "Degrees");
         AddDouble(connection, "PLANE BANK DEGREES", "Degrees");
@@ -872,33 +937,14 @@ internal sealed class SimConnectLandingRecorder : IDisposable
         AddDouble(connection, "PLANE LONGITUDE", "Degrees");
         AddDouble(connection, "AIRSPEED INDICATED", "Knots");
         AddDouble(connection, "GROUND VELOCITY", "Knots");
-        AddDouble(connection, "SIMULATION RATE", "Number");
         AddDouble(connection, "PLANE ALTITUDE", "Feet");
         AddDouble(connection, "GROUND ALTITUDE", "Feet");
-        AddDouble(connection, "PLANE ALT ABOVE GROUND MINUS CG", "Feet");
-        AddDouble(connection, "ACCELERATION WORLD Y", "Feet per second squared");
         AddDouble(connection, "ROTATION VELOCITY BODY X", "Radians per second");
         AddDouble(connection, "ROTATION VELOCITY BODY Y", "Radians per second");
         AddDouble(connection, "ROTATION VELOCITY BODY Z", "Radians per second");
-        AddDouble(connection, "PLANE TOUCHDOWN PITCH DEGREES", "Degrees");
-        AddDouble(connection, "PLANE TOUCHDOWN BANK DEGREES", "Degrees");
-        AddDouble(connection, "VELOCITY WORLD X", "Feet per second");
-        AddDouble(connection, "VELOCITY WORLD Z", "Feet per second");
-        AddDouble(connection, "VELOCITY BODY X", "Feet per second");
-        AddDouble(connection, "VELOCITY BODY Z", "Feet per second");
-        AddDouble(connection, "ACCELERATION WORLD X", "Feet per second squared");
-        AddDouble(connection, "ACCELERATION WORLD Z", "Feet per second squared");
         AddDouble(connection, "ACCELERATION BODY X", "Feet per second squared");
         AddDouble(connection, "ACCELERATION BODY Z", "Feet per second squared");
-        AddDouble(connection, "ROTATION ACCELERATION BODY X", "Radians per second squared");
-        AddDouble(connection, "ROTATION ACCELERATION BODY Y", "Radians per second squared");
-        AddDouble(connection, "ROTATION ACCELERATION BODY Z", "Radians per second squared");
-        AddDouble(connection, "SEMIBODY LOADFACTOR X", "Number");
-        AddDouble(connection, "SEMIBODY LOADFACTOR Z", "Number");
-        AddDouble(connection, "SEMIBODY LOADFACTOR YDOT", "Number");
         AddDouble(connection, "PLANE HEADING DEGREES TRUE", "Degrees");
-        AddDouble(connection, "AIRSPEED TRUE", "Knots");
-        AddDouble(connection, "AIRSPEED MACH", "Mach");
         AddDouble(connection, "INCIDENCE ALPHA", "Degrees");
         AddDouble(connection, "INCIDENCE BETA", "Degrees");
         AddDouble(connection, "AMBIENT WIND VELOCITY", "Knots");
@@ -913,22 +959,12 @@ internal sealed class SimConnectLandingRecorder : IDisposable
         AddDouble(connection, "RUDDER DEFLECTION PCT", "Percent Over 100");
         AddDouble(connection, "SPOILERS LEFT POSITION", "Percent Over 100");
         AddDouble(connection, "SPOILERS RIGHT POSITION", "Percent Over 100");
-        AddDouble(connection, "FLAPS HANDLE PERCENT", "Percent Over 100");
         AddDouble(connection, "TRAILING EDGE FLAPS LEFT PERCENT", "Percent Over 100");
         AddDouble(connection, "TRAILING EDGE FLAPS RIGHT PERCENT", "Percent Over 100");
         AddDouble(connection, "BRAKE LEFT POSITION", "Position");
         AddDouble(connection, "BRAKE RIGHT POSITION", "Position");
-        AddDouble(connection, "GEAR HANDLE POSITION", "Percent Over 100");
-        AddDouble(connection, "GEAR TOTAL PCT EXTENDED", "Percent");
-        AddDouble(connection, "GEAR CENTER POSITION", "Percent Over 100");
-        AddDouble(connection, "GEAR LEFT POSITION", "Percent Over 100");
-        AddDouble(connection, "GEAR RIGHT POSITION", "Percent Over 100");
         AddDouble(connection, "TOTAL WEIGHT", "Pounds");
         AddDouble(connection, "CG PERCENT", "Percent");
-        AddInt(connection, "ON ANY RUNWAY", "Bool");
-        AddInt(connection, "SURFACE TYPE", "Enum");
-        AddInt(connection, "SURFACE CONDITION", "Enum");
-        AddInt(connection, "SPOILERS ARMED", "Bool");
         AddInt(connection, "NUMBER OF ENGINES", "Number");
         AddDouble(connection, "YOKE X POSITION", "Percent");
         AddDouble(connection, "YOKE Y POSITION", "Percent");
@@ -992,17 +1028,31 @@ internal sealed class SimConnectLandingRecorder : IDisposable
             Definitions.Metadata,
             SimConnect.SIMCONNECT_OBJECT_ID_USER,
             SIMCONNECT_PERIOD.SECOND,
-            SIMCONNECT_DATA_REQUEST_FLAG.DEFAULT,
+            SIMCONNECT_DATA_REQUEST_FLAG.CHANGED,
             0,
             0,
             0);
     }
 
-    private static void RequestAirportFacilities(SimConnect connection)
+    private void RequestAirportFacilities(SimConnect connection)
     {
-        connection.RequestFacilitiesList_EX1(
-            SIMCONNECT_FACILITY_LIST_TYPE.AIRPORT,
-            Requests.Airports);
+        if (_airportFacilityRequestPending)
+        {
+            return;
+        }
+
+        _airportFacilityRequestPending = true;
+        try
+        {
+            connection.RequestFacilitiesList_EX1(
+                SIMCONNECT_FACILITY_LIST_TYPE.AIRPORT,
+                Requests.Airports);
+        }
+        catch
+        {
+            _airportFacilityRequestPending = false;
+            throw;
+        }
     }
 
     private void RegisterControlEvents(SimConnect connection)
@@ -1043,12 +1093,14 @@ internal sealed class SimConnectLandingRecorder : IDisposable
 
     private enum Definitions
     {
+        Guard,
         Frame,
         Metadata,
     }
 
     private enum Requests
     {
+        Guard,
         Frame,
         Metadata,
         Airports,
