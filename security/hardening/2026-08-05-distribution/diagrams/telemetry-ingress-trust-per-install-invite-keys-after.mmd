@@ -1,0 +1,9 @@
+flowchart LR
+  I["One-time invite"] --> E["Enrollment boundary"]
+  U["DPAPI per-install key"] --> E
+  U -->|"signed hash, size, time, nonce"| V["Bounded validator"]
+  E --> R["Active/revoked key registry"]
+  R --> V
+  A["Internet attacker"] --> V
+  V -->|"accepted only"| C["Corpus"]
+  V -->|"reject"| X["No admission"]

@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using System.Reflection;
+using System.Threading;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -13,6 +14,8 @@ using LandingStats.App.Controls;
 using LandingStats.App.Models;
 using LandingStats.App.Storage;
 using LandingStats.App.Telemetry;
+using LandingStats.App.TelemetryUpload;
+using LandingStats.App.Updates;
 using LandingStats.Core;
 
 namespace LandingStats.App;
@@ -22,6 +25,9 @@ public partial class MainWindow : Window
     private readonly LandingRepository _repository = new LandingRepository();
     private readonly RawCaptureRepository _rawCaptureRepository = new RawCaptureRepository();
     private readonly AirportFacilityRepository _airportFacilityRepository = new AirportFacilityRepository();
+    private readonly ReleaseUpdater _releaseUpdater = new ReleaseUpdater();
+    private readonly CancellationTokenSource _lifetimeCancellation = new CancellationTokenSource();
+    private readonly TelemetryUploadClient _telemetryUploadClient;
     private IReadOnlyList<LandingRecord> _landings = Array.Empty<LandingRecord>();
     private IReadOnlyList<AirportFacility> _airportFacilities = Array.Empty<AirportFacility>();
     private readonly Dictionary<string, LandingRecord> _loadedDetails = new Dictionary<string, LandingRecord>(StringComparer.Ordinal);
@@ -32,10 +38,13 @@ public partial class MainWindow : Window
     private bool _showFullApproach;
     private int _primaryGearSeriesIndex;
     private int? _mainIsolatedSeriesIndex;
+    private bool _changingRawDebugToggle;
 
     public MainWindow()
     {
         InitializeComponent();
+        _telemetryUploadClient = new TelemetryUploadClient(_rawCaptureRepository.RootPath);
+        _telemetryUploadClient.StatusChanged += OnTelemetryUploadStatusChanged;
         var assembly = typeof(MainWindow).Assembly;
         var version = assembly.GetName().Version;
         var company = assembly.GetCustomAttribute<AssemblyCompanyAttribute>()?.Company ?? "Evgeniy Zaytsev";
@@ -63,7 +72,25 @@ public partial class MainWindow : Window
         UpdateMainLegend(LandingChartMode.VerticalSpeed);
 
         SourceInitialized += OnSourceInitialized;
+        Loaded += OnWindowLoaded;
         Closed += OnWindowClosed;
+    }
+
+    private async void OnWindowLoaded(object sender, RoutedEventArgs eventArgs)
+    {
+        var version = typeof(MainWindow).Assembly.GetName().Version ?? new Version(0, 0, 0);
+        var result = await _releaseUpdater.CheckAndInstallAsync(version, _lifetimeCancellation.Token);
+        VersionAuthorText.ToolTip = result.Path == null ? result.Message : result.Message + "\n" + result.Path;
+        if (result.State == ReleaseUpdateState.Installed && result.Version != null)
+        {
+            VersionAuthorRun.Text += $" · v{result.Version} ready";
+            VersionAuthorText.Foreground = Brush("#8FD6A8");
+        }
+        else if (result.State == ReleaseUpdateState.Rejected)
+        {
+            VersionAuthorRun.Text += " · update rejected";
+            VersionAuthorText.Foreground = Brush("#FF8A6A");
+        }
     }
 
     private void LoadHistory()
@@ -560,14 +587,75 @@ public partial class MainWindow : Window
         return true;
     }
 
-    private void OnRawDebugModeChanged(object sender, RoutedEventArgs eventArgs)
+    private async void OnRawDebugModeChanged(object sender, RoutedEventArgs eventArgs)
     {
+        if (_changingRawDebugToggle)
+        {
+            return;
+        }
         var enabled = RawDebugToggle.IsChecked == true;
         RawDebugToggle.Content = enabled ? "DEBUG RAW · ON" : "DEBUG RAW · OFF";
+        if (enabled)
+        {
+            if (!_telemetryUploadClient.ConsentAccepted)
+            {
+                var consent = MessageBox.Show(
+                    this,
+                    "DEBUG RAW sends full-rate flight telemetry to the MSFS Landing Stats maintainer. " +
+                    "It includes aircraft state, coordinates and controller/input channels. " +
+                    "A temporary local queue copy is removed only after the server accepts it.\n\nContinue?",
+                    "Enable telemetry upload",
+                    MessageBoxButton.YesNo,
+                    MessageBoxImage.Warning);
+                if (consent != MessageBoxResult.Yes)
+                {
+                    SetRawDebugToggle(false);
+                    return;
+                }
+                _telemetryUploadClient.AcceptConsent();
+            }
+
+            RawDebugStatusText.Text = "Preparing secure telemetry upload…";
+            RawDebugToggle.IsEnabled = false;
+            TelemetryPreparationResult preparation;
+            try
+            {
+                preparation = await _telemetryUploadClient.PrepareAsync(null, _lifetimeCancellation.Token);
+                if (preparation.State == TelemetryPreparationState.InviteRequired)
+                {
+                    var dialog = new TelemetryEnrollmentDialog { Owner = this };
+                    if (dialog.ShowDialog() == true)
+                    {
+                        preparation = await _telemetryUploadClient.PrepareAsync(dialog.InviteCode, _lifetimeCancellation.Token);
+                    }
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                SetRawDebugToggle(false);
+                return;
+            }
+            catch (Exception exception)
+            {
+                RawDebugStatusText.Text = $"Telemetry upload unavailable: {exception.Message}";
+                SetRawDebugToggle(false);
+                return;
+            }
+            finally
+            {
+                RawDebugToggle.IsEnabled = true;
+            }
+            if (preparation.State != TelemetryPreparationState.Ready)
+            {
+                RawDebugStatusText.Text = preparation.Message;
+                SetRawDebugToggle(false);
+                return;
+            }
+        }
         if (_recorder == null)
         {
             RawDebugStatusText.Text = enabled
-                ? "Live capture will start after SimConnect initializes"
+                ? "Secure upload ready · capture starts after SimConnect initializes"
                 : "Full-rate capture is disabled";
             return;
         }
@@ -576,7 +664,7 @@ public partial class MainWindow : Window
         _recorder.SetRawDebugEnabled(enabled);
         if (enabled)
         {
-            RawDebugStatusText.Text = "LIVE · streaming to disk · every SIM_FRAME sample · 15 s pre-roll\n" + _rawCaptureRepository.RootPath;
+            RawDebugStatusText.Text = "LIVE · secure upload queue · every SIM_FRAME sample · 15 s pre-roll";
         }
         else if (!wasEnabled)
         {
@@ -603,7 +691,7 @@ public partial class MainWindow : Window
             {
                 OnRawCaptureFailed(_rawCaptureSession.Failure);
             }
-            RawDebugStatusText.Text = "LIVE · streaming to disk · every SIM_FRAME sample · 15 s pre-roll\n" + _rawCaptureRepository.RootPath;
+            RawDebugStatusText.Text = "LIVE · secure upload queue · every SIM_FRAME sample · 15 s pre-roll";
         }
         catch (Exception exception)
         {
@@ -648,12 +736,44 @@ public partial class MainWindow : Window
 
     private void OnRawCaptureChunkCompleted(object? sender, RawCaptureChunkEventArgs eventArgs)
     {
+        var queued = _telemetryUploadClient.Enqueue(eventArgs.Path);
         Dispatcher.BeginInvoke(new Action(() =>
         {
-            RawDebugStatusText.Text = eventArgs.CaptureContinues && _recorder?.RawDebugEnabled == true
-                ? $"Saved chunk {eventArgs.SampleCount:N0} frames · streaming continues"
-                : $"Saved {eventArgs.SampleCount:N0} frames · {System.IO.Path.GetFileName(eventArgs.Path)}";
+            RawDebugStatusText.Text = queued
+                ? $"Queued {eventArgs.SampleCount:N0} frames for secure upload"
+                : $"Upload queue unavailable · capture kept at {eventArgs.Path}";
+            if (!queued && RawDebugToggle.IsChecked == true)
+            {
+                SetRawDebugToggle(false);
+            }
         }));
+    }
+
+    private void OnTelemetryUploadStatusChanged(object? sender, TelemetryUploadStatusEventArgs eventArgs)
+    {
+        Dispatcher.BeginInvoke(new Action(() =>
+        {
+            RawDebugStatusText.Text = eventArgs.Message;
+            RawDebugStatusText.Foreground = eventArgs.IsError ? Brush("#FF8A6A") : Brush("#AEB8C2");
+        }));
+    }
+
+    private void SetRawDebugToggle(bool enabled)
+    {
+        _changingRawDebugToggle = true;
+        try
+        {
+            RawDebugToggle.IsChecked = enabled;
+            RawDebugToggle.Content = enabled ? "DEBUG RAW · ON" : "DEBUG RAW · OFF";
+            if (!enabled)
+            {
+                _recorder?.SetRawDebugEnabled(false);
+            }
+        }
+        finally
+        {
+            _changingRawDebugToggle = false;
+        }
     }
 
     private void OnRawCaptureFailed(Exception exception)
@@ -701,6 +821,10 @@ public partial class MainWindow : Window
 
     private void OnWindowClosed(object? sender, EventArgs eventArgs)
     {
+        _lifetimeCancellation.Cancel();
+        _releaseUpdater.Dispose();
+        _lifetimeCancellation.Dispose();
+        Loaded -= OnWindowLoaded;
         foreach (var chart in _charts)
         {
             chart.HoverTimeChanged -= OnChartHoverTimeChanged;
@@ -720,6 +844,8 @@ public partial class MainWindow : Window
         }
 
         StopRawCaptureSession();
+        _telemetryUploadClient.StatusChanged -= OnTelemetryUploadStatusChanged;
+        _telemetryUploadClient.Dispose();
 
         if (_messageSource != null)
         {

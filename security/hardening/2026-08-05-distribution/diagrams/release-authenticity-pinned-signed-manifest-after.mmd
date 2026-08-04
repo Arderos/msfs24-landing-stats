@@ -1,0 +1,9 @@
+flowchart LR
+  K["CI release private key"] --> M["Signed canonical manifest"]
+  G["GitHub Releases"] --> M
+  G --> E["EXE"]
+  P["Pinned public key"] --> U["Updater verifier"]
+  M --> U
+  E --> U
+  U -->|"signature + size + hash + bundle"| L["Atomic launcher replacement"]
+  U -->|"failure"| X["Keep current launcher"]

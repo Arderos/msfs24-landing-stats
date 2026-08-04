@@ -6,6 +6,10 @@ captures/
 artifacts/
 test-output/
 src/LandingStats.App/*.zip
+server/telemetry-ingest/.env
+server/telemetry-ingest/secrets/
+**/__pycache__/
+*.pyc
 
 # Local research and capture tools are intentionally not part of the app repository.
 src/LandingStats.Analyzer/

@@ -4,13 +4,19 @@ using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
+using System.Net;
+using System.Net.Http;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Runtime.Serialization;
+using System.Security.Cryptography;
+using System.Text;
 using System.Threading;
 using LandingStats.App;
 using LandingStats.App.Models;
 using LandingStats.App.Storage;
+using LandingStats.App.TelemetryUpload;
+using LandingStats.App.Updates;
 using LandingStats.Core;
 
 namespace LandingStats.App.RegressionTests;
@@ -25,7 +31,9 @@ internal static class Program
         Run("deduplicator keeps the last same-time frame", DeduplicatorKeepsLastFrame);
         Run("approach timeout re-arms capture", ApproachTimeoutRearmsCapture);
         Run("full telemetry gate has AGL hysteresis and RAW override", FullTelemetryGateHasHysteresis);
-        Run("raw debug streams directly into a zip", RawDebugStreamsIntoZip);
+        Run("raw debug streams into a temporary queue zip", RawDebugStreamsIntoZip);
+        Run("telemetry identity is stable, protected, and signs", TelemetryIdentityIsStableAndSigns);
+        Run("updater accepts a signed manifest and rejects tampering", UpdaterVerifiesSignedManifest);
         Run("valid frame clears transient error state", ValidFrameClearsTransientErrorState);
         Run("legacy SimConnect controller path is absent", LegacyControllerPathIsAbsent);
         Run("compact frame matches the SimConnect payload contract", CompactFrameMatchesPayloadContract);
@@ -126,6 +134,62 @@ internal static class Program
             {
                 Directory.Delete(root, true);
             }
+        }
+    }
+
+    private static void TelemetryIdentityIsStableAndSigns()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "landing-stats-identity-test-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var endpoint = new Uri("https://telemetry.example.test/");
+            var firstStore = new TelemetryUploadIdentityStore(root);
+            var first = firstStore.Identity();
+            var message = Encoding.ASCII.GetBytes("signed telemetry fixture");
+            var signature = Convert.FromBase64String(first.Sign(message));
+            using (var rsa = new RSACryptoServiceProvider { PersistKeyInCsp = false })
+            {
+                rsa.ImportParameters(new RSAParameters
+                {
+                    Modulus = Convert.FromBase64String(first.PublicModulus),
+                    Exponent = Convert.FromBase64String(first.PublicExponent),
+                });
+                Equal(true, rsa.VerifyData(message, CryptoConfig.MapNameToOID("SHA256"), signature), "identity signature");
+            }
+
+            firstStore.AcceptConsent();
+            firstStore.MarkEnrolled(endpoint, true);
+            var secondStore = new TelemetryUploadIdentityStore(root);
+            var second = secondStore.Identity();
+            Equal(first.InstallId, second.InstallId, "stable install id");
+            Equal(first.PublicModulus, second.PublicModulus, "stable public key");
+            Equal(true, secondStore.ConsentAccepted, "persisted consent");
+            Equal(true, secondStore.IsEnrolled(endpoint), "persisted enrollment");
+            var stored = File.ReadAllText(Path.Combine(root, "identity.json"));
+            Equal(false, stored.Contains("<RSAKeyValue>"), "private key must not be stored as plaintext XML");
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, true);
+            }
+        }
+    }
+
+    private static void UpdaterVerifiesSignedManifest()
+    {
+        const string manifest = "format=1\nversion=0.6.0\nasset=MSFS-Landing-Stats.exe\nsize=1\nsha256=0000000000000000000000000000000000000000000000000000000000000000\n";
+        const string signature = "EW7RTAPkdDEycl3YJJP6sQF1eVM1V1wAcUJgY8esySpX4n4jYPR0uUcUYfEB6m2qjW2hAMUKZ4nyO8MDmyC80jkIe5bDywLZChZp/as0k6sBcMAHzByzTGGRegejxITQkan6KcLpcYLR9KXFQ5ZM1BUbQvDLMV2gwAj8VQwmJQAemqUTT/RlQwYAnSnf0oGha44pMJbPQt6bOfzt6+Xw4q4+kGtD27MFLUxvOvUmIwhCM1IS+oleJS7+7xOh3MuOXAFONXRe4HcSdWKCR5VQVodCCYg8EmR/1TQdvW/Dx/FASxjD0RHBZHBPLzpDgIhu4/3PbO17hFC1R05oPithEUUI1l+8URJkhmXCQuMKKARoXXv6XTsHZ/Sejomjfy4in1rUdbBl04sQIN2w/1vSSPuazHDrI3YuuIb7cMAZ3qqf0ZkzRVT2fJnTHfhXNhGW/NbKuhLLdzwpnwda2/CIELl0kbgXTy50ywnGf/PdOqKJUxLmeno0vOf15MR4rI4m";
+        using (var updater = new ReleaseUpdater(new UpdateFixtureHandler(manifest, signature)))
+        {
+            var result = updater.CheckAndInstallAsync(new Version(0, 6, 0), CancellationToken.None).GetAwaiter().GetResult();
+            Equal(ReleaseUpdateState.Current, result.State, "signed manifest state");
+        }
+        using (var updater = new ReleaseUpdater(new UpdateFixtureHandler(manifest.Replace("0.6.0", "9.9.9"), signature)))
+        {
+            var result = updater.CheckAndInstallAsync(new Version(0, 6, 0), CancellationToken.None).GetAwaiter().GetResult();
+            Equal(ReleaseUpdateState.Rejected, result.State, "tampered manifest state");
         }
     }
 
@@ -1129,6 +1193,31 @@ internal static class Program
             {
                 AssertNoStorageSentinel(property.GetValue(value));
             }
+        }
+    }
+
+    private sealed class UpdateFixtureHandler : HttpMessageHandler
+    {
+        private readonly byte[] _manifest;
+        private readonly byte[] _signature;
+
+        public UpdateFixtureHandler(string manifest, string signature)
+        {
+            _manifest = Encoding.UTF8.GetBytes(manifest);
+            _signature = Encoding.ASCII.GetBytes(signature + "\n");
+        }
+
+        protected override System.Threading.Tasks.Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            var bytes = request.RequestUri!.AbsolutePath.EndsWith("update-manifest.sig", StringComparison.Ordinal)
+                ? _signature
+                : _manifest;
+            return System.Threading.Tasks.Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new ByteArrayContent(bytes),
+            });
         }
     }
 }

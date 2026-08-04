@@ -1,0 +1,131 @@
+{
+  "documentType": "codex-security.hardening-analysis",
+  "schemaVersion": "1.0",
+  "analysisId": "hardening_20260805_msfs_distribution",
+  "sourceEvidence": {
+    "kind": "document_collection",
+    "label": "MSFS Landing Stats distribution and telemetry-ingress source evidence",
+    "collectionSha256": "00a602196a04684087c9dd0e67a16bf03c2874926ec10e6c60c95cf0894a7ce2",
+    "artifactCount": 11,
+    "sourceDrift": "none"
+  },
+  "assessment": {
+    "outcome": "opportunities_identified",
+    "summary": "Two trust boundaries were hardened structurally: hostile telemetry ingestion is invite-bound, signed, validated, and quota-limited; releases require a pinned signed manifest with the CI signing secret provisioned."
+  },
+  "constraints": {
+    "profile": "balanced",
+    "changeHorizons": ["incremental", "medium_term"],
+    "nonNegotiables": [
+      "No shared private upload credential in the public executable.",
+      "No telemetry API host port.",
+      "No unsigned automatic update installation."
+    ],
+    "assumptions": [
+      "Client hosts are untrusted and cannot attest genuine simulator execution.",
+      "GitHub Actions can hold a repository signing secret.",
+      "Initial telemetry enrollment is invitation-only."
+    ]
+  },
+  "opportunities": [
+    {
+      "opportunityId": "telemetry-ingress-trust",
+      "title": "Own the telemetry-ingress trust boundary",
+      "summary": "Bind each upload to an enrolled installation key and validate the complete archive before corpus admission.",
+      "diagnosis": "A public desktop client cannot protect a shared private credential or prove simulator provenance; the server must own admission, bounds, replay state, and revocation.",
+      "evidence": [
+        {"claimType":"observed","sourceKind":"source","evidenceId":"E001","path":"src/LandingStats.App/Storage/RawCaptureRepository.cs","claim":"A completed chunk is atomically closed before ChunkCompleted is raised."},
+        {"claimType":"observed","sourceKind":"experiment","evidenceId":"E002","claim":"A signed synthetic capture traversed the public tunnel, passed validation, received an ACK, and was removed from the test corpus."},
+        {"claimType":"inferred","sourceKind":"threat_model","evidenceId":"E003","claim":"A common private key shipped in the EXE would be extractable and would authorize arbitrary forged captures."}
+      ],
+      "desiredInvariants": [
+        "Every accepted capture is bound to an active installation key, fresh nonce, signed size, and signed SHA-256.",
+        "Untrusted ZIP content is bounded and fully validated before corpus admission.",
+        "The server can revoke one installation without rotating every client.",
+        "A failed upload leaves a bounded temporary client copy and never blocks SimConnect."
+      ],
+      "proposalPath": "proposals/telemetry-ingress-trust.md",
+      "options": [
+        {
+          "optionId":"shared-binary-credential","title":"Shared credential in the executable","kind":"baseline","summary":"Gate requests with one embedded signing secret.",
+          "diagramPaths":{"before":"diagrams/telemetry-ingress-trust-before.mmd","after":"diagrams/telemetry-ingress-trust-shared-binary-credential-after.mmd"},
+          "evidenceCoverage":[{"evidenceId":"E003","effect":"unaffected","tacticalFixRequired":true,"rationale":"Extraction of one client credential grants global authority."}],
+          "tradeoffs":[
+            {"dimension":"security","direction":"regresses","confidence":"high","basis":"source-derived","assessment":"One extracted key defeats admission for every installation.","validationPlan":"Attempt static and runtime extraction from a release binary."},
+            {"dimension":"performance","direction":"neutral","confidence":"high","basis":"source-derived","assessment":"One signature adds negligible work relative to upload.","validationPlan":"Measure sign and verify latency."},
+            {"dimension":"memory","direction":"neutral","confidence":"high","basis":"source-derived","assessment":"Only bounded key material is retained.","validationPlan":"Compare process working set."},
+            {"dimension":"reliability","direction":"neutral","confidence":"medium","basis":"source-derived","assessment":"Simple validation does not improve queue recovery.","validationPlan":"Exercise offline retry."},
+            {"dimension":"operability","direction":"regresses","confidence":"high","basis":"source-derived","assessment":"Any leak requires a fleet-wide credential and client rotation.","validationPlan":"Tabletop key compromise."},
+            {"dimension":"migration","direction":"improves","confidence":"high","basis":"source-derived","assessment":"It is initially easy to deploy.","validationPlan":"Prototype one request."}
+          ],
+          "residualRisks":["A copied credential authorizes unlimited identities and forged telemetry."],
+          "implementationReadiness":{"affectedComponents":["client","ingress"],"workPackages":["Embed and verify one key."],"acceptanceCriteria":["Not recommended."],"migrationNotes":[],"rollback":"Remove the gate."}
+        },
+        {
+          "optionId":"per-install-invite-keys","title":"Per-install keys with invitation enrollment","kind":"structural","summary":"Generate a DPAPI-protected key per installation and let the server own enrollment, replay, quota, validation, and revocation.",
+          "diagramPaths":{"before":"diagrams/telemetry-ingress-trust-before.mmd","after":"diagrams/telemetry-ingress-trust-per-install-invite-keys-after.mmd"},
+          "evidenceCoverage":[{"evidenceId":"E001","effect":"addresses","tacticalFixRequired":false,"rationale":"The existing completion event is a safe queue boundary."},{"evidenceId":"E002","effect":"addresses","tacticalFixRequired":false,"rationale":"The complete public path was exercised."},{"evidenceId":"E003","effect":"mitigates","tacticalFixRequired":false,"rationale":"Compromise is limited to one revocable installation."}],
+          "tradeoffs":[
+            {"dimension":"security","direction":"improves","confidence":"high","basis":"source-derived","assessment":"Per-install authority, nonce replay protection, strict ZIP validation, and invitation admission narrow abuse.","validationPlan":"Repeat signature, replay, quota, and malformed archive tests."},
+            {"dimension":"performance","direction":"neutral","confidence":"medium","basis":"measured","assessment":"One-sample public E2E completed interactively; large-file throughput remains unmeasured.","validationPlan":"Upload 1, 8, and 16 MB captures and require no SimConnect-thread work."},
+            {"dimension":"memory","direction":"neutral","confidence":"medium","basis":"source-derived","assessment":"Streaming caps client and server buffers.","validationPlan":"Measure peak RSS during a 16 MB upload."},
+            {"dimension":"reliability","direction":"improves","confidence":"medium","basis":"source-derived","assessment":"Closed ZIPs form a retryable bounded queue and are deleted only after ACK.","validationPlan":"Interrupt network and process across upload stages."},
+            {"dimension":"operability","direction":"regresses","confidence":"high","basis":"source-derived","assessment":"Invites, revocation, SQLite, retention, and tunnel health require ownership.","validationPlan":"Write and execute the runbook."},
+            {"dimension":"migration","direction":"neutral","confidence":"high","basis":"source-derived","assessment":"Only newly enabled DEBUG RAW sessions enter the queue.","validationPlan":"Verify old local archives are not auto-enqueued."}
+          ],
+          "residualRisks":["An enrolled hostile client can still fabricate syntactically valid telemetry.","Invitation issuance remains a human trust decision."],
+          "implementationReadiness":{"affectedComponents":["src/LandingStats.App/TelemetryUpload","server/telemetry-ingest"],"workPackages":["Provision endpoint and secrets.","Issue invites.","Monitor storage and rejects."],"acceptanceCriteria":["Signed public E2E succeeds and malformed/replayed requests fail."],"migrationNotes":["First use requires consent and enrollment."],"rollback":"Disable DEBUG RAW upload and stop the isolated Compose project; queued ZIPs remain recoverable."}
+        }
+      ],
+      "recommendedOptionId":"per-install-invite-keys",
+      "recommendation":"Use invitation enrollment now; open enrollment becomes reasonable only when corpus provenance is explicitly untrusted and automated abuse handling is mature."
+    },
+    {
+      "opportunityId":"release-authenticity",
+      "title":"Authenticate self-updates independently of transport",
+      "summary":"Require a signed canonical release manifest before replacing the launcher.",
+      "diagnosis":"HTTPS and a hash served from the same compromised release account do not provide an independent authenticity decision.",
+      "evidence":[
+        {"claimType":"observed","sourceKind":"source","evidenceId":"E004","path":"src/LandingStats.App.Launcher/Program.cs","claim":"The single-file launcher exits after starting an extracted child, permitting safe replacement of the original launcher."},
+        {"claimType":"observed","sourceKind":"source","evidenceId":"E005","path":".github/workflows/build.yml","claim":"The v0.6 workflow published only the executable and release notes."}
+      ],
+      "desiredInvariants":["No downloaded executable replaces the launcher without a signature from the pinned release key.","Signed size and SHA-256 bind the exact asset.","Replacement is atomic and a previous launcher remains available."],
+      "proposalPath":"proposals/release-authenticity.md",
+      "options":[
+        {
+          "optionId":"https-and-release-hash","title":"HTTPS plus release hash","kind":"baseline","summary":"Trust GitHub transport and a colocated SHA-256.",
+          "diagramPaths":{"before":"diagrams/release-authenticity-before.mmd","after":"diagrams/release-authenticity-https-and-release-hash-after.mmd"},
+          "evidenceCoverage":[{"evidenceId":"E005","effect":"mitigates","tacticalFixRequired":true,"rationale":"Detects transfer damage but not a compromised publisher."}],
+          "tradeoffs":[
+            {"dimension":"security","direction":"improves","confidence":"medium","basis":"source-derived","assessment":"Detects accidental corruption only.","validationPlan":"Tamper with downloaded bytes."},
+            {"dimension":"performance","direction":"neutral","confidence":"high","basis":"source-derived","assessment":"One SHA-256 pass is required.","validationPlan":"Measure hash time."},
+            {"dimension":"memory","direction":"neutral","confidence":"high","basis":"source-derived","assessment":"Streaming hash is bounded.","validationPlan":"Inspect peak buffer size."},
+            {"dimension":"reliability","direction":"improves","confidence":"medium","basis":"source-derived","assessment":"Corrupt assets are rejected.","validationPlan":"Truncate a download."},
+            {"dimension":"operability","direction":"improves","confidence":"high","basis":"source-derived","assessment":"No signing key operations are needed.","validationPlan":"Publish a test release."},
+            {"dimension":"migration","direction":"improves","confidence":"high","basis":"source-derived","assessment":"Minimal workflow change.","validationPlan":"Exercise latest/download URLs."}
+          ],
+          "residualRisks":["A GitHub publisher compromise can replace both asset and hash."],
+          "implementationReadiness":{"affectedComponents":["workflow","updater"],"workPackages":["Publish and verify a hash."],"acceptanceCriteria":["Corruption is rejected."],"migrationNotes":[],"rollback":"Return to manual downloads."}
+        },
+        {
+          "optionId":"pinned-signed-manifest","title":"Pinned signed release manifest","kind":"structural","summary":"Sign a canonical manifest in CI and verify it with a pinned public key before download installation.",
+          "diagramPaths":{"before":"diagrams/release-authenticity-before.mmd","after":"diagrams/release-authenticity-pinned-signed-manifest-after.mmd"},
+          "evidenceCoverage":[{"evidenceId":"E004","effect":"addresses","tacticalFixRequired":false,"rationale":"The exited launcher is safely replaceable."},{"evidenceId":"E005","effect":"addresses","tacticalFixRequired":false,"rationale":"The workflow gains signed manifest assets."}],
+          "tradeoffs":[
+            {"dimension":"security","direction":"improves","confidence":"high","basis":"source-derived","assessment":"GitHub asset substitution is rejected without the separate signing key.","validationPlan":"Serve a modified manifest and asset."},
+            {"dimension":"performance","direction":"neutral","confidence":"medium","basis":"source-derived","assessment":"Startup adds small metadata requests; asset download happens only for a newer version.","validationPlan":"Measure cold check latency."},
+            {"dimension":"memory","direction":"neutral","confidence":"high","basis":"source-derived","assessment":"Manifest and file hashing are bounded.","validationPlan":"Inspect buffers and working set."},
+            {"dimension":"reliability","direction":"improves","confidence":"medium","basis":"source-derived","assessment":"Bundle verification, atomic replacement, and backup reduce partial-update failure.","validationPlan":"Kill the process before and after replacement."},
+            {"dimension":"operability","direction":"regresses","confidence":"high","basis":"source-derived","assessment":"The signing secret needs backup, access control, and rotation procedure.","validationPlan":"Perform a key-loss and rotation tabletop."},
+            {"dimension":"migration","direction":"neutral","confidence":"high","basis":"source-derived","assessment":"One manual bootstrap release is unavoidable for v0.6 clients.","validationPlan":"Upgrade an updater-capable prior build."}
+          ],
+          "residualRisks":["A compromise of both GitHub publishing authority and the release signing key remains fatal.","There is no automatic rollback after a semantically broken but correctly signed release."],
+          "implementationReadiness":{"affectedComponents":["src/LandingStats.App/Updates","src/LandingStats.App.Launcher",".github/workflows/build.yml"],"workPackages":["Provision CI secret.","Publish bootstrap release.","Exercise next-version update."],"acceptanceCriteria":["Signed update installs; manifest, hash, and bundle tampering are rejected."],"migrationNotes":["v0.6 users install the bootstrap manually."],"rollback":"Restore the `.previous` launcher and remove the faulty GitHub release."}
+        }
+      ],
+      "recommendedOptionId":"pinned-signed-manifest",
+      "recommendation":"Use the signed manifest; Authenticode can be added later for Windows reputation but is not required for this independent update decision."
+    }
+  ],
+  "openQuestions":["Where will the offline backup of the release private key be kept?","What retention/privacy text will be shown outside the one-time consent dialog?"]
+}

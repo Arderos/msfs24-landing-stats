@@ -7,7 +7,7 @@
     <Prefer32Bit>false</Prefer32Bit>
     <AssemblyName>MSFS-Landing-Stats</AssemblyName>
     <RootNamespace>LandingStats.App.Launcher</RootNamespace>
-    <InformationalVersion>0.6.0-single-binary</InformationalVersion>
+    <InformationalVersion>0.7.0-single-binary</InformationalVersion>
     <ApplicationIcon>..\LandingStats.App\Assets\AppIcon.ico</ApplicationIcon>
   </PropertyGroup>
 

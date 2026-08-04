@@ -1,0 +1,5 @@
+flowchart LR
+  U["Untrusted desktop client"] --> Z["Local RAW ZIP"]
+  A["Internet attacker"] -. "planned public endpoint" .-> S["Telemetry receiver"]
+  Z -. "no admission boundary yet" .-> S
+  S --> C["Research corpus"]
