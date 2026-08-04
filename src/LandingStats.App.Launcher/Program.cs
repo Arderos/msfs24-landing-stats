@@ -51,6 +51,7 @@ internal static class Program
                 Arguments = string.Join(" ", childArguments),
                 UseShellExecute = false,
             };
+            startInfo.EnvironmentVariables["MSFS_LANDING_STATS_LAUNCHER_PATH"] = Application.ExecutablePath;
             Process.Start(startInfo);
             return 0;
         }

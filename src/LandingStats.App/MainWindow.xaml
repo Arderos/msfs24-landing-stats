@@ -629,11 +629,11 @@
                         <Run x:Name="VersionAuthorRun" />
                     </Hyperlink>
                 </TextBlock>
-                <TextBlock Grid.Column="3" x:Name="RawDebugStatusText" Text="Raw capture disabled" Foreground="{StaticResource SubtleTextBrush}" FontSize="10" VerticalAlignment="Center" Margin="0,0,10,0" />
+                <TextBlock Grid.Column="3" x:Name="RawDebugStatusText" Text="Telemetry upload disabled" Foreground="{StaticResource SubtleTextBrush}" FontSize="10" VerticalAlignment="Center" Margin="0,0,10,0" />
                 <StackPanel Grid.Column="4" Orientation="Horizontal" VerticalAlignment="Center">
                     <ToggleButton x:Name="RawDebugToggle" Content="DEBUG RAW · OFF" Style="{StaticResource RawDebugToggleStyle}" FontSize="10"
                                   Checked="OnRawDebugModeChanged" Unchecked="OnRawDebugModeChanged"
-                                  ToolTip="SHORT TEST FLIGHTS ONLY · DO NOT ENABLE ON LONG FLIGHTS" />
+                                  ToolTip="SENDS FULL-RATE TELEMETRY TO THE MAINTAINER · SHORT TEST FLIGHTS ONLY" />
                     <TextBlock Text="· NOT FOR LONG FLIGHTS" Foreground="{StaticResource DangerBrush}" FontSize="9"
                                VerticalAlignment="Center" Margin="7,0,0,0" IsHitTestVisible="False" />
                 </StackPanel>

@@ -24,7 +24,7 @@ behind them:
 | G-load | One value with an unspecified sampling window | Peaks are calculated in declared 150 ms and 2 s windows, bounded by the next contact |
 | Evidence | Summary values only | Synchronized black-box traces for motion, loads, controls, power, attitude, and gear |
 | Data quality | A number is shown even when its source is ambiguous | Extrapolation, fallback, latch verification, and unavailable data are identified explicitly |
-| Ownership | Often cloud-backed | Local, portable, versioned records with no flight-data upload |
+| Ownership | Often cloud-backed | Local, portable landing records; diagnostic telemetry is sent only after explicitly enabling `DEBUG RAW` |
 
 The result is not a landing score or a structural inspection verdict. It is an
 engineering view of what the simulator published, how the result was derived,
@@ -48,9 +48,10 @@ for the formulas, timing rules, validation traces, and known limitations.
   attitude, wind, gear compression, and rollout data.
 - Hardware pitch-input capture with automatic source matching when SimConnect
   exposes an aircraft-processed command instead of the pilot's controller axis.
-- Optional full-rate diagnostic capture with a 15-second pre-roll.
+- Optional, explicitly consented full-rate diagnostic contribution with a
+  15-second pre-roll and authenticated upload.
 - Compact local landing history containing only the data used by the dashboard.
-- One-file distribution for end users.
+- One-file distribution for end users with signed automatic updates.
 
 The application keeps inertial and surface-relative landing rates separate.
 This avoids treating runway slope or local scenery elevation changes as aircraft
@@ -91,7 +92,10 @@ need `MSFS-Landing-Stats.exe`; the SDK is not required at runtime.
 GitHub Actions resolves the current MSFS 2024 Core SDK from Microsoft's public
 SDK manifest, extracts and caches only the SimConnect build dependency, builds
 the application on `windows-latest`, and publishes the single executable as a
-workflow artifact. Tags matching `v*` also create a GitHub release with the EXE.
+workflow artifact. Tags matching `v*` create a GitHub release containing the
+EXE plus an RSA-signed update manifest. The application pins the corresponding
+public key and verifies the signature, asset size, SHA-256 hash, and application
+bundle before replacing the launcher atomically for the next start.
 
 ## Data storage
 
@@ -101,19 +105,30 @@ Landing records are stored under:
 %LOCALAPPDATA%\MSFS Landing Stats\Landings
 ```
 
-The app does not upload flight data. Removing a landing from the local history
-removes its compact stored record.
+Ordinary landing records are never uploaded. Removing a landing from the local
+history removes its compact stored record.
 
-Optional diagnostic captures are stored separately under:
+`DEBUG RAW` is a separate, opt-in contribution mode. Before it can be enabled,
+the application states that the full-rate telemetry includes aircraft state,
+coordinates, and controller/input channels and asks for explicit consent and a
+one-time invitation code. Closed diagnostic chunks are staged temporarily under:
 
 ```text
-%LOCALAPPDATA%\MSFS Landing Stats\Raw Captures
+%LOCALAPPDATA%\MSFS Landing Stats\Telemetry Queue
 ```
 
-`DEBUG RAW` streams every received `SIM_FRAME` sample directly into a ZIP and
-rotates every 30,000 frames. The writer uses a bounded queue, so capture length
-does not grow application memory; long captures can still consume substantial
-disk space, so keep this mode for short diagnostic flights.
+`DEBUG RAW` streams every received `SIM_FRAME` sample directly into a ZIP,
+rotates every 30,000 frames, signs the upload with a per-installation private key
+protected by Windows, and deletes the queue copy only after the server accepts
+it. The local queue is capped at 256 MiB; if it cannot accept more data, capture
+is disabled instead of growing without bound.
+
+The receiver accepts only invited installations and exact schema-v5 archives.
+It limits one upload to 16 MiB compressed and 64 MiB expanded, one installation
+to 512 MiB per day (counting rejected signed attempts too), one source address
+to 1 GiB/day, and all ingress to 4 GiB/day. The retained corpus is capped at
+20 GiB while preserving a 2 GiB disk reserve. Invalid or incomplete files are
+never added to the corpus.
 New captures use telemetry schema v5 with the documented 20 numeric contact
 points; the parser remains compatible with earlier schema v4 captures. Landing
 details use the documented [columnar v7 format](docs/format-v7.md), while v1-v6

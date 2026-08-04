@@ -114,8 +114,51 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_SIGNING_KEY_PKCS8_B64: ${{ secrets.RELEASE_SIGNING_KEY_PKCS8_B64 }}
         run: |
           $version = $env:GITHUB_REF_NAME.TrimStart('v')
+          if ([string]::IsNullOrWhiteSpace($env:RELEASE_SIGNING_KEY_PKCS8_B64)) {
+            throw "RELEASE_SIGNING_KEY_PKCS8_B64 is not configured. Refusing to publish an unsigned update."
+          }
+
+          $assetPath = Join-Path $env:GITHUB_WORKSPACE 'artifacts\MSFS-Landing-Stats.exe'
+          $asset = Get-Item -LiteralPath $assetPath
+          $sha256 = (Get-FileHash -LiteralPath $assetPath -Algorithm SHA256).Hash.ToLowerInvariant()
+          $manifestPath = Join-Path $env:GITHUB_WORKSPACE 'artifacts\update-manifest.txt'
+          $signaturePath = Join-Path $env:GITHUB_WORKSPACE 'artifacts\update-manifest.sig'
+          $manifest = @(
+            'format=1'
+            "version=$version"
+            'asset=MSFS-Landing-Stats.exe'
+            "size=$($asset.Length)"
+            "sha256=$sha256"
+          ) -join "`n"
+          $manifest += "`n"
+          $manifestBytes = [Text.UTF8Encoding]::new($false).GetBytes($manifest)
+          [IO.File]::WriteAllBytes($manifestPath, $manifestBytes)
+
+          $privateKey = [Convert]::FromBase64String($env:RELEASE_SIGNING_KEY_PKCS8_B64)
+          $rsa = [Security.Cryptography.RSA]::Create()
+          try {
+            $bytesRead = 0
+            $rsa.ImportPkcs8PrivateKey($privateKey, [ref]$bytesRead)
+            if ($bytesRead -ne $privateKey.Length) {
+              throw 'Release signing key contains trailing data.'
+            }
+            $signature = $rsa.SignData(
+              $manifestBytes,
+              [Security.Cryptography.HashAlgorithmName]::SHA256,
+              [Security.Cryptography.RSASignaturePadding]::Pkcs1)
+            [IO.File]::WriteAllText(
+              $signaturePath,
+              [Convert]::ToBase64String($signature) + "`n",
+              [Text.UTF8Encoding]::new($false))
+          }
+          finally {
+            $rsa.Dispose()
+            [Array]::Clear($privateKey, 0, $privateKey.Length)
+          }
+
           $changelog = Get-Content -LiteralPath CHANGELOG.md -Raw
           $escapedVersion = [Regex]::Escape($version)
           $match = [Regex]::Match(
@@ -127,4 +170,8 @@ jobs:
 
           $notesPath = Join-Path $env:RUNNER_TEMP "release-notes-$version.md"
           $match.Groups['body'].Value.Trim() | Set-Content -LiteralPath $notesPath -Encoding utf8
-          gh release create $env:GITHUB_REF_NAME artifacts/MSFS-Landing-Stats.exe --notes-file $notesPath
+          gh release create $env:GITHUB_REF_NAME `
+            artifacts/MSFS-Landing-Stats.exe `
+            artifacts/update-manifest.txt `
+            artifacts/update-manifest.sig `
+            --notes-file $notesPath

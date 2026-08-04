@@ -2,6 +2,37 @@
 
 All notable changes to MSFS Landing Stats are documented in this file.
 
+## [0.7.0] - 2026-08-05
+
+### Added
+
+- Added a silent GitHub release updater. Every update is accepted only after
+  verifying a pinned RSA signature, the signed asset size and SHA-256 hash, and
+  the downloaded single-file bundle; installation is atomic and takes effect on
+  the next application start.
+- `DEBUG RAW` is now an explicit opt-in telemetry contribution mode. Each
+  installation creates its own Windows-protected signing key, enrolls once with
+  an invitation code, signs every archive request, and removes the temporary
+  local queue copy only after the receiver acknowledges it.
+- Added a containerized telemetry receiver with Cloudflare Tunnel ingress,
+  strict schema-v5 ZIP validation, replay protection, per-source rate limits,
+  per-installation and global storage quotas, free-space reserve, retention,
+  and bounded container logs.
+
+### Changed
+
+- Diagnostic archives are no longer retained as a local `Raw Captures` corpus.
+  While contribution mode is enabled, closed chunks use a bounded temporary
+  queue and are uploaded automatically; ordinary landing records remain local.
+- Tagged releases now fail closed unless the update manifest can be signed and
+  publish the executable, canonical manifest, and detached signature together.
+
+### Security
+
+- Telemetry enrollment is invite-only. The public endpoint has no generic file
+  upload path and rejects unsigned, stale, replayed, oversized, malformed, or
+  quota-exceeding captures before they enter the accepted corpus.
+
 ## [0.6.0] - 2026-08-05
 
 ### Added

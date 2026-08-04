@@ -21,7 +21,7 @@ public sealed class RawCaptureRepository
         RootPath = rootPath ?? Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "MSFS Landing Stats",
-            "Raw Captures");
+            "Telemetry Queue");
     }
 
     public string RootPath { get; }
