@@ -2,6 +2,28 @@
 
 All notable changes to MSFS Landing Stats are documented in this file.
 
+## [0.7.6] - 2026-08-05
+
+This release supersedes v0.7.5 and includes its complete consolidated history
+below.
+
+### Changed
+
+- Completed the transition back to signed manifest format 3 and direct
+  single-executable updates. Release ZIPs are no longer produced or published.
+- Split update metadata into an immutable bootstrap manifest and a moving
+  release channel. Every v0.7.5 installation first updates to the v0.7.6
+  bridge; v0.7.6 and later then follow the current signed channel.
+
+### Security
+
+- Added a two-stage release gate. It rejects a release unless the bootstrap
+  manifest is the signed v0.7.6 bridge, the channel manifest names the exact
+  release being built, and both manifests match the exact executable and
+  updater bytes they authorize.
+- The updater accepts only the two fixed manifest names and re-verifies the
+  selected manifest from the immutable versioned release before replacement.
+
 ## [0.7.5] - 2026-08-05
 
 This release supersedes v0.7.4 and includes its complete consolidated history

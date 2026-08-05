@@ -54,16 +54,17 @@ internal static class Program
         using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(60) };
         client.DefaultRequestHeaders.UserAgent.ParseAdd("MSFS-Landing-Stats-Updater/3");
         var releaseRoot = Protocol.VersionReleaseRoot(invocation.Version);
+        var signatureName = SignatureNameFor(invocation.ManifestName);
         var manifestBytes = await Protocol.DownloadSmallAsync(
             client,
-            releaseRoot + Protocol.ManifestName,
-            Protocol.ManifestName,
+            releaseRoot + invocation.ManifestName,
+            invocation.ManifestName,
             16 * 1024,
             CancellationToken.None).ConfigureAwait(false);
         var signature = Encoding.ASCII.GetString(await Protocol.DownloadSmallAsync(
             client,
-            releaseRoot + Protocol.SignatureName,
-            Protocol.SignatureName,
+            releaseRoot + signatureName,
+            signatureName,
             8 * 1024,
             CancellationToken.None).ConfigureAwait(false));
         var manifest = Protocol.VerifyAndParse(manifestBytes, signature);
@@ -184,12 +185,13 @@ internal static class Program
 
     private static UpdateInvocation ParseInvocation(string[] args)
     {
-        if (args.Length != 9 ||
+        if ((args.Length != 9 && args.Length != 11) ||
             args[0] != "--apply" ||
             args[1] != "--parent-pid" ||
             args[3] != "--target" ||
             args[5] != "--version" ||
-            args[7] != "--ready-event")
+            args[7] != "--ready-event" ||
+            (args.Length == 11 && args[9] != "--manifest"))
         {
             throw new InvalidDataException("Updater invocation is invalid");
         }
@@ -215,7 +217,22 @@ internal static class Program
             throw new InvalidDataException("Updater readiness event is invalid");
         }
 
-        return new UpdateInvocation(parentPid, targetPath, version, readyEventName);
+        var manifestName = args.Length == 11 ? args[10] : Protocol.ManifestName;
+        SignatureNameFor(manifestName);
+        return new UpdateInvocation(parentPid, targetPath, version, readyEventName, manifestName);
+    }
+
+    private static string SignatureNameFor(string manifestName)
+    {
+        if (string.Equals(manifestName, Protocol.ManifestName, StringComparison.Ordinal))
+        {
+            return Protocol.SignatureName;
+        }
+        if (string.Equals(manifestName, Protocol.ChannelManifestName, StringComparison.Ordinal))
+        {
+            return Protocol.ChannelSignatureName;
+        }
+        throw new InvalidDataException("Updater manifest channel is invalid");
     }
 
     private static void VerifyTargetProcess(UpdateInvocation invocation)
@@ -400,17 +417,19 @@ internal static class Program
 
     private sealed class UpdateInvocation
     {
-        public UpdateInvocation(int parentPid, string targetPath, Version version, string readyEventName)
+        public UpdateInvocation(int parentPid, string targetPath, Version version, string readyEventName, string manifestName)
         {
             ParentPid = parentPid;
             TargetPath = targetPath;
             Version = version;
             ReadyEventName = readyEventName;
+            ManifestName = manifestName;
         }
 
         public int ParentPid { get; }
         public string TargetPath { get; }
         public Version Version { get; }
         public string ReadyEventName { get; }
+        public string ManifestName { get; }
     }
 }

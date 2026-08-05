@@ -12,7 +12,7 @@ $packageDirectory = Join-Path $workDirectory "MSFS-Landing-Stats"
 $payloadPath = Join-Path $workDirectory "payload.zip"
 $singleFilePath = Join-Path $artifactsDirectory "MSFS-Landing-Stats.exe"
 $updaterArtifactPath = Join-Path $artifactsDirectory "MSFS-Landing-Stats.Updater.exe"
-$legacyPackagePath = Join-Path $artifactsDirectory "MSFS-Landing-Stats.zip"
+$obsoletePackagePath = Join-Path $artifactsDirectory "MSFS-Landing-Stats.zip"
 $allowedPrefix = $artifactsDirectory.TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
 
 if (-not $workDirectory.StartsWith($allowedPrefix, [StringComparison]::OrdinalIgnoreCase)) {
@@ -32,7 +32,15 @@ if (Test-Path -LiteralPath $workDirectory) {
 New-Item -ItemType Directory -Path $artifactsDirectory -Force | Out-Null
 New-Item -ItemType Directory -Path $packageDirectory -Force | Out-Null
 
-foreach ($oldArtifact in @($legacyPackagePath, $singleFilePath, $updaterArtifactPath)) {
+foreach ($oldArtifact in @(
+    $obsoletePackagePath,
+    $singleFilePath,
+    $updaterArtifactPath,
+    (Join-Path $artifactsDirectory "update-manifest.txt"),
+    (Join-Path $artifactsDirectory "update-manifest.sig"),
+    (Join-Path $artifactsDirectory "update-channel.txt"),
+    (Join-Path $artifactsDirectory "update-channel.sig")
+)) {
     if (Test-Path -LiteralPath $oldArtifact) {
         Remove-Item -LiteralPath $oldArtifact -Force
     }
@@ -116,39 +124,6 @@ if ($verification.ExitCode -ne 0) {
     throw "Single-file bundle verification failed with exit code $($verification.ExitCode)."
 }
 
-$legacyArchive = [IO.Compression.ZipFile]::Open(
-    $legacyPackagePath,
-    [IO.Compression.ZipArchiveMode]::Create)
-try {
-    $entry = $legacyArchive.CreateEntry(
-        "MSFS-Landing-Stats.exe",
-        [IO.Compression.CompressionLevel]::Optimal)
-    $input = [IO.File]::OpenRead($singleFilePath)
-    $output = $entry.Open()
-    try {
-        $input.CopyTo($output)
-    }
-    finally {
-        $output.Dispose()
-        $input.Dispose()
-    }
-}
-finally {
-    $legacyArchive.Dispose()
-}
-
-$legacyVerification = [IO.Compression.ZipFile]::OpenRead($legacyPackagePath)
-try {
-    if ($legacyVerification.Entries.Count -ne 1 -or
-        $legacyVerification.Entries[0].FullName -cne "MSFS-Landing-Stats.exe" -or
-        $legacyVerification.Entries[0].Length -ne (Get-Item -LiteralPath $singleFilePath).Length) {
-        throw "Legacy update package topology is invalid."
-    }
-}
-finally {
-    $legacyVerification.Dispose()
-}
-
 $appVersion = [Reflection.AssemblyName]::GetAssemblyName(
     (Join-Path $packageDirectory "MSFS-Landing-Stats.exe")).Version
 $singleFileVersion = [Reflection.AssemblyName]::GetAssemblyName($singleFilePath).Version
@@ -171,7 +146,6 @@ $updaterSize = (Get-Item -LiteralPath $updaterArtifactPath).Length
 Write-Host "Single-file download: $singleFilePath"
 Write-Host "Single-file size: $singleFileSize bytes"
 Write-Host "Single-file SHA-256: $singleFileHash"
-Write-Host "Legacy updater package: $legacyPackagePath"
 Write-Host "Updater: $updaterArtifactPath"
 Write-Host "Updater size: $updaterSize bytes"
 Write-Host "Updater SHA-256: $updaterHash"
