@@ -6,7 +6,7 @@
     <PlatformTarget>x64</PlatformTarget>
     <Prefer32Bit>false</Prefer32Bit>
     <AssemblyName>MSFS-Landing-Stats</AssemblyName>
-    <InformationalVersion>0.7.3-live</InformationalVersion>
+    <InformationalVersion>0.7.4-live</InformationalVersion>
     <ApplicationIcon>Assets\AppIcon.ico</ApplicationIcon>
     <MsfsSdkRoot Condition="'$(MsfsSdkRoot)' == '' and '$(MSFS_SDK)' != ''">$(MSFS_SDK)</MsfsSdkRoot>
     <MsfsSdkRoot Condition="'$(MsfsSdkRoot)' == ''">D:\MSFS 2024 SDK</MsfsSdkRoot>

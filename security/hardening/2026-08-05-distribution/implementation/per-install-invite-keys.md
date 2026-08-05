@@ -1,45 +1,52 @@
-# Implementation Plan: Per-install Keys With Invitation Enrollment
+# Implementation: Automatic Per-Installation Keys
 
-## Selected Design And Constraints
+## Selected Design
 
-The selected design uses a DPAPI-protected RSA key per Windows account, invitation enrollment, signed request metadata, replay state, bounded streaming, exact schema-v5 validation, and an isolated Docker Compose ingress. It cannot attest genuine simulator execution.
+After explicit telemetry consent, each Windows account creates a random
+installation ID and RSA key. DPAPI protects the private key locally. Enrollment
+is automatic and proves possession of that key; every later upload is signed.
+No hardware UUID, MachineGuid, account name, or shared client secret is sent.
 
-## Source Revision And Drift Check
+This identity provides stable attribution and revocation for honest clients. It
+does not attest real simulator execution: a modified public client can create
+new identities or fabricate valid telemetry. Abuse resistance therefore comes
+from independent server limits that a new installation ID cannot bypass:
+source-address rate/byte budgets, the global daily byte budget, the 20 GiB
+retained-storage ceiling, and the 2 GiB free-space reserve. Enrollment itself
+has a 1,000/hour global budget, an atomic 100,000-identity registry cap, and
+30-day cleanup only for unreferenced active identities.
 
-Evidence digest: `c79b70529ffee0f0d89d216eae67d666e0d01e4e282a1dac29140b9bd8d13b9c`. The final inventory in `../context.md` includes the client identity, byte-budget store, container, deployed ingress policy, and format-2 updater remediation; no relevant source drift remains.
+## Data And Trust Boundaries
 
-## Affected Components
+- `DEBUG RAW` gates full-rate local collection; separate consent gates upload.
+- Registration or upload failure never stops local collection.
+- The private key never leaves Windows DPAPI storage.
+- Enrollment is limited per source and globally, requires a fresh signed
+  request, respects the disk reserve, and cannot exceed the registry cap.
+- Captures require an active enrolled key, fresh timestamp, unused nonce,
+  declared size/hash, and matching signature.
+- ZIP member names, schema, row width, finite values, sample count, compressed
+  size, expanded size, and disk budgets are validated before acceptance.
+- Revocation prevents the same installation identity from re-enrolling.
 
-`src/LandingStats.App/TelemetryUpload`, `src/LandingStats.App/Storage/RawCaptureRepository.cs`, `src/LandingStats.App/MainWindow.xaml.cs`, and `server/telemetry-ingest`.
+## Operational Policy
 
-## Ordered Work Packages
+Keep 16 MiB compressed and 64 MiB expanded request bounds, 512 MiB per
+installation/day, 1 GiB per source/day, 4 GiB globally/day, 20 GiB retained,
+2 GiB free-space reserve, 1,000 enrollments/hour globally, 100,000 retained
+identities, and 30-day expiry for unreferenced active identities. The API
+remains reachable only through the Cloudflare Tunnel network and has no
+host-published port.
 
-Complete consent/enrollment UI, keep network work off SimConnect callbacks, provision Compose secrets, route Cloudflare to `telemetry-api:8080`, issue invitations, and add operational metrics/backup.
+## Validation
 
-## Compatibility And Migration
-
-Only new DEBUG RAW chunks use the telemetry queue. Historical `Raw Captures` directories are not scanned or uploaded.
-
-## Tactical Protections During Migration
-
-Keep registration in `invite` mode, retain 16 MB compressed and 64 MB expanded bounds, reject unknown schemas, and do not publish an API port.
-
-## Tests And Security Validation
-
-Run unit ZIP/signature tests, public signed E2E, invalid signature, replay, duplicate hash, oversized body, unexpected entry, NaN, bad row width, revoked key, and queue interruption cases.
-
-## Performance And Resource Benchmarks
-
-Measure 1/8/16 MB upload latency, API RSS under concurrent uploads, client UI responsiveness, and disk retention behavior. The acceptance threshold is no SimConnect callback delay and API RSS below the 256 MB container limit.
+Run automatic enrollment and signed public E2E; invalid signature, replay,
+duplicate, malformed ZIP, schema mismatch, source/install/global quota,
+storage ceiling, and free-space-reserve tests. Confirm a revoked key cannot
+restore itself.
 
 ## Rollout And Rollback
 
-Start with maintainer-owned test installs, then a small invitation cohort. Roll back by disabling the client feature and stopping this isolated Compose project; preserve queued files until a deliberate recovery decision.
-
-## Acceptance Criteria
-
-Public E2E succeeds and is cleaned from the corpus; rejects never enter `accepted`; ACK removes the local queue copy; offline files retry; accepted and attempted-byte quotas, retention, and disk reserve are enforced; a revoked key cannot upload.
-
-## Open Decisions
-
-Publish privacy/retention text and choose monitoring/alert destinations.
+Enable DEBUG RAW first on maintainer-owned installs, then monitor budget and
+rejection metrics. Roll back by disabling the client feature and stopping the
+isolated Compose project; queued ZIPs remain recoverable.

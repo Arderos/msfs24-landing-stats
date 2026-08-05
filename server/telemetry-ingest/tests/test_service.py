@@ -1,4 +1,5 @@
 import base64
+import concurrent.futures
 import tempfile
 import unittest
 import zipfile
@@ -8,7 +9,7 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
 from app.security import canonical_capture, public_key, verify_signature
-from app.store import Store
+from app.store import InstallationRegistryFullError, Store
 from app.validation import validate_capture
 
 
@@ -101,6 +102,100 @@ class ByteBudgetTests(unittest.TestCase):
                     ]
                 )
             )
+
+
+class EnrollmentTests(unittest.TestCase):
+    def test_installation_enrolls_without_invite_and_keeps_key_binding(self):
+        with tempfile.TemporaryDirectory() as value:
+            store = Store(Path(value))
+            store.initialize()
+            store.enroll("a" * 32, "modulus", "exponent")
+            installation = store.installation("a" * 32)
+            self.assertIsNotNone(installation)
+            self.assertEqual("active", installation["status"])
+            store.enroll("a" * 32, "modulus", "exponent")
+            with self.assertRaisesRegex(ValueError, "different key"):
+                store.enroll("a" * 32, "other-modulus", "exponent")
+
+    def test_registry_cap_is_atomic_and_existing_identity_still_refreshes(self):
+        with tempfile.TemporaryDirectory() as value:
+            store = Store(Path(value))
+            store.initialize()
+            maximum = 5
+
+            def enroll(index: int) -> bool:
+                try:
+                    store.enroll(
+                        f"{index:032x}",
+                        f"modulus-{index}",
+                        "exponent",
+                        maximum_installations=maximum,
+                        idle_retention_days=30,
+                    )
+                    return True
+                except InstallationRegistryFullError:
+                    return False
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=12) as executor:
+                accepted = list(executor.map(enroll, range(20)))
+
+            with store.connect() as connection:
+                count = connection.execute("SELECT COUNT(*) FROM installations").fetchone()[0]
+            self.assertEqual(maximum, count)
+            self.assertEqual(maximum, sum(accepted))
+
+            first = next(index for index, was_accepted in enumerate(accepted) if was_accepted)
+            store.enroll(
+                f"{first:032x}",
+                f"modulus-{first}",
+                "exponent",
+                maximum_installations=maximum,
+                idle_retention_days=30,
+            )
+
+    def test_prune_removes_only_stale_unreferenced_installations(self):
+        with tempfile.TemporaryDirectory() as value:
+            store = Store(Path(value))
+            store.initialize()
+            stale = "a" * 32
+            referenced = "b" * 32
+            current = "c" * 32
+            for install_id in (stale, referenced, current):
+                store.enroll(install_id, f"modulus-{install_id}", "exponent")
+
+            with store.connect() as connection:
+                connection.execute(
+                    "UPDATE installations SET last_seen=0 WHERE install_id IN (?, ?)",
+                    (stale, referenced),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO captures(
+                        capture_id, install_id, sha256, relative_path, received_at,
+                        compressed_bytes, uncompressed_bytes, sample_count,
+                        schema_version, app_version, source_address_hash)
+                    VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "capture",
+                        referenced,
+                        "d" * 64,
+                        "accepted/reference.zip",
+                        1,
+                        1,
+                        1,
+                        1,
+                        5,
+                        "0.7.4",
+                        "source",
+                    ),
+                )
+
+            removed = store.prune_installations(idle_retention_days=30)
+            self.assertEqual(1, removed)
+            self.assertIsNone(store.installation(stale))
+            self.assertIsNotNone(store.installation(referenced))
+            self.assertIsNotNone(store.installation(current))
 
 
 if __name__ == "__main__":

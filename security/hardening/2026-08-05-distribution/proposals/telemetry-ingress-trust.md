@@ -6,7 +6,7 @@ Choose how a public desktop client is admitted to a research corpus without pret
 
 ## Executive Recommendation
 
-Option 1, **Shared credential in the executable**, is easy but creates one fleet-wide secret. Option 2, **Per-install keys with invitation enrollment**, gives us revocation, replay control, bounded ingestion, and a human admission step. I recommend Option 2 for the initial community cohort.
+Option 1, **Shared credential in the executable**, is easy but creates one fleet-wide secret. Option 2, **Per-install keys with automatic bounded enrollment**, gives us revocation, replay control, and bounded ingestion without collecting hardware identity or asking users for invitation codes. I recommend Option 2.
 
 ## Evidence
 
@@ -63,13 +63,13 @@ flowchart LR
 
 Rollback is trivial, but that is also evidence that the control owns little.
 
-### Option 2: Per-install keys with invitation enrollment
+### Option 2: Per-install keys with automatic bounded enrollment
 
-Each Windows account creates its own RSA key and DPAPI protects the private XML. The server admits its public key once with a high-entropy invitation, then verifies signed metadata and a replay nonce before streaming the body through strict ZIP and CSV validation. The attractive part is containment: one compromised client is one revocable identity.
+Each Windows account creates a random installation ID and RSA key, and DPAPI protects the private XML. The server admits the public key after a signed proof-of-possession request, then verifies signed metadata and a replay nonce before streaming the body through strict ZIP and CSV validation. The attractive part is containment: one compromised client is one revocable identity. Since a public client can create arbitrary identities, the server independently caps per-source and global enrollment rate, total registry rows, retained bytes, and free-space reserve.
 
 ```mermaid
 flowchart LR
-  I["One-time invite"] --> E["Enrollment boundary"]
+  I["Signed proof of possession"] --> E["Bounded enrollment boundary"]
   U["DPAPI per-install key"] --> E
   U -->|"signed hash, size, time, nonce"| V["Bounded validator"]
   E --> R["Active/revoked key registry"]
@@ -94,12 +94,12 @@ The public E2E supports compatibility, not capacity. We still need realistic 16 
 | Security | Fleet-wide extraction failure | Per-install containment; fabricated valid data still possible |
 | Performance | One signature | One signature plus bounded validation |
 | Reliability | No queue design | Retryable closed-file boundary |
-| Operability | Simple until compromise | Invites, revocation, retention, monitoring |
+| Operability | Simple until compromise | Registry budgets, revocation, retention, monitoring |
 | Migration | Fast | One-time consent/enrollment |
 
 ## Recommendation
 
-I recommend Option 2 under the current small-cohort constraint. Open enrollment should win only if we explicitly label all community data untrusted and accept automated Sybil abuse handling as an operating function.
+I recommend Option 2 with automatic enrollment. Community data is explicitly untrusted; server-owned global enrollment and byte budgets, an atomic registry cap, retention, strict validation, and the disk reserve are the Sybil-abuse boundary.
 
 ## Evidence Coverage And Residual Risk
 
@@ -107,7 +107,7 @@ I recommend Option 2 under the current small-cohort constraint. Open enrollment 
 
 ## Migration And Rollout
 
-Begin with maintainer installs, then issue a few invitations. Do not scan `Raw Captures`; only new `Telemetry Queue` chunks participate. Rotate the disclosed tunnel token after confirming the replacement.
+Begin with maintainer installs, then enable the public endpoint while monitoring enrollment counts, rejection rates, SQLite/WAL size, corpus bytes, and free space. Do not scan historical `Raw Captures`; only newly completed telemetry queue chunks participate. Rotate the disclosed tunnel token after confirming the replacement.
 
 ## Validation Plan
 
@@ -115,7 +115,7 @@ Run malformed ZIP, bomb ratio, wrong schema, NaN, replay, revoked key, duplicate
 
 ## Implementation Work Packages
 
-Client consent/identity/queue, server admission/validation/storage, Docker/Cloudflare deployment, and operator invite/revocation/retention runbooks.
+Client consent/identity/queue, server admission/validation/storage, Docker/Cloudflare deployment, and operator enrollment-budget/revocation/retention runbooks.
 
 ## Open Questions
 

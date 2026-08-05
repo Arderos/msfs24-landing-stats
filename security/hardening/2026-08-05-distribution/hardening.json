@@ -11,7 +11,7 @@
   },
   "assessment": {
     "outcome": "opportunities_identified",
-    "summary": "Two trust boundaries were hardened structurally: hostile telemetry ingestion is invite-bound, signed, validated, and quota-limited; releases require a pinned signed manifest with the CI signing secret provisioned."
+    "summary": "Two trust boundaries were hardened structurally: hostile telemetry ingestion is automatically enrolled, signed, strictly validated, and bounded by source/global/storage quotas; releases require a pinned signed manifest with the CI signing secret provisioned."
   },
   "constraints": {
     "profile": "balanced",
@@ -24,7 +24,7 @@
     "assumptions": [
       "Client hosts are untrusted and cannot attest genuine simulator execution.",
       "GitHub Actions can hold a repository signing secret.",
-      "Initial telemetry enrollment is invitation-only."
+      "Initial telemetry enrollment is automatic and creates no hardware fingerprint."
     ]
   },
   "opportunities": [
@@ -42,7 +42,8 @@
         "Every accepted capture is bound to an active installation key, fresh nonce, signed size, and signed SHA-256.",
         "Untrusted ZIP content is bounded and fully validated before corpus admission.",
         "The server can revoke one installation without rotating every client.",
-        "A failed upload leaves a bounded temporary client copy and never blocks SimConnect."
+        "A failed upload leaves the completed local capture intact and never disables DEBUG RAW or blocks SimConnect.",
+        "Public enrollment has a global request budget, atomic registry cap, stale-unreferenced retention, and free-space gate."
       ],
       "proposalPath": "proposals/telemetry-ingress-trust.md",
       "options": [
@@ -62,23 +63,23 @@
           "implementationReadiness":{"affectedComponents":["client","ingress"],"workPackages":["Embed and verify one key."],"acceptanceCriteria":["Not recommended."],"migrationNotes":[],"rollback":"Remove the gate."}
         },
         {
-          "optionId":"per-install-invite-keys","title":"Per-install keys with invitation enrollment","kind":"structural","summary":"Generate a DPAPI-protected key per installation and let the server own enrollment, replay, quota, validation, and revocation.",
+          "optionId":"per-install-auto-keys","title":"Per-install keys with automatic enrollment","kind":"structural","summary":"Generate a DPAPI-protected key per installation and let the server own enrollment, replay, source/global quota, validation, and revocation.",
           "diagramPaths":{"before":"diagrams/telemetry-ingress-trust-before.mmd","after":"diagrams/telemetry-ingress-trust-per-install-invite-keys-after.mmd"},
           "evidenceCoverage":[{"evidenceId":"E001","effect":"addresses","tacticalFixRequired":false,"rationale":"The existing completion event is a safe queue boundary."},{"evidenceId":"E002","effect":"addresses","tacticalFixRequired":false,"rationale":"The complete public path was exercised."},{"evidenceId":"E003","effect":"mitigates","tacticalFixRequired":false,"rationale":"Compromise is limited to one revocable installation."}],
           "tradeoffs":[
-            {"dimension":"security","direction":"improves","confidence":"high","basis":"source-derived","assessment":"Per-install authority, nonce replay protection, strict ZIP validation, and invitation admission narrow abuse.","validationPlan":"Repeat signature, replay, quota, and malformed archive tests."},
+            {"dimension":"security","direction":"improves","confidence":"high","basis":"source-derived","assessment":"Per-install authority, nonce replay protection, strict ZIP validation, source/global budgets, storage ceiling, and free-space reserve bound abuse.","validationPlan":"Repeat signature, replay, source/global quota, storage reserve, and malformed archive tests."},
             {"dimension":"performance","direction":"neutral","confidence":"medium","basis":"measured","assessment":"One-sample public E2E completed interactively; large-file throughput remains unmeasured.","validationPlan":"Upload 1, 8, and 16 MB captures and require no SimConnect-thread work."},
             {"dimension":"memory","direction":"neutral","confidence":"medium","basis":"source-derived","assessment":"Streaming caps client and server buffers.","validationPlan":"Measure peak RSS during a 16 MB upload."},
             {"dimension":"reliability","direction":"improves","confidence":"medium","basis":"source-derived","assessment":"Closed ZIPs form a retryable bounded queue and are deleted only after ACK.","validationPlan":"Interrupt network and process across upload stages."},
-            {"dimension":"operability","direction":"regresses","confidence":"high","basis":"source-derived","assessment":"Invites, revocation, SQLite, retention, and tunnel health require ownership.","validationPlan":"Write and execute the runbook."},
+            {"dimension":"operability","direction":"regresses","confidence":"high","basis":"source-derived","assessment":"Revocation, enrollment/registry budgets, SQLite, retention, and tunnel health require ownership.","validationPlan":"Write and execute the runbook."},
             {"dimension":"migration","direction":"neutral","confidence":"high","basis":"source-derived","assessment":"Only newly enabled DEBUG RAW sessions enter the queue.","validationPlan":"Verify old local archives are not auto-enqueued."}
           ],
-          "residualRisks":["An enrolled hostile client can still fabricate syntactically valid telemetry.","Invitation issuance remains a human trust decision."],
-          "implementationReadiness":{"affectedComponents":["src/LandingStats.App/TelemetryUpload","server/telemetry-ingest"],"workPackages":["Provision endpoint and secrets.","Issue invites.","Monitor storage and rejects."],"acceptanceCriteria":["Signed public E2E succeeds and malformed/replayed requests fail."],"migrationNotes":["First use requires consent and enrollment."],"rollback":"Disable DEBUG RAW upload and stop the isolated Compose project; queued ZIPs remain recoverable."}
+          "residualRisks":["An enrolled hostile client can still fabricate syntactically valid telemetry.","Distributed clients can consume the bounded global enrollment and capture budgets, causing temporary fail-closed rejection."],
+          "implementationReadiness":{"affectedComponents":["src/LandingStats.App/TelemetryUpload","server/telemetry-ingest"],"workPackages":["Provision endpoint and secrets.","Monitor enrollment, source/global budgets, storage and rejects."],"acceptanceCriteria":["Automatic signed public E2E succeeds and malformed/replayed/quota-exceeding requests fail."],"migrationNotes":["First use requires explicit telemetry consent; enrollment is automatic."],"rollback":"Disable DEBUG RAW upload and stop the isolated Compose project; queued ZIPs remain recoverable."}
         }
       ],
-      "recommendedOptionId":"per-install-invite-keys",
-      "recommendation":"Use invitation enrollment now; open enrollment becomes reasonable only when corpus provenance is explicitly untrusted and automated abuse handling is mature."
+      "recommendedOptionId":"per-install-auto-keys",
+      "recommendation":"Use automatic per-install key enrollment with explicit consent. Treat corpus provenance as untrusted and enforce source/global byte budgets plus hard storage and free-space ceilings."
     },
     {
       "opportunityId":"release-authenticity",

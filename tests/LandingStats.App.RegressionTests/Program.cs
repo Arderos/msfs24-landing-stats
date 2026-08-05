@@ -40,6 +40,7 @@ internal static class Program
         Run("raw debug streams into a temporary queue zip", RawDebugStreamsIntoZip);
         Run("raw telemetry queue never blocks its producer", RawTelemetryQueueNeverBlocksProducer);
         Run("telemetry identity is stable, protected, and signs", TelemetryIdentityIsStableAndSigns);
+        Run("telemetry registration is automatic and hardware anonymous", TelemetryRegistrationIsAutomaticAndAnonymous);
         Run("updater accepts a signed manifest and rejects tampering", UpdaterVerifiesSignedManifest);
         Run("updater accepts the format-3 single executable manifest shape", UpdaterAcceptsSingleExecutableManifestShape);
         Run("updater cleanup refuses paths outside its private root", UpdaterCleanupRefusesUnsafePath);
@@ -244,6 +245,38 @@ internal static class Program
         }
     }
 
+    private static void TelemetryRegistrationIsAutomaticAndAnonymous()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "landing-stats-auto-enrollment-test-" + Guid.NewGuid().ToString("N"));
+        var previousEndpoint = Environment.GetEnvironmentVariable("MSFS_LANDING_STATS_TELEMETRY_URL");
+        try
+        {
+            Directory.CreateDirectory(root);
+            Environment.SetEnvironmentVariable("MSFS_LANDING_STATS_TELEMETRY_URL", "https://telemetry.example.test/");
+            var handler = new TelemetryEnrollmentFixtureHandler();
+            using var client = new TelemetryUploadClient(
+                Path.Combine(root, "queue"),
+                handler,
+                Path.Combine(root, "identity"));
+            var result = client.PrepareAsync(CancellationToken.None).GetAwaiter().GetResult();
+            Equal(TelemetryPreparationState.Ready, result.State, "automatic telemetry enrollment state");
+            var refresh = client.PrepareAsync(CancellationToken.None).GetAwaiter().GetResult();
+            Equal(TelemetryPreparationState.Ready, refresh.State, "idempotent telemetry enrollment refresh");
+            Equal(2, handler.EnrollmentCount, "server enrollment is refreshed whenever DEBUG RAW is enabled");
+            var payload = handler.EnrollmentPayload ?? throw new InvalidOperationException("enrollment payload was not sent");
+            Equal(true, payload.IndexOf("\"install_id\"", StringComparison.Ordinal) >= 0, "anonymous installation id field");
+            Equal(true, payload.IndexOf("\"public_modulus\"", StringComparison.Ordinal) >= 0, "public key field");
+            Equal(false, payload.IndexOf("invite", StringComparison.OrdinalIgnoreCase) >= 0, "invite field absence");
+            Equal(false, payload.IndexOf("hardware", StringComparison.OrdinalIgnoreCase) >= 0, "hardware identifier absence");
+            Equal(false, payload.IndexOf("machineguid", StringComparison.OrdinalIgnoreCase) >= 0, "MachineGuid absence");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("MSFS_LANDING_STATS_TELEMETRY_URL", previousEndpoint);
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
     private static void UpdaterCleanupRefusesUnsafePath()
     {
         var directory = Path.Combine(Path.GetTempPath(), "landing-stats-unsafe-cleanup-test-" + Guid.NewGuid().ToString("N"));
@@ -299,7 +332,9 @@ internal static class Program
             if (builtExecutable == null) throw new FileNotFoundException("Built single executable fixture is unavailable");
             File.Copy(builtExecutable, replacement);
 
-            UpdaterProgram.InstallExecutableTransactionally(replacement, target, new Version(0, 7, 3));
+            var replacementVersion = AssemblyName.GetAssemblyName(replacement).Version
+                                     ?? throw new InvalidDataException("replacement fixture version is unavailable");
+            UpdaterProgram.InstallExecutableTransactionally(replacement, target, replacementVersion);
             Equal(false, File.Exists(replacement), "replacement moved into place");
             Equal(true, new FileInfo(target).Length > 100, "installed executable length");
             Equal(0, Directory.GetFiles(root, ".msfs-landing-stats-backup-*.exe").Length, "transaction backup removed");
@@ -1609,6 +1644,45 @@ internal static class Program
             {
                 RequestMessage = request,
                 Content = new ByteArrayContent(bytes),
+            });
+        }
+    }
+
+    private sealed class TelemetryEnrollmentFixtureHandler : HttpMessageHandler
+    {
+        public string? EnrollmentPayload { get; private set; }
+        public int EnrollmentCount { get; private set; }
+
+        protected override System.Threading.Tasks.Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            if (request.Method == HttpMethod.Get && request.RequestUri!.AbsolutePath.EndsWith("/v1/config", StringComparison.Ordinal))
+            {
+                return System.Threading.Tasks.Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    RequestMessage = request,
+                    Content = new StringContent(
+                        "{\"protocol\":1,\"registration_mode\":\"open\",\"telemetry_schema\":5,\"max_upload_bytes\":16777216}",
+                        Encoding.UTF8,
+                        "application/json"),
+                });
+            }
+
+            if (request.Method == HttpMethod.Post && request.RequestUri!.AbsolutePath.EndsWith("/v1/enroll", StringComparison.Ordinal))
+            {
+                EnrollmentCount++;
+                EnrollmentPayload = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+                return System.Threading.Tasks.Task.FromResult(new HttpResponseMessage(HttpStatusCode.Created)
+                {
+                    RequestMessage = request,
+                    Content = new StringContent("{\"status\":\"enrolled\"}", Encoding.UTF8, "application/json"),
+                });
+            }
+
+            return System.Threading.Tasks.Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound)
+            {
+                RequestMessage = request,
             });
         }
     }

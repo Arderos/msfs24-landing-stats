@@ -20,7 +20,6 @@ namespace LandingStats.App.TelemetryUpload;
 internal enum TelemetryPreparationState
 {
     Ready,
-    InviteRequired,
     Unavailable,
 }
 
@@ -65,7 +64,7 @@ internal sealed class TelemetryUploadClient : IDisposable
     private readonly Task _worker;
     private int _disposed;
 
-    public TelemetryUploadClient(string queuePath, HttpMessageHandler? handler = null)
+    public TelemetryUploadClient(string queuePath, HttpMessageHandler? handler = null, string? identityRoot = null)
     {
         _queuePath = queuePath;
         var configured = Environment.GetEnvironmentVariable(EndpointEnvironmentVariable);
@@ -79,7 +78,7 @@ internal sealed class TelemetryUploadClient : IDisposable
             _endpoint = endpoint.AbsoluteUri.EndsWith("/", StringComparison.Ordinal) ? endpoint : new Uri(endpoint.AbsoluteUri + "/");
         }
 
-        var identityRoot = Path.Combine(
+        identityRoot ??= Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "MSFS Landing Stats",
             "Telemetry Upload");
@@ -100,29 +99,18 @@ internal sealed class TelemetryUploadClient : IDisposable
 
     public void AcceptConsent() => _identityStore.AcceptConsent();
 
-    public async Task<TelemetryPreparationResult> PrepareAsync(string? inviteCode, CancellationToken cancellationToken)
+    public async Task<TelemetryPreparationResult> PrepareAsync(CancellationToken cancellationToken)
     {
         if (_endpoint == null)
         {
             return new TelemetryPreparationResult(TelemetryPreparationState.Unavailable, "Telemetry receiver is not configured in this build");
         }
-        if (_identityStore.IsEnrolled(_endpoint))
-        {
-            return new TelemetryPreparationResult(TelemetryPreparationState.Ready, "Secure telemetry upload is ready");
-        }
-
         try
         {
             var config = await GetConfigAsync(cancellationToken).ConfigureAwait(false);
-            if (!string.Equals(config.RegistrationMode, "open", StringComparison.OrdinalIgnoreCase) &&
-                !string.Equals(config.RegistrationMode, "invite", StringComparison.OrdinalIgnoreCase))
+            if (!string.Equals(config.RegistrationMode, "open", StringComparison.OrdinalIgnoreCase))
             {
-                return new TelemetryPreparationResult(TelemetryPreparationState.Unavailable, "Telemetry receiver returned an unsupported registration mode");
-            }
-            if (string.Equals(config.RegistrationMode, "invite", StringComparison.OrdinalIgnoreCase) &&
-                string.IsNullOrWhiteSpace(inviteCode))
-            {
-                return new TelemetryPreparationResult(TelemetryPreparationState.InviteRequired, "A one-time telemetry invitation code is required");
+                return new TelemetryPreparationResult(TelemetryPreparationState.Unavailable, "Telemetry receiver is not accepting automatic registration");
             }
 
             var identity = _identityStore.Identity();
@@ -137,7 +125,6 @@ internal sealed class TelemetryUploadClient : IDisposable
                 PublicModulus = identity.PublicModulus,
                 PublicExponent = identity.PublicExponent,
                 Signature = identity.Sign(canonical),
-                InviteCode = string.IsNullOrWhiteSpace(inviteCode) ? null : inviteCode!.Trim(),
             };
 
             using var memory = new MemoryStream();
@@ -147,7 +134,7 @@ internal sealed class TelemetryUploadClient : IDisposable
             using var response = await _client.PostAsync(new Uri(_endpoint, "v1/enroll"), content, cancellationToken).ConfigureAwait(false);
             if (response.StatusCode == HttpStatusCode.Forbidden)
             {
-                return new TelemetryPreparationResult(TelemetryPreparationState.InviteRequired, "The invitation code is invalid, already used, or the installation was revoked");
+                return new TelemetryPreparationResult(TelemetryPreparationState.Unavailable, "Telemetry registration was rejected or this installation was revoked");
             }
             if (!response.IsSuccessStatusCode)
             {
@@ -179,7 +166,7 @@ internal sealed class TelemetryUploadClient : IDisposable
         var acceptedForUpload = EnqueueCore(path);
         if (capacityExceeded)
         {
-            RaiseStatus("Telemetry queue reached 256 MB; DEBUG RAW was stopped without deleting queued captures", true);
+            RaiseStatus("Telemetry upload queue reached 256 MB; local DEBUG RAW continues and queued captures stay on disk", true);
             return false;
         }
 
@@ -443,6 +430,5 @@ internal sealed class TelemetryUploadClient : IDisposable
         [DataMember(Name = "public_modulus", Order = 4)] public string PublicModulus { get; set; } = string.Empty;
         [DataMember(Name = "public_exponent", Order = 5)] public string PublicExponent { get; set; } = string.Empty;
         [DataMember(Name = "signature", Order = 6)] public string Signature { get; set; } = string.Empty;
-        [DataMember(Name = "invite_code", Order = 7, EmitDefaultValue = false)] public string? InviteCode { get; set; }
     }
 }

@@ -119,27 +119,35 @@ Landing records are stored under:
 Ordinary landing records are never uploaded. Removing a landing from the local
 history removes its compact stored record.
 
-`DEBUG RAW` is a separate, opt-in contribution mode. Before it can be enabled,
-the application states that the full-rate telemetry includes aircraft state,
-coordinates, and controller/input channels and asks for explicit consent and a
-one-time invitation code. Closed diagnostic chunks are staged temporarily under:
+`DEBUG RAW` is a separate full-rate local recording mode. On first use, the
+application explains that telemetry includes aircraft state, coordinates, and
+controller/input channels and separately asks whether those captures may be
+uploaded. Saying no keeps local recording active. Saying yes registers an
+anonymous random installation ID and Windows-protected public key
+automatically. No hardware UUID is collected. Closed diagnostic chunks are
+written under:
 
 ```text
 %LOCALAPPDATA%\MSFS Landing Stats\Telemetry Queue
 ```
 
-`DEBUG RAW` streams every received `SIM_FRAME` sample directly into a ZIP,
-rotates every 30,000 frames, signs the upload with a per-installation private key
-protected by Windows, and deletes the queue copy only after the server accepts
-it. The local queue is capped at 256 MiB; if it cannot accept more data, capture
-is disabled instead of growing without bound.
+`DEBUG RAW` streams every received `SIM_FRAME` sample directly into a ZIP and
+rotates every 30,000 frames. Local capture never depends on registration or
+network success. When upload is allowed, the app signs with a per-installation
+private key protected by Windows and deletes a queue copy only after the server
+accepts it. The uploader schedules at most 256 MiB at once; excess or failed
+captures remain local and full-rate capture continues. If `DEBUG RAW` is never
+enabled, the telemetry uploader is not initialized and sends no requests.
 
-The receiver accepts only invited installations and exact schema-v5 archives.
+The receiver accepts signed, automatically enrolled installations and exact
+schema-v5 archives.
 It limits one upload to 16 MiB compressed and 64 MiB expanded, one installation
 to 512 MiB per day (counting rejected signed attempts too), one source address
 to 1 GiB/day, and all ingress to 4 GiB/day. The retained corpus is capped at
-20 GiB while preserving a 2 GiB disk reserve. Invalid or incomplete files are
-never added to the corpus.
+20 GiB while preserving a 2 GiB disk reserve. Automatic enrollment is limited
+to 10/source/hour and 1,000 globally/hour; the durable registry is atomically
+capped at 100,000 identities and removes stale unreferenced identities after
+30 days. Invalid or incomplete files are never added to the corpus.
 New captures use telemetry schema v5 with the documented 20 numeric contact
 points; the parser remains compatible with earlier schema v4 captures. Landing
 details use the documented [columnar v7 format](docs/format-v7.md), while v1-v6

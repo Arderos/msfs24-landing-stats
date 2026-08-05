@@ -66,7 +66,7 @@ bounded at 128 MiB, and the updater at 16 MiB.
 
 ## Rollout And Rollback
 
-v0.7.3 is the only supported public bootstrap. Older GitHub releases are
+v0.7.4 is the only supported public bootstrap. Older GitHub releases are
 removed rather than migrated. A failed helper restarts the preserved EXE. For a
 bad signed release, remove it from `latest` and publish a corrected higher
 version; never silently replace the bytes behind a signed version.

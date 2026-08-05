@@ -2,7 +2,7 @@
 
 ## Evidence Basis
 
-I inspected the released v0.7.0 path, the replacement format-2 updater, the DEBUG RAW lifecycle, and the client/server tree. I also exercised a signed enrollment and capture through the public Cloudflare hostname and removed the synthetic record. The v0.7.0 custom SFX launcher was independently isolated as the Defender ML trigger; the normal application and standalone updater scan clean with Internet Zone metadata.
+I inspected the release updater, the DEBUG RAW lifecycle, and the client/server tree. Enrollment is automatic and anonymous; every capture is still bound to its installation key. Enrollment has a global request budget, atomic registry cap, stale-unreferenced retention, and a free-space gate. Capture admission retains independent source/global byte budgets and hard storage/free-space ceilings because a public client cannot prove genuine hardware identity.
 
 ## Constraints
 
@@ -12,7 +12,7 @@ The client is public and runs on an untrusted Windows machine, so it cannot prov
 
 | Opportunity | Evidence | Options | Recommendation | Proposal |
 | --- | --- | --- | --- | --- |
-| Own the telemetry-ingress trust boundary | RAW ZIP lifecycle, public hostile endpoint, signed E2E experiment | Shared binary credential; per-install key with invitation | Per-install DPAPI key, one-time invitation, strict bounded validator | [Telemetry ingress](proposals/telemetry-ingress-trust.md) |
+| Own the telemetry-ingress trust boundary | RAW ZIP lifecycle, public hostile endpoint, signed E2E experiment | Shared binary credential; automatic per-install key | Per-install DPAPI key, automatic enrollment, source/global quotas, strict bounded validator | [Telemetry ingress](proposals/telemetry-ingress-trust.md) |
 | Authenticate self-updates independently of transport | v0.7.0 signed format-1 SFX path, removed after Defender ML detection | HTTPS plus hash; signed canonical two-asset manifest | Pinned release key, independently verifying helper, transactional five-file replacement | [Release authenticity](proposals/release-authenticity.md) |
 
 ## Recommendation Summary
@@ -21,4 +21,4 @@ I recommend the two selected structural options together. They use asymmetric ke
 
 ## Next Decisions
 
-Publish v0.7.1 as the one-time clean ZIP bootstrap, exercise the first format-2-to-format-2 update, issue invitation codes deliberately, publish the privacy/retention statement, and rotate the tunnel token that appeared in chat after deployment verification.
+Monitor enrollment count/rate, source/global capture-attempt budgets, SQLite/WAL size, and disk reserve. Publish the privacy/retention statement and rotate the tunnel token that appeared in chat after deployment verification.

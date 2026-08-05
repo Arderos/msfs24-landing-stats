@@ -1,5 +1,5 @@
 flowchart LR
-  I["One-time invite"] --> E["Enrollment boundary"]
+  I["Random install ID + DPAPI key"] --> E["Automatic signed enrollment"]
   U["DPAPI per-install key"] --> E
   U -->|"signed hash, size, time, nonce"| V["Bounded validator"]
   E --> R["Active/revoked key registry"]
