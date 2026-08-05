@@ -42,7 +42,9 @@ internal static class Program
         Run("telemetry identity is stable, protected, and signs", TelemetryIdentityIsStableAndSigns);
         Run("telemetry registration is automatic and hardware anonymous", TelemetryRegistrationIsAutomaticAndAnonymous);
         Run("updater accepts a signed manifest and rejects tampering", UpdaterVerifiesSignedManifest);
+        Run("updater accepts the issued format-2 manifest shape", UpdaterAcceptsIssuedManifestShape);
         Run("updater accepts the format-3 single executable manifest shape", UpdaterAcceptsSingleExecutableManifestShape);
+        Run("updater extracts only one bundled executable from legacy package", UpdaterExtractsLegacySingleExecutable);
         Run("updater cleanup refuses paths outside its private root", UpdaterCleanupRefusesUnsafePath);
         Run("updater installs one valid executable transactionally", UpdaterInstallsSingleExecutable);
         Run("updater rolls back an invalid executable replacement", UpdaterRollsBackInvalidExecutableReplacement);
@@ -307,6 +309,64 @@ internal static class Program
         var parsed = parse.Invoke(null, new object[] { new UTF8Encoding(false).GetBytes(manifest) })!;
         var packageAsset = parsed.GetType().GetProperty("PackageAsset")!.GetValue(parsed) as string;
         Equal("MSFS-Landing-Stats.exe", packageAsset, "format-3 package asset");
+    }
+
+    private static void UpdaterAcceptsIssuedManifestShape()
+    {
+        const string manifest = "format=2\nversion=0.7.5\npackage=MSFS-Landing-Stats.zip\npackage-size=488021\npackage-sha256=0000000000000000000000000000000000000000000000000000000000000000\nupdater=MSFS-Landing-Stats.Updater.exe\nupdater-size=113152\nupdater-sha256=1111111111111111111111111111111111111111111111111111111111111111\n";
+        var protocolType = typeof(ReleaseUpdater).Assembly.GetType(
+            "LandingStats.UpdateProtocol.ReleaseUpdateProtocol",
+            true)!;
+        var parse = protocolType.GetMethod("ParseManifest", BindingFlags.Static | BindingFlags.NonPublic)!;
+        var parsed = parse.Invoke(null, new object[] { new UTF8Encoding(false).GetBytes(manifest) })!;
+        var packageAsset = parsed.GetType().GetProperty("PackageAsset")!.GetValue(parsed) as string;
+        Equal("MSFS-Landing-Stats.zip", packageAsset, "format-2 package asset");
+    }
+
+    private static void UpdaterExtractsLegacySingleExecutable()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "landing-stats-legacy-update-test-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            Directory.CreateDirectory(root);
+            var source = Path.Combine(root, "source.exe");
+            var package = Path.Combine(root, "MSFS-Landing-Stats.zip");
+            var destination = Path.Combine(root, "MSFS-Landing-Stats.exe");
+            File.WriteAllBytes(source, new byte[] { 1, 2, 3, 4 });
+            using (var archive = ZipFile.Open(package, ZipArchiveMode.Create))
+            {
+                var entry = archive.CreateEntry("MSFS-Landing-Stats.exe", CompressionLevel.NoCompression);
+                using var input = File.OpenRead(source);
+                using var output = entry.Open();
+                input.CopyTo(output);
+            }
+
+            UpdaterProgram.ExtractLegacySingleExecutable(package, destination);
+            Equal("01020304", BitConverter.ToString(File.ReadAllBytes(destination)).Replace("-", string.Empty), "legacy package payload");
+
+            File.Delete(destination);
+            File.Delete(package);
+            using (var archive = ZipFile.Open(package, ZipArchiveMode.Create))
+            {
+                archive.CreateEntry("MSFS-Landing-Stats.exe");
+                archive.CreateEntry("unexpected.dll");
+            }
+            var rejected = false;
+            try
+            {
+                UpdaterProgram.ExtractLegacySingleExecutable(package, destination);
+            }
+            catch (InvalidDataException)
+            {
+                rejected = true;
+            }
+            Equal(true, rejected, "legacy package rejects extra entry");
+            Equal(false, File.Exists(destination), "rejected legacy package leaves no executable");
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
     }
 
     private static void UpdaterInstallsSingleExecutable()

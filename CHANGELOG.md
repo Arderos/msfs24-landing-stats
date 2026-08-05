@@ -2,6 +2,19 @@
 
 All notable changes to MSFS Landing Stats are documented in this file.
 
+## [0.7.5] - 2026-08-05
+
+This release supersedes v0.7.4 and includes its complete consolidated history
+below.
+
+### Fixed
+
+- Restored update-manifest compatibility with every issued v0.7.x client. The
+  latest release now uses the signed format-2 package contract understood by
+  the original v0.7.3 verifier, while the downloaded updater securely installs
+  the same one-file application. Existing clients update without cleanup,
+  reinstalling, or replacing their old executable by hand.
+
 ## [0.7.4] - 2026-08-05
 
 This release supersedes v0.7.3 and includes its complete consolidated history

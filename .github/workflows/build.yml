@@ -108,6 +108,7 @@ jobs:
           name: MSFS-Landing-Stats
           path: |
             artifacts/MSFS-Landing-Stats.exe
+            artifacts/MSFS-Landing-Stats.zip
             artifacts/MSFS-Landing-Stats.Updater.exe
           if-no-files-found: error
 
@@ -123,7 +124,7 @@ jobs:
             throw "RELEASE_SIGNING_KEY_PKCS8_B64 is not configured. Refusing to publish an unsigned update."
           }
 
-          $packagePath = Join-Path $env:GITHUB_WORKSPACE 'artifacts\MSFS-Landing-Stats.exe'
+          $packagePath = Join-Path $env:GITHUB_WORKSPACE 'artifacts\MSFS-Landing-Stats.zip'
           $updaterPath = Join-Path $env:GITHUB_WORKSPACE 'artifacts\MSFS-Landing-Stats.Updater.exe'
           $package = Get-Item -LiteralPath $packagePath
           $updater = Get-Item -LiteralPath $updaterPath
@@ -137,9 +138,9 @@ jobs:
           $manifestPath = Join-Path $env:GITHUB_WORKSPACE 'artifacts\update-manifest.txt'
           $signaturePath = Join-Path $env:GITHUB_WORKSPACE 'artifacts\update-manifest.sig'
           $manifest = @(
-            'format=3'
+            'format=2'
             "version=$version"
-            'package=MSFS-Landing-Stats.exe'
+            'package=MSFS-Landing-Stats.zip'
             "package-size=$($package.Length)"
             "package-sha256=$packageSha256"
             'updater=MSFS-Landing-Stats.Updater.exe'
@@ -174,7 +175,7 @@ jobs:
 
           $changelog = Get-Content -LiteralPath CHANGELOG.md -Raw
           $escapedVersion = [Regex]::Escape($version)
-          $pattern = if ($version -ceq '0.7.4') {
+          $pattern = if ($version -ceq '0.7.5') {
             "(?ms)^## \[$escapedVersion\][^\r\n]*\r?\n(?<body>.*)\z"
           } else {
             "(?ms)^## \[$escapedVersion\][^\r\n]*\r?\n(?<body>.*?)(?=^## \[|\z)"
@@ -188,6 +189,7 @@ jobs:
           $match.Groups['body'].Value.Trim() | Set-Content -LiteralPath $notesPath -Encoding utf8
           gh release create $env:GITHUB_REF_NAME `
             artifacts/MSFS-Landing-Stats.exe `
+            artifacts/MSFS-Landing-Stats.zip `
             artifacts/MSFS-Landing-Stats.Updater.exe `
             artifacts/update-manifest.txt `
             artifacts/update-manifest.sig `
