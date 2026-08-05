@@ -50,7 +50,10 @@ one threshold and removes the full telemetry cost during cruise.
 
 A landing episode begins at the descending 500 ft AGL gate and ends after 15
 seconds of rollout. A bounded pre-roll is retained so enabling diagnostic capture
-shortly before an event does not lose the immediately preceding samples.
+shortly before an event does not lose the immediately preceding samples. Pre-roll
+age uses the recorder's monotonic receipt clock, not simulation time, because the
+simulation clock can freeze in a pause or jump during loading. A separate 4,096-
+sample ceiling bounds memory even if the incoming clock or frame rate is malformed.
 
 Simulator telemetry is treated as an **unevenly timed series**. Frame intervals
 can change during a landing, and duplicate messages can share the same simulation
@@ -194,8 +197,10 @@ At least five distinct pre-contact timestamps are required. Three points make a
 quadratic algebraically solvable, but three or four simulator frames provide no
 useful protection against quantization or a single irregular frame. The model
 therefore becomes unavailable instead of reporting a confident extrapolation at
-low sample density. Every polynomial is evaluated at the same frozen effective
-time:
+low sample density. The effective time must also lie between the earliest and
+latest fit samples; five densely packed frames that do not reach 75 ms before
+contact are not enough. Every polynomial is evaluated at the same frozen
+effective time:
 
 ```text
 t_* = t_c - 0.075 seconds
@@ -234,7 +239,10 @@ with `omega_y = 0`, preserving the validated equation above. The omitted
 banked de-crab, but adding it would define a new model version and requires a
 new out-of-sample validation rather than a silent refactor.
 
-The terrain fit uses approach-side samples only. A centered fit including rollout
+The terrain fit uses approach-side samples only. A clipped five-sample median
+detector covers the ends of short captures as well as their interior; isolated or
+adjacent altitude spikes are replaced from the nearest valid time neighbors before
+the quadratic is fitted. A centered fit including rollout
 samples fixed one large error in the legacy terrain-only comparison, but worsened
 the frozen full reconstruction. Likewise, a lateral roll/half-track term and a
 global multiplicative correction were tested and rejected. Their apparent gains

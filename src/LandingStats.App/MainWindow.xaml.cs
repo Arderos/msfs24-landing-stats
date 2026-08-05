@@ -153,6 +153,14 @@ public partial class MainWindow : Window
             }
         }
 
+        if (ReferenceEquals(DataContext, detail))
+        {
+            // Airport resolution mutates cached details after they have already been bound.
+            // LandingRecord is intentionally a storage DTO, not INotifyPropertyChanged, so
+            // force a binding refresh when selecting the same instance again.
+            DataContext = null;
+        }
+
         DataContext = detail;
         MainChart.Record = detail;
         MiniGChart.Record = detail;
@@ -333,6 +341,7 @@ public partial class MainWindow : Window
                 labels = new[] { "aircraft", "VSI (lagged)", "surface closure" };
                 colors = new[] { "#FF7A45", "#D9C46A", "#5FA8F5" };
                 dashed = new[] { false, false, true };
+                count = record?.HasSurfaceLatchData == true ? 3 : 2;
                 break;
             case LandingChartMode.LoadFactors:
                 labels = new[] { "vertical", "longitudinal", "lateral" };

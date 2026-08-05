@@ -25,6 +25,7 @@ internal static class TouchdownClosureReconstruction
     private const double FitWindowSeconds = 0.250;
     private const double EvaluationOffsetSeconds = -0.075;
     private const double GroundOutlierThresholdFeet = 5.0;
+    private const double TimeToleranceSeconds = 0.000000001;
 
     public static bool TryEstimate(
         IReadOnlyList<TelemetrySample> samples,
@@ -68,7 +69,19 @@ internal static class TouchdownClosureReconstruction
         // four simulator frames leave no useful protection against quantization
         // or a single irregular frame. The frozen reconstruction therefore needs
         // at least five distinct pre-contact samples and has no linear fallback.
-        if (indices.Count < 5)
+        if (indices.Count < 5 || CountDistinctTimes(samples, indices) < 5)
+        {
+            return false;
+        }
+
+        // tc-75 ms must be an interpolation point. Extrapolating a quadratic even
+        // 20-30 ms outside a short low-FPS history amplifies normal frame noise into
+        // a confident-looking tens-of-fpm error.
+        var evaluationTime = estimatedContactTime + EvaluationOffsetSeconds;
+        var firstFitTime = TouchdownAnalysis.TimeOf(samples[indices[0]]);
+        var lastFitTime = TouchdownAnalysis.TimeOf(samples[indices[indices.Count - 1]]);
+        if (evaluationTime < firstFitTime - TimeToleranceSeconds ||
+            evaluationTime > lastFitTime + TimeToleranceSeconds)
         {
             return false;
         }
@@ -225,48 +238,121 @@ internal static class TouchdownClosureReconstruction
     {
         var result = new double[samples.Count];
         var original = new double[samples.Count];
+        var outliers = new bool[samples.Count];
+        var localMedians = new double[samples.Count];
         for (var index = 0; index < samples.Count; index++)
         {
             result[index] = samples[index].GroundAltitudeFeet;
             original[index] = result[index];
+            localMedians[index] = double.NaN;
         }
 
-        for (var index = 2; index < samples.Count - 2; index++)
+        for (var index = 0; index < samples.Count; index++)
         {
-            var local = new[]
+            var local = new List<double>(5);
+            var first = Math.Max(0, Math.Min(index - 2, samples.Count - 5));
+            var last = Math.Min(samples.Count - 1, first + 4);
+            first = Math.Max(0, last - 4);
+            for (var neighbor = first; neighbor <= last; neighbor++)
             {
-                original[index - 2],
-                original[index - 1],
-                original[index],
-                original[index + 1],
-                original[index + 2],
-            };
-            Array.Sort(local);
-            if (!IsFinite(local[0]) || !IsFinite(local[4]))
+                if (IsFinite(original[neighbor]))
+                {
+                    local.Add(original[neighbor]);
+                }
+            }
+
+            if (local.Count < 3 || !IsFinite(original[index]))
             {
                 continue;
             }
 
-            if (Math.Abs(original[index] - local[2]) > GroundOutlierThresholdFeet)
+            local.Sort();
+            var median = local[local.Count / 2];
+            localMedians[index] = median;
+            outliers[index] = Math.Abs(original[index] - median) > GroundOutlierThresholdFeet;
+        }
+
+        for (var index = 0; index < samples.Count; index++)
+        {
+            if (!outliers[index])
             {
-                var previousTime = TouchdownAnalysis.TimeOf(samples[index - 1]);
+                continue;
+            }
+
+            var previousIndex = index - 1;
+            while (previousIndex >= 0 && (outliers[previousIndex] || !IsFinite(result[previousIndex])))
+            {
+                previousIndex--;
+            }
+
+            var nextIndex = index + 1;
+            while (nextIndex < samples.Count && (outliers[nextIndex] || !IsFinite(original[nextIndex])))
+            {
+                nextIndex++;
+            }
+
+            if (previousIndex >= 0 && nextIndex < samples.Count)
+            {
+                var previousTime = TouchdownAnalysis.TimeOf(samples[previousIndex]);
                 var targetTime = TouchdownAnalysis.TimeOf(samples[index]);
-                var nextTime = TouchdownAnalysis.TimeOf(samples[index + 1]);
+                var nextTime = TouchdownAnalysis.TimeOf(samples[nextIndex]);
                 var duration = nextTime - previousTime;
                 if (duration > 0.000001)
                 {
                     var fraction = (targetTime - previousTime) / duration;
-                    result[index] = result[index - 1] +
-                                    (original[index + 1] - result[index - 1]) * fraction;
+                    result[index] = result[previousIndex] +
+                                    (original[nextIndex] - result[previousIndex]) * fraction;
                 }
                 else
                 {
-                    result[index] = local[2];
+                    result[index] = localMedians[index];
                 }
+            }
+            else if (previousIndex >= 0)
+            {
+                result[index] = result[previousIndex];
+            }
+            else if (nextIndex < samples.Count)
+            {
+                result[index] = original[nextIndex];
+            }
+            else
+            {
+                result[index] = localMedians[index];
             }
         }
 
         return result;
+    }
+
+    private static int CountDistinctTimes(
+        IReadOnlyList<TelemetrySample> samples,
+        IReadOnlyList<int> indices)
+    {
+        var count = 0;
+        var previousTime = double.NaN;
+        foreach (var index in indices)
+        {
+            var time = TouchdownAnalysis.TimeOf(samples[index]);
+            if (!IsFinite(time))
+            {
+                continue;
+            }
+
+            if (!double.IsNaN(previousTime) && time < previousTime - TimeToleranceSeconds)
+            {
+                return 0;
+            }
+
+            if (double.IsNaN(previousTime) || time - previousTime > TimeToleranceSeconds)
+            {
+                count++;
+            }
+
+            previousTime = time;
+        }
+
+        return count;
     }
 
     private static double Evaluate(IReadOnlyList<double> coefficients, double x) =>

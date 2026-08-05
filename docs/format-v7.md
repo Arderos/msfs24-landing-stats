@@ -34,4 +34,4 @@ Regression tests enforce both sides of the rule:
 
 ## Compatibility
 
-The application reads object-oriented landing records v1–v6 and columnar v7. If the summary index is missing or damaged, it is rebuilt from the independent detail files. New v7 writes do not rewrite old records unless that record is explicitly saved again.
+The application reads object-oriented landing records v1–v6 and columnar v7. The summary index is reconciled with the independent detail files on load, so it is rebuilt when missing or damaged and repaired when a detail commit succeeded but the following index update did not. New v7 writes do not rewrite old records unless that record is explicitly saved again.
