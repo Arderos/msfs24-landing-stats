@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
+using System.Globalization;
 using System.Runtime.Serialization.Json;
 using LandingStats.App.Models;
 
@@ -76,7 +77,7 @@ public sealed class LandingRepository
         }
 
         Directory.CreateDirectory(RootPath);
-        var safeTimestamp = record.TimestampUtc.ToString("yyyyMMdd-HHmmss'Z'");
+        var safeTimestamp = record.TimestampUtc.ToString("yyyyMMdd-HHmmss'Z'", CultureInfo.InvariantCulture);
         var path = Path.Combine(RootPath, $"{safeTimestamp}-{record.Id}.landing.json.gz");
         if (record.FormatVersion >= 7)
         {
@@ -119,34 +120,61 @@ public sealed class LandingRepository
             return;
         }
 
+        var indexWasReadable = true;
         _summaries = ReadIndex();
-        if (_summaries != null)
+        if (_summaries == null)
         {
-            foreach (var summary in _summaries)
-            {
-                summary.IsSummaryOnly = true;
-            }
-
-            return;
+            indexWasReadable = false;
+            _summaries = new List<LandingRecord>();
         }
 
-        _summaries = new List<LandingRecord>();
-        if (Directory.Exists(RootPath))
+        foreach (var summary in _summaries)
         {
-            foreach (var path in Directory.EnumerateFiles(RootPath, "*.landing.json.gz"))
-            {
-                var record = ReadRecord(path);
-                if (record != null)
-                {
-                    _summaries.Add(CreateSummary(record));
-                }
-            }
+            summary.IsSummaryOnly = true;
         }
 
-        if (_summaries.Count > 0)
+        var reconciled = ReconcileIndexWithDetailFiles();
+        if (reconciled || (!indexWasReadable && _summaries.Count > 0))
         {
             SaveIndex();
         }
+    }
+
+    private bool ReconcileIndexWithDetailFiles()
+    {
+        if (!Directory.Exists(RootPath))
+        {
+            return false;
+        }
+
+        var paths = Directory.EnumerateFiles(RootPath, "*.landing.json.gz").ToArray();
+        var changed = _summaries!.RemoveAll(summary =>
+            !paths.Any(path => PathMatchesRecord(path, summary.Id))) > 0;
+
+        foreach (var path in paths)
+        {
+            if (_summaries.Any(summary => PathMatchesRecord(path, summary.Id)))
+            {
+                continue;
+            }
+
+            var record = ReadRecord(path);
+            if (record == null || _summaries.Any(summary => string.Equals(summary.Id, record.Id, StringComparison.Ordinal)))
+            {
+                continue;
+            }
+
+            _summaries.Add(CreateSummary(record));
+            changed = true;
+        }
+
+        return changed;
+    }
+
+    private static bool PathMatchesRecord(string path, string id)
+    {
+        return !string.IsNullOrWhiteSpace(id) &&
+               Path.GetFileName(path).EndsWith($"-{id}.landing.json.gz", StringComparison.Ordinal);
     }
 
     private List<LandingRecord>? ReadIndex()

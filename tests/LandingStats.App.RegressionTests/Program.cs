@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.IO.Compression;
+using System.Globalization;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
@@ -14,8 +15,10 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
 using LandingStats.App;
+using LandingStats.App.Controls;
 using LandingStats.App.Models;
 using LandingStats.App.Storage;
+using LandingStats.App.Telemetry;
 using LandingStats.App.TelemetryUpload;
 using LandingStats.App.Updates;
 using LandingStats.Core;
@@ -32,8 +35,10 @@ internal static class Program
     {
         Run("deduplicator keeps the last same-time frame", DeduplicatorKeepsLastFrame);
         Run("approach timeout re-arms capture", ApproachTimeoutRearmsCapture);
+        Run("pre-roll uses monotonic receipt time and remains bounded", PreRollUsesReceiptTimeAndRemainsBounded);
         Run("full telemetry gate has AGL hysteresis and RAW override", FullTelemetryGateHasHysteresis);
         Run("raw debug streams into a temporary queue zip", RawDebugStreamsIntoZip);
+        Run("raw telemetry queue never blocks its producer", RawTelemetryQueueNeverBlocksProducer);
         Run("telemetry identity is stable, protected, and signs", TelemetryIdentityIsStableAndSigns);
         Run("updater accepts a signed manifest and rejects tampering", UpdaterVerifiesSignedManifest);
         Run("updater cleanup refuses paths outside its private root", UpdaterCleanupRefusesUnsafePath);
@@ -43,14 +48,22 @@ internal static class Program
         Run("legacy SimConnect controller path is absent", LegacyControllerPathIsAbsent);
         Run("compact frame matches the SimConnect payload contract", CompactFrameMatchesPayloadContract);
         Run("telemetry schema v5 reads current and v4 rows", TelemetrySchemaReadsCurrentAndV4Rows);
+        Run("telemetry CSV preserves doubles and rejects header-row schema mismatch", TelemetryCsvIsStrictAndRoundTrips);
         Run("header wind uses the contact-time sample", HeaderWindUsesContactTimeSample);
         Run("landing history uses lazy columnar v7 details", LandingHistoryUsesLazyColumnarDetails);
+        Run("landing index reconciles committed details after an interrupted save", LandingIndexReconcilesCommittedDetails);
+        Run("landing filenames are culture invariant", LandingFilenamesAreCultureInvariant);
+        Run("airport cache is never overwritten after a transient read failure", AirportCacheSurvivesTransientReadFailure);
+        Run("chart ranges discard non-finite telemetry", ChartRangesDiscardNonFiniteTelemetry);
         Run("closure reconstruction survives history round-trip", ClosureReconstructionSurvivesHistoryRoundTrip);
         Run("bounce history shows the latest contact first", BounceHistoryShowsLatestContactFirst);
         Run("columnar v7 is smaller than the object layout", ColumnarV7IsSmallerThanObjectLayout);
         Run("stored controller columns retain only live sources", StoredControllerColumnsAreCompact);
         Run("closure reconstruction keeps the raw latch independent", ClosureReconstructionKeepsRawLatchIndependent);
         Run("closure reconstruction requires five fit points", ClosureReconstructionRequiresFiveFitPoints);
+        Run("closure reconstruction requires five distinct timestamps", ClosureReconstructionRequiresDistinctTimestamps);
+        Run("closure reconstruction never extrapolates before its history", ClosureReconstructionRequiresEvaluationBracket);
+        Run("closure reconstruction sanitizes an early ground spike", ClosureReconstructionSanitizesEarlyGroundSpike);
         Run("closure reconstruction is unavailable without geometry", ClosureReconstructionRequiresGeometry);
         Run("closure reconstruction marks last-air contact-time fallback", ClosureReconstructionMarksContactTimeFallback);
         Run("closure reconstruction accepts permuted staggered mains", ClosureReconstructionAcceptsPermutedStaggeredMains);
@@ -92,6 +105,28 @@ internal static class Program
 
         Invoke(recorder, "ProcessSample", ApproachSample(302.02));
         NotNull(Field(recorder, "_episodeSamples"), "next descending frame should start a fresh episode");
+    }
+
+    private static void PreRollUsesReceiptTimeAndRemainsBounded()
+    {
+        var buffer = new PreRollBuffer(15.0, 3);
+        buffer.Add(new TelemetrySample { Sequence = 1, SimulationTimeSeconds = 100 }, 0.0);
+        buffer.Add(new TelemetrySample { Sequence = 2, SimulationTimeSeconds = 100 }, 14.0);
+        buffer.Add(new TelemetrySample { Sequence = 3, SimulationTimeSeconds = 0 }, 16.0);
+
+        var afterFrozenAndFallbackTimes = buffer.ToArray();
+        Equal(2, afterFrozenAndFallbackTimes.Length, "receipt-time window count");
+        Equal(2L, afterFrozenAndFallbackTimes[0].Sequence, "frozen simulator time cannot retain stale head");
+
+        for (var sequence = 4; sequence <= 20; sequence++)
+        {
+            buffer.Add(new TelemetrySample { Sequence = sequence, SimulationTimeSeconds = 0 }, 16.0);
+        }
+
+        var bounded = buffer.ToArray();
+        Equal(3, bounded.Length, "hard sample limit");
+        Equal(18L, bounded[0].Sequence, "hard limit retains newest samples");
+        Equal(20L, bounded[2].Sequence, "hard limit retains tail");
     }
 
     private static void FullTelemetryGateHasHysteresis()
@@ -140,6 +175,16 @@ internal static class Program
                 Directory.Delete(root, true);
             }
         }
+    }
+
+    private static void RawTelemetryQueueNeverBlocksProducer()
+    {
+        using var queue = new BoundedTelemetryQueue(1);
+        Equal(true, queue.TryAdd(new TelemetrySample { Sequence = 1 }), "first queued sample");
+        var stopwatch = Stopwatch.StartNew();
+        Equal(false, queue.TryAdd(new TelemetrySample { Sequence = 2 }), "full queue rejects without dropping an accepted sample");
+        stopwatch.Stop();
+        Equal(true, stopwatch.Elapsed < TimeSpan.FromMilliseconds(100), "full queue returns immediately");
     }
 
     private static void TelemetryIdentityIsStableAndSigns()
@@ -382,6 +427,47 @@ internal static class Program
         Equal(true, v4.ContactPointOnGround[19], "v4 contact state");
     }
 
+    private static void TelemetryCsvIsStrictAndRoundTrips()
+    {
+        var value = BitConverter.Int64BitsToDouble(0x3FD5555555555555);
+        var sample = new TelemetrySample
+        {
+            Sequence = 7,
+            HostElapsedSeconds = value,
+            SimulationTimeSeconds = 10.0,
+        };
+        var line = TelemetryCsv.Format(sample);
+        Equal(true, TelemetryCsv.TryParse(line, out var parsed), "round-trip row parse");
+        Equal(
+            BitConverter.DoubleToInt64Bits(value),
+            BitConverter.DoubleToInt64Bits(parsed.HostElapsedSeconds),
+            "binary64 round trip");
+
+        var root = Path.Combine(Path.GetTempPath(), "landing-stats-csv-schema-test-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var path = Path.Combine(root, "truncated.csv");
+            var truncated = string.Join(",", line.Split(',').Take(22));
+            File.WriteAllText(path, TelemetryCsv.Header + Environment.NewLine + truncated + Environment.NewLine);
+            var rejected = false;
+            try
+            {
+                TelemetryCsv.ReadFile(path);
+            }
+            catch (InvalidDataException)
+            {
+                rejected = true;
+            }
+
+            Equal(true, rejected, "current header with legacy-width row is rejected");
+        }
+        finally
+        {
+            Directory.Delete(root, true);
+        }
+    }
+
     private static void HeaderWindUsesContactTimeSample()
     {
         var record = new LandingRecord();
@@ -500,6 +586,107 @@ internal static class Program
                 Directory.Delete(root, true);
             }
         }
+    }
+
+    private static void LandingIndexReconcilesCommittedDetails()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "landing-stats-index-reconcile-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var repository = new LandingRepository(root);
+            var first = new LandingRecord { TimestampUtc = new DateTime(2026, 8, 5, 1, 2, 3, DateTimeKind.Utc) };
+            repository.Save(first);
+            var staleIndex = File.ReadAllBytes(repository.IndexPath);
+
+            var second = new LandingRecord { TimestampUtc = first.TimestampUtc.AddMinutes(1) };
+            repository.Save(second);
+            File.WriteAllBytes(repository.IndexPath, staleIndex);
+
+            var recovered = new LandingRepository(root).LoadAll();
+            Equal(2, recovered.Count, "reconciled landing count");
+            Equal(true, recovered.Any(record => record.Id == second.Id), "detail missing from stale index is recovered");
+            Equal(2, new LandingRepository(root).LoadAll().Count, "reconciled index is persisted");
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
+    private static void LandingFilenamesAreCultureInvariant()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "landing-stats-culture-path-" + Guid.NewGuid().ToString("N"));
+        var previousCulture = Thread.CurrentThread.CurrentCulture;
+        try
+        {
+            Thread.CurrentThread.CurrentCulture = CultureInfo.GetCultureInfo("th-TH");
+            var record = new LandingRecord
+            {
+                TimestampUtc = new DateTime(2026, 8, 5, 1, 2, 3, DateTimeKind.Utc),
+            };
+            var path = new LandingRepository(root).Save(record);
+            Equal(true, Path.GetFileName(path).StartsWith("20260805-010203Z-", StringComparison.Ordinal), "invariant UTC filename");
+        }
+        finally
+        {
+            Thread.CurrentThread.CurrentCulture = previousCulture;
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
+    private static void AirportCacheSurvivesTransientReadFailure()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "landing-stats-airport-cache-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        var path = Path.Combine(root, "airports.json.gz");
+        try
+        {
+            var repository = new AirportFacilityRepository(path);
+            repository.MergeAndSave(new[]
+            {
+                new AirportFacility { Ident = "LBSF", Region = "BG", LatitudeDegrees = 42.7, LongitudeDegrees = 23.4 },
+            });
+
+            var rejected = false;
+            using (var locked = new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+            {
+                try
+                {
+                    repository.MergeAndSave(new[]
+                    {
+                        new AirportFacility { Ident = "LBPD", Region = "BG", LatitudeDegrees = 42.1, LongitudeDegrees = 24.7 },
+                    });
+                }
+                catch (IOException)
+                {
+                    rejected = true;
+                }
+            }
+
+            Equal(true, rejected, "transient cache read failure is propagated");
+            var restored = repository.Load();
+            Equal(1, restored.Count, "existing airport count after failed merge");
+            Equal("LBSF", restored[0].Ident, "existing airport survives failed merge");
+        }
+        finally
+        {
+            Directory.Delete(root, true);
+        }
+    }
+
+    private static void ChartRangesDiscardNonFiniteTelemetry()
+    {
+        var finite = ChartValueSanitizer.FiniteValues(new[]
+        {
+            double.NaN,
+            12.5,
+            double.PositiveInfinity,
+            -3.0,
+            double.NegativeInfinity,
+        });
+        Equal(2, finite.Length, "finite chart value count");
+        Near(12.5, finite[0], 0, "first finite chart value");
+        Near(-3.0, finite[1], 0, "second finite chart value");
     }
 
     private static void StoredControllerColumnsAreCompact()
@@ -699,6 +886,65 @@ internal static class Program
             options).Single();
         Equal(true, fivePoint.ClosureReconstructionAvailable, "five-point reconstruction availability");
         Equal(5, fivePoint.ClosureReconstructionFitPointCount, "five-point fit count");
+    }
+
+    private static void ClosureReconstructionRequiresDistinctTimestamps()
+    {
+        var samples = SparseReconstructionSamples(3);
+        var airborne = samples.Where(sample => !sample.OnGround).ToArray();
+        samples.Insert(1, CloneTelemetrySample(airborne[0]));
+        samples.Insert(3, CloneTelemetrySample(airborne[1]));
+        samples.Insert(5, CloneTelemetrySample(airborne[2]));
+
+        var result = TouchdownAnalysis.Analyze(
+            samples,
+            new TouchdownAnalysisOptions
+            {
+                LongitudinalMainGearArmFeet = -8.0,
+                RecoverLongitudinalMainGearArmFromTelemetry = false,
+            }).Single();
+
+        Equal(false, result.ClosureReconstructionAvailable, "duplicate timestamps cannot satisfy fit minimum");
+    }
+
+    private static void ClosureReconstructionRequiresEvaluationBracket()
+    {
+        var samples = DenseShortHistoryReconstructionSamples();
+        var result = TouchdownAnalysis.Analyze(
+            samples,
+            new TouchdownAnalysisOptions
+            {
+                LongitudinalMainGearArmFeet = -8.0,
+                RecoverLongitudinalMainGearArmFromTelemetry = false,
+            }).Single();
+
+        Equal(false, result.ClosureReconstructionAvailable, "tc-75 ms outside sampled history");
+    }
+
+    private static void ClosureReconstructionSanitizesEarlyGroundSpike()
+    {
+        const double armFeet = -8.0;
+        var baselineSamples = ReconstructionSamples(0.010, 280.0).Skip(4).ToList();
+        var baseline = TouchdownAnalysis.Analyze(
+            baselineSamples,
+            new TouchdownAnalysisOptions
+            {
+                LongitudinalMainGearArmFeet = armFeet,
+                RecoverLongitudinalMainGearArmFromTelemetry = false,
+            }).Single();
+
+        var spikedSamples = ReconstructionSamples(0.010, 280.0).Skip(4).ToList();
+        spikedSamples[1].GroundAltitudeFeet += 10.0;
+        var repaired = TouchdownAnalysis.Analyze(
+            spikedSamples,
+            new TouchdownAnalysisOptions
+            {
+                LongitudinalMainGearArmFeet = armFeet,
+                RecoverLongitudinalMainGearArmFromTelemetry = false,
+            }).Single();
+
+        Equal(true, repaired.ClosureReconstructionAvailable, "early-spike reconstruction availability");
+        Near(baseline.ReconstructedTerrainFpm, repaired.ReconstructedTerrainFpm, 0.05, "early ground spike repair");
     }
 
     private static void ClosureReconstructionMarksContactTimeFallback()
@@ -1046,6 +1292,50 @@ internal static class Program
         }
 
         return samples;
+    }
+
+    private static List<TelemetrySample> DenseShortHistoryReconstructionSamples()
+    {
+        const double contactTime = 0.010;
+        var samples = new List<TelemetrySample>();
+        for (var index = 0; index < 5; index++)
+        {
+            var time = -0.050 + index * 0.0125;
+            var x = time - contactTime;
+            samples.Add(new TelemetrySample
+            {
+                Sequence = index,
+                SimulationTimeSeconds = time,
+                OnGround = false,
+                VelocityWorldYFps = Velocity(x),
+                GroundAltitudeFeet = GroundAltitude(x),
+                PlaneAltitudeFeet = GroundAltitude(x) + 10.0,
+                RotationVelocityBodyXRadiansPerSecond = PitchRate(x),
+                PitchDegrees = PitchRadians(x) * 180.0 / Math.PI,
+                BankDegrees = BankRadians(x) * 180.0 / Math.PI,
+            });
+        }
+
+        var ground = ReconstructionSamples(contactTime, 280.0).Where(sample => sample.OnGround);
+        samples.AddRange(ground);
+        return samples;
+    }
+
+    private static TelemetrySample CloneTelemetrySample(TelemetrySample source)
+    {
+        return new TelemetrySample
+        {
+            Sequence = source.Sequence + 1000,
+            HostElapsedSeconds = source.HostElapsedSeconds,
+            SimulationTimeSeconds = source.SimulationTimeSeconds,
+            OnGround = source.OnGround,
+            VelocityWorldYFps = source.VelocityWorldYFps,
+            GroundAltitudeFeet = source.GroundAltitudeFeet,
+            PlaneAltitudeFeet = source.PlaneAltitudeFeet,
+            RotationVelocityBodyXRadiansPerSecond = source.RotationVelocityBodyXRadiansPerSecond,
+            PitchDegrees = source.PitchDegrees,
+            BankDegrees = source.BankDegrees,
+        };
     }
 
     private static List<TelemetrySample> SparseReconstructionSamples(int airbornePointCount)

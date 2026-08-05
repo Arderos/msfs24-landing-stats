@@ -587,8 +587,9 @@ public sealed class LandingChart : FrameworkElement
                             .Concat(new[] { -_record!.SurfaceFpm })
                         : points.SelectMany(point => new[] { -point.InertialFpm, -point.IndicatedFpm }),
                 };
-                var verticalMinimum = Math.Min(0, verticalValues.Min());
-                var verticalMaximum = Math.Max(0, verticalValues.Max());
+                var finiteVerticalValues = ChartValueSanitizer.FiniteValues(verticalValues);
+                var verticalMinimum = Math.Min(0, finiteVerticalValues.DefaultIfEmpty(0).Min());
+                var verticalMaximum = Math.Max(0, finiteVerticalValues.DefaultIfEmpty(0).Max());
                 var verticalPadding = Math.Max(30, (verticalMaximum - verticalMinimum) * 0.05);
                 minimum = Math.Floor((verticalMinimum - verticalPadding) / 100.0) * 100.0;
                 maximum = Math.Ceiling((verticalMaximum + verticalPadding) / 100.0) * 100.0;
@@ -599,18 +600,32 @@ public sealed class LandingChart : FrameworkElement
                     var horizontalValues = _isolatedSeriesIndex == 1
                         ? points.Select(point => point.LongitudinalLoadG)
                         : points.Select(point => point.LateralLoadG);
-                    var horizontalMinimum = Math.Min(0, horizontalValues.Min());
-                    var horizontalMaximum = Math.Max(0, horizontalValues.Max());
+                    var finiteHorizontalValues = ChartValueSanitizer.FiniteValues(horizontalValues);
+                    var horizontalMinimum = Math.Min(0, finiteHorizontalValues.DefaultIfEmpty(0).Min());
+                    var horizontalMaximum = Math.Max(0, finiteHorizontalValues.DefaultIfEmpty(0).Max());
                     var horizontalPadding = Math.Max(0.04, (horizontalMaximum - horizontalMinimum) * 0.12);
                     minimum = Math.Floor((horizontalMinimum - horizontalPadding) * 10) / 10.0;
                     maximum = Math.Ceiling((horizontalMaximum + horizontalPadding) * 10) / 10.0;
                 }
                 else
                 {
-                    minimum = HasHorizontalLoadData && !_isolatedSeriesIndex.HasValue
-                        ? Math.Min(-0.3, points.Min(point => Math.Min(point.LongitudinalLoadG, point.LateralLoadG)) - 0.08)
-                        : Math.Min(0.8, points.Min(point => point.GForce) - 0.08);
-                    maximum = Math.Max(1.2, points.Max(point => point.GForce) + 0.08);
+                    var finiteVerticalLoads = ChartValueSanitizer.FiniteValues(points.Select(point => point.GForce));
+                    var verticalLoadMinimum = finiteVerticalLoads.DefaultIfEmpty(1.0).Min();
+                    var verticalLoadMaximum = finiteVerticalLoads.DefaultIfEmpty(1.0).Max();
+                    if (HasHorizontalLoadData && !_isolatedSeriesIndex.HasValue)
+                    {
+                        var finiteHorizontalLoads = ChartValueSanitizer.FiniteValues(points.SelectMany(point =>
+                            new[] { point.LongitudinalLoadG, point.LateralLoadG }));
+                        minimum = finiteHorizontalLoads.Length > 0
+                            ? Math.Min(-0.3, finiteHorizontalLoads.Min() - 0.08)
+                            : Math.Min(0.8, verticalLoadMinimum - 0.08);
+                    }
+                    else
+                    {
+                        minimum = Math.Min(0.8, verticalLoadMinimum - 0.08);
+                    }
+
+                    maximum = Math.Max(1.2, verticalLoadMaximum + 0.08);
                 }
                 break;
             case LandingChartMode.FlightControls:
@@ -625,8 +640,9 @@ public sealed class LandingChart : FrameworkElement
                         point.ElevatorPercent, point.AileronPercent, point.RudderPercent,
                     }),
                 };
-                var controlMinimum = controlValues.Min();
-                var controlMaximum = controlValues.Max();
+                var finiteControlValues = ChartValueSanitizer.FiniteValues(controlValues);
+                var controlMinimum = finiteControlValues.DefaultIfEmpty(0).Min();
+                var controlMaximum = finiteControlValues.DefaultIfEmpty(0).Max();
                 controlMinimum = Math.Min(0, controlMinimum);
                 controlMaximum = Math.Max(0, controlMaximum);
                 var controlSpan = Math.Max(8, controlMaximum - controlMinimum);
@@ -647,8 +663,9 @@ public sealed class LandingChart : FrameworkElement
                     2 => points.Select(point => point.AngleOfAttackDegrees),
                     _ => points.SelectMany(point => new[] { -point.PitchDegrees, point.BankDegrees, point.AngleOfAttackDegrees }),
                 };
-                minimum = Math.Floor(Math.Min(0, attitudeValues.Min()) - 1);
-                maximum = Math.Ceiling(Math.Max(0, attitudeValues.Max()) + 1);
+                var finiteAttitudeValues = ChartValueSanitizer.FiniteValues(attitudeValues);
+                minimum = Math.Floor(Math.Min(0, finiteAttitudeValues.DefaultIfEmpty(0).Min()) - 1);
+                maximum = Math.Ceiling(Math.Max(0, finiteAttitudeValues.DefaultIfEmpty(0).Max()) + 1);
                 if (maximum - minimum < 10)
                 {
                     maximum = minimum + 10;
@@ -895,13 +912,23 @@ public sealed class LandingChart : FrameworkElement
         var geometry = new StreamGeometry();
         using (var geometryContext = geometry.Open())
         {
+            var hasFigure = false;
             for (var index = 0; index < points.Count; index++)
             {
-                var x = MapX(selectTime(points[index]), plot, minTime, maxTime);
-                var y = MapY(selectValue(points[index]), plot, minValue, maxValue);
-                if (index == 0)
+                var time = selectTime(points[index]);
+                var value = selectValue(points[index]);
+                if (!ChartValueSanitizer.IsFinite(time) || !ChartValueSanitizer.IsFinite(value))
+                {
+                    hasFigure = false;
+                    continue;
+                }
+
+                var x = MapX(time, plot, minTime, maxTime);
+                var y = MapY(value, plot, minValue, maxValue);
+                if (!hasFigure)
                 {
                     geometryContext.BeginFigure(new Point(x, y), false, false);
+                    hasFigure = true;
                 }
                 else
                 {
@@ -946,7 +973,7 @@ public sealed class LandingChart : FrameworkElement
 
         void AddFlag(double value, Brush brush, bool visible, string? label = null)
         {
-            if (visible)
+            if (visible && ChartValueSanitizer.IsFinite(value))
             {
                 var text = FormatFlagValue(value);
                 flags.Add(new HoverFlag(label == null ? text : $"{label} {text}", brush, MapY(value, plot, minValue, maxValue)));

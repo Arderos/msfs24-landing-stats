@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
@@ -92,6 +91,7 @@ public sealed class RawCaptureChunkEventArgs : EventArgs
 public sealed class RawCaptureSession : IDisposable
 {
     private const int QueueCapacity = 2048;
+    private static readonly TimeSpan DisposeWaitTimeout = TimeSpan.FromSeconds(2);
 
     private readonly string _rootPath;
     private readonly string _simulator;
@@ -99,8 +99,7 @@ public sealed class RawCaptureSession : IDisposable
     private readonly string _aircraftType;
     private readonly string _aircraftModel;
     private readonly IReadOnlyList<string> _controlInputSources;
-    private readonly BlockingCollection<TelemetrySample> _samples =
-        new BlockingCollection<TelemetrySample>(new ConcurrentQueue<TelemetrySample>(), QueueCapacity);
+    private readonly BoundedTelemetryQueue _samples = new BoundedTelemetryQueue(QueueCapacity);
     private readonly Task _writerTask;
     private DateTime _nextChunkStartedUtc;
     private Exception? _failure;
@@ -145,7 +144,14 @@ public sealed class RawCaptureSession : IDisposable
 
         try
         {
-            _samples.Add(sample);
+            if (!_samples.TryAdd(sample))
+            {
+                if (Volatile.Read(ref _disposed) == 0)
+                {
+                    Fail(new IOException(
+                        "RAW telemetry writer could not keep up with the simulator. Capture stopped without dropping frames."));
+                }
+            }
         }
         catch (InvalidOperationException)
         {
@@ -161,13 +167,29 @@ public sealed class RawCaptureSession : IDisposable
         }
 
         _samples.CompleteAdding();
+        var disposeQueueHere = true;
         try
         {
+            if (!_writerTask.Wait(DisposeWaitTimeout))
+            {
+                Fail(new IOException("RAW telemetry writer did not stop within two seconds."));
+                disposeQueueHere = false;
+                _writerTask.ContinueWith(
+                    _ => _samples.Dispose(),
+                    CancellationToken.None,
+                    TaskContinuationOptions.ExecuteSynchronously,
+                    TaskScheduler.Default);
+                return;
+            }
+
             _writerTask.GetAwaiter().GetResult();
         }
         finally
         {
-            _samples.Dispose();
+            if (disposeQueueHere)
+            {
+                _samples.Dispose();
+            }
         }
     }
 
@@ -207,16 +229,34 @@ public sealed class RawCaptureSession : IDisposable
         }
         catch (Exception exception)
         {
-            Volatile.Write(ref _failure, exception);
             chunk?.Dispose();
-            try
-            {
-                Failed?.Invoke(exception);
-            }
-            catch
-            {
-                // A UI error handler must not replace the storage failure.
-            }
+            Fail(exception);
+        }
+    }
+
+    private void Fail(Exception exception)
+    {
+        if (Interlocked.CompareExchange(ref _failure, exception, null) != null)
+        {
+            return;
+        }
+
+        try
+        {
+            _samples.CompleteAdding();
+        }
+        catch (ObjectDisposedException)
+        {
+            // Disposal won the race; the original failure is still retained for diagnostics.
+        }
+
+        try
+        {
+            Failed?.Invoke(exception);
+        }
+        catch
+        {
+            // A UI error handler must not replace the storage failure.
         }
     }
 

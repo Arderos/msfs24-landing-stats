@@ -149,6 +149,8 @@ public static class TelemetryCsv
             throw new InvalidDataException("The telemetry CSV header is missing or belongs to an unsupported version.");
         }
 
+        var expectedColumnCount = header!.Split(',').Length;
+
         string? line;
         var lineNumber = 1;
         while ((line = reader.ReadLine()) != null)
@@ -159,7 +161,7 @@ public static class TelemetryCsv
                 continue;
             }
 
-            if (!TryParse(line, out var sample))
+            if (line.Split(',').Length != expectedColumnCount || !TryParse(line, out var sample))
             {
                 throw new InvalidDataException($"Invalid telemetry data at line {lineNumber}.");
             }
@@ -902,7 +904,8 @@ public static class TelemetryCsv
 
     private static string Number(double value)
     {
-        return value.ToString("R", Invariant);
+        // G17 is the portable round-trip format for a binary64 value on .NET Framework.
+        return value.ToString("G17", Invariant);
     }
 
     private static bool TryNumber(string value, out double result)

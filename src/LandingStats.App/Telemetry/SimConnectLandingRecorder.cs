@@ -133,14 +133,16 @@ internal sealed class SimConnectLandingRecorder : IDisposable
     private const double FullTelemetryEnableAglFeet = 3000.0;
     private const double FullTelemetryDisableAglFeet = 3500.0;
     private const double AirportCacheMaximumDistanceNauticalMiles = 20.0;
+    private const int PreRollMaximumSamples = 4096;
     private static readonly TimeSpan JoystickRefreshInterval = TimeSpan.FromSeconds(5);
 
     private readonly IntPtr _windowHandle;
     private readonly Stopwatch _hostClock = Stopwatch.StartNew();
     private readonly DispatcherTimer _retryTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
-    private readonly Queue<TelemetrySample> _preRoll = new Queue<TelemetrySample>();
+    private readonly PreRollBuffer _preRoll = new PreRollBuffer(PreRollSeconds, PreRollMaximumSamples);
     private readonly Dictionary<string, AirportFacility> _airportFacilities =
         new Dictionary<string, AirportFacility>(StringComparer.OrdinalIgnoreCase);
+    private Dictionary<string, AirportFacility>? _pendingAirportFacilities;
     private readonly Dictionary<uint, string> _simConnectOperations = new Dictionary<uint, string>();
     private readonly WindowsJoystickReader _windowsJoystickReader = new WindowsJoystickReader();
 
@@ -217,7 +219,7 @@ internal sealed class SimConnectLandingRecorder : IDisposable
 
         if (enabled)
         {
-            if (_windowsJoystickReader.Refresh())
+            if (_episodeSamples == null && _windowsJoystickReader.Refresh())
             {
                 _preRoll.Clear();
             }
@@ -285,8 +287,7 @@ internal sealed class SimConnectLandingRecorder : IDisposable
             RawDebugCaptureStopped?.Invoke(this, EventArgs.Empty);
         }
 
-        _simConnect?.Dispose();
-        _simConnect = null;
+        CloseSimConnect();
         _hostClock.Stop();
     }
 
@@ -443,7 +444,13 @@ internal sealed class SimConnectLandingRecorder : IDisposable
 
         if (data.dwEntryNumber == 0)
         {
-            _airportFacilities.Clear();
+            _pendingAirportFacilities = new Dictionary<string, AirportFacility>(StringComparer.OrdinalIgnoreCase);
+        }
+
+        var target = _pendingAirportFacilities;
+        if (target == null)
+        {
+            return;
         }
 
         foreach (var value in data.rgData)
@@ -461,11 +468,18 @@ internal sealed class SimConnectLandingRecorder : IDisposable
                 LongitudeDegrees = airport.Longitude,
                 AltitudeMeters = airport.Altitude,
             };
-            _airportFacilities[facility.Key] = facility;
+            target[facility.Key] = facility;
         }
 
         if (data.dwOutOf == 0 || data.dwEntryNumber + 1 >= data.dwOutOf)
         {
+            _airportFacilities.Clear();
+            foreach (var facility in target.Values)
+            {
+                _airportFacilities[facility.Key] = facility;
+            }
+
+            _pendingAirportFacilities = null;
             _airportFacilityRequestPending = false;
             AirportFacilitiesUpdated?.Invoke(
                 this,
@@ -635,12 +649,7 @@ internal sealed class SimConnectLandingRecorder : IDisposable
 
     private void AddToPreRoll(TelemetrySample sample)
     {
-        _preRoll.Enqueue(sample);
-        var sampleTime = TimeOf(sample);
-        while (_preRoll.Count > 1 && sampleTime - TimeOf(_preRoll.Peek()) > PreRollSeconds)
-        {
-            _preRoll.Dequeue();
-        }
+        _preRoll.Add(sample, _hostClock.Elapsed.TotalSeconds);
     }
 
     private void SetFullTelemetryForAgl(double aglFeet)
@@ -672,15 +681,24 @@ internal sealed class SimConnectLandingRecorder : IDisposable
             return;
         }
 
-        _simConnect.RequestDataOnSimObject(
-            Requests.Frame,
-            Definitions.Frame,
-            SimConnect.SIMCONNECT_OBJECT_ID_USER,
-            enabled ? SIMCONNECT_PERIOD.SIM_FRAME : SIMCONNECT_PERIOD.NEVER,
-            SIMCONNECT_DATA_REQUEST_FLAG.DEFAULT,
-            0,
-            0,
-            0);
+        try
+        {
+            _simConnect.RequestDataOnSimObject(
+                Requests.Frame,
+                Definitions.Frame,
+                SimConnect.SIMCONNECT_OBJECT_ID_USER,
+                enabled ? SIMCONNECT_PERIOD.SIM_FRAME : SIMCONNECT_PERIOD.NEVER,
+                SIMCONNECT_DATA_REQUEST_FLAG.DEFAULT,
+                0,
+                0,
+                0);
+        }
+        catch (Exception exception)
+        {
+            _fullTelemetryEnabled = false;
+            SetStatus(RecorderState.Error, $"Telemetry mode change failed: {exception.Message}");
+            Disconnect();
+        }
     }
 
     private bool ShouldRefreshAirportFacilities(IReadOnlyList<TelemetrySample> samples)
@@ -730,10 +748,10 @@ internal sealed class SimConnectLandingRecorder : IDisposable
             DiscardEpisode();
         }
 
-        _simConnect?.Dispose();
-        _simConnect = null;
+        CloseSimConnect();
         _fullTelemetryEnabled = false;
         _airportFacilityRequestPending = false;
+        _pendingAirportFacilities = null;
         _recoverStatusAfterFrame = false;
         ResetFlightDetection();
         if (!_disposed)
@@ -752,6 +770,20 @@ internal sealed class SimConnectLandingRecorder : IDisposable
         _lastGuardAglFeet = double.NaN;
         _axisElevatorSetPercent = 0;
         _axisElevatorSetReceivedHostSeconds = double.NaN;
+    }
+
+    private void CloseSimConnect()
+    {
+        var connection = _simConnect;
+        _simConnect = null;
+        try
+        {
+            connection?.Dispose();
+        }
+        catch
+        {
+            // A dead simulator connection is already unusable; shutdown and retry must continue.
+        }
     }
 
     private TelemetrySample ToSample(SimFrameData frame)

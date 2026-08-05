@@ -32,11 +32,7 @@ public sealed class AirportFacilityRepository
 
         try
         {
-            using (var file = File.OpenRead(Path))
-            using (var gzip = new GZipStream(file, CompressionMode.Decompress, false))
-            {
-                return (_serializer.ReadObject(gzip) as List<AirportFacility>) ?? new List<AirportFacility>();
-            }
+            return ReadExisting();
         }
         catch (Exception exception) when (
             exception is IOException ||
@@ -49,7 +45,24 @@ public sealed class AirportFacilityRepository
 
     public IReadOnlyList<AirportFacility> MergeAndSave(IEnumerable<AirportFacility> facilities)
     {
-        var merged = Load()
+        // A read failure is not an empty database. Propagate it so a transient lock,
+        // antivirus scan, or I/O error can never replace the accumulated cache with
+        // the facilities from one event.
+        IReadOnlyList<AirportFacility> existing;
+        try
+        {
+            existing = ReadExisting();
+        }
+        catch (FileNotFoundException)
+        {
+            existing = Array.Empty<AirportFacility>();
+        }
+        catch (DirectoryNotFoundException)
+        {
+            existing = Array.Empty<AirportFacility>();
+        }
+
+        var merged = existing
             .Concat(facilities ?? Enumerable.Empty<AirportFacility>())
             .Where(facility => !string.IsNullOrWhiteSpace(facility.Ident))
             .GroupBy(facility => facility.Key, StringComparer.OrdinalIgnoreCase)
@@ -91,5 +104,14 @@ public sealed class AirportFacilityRepository
         }
 
         return merged;
+    }
+
+    private IReadOnlyList<AirportFacility> ReadExisting()
+    {
+        using (var file = File.OpenRead(Path))
+        using (var gzip = new GZipStream(file, CompressionMode.Decompress, false))
+        {
+            return (_serializer.ReadObject(gzip) as List<AirportFacility>) ?? new List<AirportFacility>();
+        }
     }
 }

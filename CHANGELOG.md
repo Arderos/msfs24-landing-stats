@@ -2,6 +2,34 @@
 
 All notable changes to MSFS Landing Stats are documented in this file.
 
+## [0.7.2] - 2026-08-05
+
+### Fixed
+
+- Pre-roll retention now uses monotonic receipt time instead of simulation time
+  and has a hard frame cap, so an ESC pause, frozen simulation clock, or zero-time
+  loading frame cannot grow or permanently poison the buffer.
+- Full-rate telemetry can no longer block the SimConnect/UI thread behind a slow
+  disk or antivirus scanner. A saturated writer stops the diagnostic capture
+  explicitly without silently dropping accepted frames, and shutdown has a
+  bounded wait.
+- Closure reconstruction now requires five distinct timestamps and brackets its
+  `t_c - 75 ms` evaluation point inside the recorded history. The terrain
+  sanitizer also repairs spikes at the beginning and end of short captures.
+- Telemetry CSV rows must match the file header's schema, and binary64 values use
+  the portable `G17` round-trip representation on .NET Framework.
+- The landing summary index now reconciles itself with canonical detail files,
+  recovering a landing when detail commit succeeded but index update did not.
+  Landing filenames are culture-invariant.
+- Airport refreshes now replace the live cache only after every pagination page
+  arrives, and a transient cache read failure can no longer overwrite the
+  accumulated database with one partial event.
+- The selected landing header refreshes after asynchronous airport resolution;
+  unavailable surface closure is no longer selectable in the outer legend, and
+  non-finite telemetry no longer blanks an entire chart.
+- SimConnect mode changes are guarded against the simulator exiting during a UI
+  toggle, and joystick enumeration cannot remap controller slots mid-episode.
+
 ## [0.7.1] - 2026-08-05
 
 ### Fixed
