@@ -1,12 +1,11 @@
 using System;
-using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
-using System.IO.Compression;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Reflection;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
@@ -17,16 +16,7 @@ namespace LandingStats.App.Updater;
 internal static class Program
 {
     private const string TargetExecutableName = "MSFS-Landing-Stats.exe";
-    private const long MaximumExpandedPackageBytes = 64L * 1024 * 1024;
-
-    private static readonly string[] RequiredFiles =
-    {
-        TargetExecutableName,
-        "MSFS-Landing-Stats.exe.config",
-        "LandingStats.Core.dll",
-        "Microsoft.FlightSimulator.SimConnect.dll",
-        "SimConnect.dll",
-    };
+    private static readonly byte[] BundleMagic = Encoding.ASCII.GetBytes("MSFSLSABUNDLE1");
 
     [STAThread]
     private static int Main(string[] args)
@@ -43,7 +33,7 @@ internal static class Program
         {
             TryRestartExistingApplication(targetPath);
             MessageBox.Show(
-                "MSFS Landing Stats was not updated. The existing installation was preserved.\r\n\r\n" + exception.Message,
+                "MSFS Landing Stats was not updated. The existing application was preserved.\r\n\r\n" + exception.Message,
                 "MSFS Landing Stats updater",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Error);
@@ -61,7 +51,7 @@ internal static class Program
         SignalReady(invocation.ReadyEventName);
 
         using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(60) };
-        client.DefaultRequestHeaders.UserAgent.ParseAdd("MSFS-Landing-Stats-Updater/2");
+        client.DefaultRequestHeaders.UserAgent.ParseAdd("MSFS-Landing-Stats-Updater/3");
         var releaseRoot = Protocol.VersionReleaseRoot(invocation.Version);
         var manifestBytes = await Protocol.DownloadSmallAsync(
             client,
@@ -69,7 +59,7 @@ internal static class Program
             Protocol.ManifestName,
             16 * 1024,
             CancellationToken.None).ConfigureAwait(false);
-        var signature = System.Text.Encoding.ASCII.GetString(await Protocol.DownloadSmallAsync(
+        var signature = Encoding.ASCII.GetString(await Protocol.DownloadSmallAsync(
             client,
             releaseRoot + Protocol.SignatureName,
             Protocol.SignatureName,
@@ -85,43 +75,23 @@ internal static class Program
         {
             throw new InvalidDataException("Updater does not match the signed release manifest");
         }
-        VerifyApplicationVersion(ownPath, manifest.Version);
+        VerifyAssemblyVersion(ownPath, manifest.Version, "MSFS-Landing-Stats.Updater");
 
-        WaitForTargetExit(invocation.ParentPid);
-
-        var packagePath = Path.Combine(updateRoot, manifest.PackageAsset);
+        var replacementPath = Path.Combine(updateRoot, manifest.PackageAsset);
         await Protocol.DownloadVerifiedFileAsync(
             client,
             releaseRoot + manifest.PackageAsset,
             manifest.PackageAsset,
-            packagePath,
+            replacementPath,
             manifest.PackageSize,
             manifest.PackageSha256,
             Protocol.MaximumPackageBytes,
             CancellationToken.None).ConfigureAwait(false);
+        VerifySingleFileBundle(replacementPath);
+        VerifyAssemblyVersion(replacementPath, manifest.Version, "MSFS-Landing-Stats");
 
-        var targetDirectory = Path.GetDirectoryName(invocation.TargetPath)
-                              ?? throw new InvalidDataException("Application directory is unavailable");
-        var transactionId = Guid.NewGuid().ToString("N");
-        var stagingDirectory = Path.Combine(targetDirectory, ".msfs-landing-stats-update-" + transactionId);
-        var backupDirectory = Path.Combine(targetDirectory, ".msfs-landing-stats-backup-" + transactionId);
-        var installed = false;
-        try
-        {
-            ExtractValidatedPackage(packagePath, stagingDirectory);
-            VerifyApplicationVersion(Path.Combine(stagingDirectory, TargetExecutableName), manifest.Version);
-            InstallTransactionally(stagingDirectory, backupDirectory, targetDirectory);
-            VerifyApplicationVersion(invocation.TargetPath, manifest.Version);
-            installed = true;
-        }
-        finally
-        {
-            DeleteDirectoryIfPresent(stagingDirectory);
-            if (installed)
-            {
-                DeleteDirectoryIfPresent(backupDirectory);
-            }
-        }
+        WaitForTargetExit(invocation.ParentPid);
+        InstallExecutableTransactionally(replacementPath, invocation.TargetPath, invocation.Version);
 
         var cleanupArguments = string.Join(" ", new[]
         {
@@ -132,7 +102,7 @@ internal static class Program
         var started = Process.Start(new ProcessStartInfo
         {
             FileName = invocation.TargetPath,
-            WorkingDirectory = targetDirectory,
+            WorkingDirectory = Path.GetDirectoryName(invocation.TargetPath) ?? Environment.CurrentDirectory,
             Arguments = cleanupArguments,
             UseShellExecute = false,
         });
@@ -182,10 +152,22 @@ internal static class Program
     {
         using var process = Process.GetProcessById(invocation.ParentPid);
         var processPath = Path.GetFullPath(process.MainModule?.FileName ?? string.Empty);
-        if (!string.Equals(processPath, invocation.TargetPath, StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(processPath, invocation.TargetPath, StringComparison.OrdinalIgnoreCase))
         {
-            throw new InvalidDataException("Updater target does not match the requesting process");
+            return;
         }
+
+        var runtimeRoot = Path.GetFullPath(Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "MSFS Landing Stats",
+            "Runtime",
+            "App")).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+        if (!processPath.StartsWith(runtimeRoot, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidDataException("Updater requester is outside the private application runtime");
+        }
+
+        VerifySingleFileBundle(invocation.TargetPath);
     }
 
     private static void WaitForTargetExit(int parentPid)
@@ -210,115 +192,74 @@ internal static class Program
         ready.Set();
     }
 
-    internal static void ExtractValidatedPackage(string packagePath, string stagingDirectory)
+    internal static void InstallExecutableTransactionally(string replacementPath, string targetPath, Version expectedVersion)
     {
-        Directory.CreateDirectory(stagingDirectory);
-        using var archive = ZipFile.OpenRead(packagePath);
-        if (archive.Entries.Count != RequiredFiles.Length)
+        replacementPath = Path.GetFullPath(replacementPath);
+        targetPath = Path.GetFullPath(targetPath);
+        if (string.Equals(replacementPath, targetPath, StringComparison.OrdinalIgnoreCase) ||
+            !File.Exists(replacementPath) ||
+            !File.Exists(targetPath))
         {
-            throw new InvalidDataException("Update package contains an unexpected number of files");
+            throw new InvalidDataException("Executable replacement paths are invalid");
         }
 
-        var expected = new HashSet<string>(RequiredFiles, StringComparer.OrdinalIgnoreCase);
-        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        long expandedBytes = 0;
-        foreach (var entry in archive.Entries)
-        {
-            if (string.IsNullOrEmpty(entry.Name) ||
-                !string.Equals(entry.FullName, entry.Name, StringComparison.Ordinal) ||
-                !expected.Contains(entry.Name) ||
-                !seen.Add(entry.Name))
-            {
-                throw new InvalidDataException("Update package contains an unexpected or unsafe entry");
-            }
-
-            if (entry.Length <= 0 || entry.Length > MaximumExpandedPackageBytes - expandedBytes)
-            {
-                throw new InvalidDataException("Update package expanded size is invalid");
-            }
-
-            var destination = Path.Combine(stagingDirectory, entry.Name);
-            using var input = entry.Open();
-            using var output = new FileStream(destination, FileMode.CreateNew, FileAccess.Write, FileShare.None);
-            var buffer = new byte[65536];
-            long entryBytes = 0;
-            int read;
-            while ((read = input.Read(buffer, 0, buffer.Length)) > 0)
-            {
-                entryBytes += read;
-                if (entryBytes > entry.Length || entryBytes > MaximumExpandedPackageBytes - expandedBytes)
-                {
-                    throw new InvalidDataException("Update package entry exceeds its declared size");
-                }
-                output.Write(buffer, 0, read);
-            }
-            if (entryBytes != entry.Length)
-            {
-                throw new InvalidDataException("Update package entry length is inconsistent");
-            }
-            expandedBytes += entryBytes;
-        }
-
-        if (!expected.SetEquals(seen))
-        {
-            throw new InvalidDataException("Update package is incomplete");
-        }
-    }
-
-    internal static void InstallTransactionally(string stagingDirectory, string backupDirectory, string targetDirectory)
-    {
-        Directory.CreateDirectory(backupDirectory);
-        var movedToBackup = new List<string>();
-        var movedIntoPlace = new List<string>();
+        var targetDirectory = Path.GetDirectoryName(targetPath) ?? throw new InvalidDataException("Application directory is unavailable");
+        var backupPath = Path.Combine(targetDirectory, ".msfs-landing-stats-backup-" + Guid.NewGuid().ToString("N") + ".exe");
+        File.Move(targetPath, backupPath);
         try
         {
-            foreach (var file in RequiredFiles)
-            {
-                var target = Path.Combine(targetDirectory, file);
-                var backup = Path.Combine(backupDirectory, file);
-                if (!File.Exists(target))
-                {
-                    throw new InvalidDataException("Installed application is incomplete: " + file);
-                }
-                File.Move(target, backup);
-                movedToBackup.Add(file);
-            }
-
-            foreach (var file in RequiredFiles)
-            {
-                File.Move(Path.Combine(stagingDirectory, file), Path.Combine(targetDirectory, file));
-                movedIntoPlace.Add(file);
-            }
+            File.Move(replacementPath, targetPath);
+            VerifySingleFileBundle(targetPath);
+            VerifyAssemblyVersion(targetPath, expectedVersion, "MSFS-Landing-Stats");
+            File.Delete(backupPath);
         }
         catch
         {
-            foreach (var file in movedIntoPlace.AsEnumerable().Reverse())
+            if (File.Exists(targetPath))
             {
-                var target = Path.Combine(targetDirectory, file);
-                if (File.Exists(target))
-                {
-                    File.Delete(target);
-                }
+                File.Delete(targetPath);
             }
-            foreach (var file in movedToBackup.AsEnumerable().Reverse())
+            if (File.Exists(backupPath))
             {
-                var backup = Path.Combine(backupDirectory, file);
-                var target = Path.Combine(targetDirectory, file);
-                if (File.Exists(backup))
-                {
-                    File.Move(backup, target);
-                }
+                File.Move(backupPath, targetPath);
             }
             throw;
         }
     }
 
-    private static void VerifyApplicationVersion(string executablePath, Version expected)
+    private static void VerifySingleFileBundle(string path)
     {
-        var actual = AssemblyName.GetAssemblyName(executablePath).Version;
-        if (actual == null || actual.Major != expected.Major || actual.Minor != expected.Minor || actual.Build != expected.Build)
+        using var input = File.OpenRead(path);
+        var trailerLength = sizeof(long) + BundleMagic.Length;
+        if (input.ReadByte() != 'M' || input.ReadByte() != 'Z' || input.Length <= trailerLength)
         {
-            throw new InvalidDataException("Application package version does not match the signed manifest");
+            throw new InvalidDataException("Signed application is not a Windows executable");
+        }
+
+        input.Seek(-BundleMagic.Length, SeekOrigin.End);
+        var actual = new byte[BundleMagic.Length];
+        if (input.Read(actual, 0, actual.Length) != actual.Length || !actual.SequenceEqual(BundleMagic))
+        {
+            throw new InvalidDataException("Signed application bundle is incomplete");
+        }
+
+        input.Seek(-trailerLength, SeekOrigin.End);
+        using var reader = new BinaryReader(input, Encoding.UTF8, true);
+        var payloadLength = reader.ReadInt64();
+        if (payloadLength <= 0 || payloadLength > input.Length - trailerLength)
+        {
+            throw new InvalidDataException("Signed application bundle length is invalid");
+        }
+    }
+
+    private static void VerifyAssemblyVersion(string executablePath, Version expected, string expectedName)
+    {
+        var assembly = AssemblyName.GetAssemblyName(executablePath);
+        var actual = assembly.Version;
+        if (!string.Equals(assembly.Name, expectedName, StringComparison.Ordinal) ||
+            actual == null || actual.Major != expected.Major || actual.Minor != expected.Minor || actual.Build != expected.Build)
+        {
+            throw new InvalidDataException("Application version does not match the signed manifest");
         }
     }
 
@@ -355,25 +296,6 @@ internal static class Program
         }
     }
 
-    private static void DeleteDirectoryIfPresent(string path)
-    {
-        try
-        {
-            if (Directory.Exists(path))
-            {
-                Directory.Delete(path, true);
-            }
-        }
-        catch (IOException)
-        {
-            // A failed update may leave only a bounded staging directory beside the app.
-        }
-        catch (UnauthorizedAccessException)
-        {
-            // The update result is already determined; cleanup can be retried manually.
-        }
-    }
-
     private static string QuoteArgument(string value)
     {
         if (value.Length != 0 && value.IndexOfAny(new[] { ' ', '\t', '"' }) < 0)
@@ -381,7 +303,7 @@ internal static class Program
             return value;
         }
 
-        var result = new System.Text.StringBuilder("\"");
+        var result = new StringBuilder("\"");
         var backslashes = 0;
         foreach (var character in value)
         {

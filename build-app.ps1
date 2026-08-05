@@ -9,9 +9,10 @@ $repositoryRoot = [IO.Path]::GetFullPath($PSScriptRoot)
 $artifactsDirectory = [IO.Path]::GetFullPath((Join-Path $repositoryRoot "artifacts"))
 $workDirectory = [IO.Path]::GetFullPath((Join-Path $artifactsDirectory "app-package-work"))
 $packageDirectory = Join-Path $workDirectory "MSFS-Landing-Stats"
-$packagePath = Join-Path $artifactsDirectory "MSFS-Landing-Stats.zip"
+$payloadPath = Join-Path $workDirectory "payload.zip"
+$singleFilePath = Join-Path $artifactsDirectory "MSFS-Landing-Stats.exe"
 $updaterArtifactPath = Join-Path $artifactsDirectory "MSFS-Landing-Stats.Updater.exe"
-$obsoleteBundlePath = Join-Path $artifactsDirectory "MSFS-Landing-Stats.exe"
+$obsoletePackagePath = Join-Path $artifactsDirectory "MSFS-Landing-Stats.zip"
 $allowedPrefix = $artifactsDirectory.TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
 
 if (-not $workDirectory.StartsWith($allowedPrefix, [StringComparison]::OrdinalIgnoreCase)) {
@@ -31,7 +32,7 @@ if (Test-Path -LiteralPath $workDirectory) {
 New-Item -ItemType Directory -Path $artifactsDirectory -Force | Out-Null
 New-Item -ItemType Directory -Path $packageDirectory -Force | Out-Null
 
-foreach ($oldArtifact in @($packagePath, $updaterArtifactPath, $obsoleteBundlePath)) {
+foreach ($oldArtifact in @($obsoletePackagePath, $singleFilePath, $updaterArtifactPath)) {
     if (Test-Path -LiteralPath $oldArtifact) {
         Remove-Item -LiteralPath $oldArtifact -Force
     }
@@ -60,14 +61,19 @@ if (-not (Test-Path -LiteralPath $updaterBuildPath)) {
 }
 Copy-Item -LiteralPath $updaterBuildPath -Destination $updaterArtifactPath
 
+$launcherBuildPath = Join-Path $repositoryRoot "src\LandingStats.App.Launcher\bin\$Configuration\net48\MSFS-Landing-Stats.exe"
+if (-not (Test-Path -LiteralPath $launcherBuildPath)) {
+    throw "Single-file bootstrap is missing: $launcherBuildPath"
+}
+
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 [IO.Compression.ZipFile]::CreateFromDirectory(
     $packageDirectory,
-    $packagePath,
+    $payloadPath,
     [IO.Compression.CompressionLevel]::Optimal,
     $false)
 
-$archive = [IO.Compression.ZipFile]::OpenRead($packagePath)
+$archive = [IO.Compression.ZipFile]::OpenRead($payloadPath)
 try {
     $actualFiles = @($archive.Entries | ForEach-Object FullName | Sort-Object)
     $expectedFiles = @($packageFiles | Sort-Object)
@@ -80,22 +86,56 @@ finally {
     $archive.Dispose()
 }
 
+Copy-Item -LiteralPath $launcherBuildPath -Destination $singleFilePath
+$zipBytes = [IO.File]::ReadAllBytes($payloadPath)
+$magicBytes = [Text.Encoding]::ASCII.GetBytes("MSFSLSABUNDLE1")
+$stream = [IO.File]::Open($singleFilePath, [IO.FileMode]::Append, [IO.FileAccess]::Write, [IO.FileShare]::None)
+try {
+    $stream.Write($zipBytes, 0, $zipBytes.Length)
+    $writer = [IO.BinaryWriter]::new($stream, [Text.Encoding]::UTF8, $true)
+    try {
+        $writer.Write([Int64]$zipBytes.LongLength)
+        $writer.Write($magicBytes)
+        $writer.Flush()
+    }
+    finally {
+        $writer.Dispose()
+    }
+}
+finally {
+    $stream.Dispose()
+}
+
+$verification = Start-Process `
+    -FilePath $singleFilePath `
+    -ArgumentList '--verify-bundle' `
+    -Wait `
+    -PassThru `
+    -WindowStyle Hidden
+if ($verification.ExitCode -ne 0) {
+    throw "Single-file bundle verification failed with exit code $($verification.ExitCode)."
+}
+
 $appVersion = [Reflection.AssemblyName]::GetAssemblyName(
     (Join-Path $packageDirectory "MSFS-Landing-Stats.exe")).Version
+$singleFileVersion = [Reflection.AssemblyName]::GetAssemblyName($singleFilePath).Version
 $updaterVersion = [Reflection.AssemblyName]::GetAssemblyName($updaterArtifactPath).Version
-if ($appVersion.Major -ne $updaterVersion.Major -or
+if ($appVersion.Major -ne $singleFileVersion.Major -or
+    $appVersion.Minor -ne $singleFileVersion.Minor -or
+    $appVersion.Build -ne $singleFileVersion.Build -or
+    $appVersion.Major -ne $updaterVersion.Major -or
     $appVersion.Minor -ne $updaterVersion.Minor -or
     $appVersion.Build -ne $updaterVersion.Build) {
     throw "Application and updater versions do not match."
 }
 
-$packageHash = (Get-FileHash -LiteralPath $packagePath -Algorithm SHA256).Hash.ToLowerInvariant()
-$packageSize = (Get-Item -LiteralPath $packagePath).Length
+$singleFileHash = (Get-FileHash -LiteralPath $singleFilePath -Algorithm SHA256).Hash.ToLowerInvariant()
+$singleFileSize = (Get-Item -LiteralPath $singleFilePath).Length
 $updaterHash = (Get-FileHash -LiteralPath $updaterArtifactPath -Algorithm SHA256).Hash.ToLowerInvariant()
 $updaterSize = (Get-Item -LiteralPath $updaterArtifactPath).Length
-Write-Host "Portable package: $packagePath"
-Write-Host "Package size: $packageSize bytes"
-Write-Host "Package SHA-256: $packageHash"
+Write-Host "Single-file download: $singleFilePath"
+Write-Host "Single-file size: $singleFileSize bytes"
+Write-Host "Single-file SHA-256: $singleFileHash"
 Write-Host "Updater: $updaterArtifactPath"
 Write-Host "Updater size: $updaterSize bytes"
 Write-Host "Updater SHA-256: $updaterHash"

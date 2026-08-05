@@ -51,7 +51,7 @@ for the formulas, timing rules, validation traces, and known limitations.
 - Optional, explicitly consented full-rate diagnostic contribution with a
   15-second pre-roll and authenticated upload.
 - Compact local landing history containing only the data used by the dashboard.
-- Portable ZIP distribution with signed automatic updates and restart.
+- One-file distribution with signed automatic updates and restart.
 
 The application keeps inertial and surface-relative landing rates separate.
 This avoids treating runway slope or local scenery elevation changes as aircraft
@@ -77,35 +77,36 @@ To build locally:
 .\build-app.ps1 -MsfsSdkRoot "D:\MSFS 2024 SDK"
 ```
 
-The resulting portable package and standalone updater are written to:
+The resulting user download and standalone update helper are written to:
 
 ```text
-artifacts\MSFS-Landing-Stats.zip
+artifacts\MSFS-Landing-Stats.exe
 artifacts\MSFS-Landing-Stats.Updater.exe
 ```
 
-Extract `MSFS-Landing-Stats.zip` into its own folder and run
-`MSFS-Landing-Stats.exe`. Keep the five extracted files together; the SDK is
-not required at runtime. The updater executable is a release asset downloaded
-only when a newer signed version exists and is not part of the initial ZIP.
+Download and run `MSFS-Landing-Stats.exe`. Nothing needs to be extracted or
+kept beside it. The executable prepares its private runtime under LocalAppData;
+the SDK is not required at runtime. The updater executable is downloaded only
+when a newer signed version exists.
 
 ## Automated builds
 
 GitHub Actions resolves the current MSFS 2024 Core SDK from Microsoft's public
 SDK manifest, extracts and caches only the SimConnect build dependency, and
 builds the application on `windows-latest`. Tags matching `v*` publish the
-portable ZIP, a standalone updater, and an RSA-signed format-2 manifest binding
-the exact version, names, sizes, and SHA-256 hashes of both assets.
+single application executable, a temporary standalone updater, and an
+RSA-signed format-3 manifest binding the exact version, names, sizes, and
+SHA-256 hashes of both executables.
 
 For an update, the running application first verifies the pinned manifest
 signature and updater hash. The verified updater then re-downloads the manifest
 from the immutable versioned release URL, repeats signature and self-hash
 verification, verifies the package size and SHA-256 while streaming, accepts
-only the five expected top-level files, and checks the new executable version.
-It confirms the requesting process identity before the application exits,
-replaces only the managed application files with rollback on failure, restarts
-the new version, and is removed by that new process. No shell script, embedded
-payload, or self-extracting executable is used.
+only a complete single-file bundle with the signed assembly version, and
+confirms both the requesting process and replacement target. After the
+application exits, it atomically replaces that one executable with rollback on
+failure, restarts the new version, and is removed by that new process. No shell
+or script participates in the update.
 
 ## Data storage
 

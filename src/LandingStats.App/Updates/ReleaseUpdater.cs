@@ -40,6 +40,9 @@ internal sealed class ReleaseUpdateResult
 
 internal sealed class ReleaseUpdater : IDisposable
 {
+    private const string TargetExecutableName = "MSFS-Landing-Stats.exe";
+    private const string LauncherPathEnvironmentVariable = "MSFS_LANDING_STATS_LAUNCHER_PATH";
+
     private readonly HttpClient _client;
 
     public ReleaseUpdater(HttpMessageHandler? handler = null)
@@ -47,7 +50,7 @@ internal sealed class ReleaseUpdater : IDisposable
         ServicePointManager.SecurityProtocol |= SecurityProtocolType.Tls12;
         _client = handler == null ? new HttpClient() : new HttpClient(handler, true);
         _client.Timeout = TimeSpan.FromSeconds(45);
-        _client.DefaultRequestHeaders.UserAgent.ParseAdd("MSFS-Landing-Stats-Updater/2");
+        _client.DefaultRequestHeaders.UserAgent.ParseAdd("MSFS-Landing-Stats-Updater/3");
     }
 
     public async Task<ReleaseUpdateResult> CheckAndInstallAsync(Version currentVersion, CancellationToken cancellationToken)
@@ -74,11 +77,7 @@ internal sealed class ReleaseUpdater : IDisposable
                 return new ReleaseUpdateResult(ReleaseUpdateState.Current, "The installed version is current", manifest.Version);
             }
 
-            var targetPath = Path.GetFullPath(Assembly.GetExecutingAssembly().Location);
-            if (!string.Equals(Path.GetFileName(targetPath), "MSFS-Landing-Stats.exe", StringComparison.OrdinalIgnoreCase))
-            {
-                throw new InvalidDataException("The application executable has an unexpected name");
-            }
+            var targetPath = ResolveUpdateTarget();
 
             updateRoot = Path.Combine(
                 UpdatesRoot(),
@@ -248,6 +247,22 @@ internal sealed class ReleaseUpdater : IDisposable
         {
             throw new InvalidDataException("Signed updater is not a Windows executable");
         }
+    }
+
+    private static string ResolveUpdateTarget()
+    {
+        var launcherPath = Environment.GetEnvironmentVariable(LauncherPathEnvironmentVariable);
+        var targetPath = string.IsNullOrWhiteSpace(launcherPath)
+            ? Assembly.GetExecutingAssembly().Location
+            : launcherPath;
+        targetPath = Path.GetFullPath(targetPath);
+        if (!string.Equals(Path.GetFileName(targetPath), TargetExecutableName, StringComparison.OrdinalIgnoreCase) ||
+            !File.Exists(targetPath))
+        {
+            throw new InvalidDataException("The update target is invalid");
+        }
+
+        return targetPath;
     }
 
     private static void TryDeleteDirectory(string path)

@@ -41,9 +41,10 @@ internal static class Program
         Run("raw telemetry queue never blocks its producer", RawTelemetryQueueNeverBlocksProducer);
         Run("telemetry identity is stable, protected, and signs", TelemetryIdentityIsStableAndSigns);
         Run("updater accepts a signed manifest and rejects tampering", UpdaterVerifiesSignedManifest);
+        Run("updater accepts the format-3 single executable manifest shape", UpdaterAcceptsSingleExecutableManifestShape);
         Run("updater cleanup refuses paths outside its private root", UpdaterCleanupRefusesUnsafePath);
-        Run("updater rejects unsafe package entries", UpdaterRejectsUnsafePackageEntries);
-        Run("updater rolls back an incomplete replacement", UpdaterRollsBackIncompleteReplacement);
+        Run("updater installs one valid executable transactionally", UpdaterInstallsSingleExecutable);
+        Run("updater rolls back an invalid executable replacement", UpdaterRollsBackInvalidExecutableReplacement);
         Run("valid frame clears transient error state", ValidFrameClearsTransientErrorState);
         Run("legacy SimConnect controller path is absent", LegacyControllerPathIsAbsent);
         Run("compact frame matches the SimConnect payload contract", CompactFrameMatchesPayloadContract);
@@ -263,38 +264,45 @@ internal static class Program
         }
     }
 
-    private static void UpdaterRejectsUnsafePackageEntries()
+    private static void UpdaterAcceptsSingleExecutableManifestShape()
     {
-        var root = Path.Combine(Path.GetTempPath(), "landing-stats-package-validation-test-" + Guid.NewGuid().ToString("N"));
-        var validPackage = Path.Combine(root, "valid.zip");
-        var invalidPackage = Path.Combine(root, "invalid.zip");
-        var extracted = Path.Combine(root, "extracted");
-        var expected = new[]
-        {
-            "MSFS-Landing-Stats.exe",
-            "MSFS-Landing-Stats.exe.config",
-            "LandingStats.Core.dll",
-            "Microsoft.FlightSimulator.SimConnect.dll",
-            "SimConnect.dll",
-        };
+        const string manifest = "format=3\nversion=0.7.3\npackage=MSFS-Landing-Stats.exe\npackage-size=488021\npackage-sha256=0000000000000000000000000000000000000000000000000000000000000000\nupdater=MSFS-Landing-Stats.Updater.exe\nupdater-size=113152\nupdater-sha256=1111111111111111111111111111111111111111111111111111111111111111\n";
+        var protocolType = typeof(ReleaseUpdater).Assembly.GetType(
+            "LandingStats.UpdateProtocol.ReleaseUpdateProtocol",
+            true)!;
+        var parse = protocolType.GetMethod("ParseManifest", BindingFlags.Static | BindingFlags.NonPublic)!;
+        var parsed = parse.Invoke(null, new object[] { new UTF8Encoding(false).GetBytes(manifest) })!;
+        var packageAsset = parsed.GetType().GetProperty("PackageAsset")!.GetValue(parsed) as string;
+        Equal("MSFS-Landing-Stats.exe", packageAsset, "format-3 package asset");
+    }
+
+    private static void UpdaterInstallsSingleExecutable()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "landing-stats-single-update-test-" + Guid.NewGuid().ToString("N"));
+        var target = Path.Combine(root, "MSFS-Landing-Stats.exe");
+        var replacement = Path.Combine(root, "replacement.exe");
         try
         {
             Directory.CreateDirectory(root);
-            WriteTestPackage(validPackage, expected);
-            UpdaterProgram.ExtractValidatedPackage(validPackage, extracted);
-            Equal(expected.Length, Directory.GetFiles(extracted).Length, "validated package file count");
+            File.WriteAllText(target, "old");
+            var search = new DirectoryInfo(AppDomain.CurrentDomain.BaseDirectory);
+            string? builtExecutable = null;
+            while (search != null && builtExecutable == null)
+            {
+                var candidate = Path.Combine(search.FullName, "artifacts", "MSFS-Landing-Stats.exe");
+                if (File.Exists(candidate))
+                {
+                    builtExecutable = candidate;
+                }
+                search = search.Parent;
+            }
+            if (builtExecutable == null) throw new FileNotFoundException("Built single executable fixture is unavailable");
+            File.Copy(builtExecutable, replacement);
 
-            WriteTestPackage(invalidPackage, expected.Skip(1).Concat(new[] { "../MSFS-Landing-Stats.exe" }));
-            var rejected = false;
-            try
-            {
-                UpdaterProgram.ExtractValidatedPackage(invalidPackage, Path.Combine(root, "invalid-extracted"));
-            }
-            catch (InvalidDataException)
-            {
-                rejected = true;
-            }
-            Equal(true, rejected, "unsafe package rejection");
+            UpdaterProgram.InstallExecutableTransactionally(replacement, target, new Version(0, 7, 3));
+            Equal(false, File.Exists(replacement), "replacement moved into place");
+            Equal(true, new FileInfo(target).Length > 100, "installed executable length");
+            Equal(0, Directory.GetFiles(root, ".msfs-landing-stats-backup-*.exe").Length, "transaction backup removed");
         }
         finally
         {
@@ -302,62 +310,32 @@ internal static class Program
         }
     }
 
-    private static void UpdaterRollsBackIncompleteReplacement()
+    private static void UpdaterRollsBackInvalidExecutableReplacement()
     {
         var root = Path.Combine(Path.GetTempPath(), "landing-stats-update-rollback-test-" + Guid.NewGuid().ToString("N"));
-        var target = Path.Combine(root, "target");
-        var staging = Path.Combine(target, ".staging");
-        var backup = Path.Combine(target, ".backup");
-        var files = new[]
-        {
-            "MSFS-Landing-Stats.exe",
-            "MSFS-Landing-Stats.exe.config",
-            "LandingStats.Core.dll",
-            "Microsoft.FlightSimulator.SimConnect.dll",
-            "SimConnect.dll",
-        };
+        var target = Path.Combine(root, "MSFS-Landing-Stats.exe");
+        var replacement = Path.Combine(root, "replacement.exe");
         try
         {
-            Directory.CreateDirectory(target);
-            Directory.CreateDirectory(staging);
-            foreach (var file in files)
-            {
-                File.WriteAllText(Path.Combine(target, file), "old-" + file);
-            }
-            foreach (var file in files.Take(files.Length - 1))
-            {
-                File.WriteAllText(Path.Combine(staging, file), "new-" + file);
-            }
+            Directory.CreateDirectory(root);
+            File.WriteAllText(target, "known-good-old-executable");
+            File.WriteAllText(replacement, "invalid-new-executable");
 
             var failed = false;
             try
             {
-                UpdaterProgram.InstallTransactionally(staging, backup, target);
+                UpdaterProgram.InstallExecutableTransactionally(replacement, target, new Version(0, 7, 3));
             }
-            catch (IOException)
+            catch (InvalidDataException)
             {
                 failed = true;
             }
-            Equal(true, failed, "incomplete transaction failure");
-            foreach (var file in files)
-            {
-                Equal("old-" + file, File.ReadAllText(Path.Combine(target, file)), "rollback content " + file);
-            }
+            Equal(true, failed, "invalid executable transaction failure");
+            Equal("known-good-old-executable", File.ReadAllText(target), "single executable rollback content");
         }
         finally
         {
             if (Directory.Exists(root)) Directory.Delete(root, true);
-        }
-    }
-
-    private static void WriteTestPackage(string path, IEnumerable<string> entries)
-    {
-        using var archive = ZipFile.Open(path, ZipArchiveMode.Create);
-        foreach (var name in entries)
-        {
-            var entry = archive.CreateEntry(name);
-            using var writer = new StreamWriter(entry.Open(), new UTF8Encoding(false));
-            writer.Write("test");
         }
     }
 

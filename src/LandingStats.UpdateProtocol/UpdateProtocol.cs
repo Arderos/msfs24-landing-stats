@@ -45,7 +45,8 @@ internal static class ReleaseUpdateProtocol
     public const string LatestReleaseRoot = "https://github.com/Arderos/msfs24-landing-stats/releases/latest/download/";
     public const string ManifestName = "update-manifest.txt";
     public const string SignatureName = "update-manifest.sig";
-    public const string PackageAssetName = "MSFS-Landing-Stats.zip";
+    public const string PackageAssetName = "MSFS-Landing-Stats.exe";
+    private const string LegacyPackageAssetName = "MSFS-Landing-Stats.zip";
     public const string UpdaterAssetName = "MSFS-Landing-Stats.Updater.exe";
     public const long MaximumPackageBytes = 128L * 1024 * 1024;
     public const long MaximumUpdaterBytes = 16L * 1024 * 1024;
@@ -210,7 +211,7 @@ internal static class ReleaseUpdateProtocol
         var lines = text.Split(new[] { '\n' }, StringSplitOptions.RemoveEmptyEntries)
             .Select(line => line.TrimEnd('\r'))
             .ToArray();
-        if (lines.Length != 8 || lines[0] != "format=2")
+        if (lines.Length != 8 || (lines[0] != "format=3" && lines[0] != "format=2"))
         {
             throw new InvalidDataException("Update manifest format is invalid");
         }
@@ -227,7 +228,8 @@ internal static class ReleaseUpdateProtocol
         {
             throw new InvalidDataException("Update version is invalid");
         }
-        if (!string.Equals(packageAsset, PackageAssetName, StringComparison.Ordinal) ||
+        var expectedPackageAsset = lines[0] == "format=3" ? PackageAssetName : LegacyPackageAssetName;
+        if (!string.Equals(packageAsset, expectedPackageAsset, StringComparison.Ordinal) ||
             !long.TryParse(packageSizeText, NumberStyles.None, CultureInfo.InvariantCulture, out var packageSize) ||
             packageSize <= 0 || packageSize > MaximumPackageBytes ||
             !ValidSha256(packageSha256) ||
