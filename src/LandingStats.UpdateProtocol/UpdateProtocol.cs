@@ -46,7 +46,7 @@ internal static class ReleaseUpdateProtocol
     public const string ManifestName = "update-manifest.txt";
     public const string SignatureName = "update-manifest.sig";
     public const string PackageAssetName = "MSFS-Landing-Stats.exe";
-    private const string LegacyPackageAssetName = "MSFS-Landing-Stats.zip";
+    public const string LegacyPackageAssetName = "MSFS-Landing-Stats.zip";
     public const string UpdaterAssetName = "MSFS-Landing-Stats.Updater.exe";
     public const long MaximumPackageBytes = 128L * 1024 * 1024;
     public const long MaximumUpdaterBytes = 16L * 1024 * 1024;

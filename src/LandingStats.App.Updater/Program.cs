@@ -1,6 +1,7 @@
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.IO.Compression;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
@@ -77,16 +78,17 @@ internal static class Program
         }
         VerifyAssemblyVersion(ownPath, manifest.Version, "MSFS-Landing-Stats.Updater");
 
-        var replacementPath = Path.Combine(updateRoot, manifest.PackageAsset);
+        var packagePath = Path.Combine(updateRoot, manifest.PackageAsset);
         await Protocol.DownloadVerifiedFileAsync(
             client,
             releaseRoot + manifest.PackageAsset,
             manifest.PackageAsset,
-            replacementPath,
+            packagePath,
             manifest.PackageSize,
             manifest.PackageSha256,
             Protocol.MaximumPackageBytes,
             CancellationToken.None).ConfigureAwait(false);
+        var replacementPath = PrepareReplacement(packagePath, manifest.PackageAsset, updateRoot);
         VerifySingleFileBundle(replacementPath);
         VerifyAssemblyVersion(replacementPath, manifest.Version, "MSFS-Landing-Stats");
 
@@ -109,6 +111,74 @@ internal static class Program
         if (started == null)
         {
             throw new InvalidOperationException("The updated application could not be restarted");
+        }
+    }
+
+    internal static string PrepareReplacement(string packagePath, string packageAsset, string updateRoot)
+    {
+        packagePath = Path.GetFullPath(packagePath);
+        updateRoot = Path.GetFullPath(updateRoot);
+        if (string.Equals(packageAsset, Protocol.PackageAssetName, StringComparison.Ordinal))
+        {
+            return packagePath;
+        }
+        if (!string.Equals(packageAsset, Protocol.LegacyPackageAssetName, StringComparison.Ordinal))
+        {
+            throw new InvalidDataException("Signed application package name is unsupported");
+        }
+
+        var replacementPath = Path.Combine(updateRoot, TargetExecutableName);
+        ExtractLegacySingleExecutable(packagePath, replacementPath);
+        return replacementPath;
+    }
+
+    internal static void ExtractLegacySingleExecutable(string packagePath, string destinationPath)
+    {
+        destinationPath = Path.GetFullPath(destinationPath);
+        try
+        {
+            using var input = File.OpenRead(packagePath);
+            using var archive = new ZipArchive(input, ZipArchiveMode.Read, false);
+            if (archive.Entries.Count != 1)
+            {
+                throw new InvalidDataException("Signed application package must contain exactly one file");
+            }
+
+            var entry = archive.Entries[0];
+            if (!string.Equals(entry.FullName, TargetExecutableName, StringComparison.Ordinal) ||
+                !string.Equals(entry.Name, TargetExecutableName, StringComparison.Ordinal) ||
+                entry.Length <= 0 ||
+                entry.Length > Protocol.MaximumPackageBytes)
+            {
+                throw new InvalidDataException("Signed application package entry is invalid");
+            }
+
+            using var entryStream = entry.Open();
+            using var output = new FileStream(destinationPath, FileMode.CreateNew, FileAccess.Write, FileShare.None);
+            var buffer = new byte[65536];
+            long total = 0;
+            int read;
+            while ((read = entryStream.Read(buffer, 0, buffer.Length)) > 0)
+            {
+                total += read;
+                if (total > entry.Length || total > Protocol.MaximumPackageBytes)
+                {
+                    throw new InvalidDataException("Signed application package expands beyond its declared size");
+                }
+                output.Write(buffer, 0, read);
+            }
+            if (total != entry.Length)
+            {
+                throw new InvalidDataException("Signed application package entry length is inconsistent");
+            }
+        }
+        catch
+        {
+            if (File.Exists(destinationPath))
+            {
+                File.Delete(destinationPath);
+            }
+            throw;
         }
     }
 
