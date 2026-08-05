@@ -110,6 +110,7 @@ jobs:
             artifacts/MSFS-Landing-Stats.exe
             artifacts/MSFS-Landing-Stats.zip
             artifacts/MSFS-Landing-Stats.Updater.exe
+            artifacts/update-manifest.txt
           if-no-files-found: error
 
       - name: Publish tagged release
@@ -126,30 +127,19 @@ jobs:
 
           $packagePath = Join-Path $env:GITHUB_WORKSPACE 'artifacts\MSFS-Landing-Stats.zip'
           $updaterPath = Join-Path $env:GITHUB_WORKSPACE 'artifacts\MSFS-Landing-Stats.Updater.exe'
-          $package = Get-Item -LiteralPath $packagePath
-          $updater = Get-Item -LiteralPath $updaterPath
           $assemblyVersion = [Reflection.AssemblyName]::GetAssemblyName($updaterPath).Version
           $builtVersion = "$($assemblyVersion.Major).$($assemblyVersion.Minor).$($assemblyVersion.Build)"
           if ($version -cne $builtVersion) {
             throw "Tag version $version does not match built updater version $builtVersion."
           }
-          $packageSha256 = (Get-FileHash -LiteralPath $packagePath -Algorithm SHA256).Hash.ToLowerInvariant()
-          $updaterSha256 = (Get-FileHash -LiteralPath $updaterPath -Algorithm SHA256).Hash.ToLowerInvariant()
           $manifestPath = Join-Path $env:GITHUB_WORKSPACE 'artifacts\update-manifest.txt'
           $signaturePath = Join-Path $env:GITHUB_WORKSPACE 'artifacts\update-manifest.sig'
-          $manifest = @(
-            'format=2'
-            "version=$version"
-            'package=MSFS-Landing-Stats.zip'
-            "package-size=$($package.Length)"
-            "package-sha256=$packageSha256"
-            'updater=MSFS-Landing-Stats.Updater.exe'
-            "updater-size=$($updater.Length)"
-            "updater-sha256=$updaterSha256"
-          ) -join "`n"
-          $manifest += "`n"
-          $manifestBytes = [Text.UTF8Encoding]::new($false).GetBytes($manifest)
-          [IO.File]::WriteAllBytes($manifestPath, $manifestBytes)
+          .\verify-issued-update-compatibility.ps1 `
+            -ManifestPath $manifestPath `
+            -PackagePath $packagePath `
+            -PublicExecutablePath (Join-Path $env:GITHUB_WORKSPACE 'artifacts\MSFS-Landing-Stats.exe') `
+            -UpdaterPath $updaterPath
+          $manifestBytes = [IO.File]::ReadAllBytes($manifestPath)
 
           $privateKey = [Convert]::FromBase64String($env:RELEASE_SIGNING_KEY_PKCS8_B64)
           $rsa = [Security.Cryptography.RSA]::Create()
