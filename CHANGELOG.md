@@ -2,6 +2,35 @@
 
 All notable changes to MSFS Landing Stats are documented in this file.
 
+## [0.7.3] - 2026-08-05
+
+This is the single supported public release and supersedes v0.1.0 through
+v0.7.2. Their complete historical notes are included below in this release.
+
+### Changed
+
+- Restored the original one-file distribution. Users download and run only
+  `MSFS-Landing-Stats.exe`; there is no ZIP to extract and no group of files to
+  keep together.
+- Replaced the multi-file update transaction with a single-executable update.
+  The application verifies a signed manifest and temporary updater, exits, and
+  the updater independently verifies and atomically replaces the one public
+  executable before restarting it and removing itself.
+- The application payload remains inside the executable and is prepared in a
+  private versioned runtime directory. A new executable prepares its own new
+  runtime, so an update cannot be undone by an older bootstrap payload.
+
+### Security
+
+- Introduced signed update manifest format 3, binding the exact name, size, and
+  SHA-256 of both the new single-file application and its standalone updater.
+- The updater re-fetches the manifest from the immutable versioned GitHub
+  release, verifies its own signed identity, checks the requesting process and
+  target, validates the replacement as a complete PE bundle with the expected
+  assembly version, and rolls back if replacement verification fails.
+- The final Internet-Zone-marked single executable passes Microsoft Defender
+  real-time/custom scanning and its embedded bundle self-verification.
+
 ## [0.7.2] - 2026-08-05
 
 ### Fixed
