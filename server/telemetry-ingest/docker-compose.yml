@@ -8,7 +8,6 @@ services:
     restart: unless-stopped
     environment:
       DATA_ROOT: /data
-      REGISTRATION_MODE: ${REGISTRATION_MODE:-invite}
       SERVER_PEPPER_FILE: /run/secrets/server_pepper
       MAX_UPLOAD_BYTES: "16777216"
       MAX_UNCOMPRESSED_BYTES: "67108864"
@@ -18,6 +17,9 @@ services:
       DAILY_GLOBAL_ATTEMPT_QUOTA_BYTES: "4294967296"
       MINIMUM_FREE_BYTES: "2147483648"
       RETENTION_DAYS: "30"
+      GLOBAL_ENROLLMENTS_PER_HOUR: "1000"
+      MAX_INSTALLATIONS: "100000"
+      UNREFERENCED_INSTALLATION_RETENTION_DAYS: "30"
     volumes:
       - /srv/msfs-landing-telemetry/data:/data
     secrets:

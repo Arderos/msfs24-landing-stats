@@ -90,12 +90,5 @@ def canonical_capture(
     ).encode("ascii")
 
 
-def hash_invite(code: str) -> str:
-    normalized = code.strip().upper().replace("-", "")
-    if len(normalized) < 20 or len(normalized) > 128 or not normalized.isalnum():
-        raise ValueError("invalid invitation code")
-    return hashlib.sha256(normalized.encode("ascii")).hexdigest()
-
-
 def address_key(pepper: bytes, address: str) -> str:
     return hmac.new(pepper, address.encode("utf-8"), hashlib.sha256).hexdigest()

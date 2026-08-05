@@ -174,7 +174,7 @@ jobs:
 
           $changelog = Get-Content -LiteralPath CHANGELOG.md -Raw
           $escapedVersion = [Regex]::Escape($version)
-          $pattern = if ($version -ceq '0.7.3') {
+          $pattern = if ($version -ceq '0.7.4') {
             "(?ms)^## \[$escapedVersion\][^\r\n]*\r?\n(?<body>.*)\z"
           } else {
             "(?ms)^## \[$escapedVersion\][^\r\n]*\r?\n(?<body>.*?)(?=^## \[|\z)"

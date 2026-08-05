@@ -2,6 +2,36 @@
 
 All notable changes to MSFS Landing Stats are documented in this file.
 
+## [0.7.4] - 2026-08-05
+
+This release supersedes v0.7.3 and includes its complete consolidated history
+below.
+
+### Changed
+
+- `DEBUG RAW` now registers a consenting installation automatically. The manual
+  invitation-code window and server-side invite administration were removed.
+- Installations remain anonymous: identity is a random installation ID plus an
+  RSA key protected by Windows DPAPI. No hardware UUID, MachineGuid, account
+  name, or other persistent hardware fingerprint is collected.
+- Local `DEBUG RAW` capture is independent from telemetry upload. Registration,
+  network, quota, or server failures never disable full-rate local recording;
+  completed ZIPs remain on disk until the server explicitly accepts them.
+- Telemetry is initialized lazily only after `DEBUG RAW` is enabled. A normal
+  application session performs no telemetry registration or queue work.
+
+### Security
+
+- Open registration does not weaken the storage boundary: source registration
+  is capped at 10/hour, all sources share a 1,000/hour budget, the durable
+  registry is atomically capped at 100,000 identities, and stale unreferenced
+  identities expire after 30 days. New identities are rejected below the 2 GiB
+  disk reserve.
+- Every archive still requires a signature from its enrolled key, and
+  per-installation, per-source, global daily, total storage, expansion, request-
+  size, and free-space limits remain fail-closed.
+- A revoked installation key cannot silently re-register with the same identity.
+
 ## [0.7.3] - 2026-08-05
 
 This is the single supported public release and supersedes v0.1.0 through

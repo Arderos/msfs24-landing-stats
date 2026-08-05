@@ -44,7 +44,6 @@ def post_json(url: str, value: dict) -> dict:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--endpoint", required=True)
-    parser.add_argument("--invite", required=True)
     parser.add_argument("--cleanup-data-root")
     args = parser.parse_args()
     endpoint = args.endpoint.rstrip("/") + "/"
@@ -73,7 +72,6 @@ def main() -> None:
             "public_modulus": modulus,
             "public_exponent": exponent,
             "signature": base64.b64encode(private.sign(enrollment, padding.PKCS1v15(), hashes.SHA256())).decode("ascii"),
-            "invite_code": args.invite,
         },
     )
 

@@ -27,7 +27,7 @@ public partial class MainWindow : Window
     private readonly AirportFacilityRepository _airportFacilityRepository = new AirportFacilityRepository();
     private readonly ReleaseUpdater _releaseUpdater = new ReleaseUpdater();
     private readonly CancellationTokenSource _lifetimeCancellation = new CancellationTokenSource();
-    private readonly TelemetryUploadClient _telemetryUploadClient;
+    private TelemetryUploadClient? _telemetryUploadClient;
     private IReadOnlyList<LandingRecord> _landings = Array.Empty<LandingRecord>();
     private IReadOnlyList<AirportFacility> _airportFacilities = Array.Empty<AirportFacility>();
     private readonly Dictionary<string, LandingRecord> _loadedDetails = new Dictionary<string, LandingRecord>(StringComparer.Ordinal);
@@ -39,12 +39,11 @@ public partial class MainWindow : Window
     private int _primaryGearSeriesIndex;
     private int? _mainIsolatedSeriesIndex;
     private bool _changingRawDebugToggle;
+    private bool _telemetryUploadAllowed;
 
     public MainWindow()
     {
         InitializeComponent();
-        _telemetryUploadClient = new TelemetryUploadClient(_rawCaptureRepository.RootPath);
-        _telemetryUploadClient.StatusChanged += OnTelemetryUploadStatusChanged;
         var assembly = typeof(MainWindow).Assembly;
         var version = assembly.GetName().Version;
         var company = assembly.GetCustomAttribute<AssemblyCompanyAttribute>()?.Company ?? "Evgeniy Zaytsev";
@@ -606,81 +605,100 @@ public partial class MainWindow : Window
         }
         var enabled = RawDebugToggle.IsChecked == true;
         RawDebugToggle.Content = enabled ? "DEBUG RAW · ON" : "DEBUG RAW · OFF";
-        if (enabled)
+        if (!enabled)
         {
-            if (!_telemetryUploadClient.ConsentAccepted)
+            var wasEnabled = _recorder?.RawDebugEnabled == true;
+            _recorder?.SetRawDebugEnabled(false);
+            if (!wasEnabled)
             {
-                var consent = MessageBox.Show(
-                    this,
-                    "DEBUG RAW sends full-rate flight telemetry to the MSFS Landing Stats maintainer. " +
-                    "It includes aircraft state, coordinates and controller/input channels. " +
-                    "A temporary local queue copy is removed only after the server accepts it.\n\nContinue?",
-                    "Enable telemetry upload",
-                    MessageBoxButton.YesNo,
-                    MessageBoxImage.Warning);
-                if (consent != MessageBoxResult.Yes)
-                {
-                    SetRawDebugToggle(false);
-                    return;
-                }
-                _telemetryUploadClient.AcceptConsent();
+                RawDebugStatusText.Text = "Full-rate capture is disabled";
             }
-
-            RawDebugStatusText.Text = "Preparing secure telemetry upload…";
-            RawDebugToggle.IsEnabled = false;
-            TelemetryPreparationResult preparation;
-            try
-            {
-                preparation = await _telemetryUploadClient.PrepareAsync(null, _lifetimeCancellation.Token);
-                if (preparation.State == TelemetryPreparationState.InviteRequired)
-                {
-                    var dialog = new TelemetryEnrollmentDialog { Owner = this };
-                    if (dialog.ShowDialog() == true)
-                    {
-                        preparation = await _telemetryUploadClient.PrepareAsync(dialog.InviteCode, _lifetimeCancellation.Token);
-                    }
-                }
-            }
-            catch (OperationCanceledException)
-            {
-                SetRawDebugToggle(false);
-                return;
-            }
-            catch (Exception exception)
-            {
-                RawDebugStatusText.Text = $"Telemetry upload unavailable: {exception.Message}";
-                SetRawDebugToggle(false);
-                return;
-            }
-            finally
-            {
-                RawDebugToggle.IsEnabled = true;
-            }
-            if (preparation.State != TelemetryPreparationState.Ready)
-            {
-                RawDebugStatusText.Text = preparation.Message;
-                SetRawDebugToggle(false);
-                return;
-            }
-        }
-        if (_recorder == null)
-        {
-            RawDebugStatusText.Text = enabled
-                ? "Secure upload ready · capture starts after SimConnect initializes"
-                : "Full-rate capture is disabled";
             return;
         }
 
-        var wasEnabled = _recorder.RawDebugEnabled;
-        _recorder.SetRawDebugEnabled(enabled);
-        if (enabled)
+        _recorder?.SetRawDebugEnabled(true);
+        RawDebugStatusText.Text = _recorder == null
+            ? "Local full-rate capture armed · starts after SimConnect initializes"
+            : "LIVE · saved locally · every SIM_FRAME sample · 15 s pre-roll";
+
+        TelemetryUploadClient uploadClient;
+        try
         {
-            RawDebugStatusText.Text = "LIVE · secure upload queue · every SIM_FRAME sample · 15 s pre-roll";
+            uploadClient = EnsureTelemetryUploadClient();
         }
-        else if (!wasEnabled)
+        catch (Exception exception)
         {
-            RawDebugStatusText.Text = "Full-rate capture is disabled";
+            RawDebugStatusText.Text = $"Local DEBUG RAW is active · upload unavailable: {exception.Message}";
+            return;
         }
+
+        bool consentAccepted;
+        try
+        {
+            consentAccepted = uploadClient.ConsentAccepted;
+        }
+        catch (Exception exception)
+        {
+            _telemetryUploadAllowed = false;
+            RawDebugStatusText.Text = $"LIVE · saved locally · upload identity unavailable: {exception.Message}";
+            return;
+        }
+
+        if (!consentAccepted)
+        {
+            var consent = MessageBox.Show(
+                this,
+                "DEBUG RAW is already recording locally. It can also send full-rate flight telemetry " +
+                "to the MSFS Landing Stats maintainer, including aircraft state, coordinates and " +
+                "controller/input channels. A local queue copy is removed only after the server accepts it.\n\n" +
+                "Yes: allow upload. No: keep recording locally only.",
+                "Enable telemetry upload",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Warning);
+            if (consent != MessageBoxResult.Yes)
+            {
+                _telemetryUploadAllowed = false;
+                RawDebugStatusText.Text = "LIVE · saved locally · telemetry upload is disabled";
+                return;
+            }
+            try
+            {
+                uploadClient.AcceptConsent();
+            }
+            catch (Exception exception)
+            {
+                _telemetryUploadAllowed = false;
+                RawDebugStatusText.Text = $"LIVE · saved locally · upload consent could not be saved: {exception.Message}";
+                return;
+            }
+        }
+        _telemetryUploadAllowed = true;
+
+        RawDebugStatusText.Text = "LIVE · saved locally · preparing secure upload…";
+        TelemetryPreparationResult preparation;
+        try
+        {
+            preparation = await uploadClient.PrepareAsync(_lifetimeCancellation.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            return;
+        }
+        catch (Exception exception)
+        {
+            if (RawDebugToggle.IsChecked == true)
+            {
+                RawDebugStatusText.Text = $"LIVE · saved locally · upload unavailable: {exception.Message}";
+            }
+            return;
+        }
+        if (RawDebugToggle.IsChecked != true)
+        {
+            return;
+        }
+        RawDebugStatusText.Text = preparation.State == TelemetryPreparationState.Ready
+            ? "LIVE · saved locally · secure upload ready"
+            : $"LIVE · saved locally · {preparation.Message}";
     }
 
     private void OnRawDebugCaptureStarted(object? sender, RawDebugCaptureStartedEventArgs eventArgs)
@@ -702,7 +720,7 @@ public partial class MainWindow : Window
             {
                 OnRawCaptureFailed(_rawCaptureSession.Failure);
             }
-            RawDebugStatusText.Text = "LIVE · secure upload queue · every SIM_FRAME sample · 15 s pre-roll";
+            RawDebugStatusText.Text = "LIVE · saved locally · every SIM_FRAME sample · 15 s pre-roll";
         }
         catch (Exception exception)
         {
@@ -747,17 +765,29 @@ public partial class MainWindow : Window
 
     private void OnRawCaptureChunkCompleted(object? sender, RawCaptureChunkEventArgs eventArgs)
     {
-        var queued = _telemetryUploadClient.Enqueue(eventArgs.Path);
+        var uploadAllowed = _telemetryUploadAllowed;
+        var queued = uploadAllowed && _telemetryUploadClient?.Enqueue(eventArgs.Path) == true;
         Dispatcher.BeginInvoke(new Action(() =>
         {
-            RawDebugStatusText.Text = queued
-                ? $"Queued {eventArgs.SampleCount:N0} frames for secure upload"
-                : $"Upload queue unavailable · capture kept at {eventArgs.Path}";
-            if (!queued && RawDebugToggle.IsChecked == true)
-            {
-                SetRawDebugToggle(false);
-            }
+            RawDebugStatusText.Text = !uploadAllowed
+                ? $"Saved {eventArgs.SampleCount:N0} frames locally · telemetry upload is disabled"
+                : queued
+                    ? $"Saved {eventArgs.SampleCount:N0} frames locally · queued for secure upload"
+                    : $"Saved {eventArgs.SampleCount:N0} frames locally · upload unavailable · {eventArgs.Path}";
         }));
+    }
+
+    private TelemetryUploadClient EnsureTelemetryUploadClient()
+    {
+        if (_telemetryUploadClient != null)
+        {
+            return _telemetryUploadClient;
+        }
+
+        var client = new TelemetryUploadClient(_rawCaptureRepository.RootPath);
+        client.StatusChanged += OnTelemetryUploadStatusChanged;
+        _telemetryUploadClient = client;
+        return client;
     }
 
     private void OnTelemetryUploadStatusChanged(object? sender, TelemetryUploadStatusEventArgs eventArgs)
@@ -855,8 +885,12 @@ public partial class MainWindow : Window
         }
 
         StopRawCaptureSession();
-        _telemetryUploadClient.StatusChanged -= OnTelemetryUploadStatusChanged;
-        _telemetryUploadClient.Dispose();
+        if (_telemetryUploadClient != null)
+        {
+            _telemetryUploadClient.StatusChanged -= OnTelemetryUploadStatusChanged;
+            _telemetryUploadClient.Dispose();
+            _telemetryUploadClient = null;
+        }
 
         if (_messageSource != null)
         {

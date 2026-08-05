@@ -6,6 +6,10 @@ from contextlib import contextmanager
 from pathlib import Path
 
 
+class InstallationRegistryFullError(RuntimeError):
+    pass
+
+
 class Store:
     def __init__(self, root: Path):
         self.root = root
@@ -32,12 +36,6 @@ class Store:
                     status TEXT NOT NULL CHECK(status IN ('active', 'revoked')),
                     created_at INTEGER NOT NULL,
                     last_seen INTEGER NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS invite_codes (
-                    code_hash TEXT PRIMARY KEY,
-                    created_at INTEGER NOT NULL,
-                    used_at INTEGER,
-                    used_by TEXT
                 );
                 CREATE TABLE IF NOT EXISTS nonces (
                     install_id TEXT NOT NULL,
@@ -77,10 +75,12 @@ class Store:
             )
 
     @contextmanager
-    def connect(self):
+    def connect(self, *, immediate: bool = False):
         connection = sqlite3.connect(str(self.database_path), timeout=10)
         connection.row_factory = sqlite3.Row
         try:
+            if immediate:
+                connection.execute("BEGIN IMMEDIATE")
             yield connection
             connection.commit()
         except Exception:
@@ -92,26 +92,21 @@ class Store:
     def rate_limit(self, scope: str, subject: str, seconds: int, maximum: int) -> bool:
         now = int(time.time())
         window = now - (now % seconds)
-        with self.connect() as connection:
+        with self.connect(immediate=True) as connection:
             connection.execute(
                 "DELETE FROM rate_limits WHERE window_start < ?", (now - max(seconds * 3, 3600),)
             )
-            row = connection.execute(
-                "SELECT count FROM rate_limits WHERE scope=? AND subject=? AND window_start=?",
-                (scope, subject, window),
-            ).fetchone()
-            if row is not None and row["count"] >= maximum:
-                return False
-            connection.execute(
+            cursor = connection.execute(
                 """
                 INSERT INTO rate_limits(scope, subject, window_start, count)
                 VALUES(?, ?, ?, 1)
                 ON CONFLICT(scope, subject, window_start)
                 DO UPDATE SET count=count+1
+                WHERE count < ?
                 """,
-                (scope, subject, window),
+                (scope, subject, window, maximum),
             )
-            return True
+            return cursor.rowcount == 1
 
     def use_nonce(self, install_id: str, nonce: str) -> bool:
         now = int(time.time())
@@ -165,9 +160,18 @@ class Store:
                 "SELECT * FROM installations WHERE install_id=?", (install_id,)
             ).fetchone()
 
-    def enroll(self, install_id: str, modulus: str, exponent: str, invite_hash: str | None) -> None:
+    def enroll(
+        self,
+        install_id: str,
+        modulus: str,
+        exponent: str,
+        *,
+        maximum_installations: int = 100_000,
+        idle_retention_days: int = 30,
+    ) -> bool:
+        """Atomically refresh or add an identity without exceeding the registry cap."""
         now = int(time.time())
-        with self.connect() as connection:
+        with self.connect(immediate=True) as connection:
             existing = connection.execute(
                 "SELECT modulus, exponent, status FROM installations WHERE install_id=?", (install_id,)
             ).fetchone()
@@ -179,20 +183,12 @@ class Store:
                 connection.execute(
                     "UPDATE installations SET last_seen=? WHERE install_id=?", (now, install_id)
                 )
-                return
+                return False
 
-            if invite_hash is not None:
-                invite = connection.execute(
-                    "SELECT used_at FROM invite_codes WHERE code_hash=?", (invite_hash,)
-                ).fetchone()
-                if invite is None or invite["used_at"] is not None:
-                    raise PermissionError("invitation code is invalid or already used")
-                connection.execute(
-                    "UPDATE invite_codes SET used_at=?, used_by=? WHERE code_hash=? AND used_at IS NULL",
-                    (now, install_id, invite_hash),
-                )
-                if connection.total_changes != 1:
-                    raise PermissionError("invitation code was consumed concurrently")
+            self._prune_installations(connection, now - idle_retention_days * 86400)
+            count = connection.execute("SELECT COUNT(*) FROM installations").fetchone()[0]
+            if count >= maximum_installations:
+                raise InstallationRegistryFullError("installation registry capacity is active")
 
             connection.execute(
                 """
@@ -201,13 +197,33 @@ class Store:
                 """,
                 (install_id, modulus, exponent, now, now),
             )
+            return True
 
-    def add_invite(self, code_hash: str) -> None:
-        with self.connect() as connection:
-            connection.execute(
-                "INSERT INTO invite_codes(code_hash, created_at) VALUES(?, ?)",
-                (code_hash, int(time.time())),
-            )
+    def prune_installations(self, idle_retention_days: int) -> int:
+        cutoff = int(time.time()) - idle_retention_days * 86400
+        with self.connect(immediate=True) as connection:
+            return self._prune_installations(connection, cutoff)
+
+    @staticmethod
+    def _prune_installations(connection: sqlite3.Connection, cutoff: int) -> int:
+        stale = """
+            SELECT install_id
+            FROM installations
+            WHERE status='active'
+              AND last_seen < ?
+              AND NOT EXISTS (
+                  SELECT 1 FROM captures WHERE captures.install_id=installations.install_id
+              )
+        """
+        connection.execute(
+            f"DELETE FROM nonces WHERE install_id IN ({stale})",
+            (cutoff,),
+        )
+        cursor = connection.execute(
+            f"DELETE FROM installations WHERE install_id IN ({stale})",
+            (cutoff,),
+        )
+        return cursor.rowcount
 
     def capture_by_hash(self, sha256: str):
         with self.connect() as connection:

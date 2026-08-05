@@ -17,17 +17,16 @@ from .security import (
     address_key,
     canonical_capture,
     canonical_enrollment,
-    hash_invite,
     parse_utc,
     public_key,
     verify_signature,
 )
-from .store import Store
+from .store import InstallationRegistryFullError, Store
 from .validation import validate_capture
 
 
 DATA_ROOT = Path(os.environ.get("DATA_ROOT", "/data"))
-REGISTRATION_MODE = os.environ.get("REGISTRATION_MODE", "invite").strip().lower()
+REGISTRATION_MODE = "open"
 MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_BYTES", str(16 * 1024 * 1024)))
 MAX_UNCOMPRESSED_BYTES = int(os.environ.get("MAX_UNCOMPRESSED_BYTES", str(64 * 1024 * 1024)))
 STORAGE_QUOTA_BYTES = int(os.environ.get("STORAGE_QUOTA_BYTES", str(20 * 1024 * 1024 * 1024)))
@@ -40,14 +39,23 @@ DAILY_GLOBAL_ATTEMPT_QUOTA_BYTES = int(
 )
 MINIMUM_FREE_BYTES = int(os.environ.get("MINIMUM_FREE_BYTES", str(2 * 1024 * 1024 * 1024)))
 RETENTION_DAYS = int(os.environ.get("RETENTION_DAYS", "30"))
+GLOBAL_ENROLLMENTS_PER_HOUR = int(os.environ.get("GLOBAL_ENROLLMENTS_PER_HOUR", "1000"))
+MAX_INSTALLATIONS = int(os.environ.get("MAX_INSTALLATIONS", "100000"))
+UNREFERENCED_INSTALLATION_RETENTION_DAYS = int(
+    os.environ.get("UNREFERENCED_INSTALLATION_RETENTION_DAYS", "30")
+)
 PEPPER_PATH = Path(os.environ.get("SERVER_PEPPER_FILE", "/run/secrets/server_pepper"))
 EXPECTED_HEADER = (Path(__file__).parent.parent / "schema-v5.header").read_text(encoding="utf-8").strip()
 STORE = Store(DATA_ROOT)
 
-if REGISTRATION_MODE not in {"invite", "open"}:
-    raise RuntimeError("REGISTRATION_MODE must be invite or open")
 if not 1024 * 1024 <= MAX_UPLOAD_BYTES <= 64 * 1024 * 1024:
     raise RuntimeError("MAX_UPLOAD_BYTES is outside policy")
+if not 1 <= GLOBAL_ENROLLMENTS_PER_HOUR <= 10000:
+    raise RuntimeError("GLOBAL_ENROLLMENTS_PER_HOUR is outside policy")
+if not 1000 <= MAX_INSTALLATIONS <= 1_000_000:
+    raise RuntimeError("MAX_INSTALLATIONS is outside policy")
+if not 1 <= UNREFERENCED_INSTALLATION_RETENTION_DAYS <= 365:
+    raise RuntimeError("UNREFERENCED_INSTALLATION_RETENTION_DAYS is outside policy")
 
 SERVER_PEPPER = PEPPER_PATH.read_bytes().strip()
 if len(SERVER_PEPPER) < 32:
@@ -68,7 +76,6 @@ class EnrollmentRequest(BaseModel):
     public_modulus: str = Field(min_length=300, max_length=1024)
     public_exponent: str = Field(min_length=4, max_length=16)
     signature: str = Field(min_length=300, max_length=1024)
-    invite_code: str | None = Field(default=None, max_length=160)
 
 
 @app.middleware("http")
@@ -103,6 +110,7 @@ def _fresh_timestamp(value: str) -> None:
 def startup() -> None:
     STORE.initialize()
     STORE.prune(RETENTION_DAYS, STORAGE_QUOTA_BYTES)
+    STORE.prune_installations(UNREFERENCED_INSTALLATION_RETENTION_DAYS)
 
 
 @app.get("/health")
@@ -125,6 +133,8 @@ def enroll(payload: EnrollmentRequest, request: Request, response: Response) -> 
     source_hash = address_key(SERVER_PEPPER, _source_address(request))
     if not STORE.rate_limit("enroll-ip-hour", source_hash, 3600, 10):
         raise HTTPException(status_code=429, detail="enrollment rate limit exceeded")
+    if not STORE.rate_limit("enroll-global-hour", "global", 3600, GLOBAL_ENROLLMENTS_PER_HOUR):
+        raise HTTPException(status_code=429, detail="global enrollment rate limit exceeded")
     was_enrolled = STORE.installation(payload.install_id) is not None
     try:
         if not INSTALL_ID_RE.fullmatch(payload.install_id):
@@ -144,17 +154,22 @@ def enroll(payload: EnrollmentRequest, request: Request, response: Response) -> 
             ),
             payload.signature,
         )
-        invite_hash = None
-        if REGISTRATION_MODE == "invite":
-            if not payload.invite_code:
-                raise PermissionError("an invitation code is required")
-            invite_hash = hash_invite(payload.invite_code)
-        STORE.enroll(payload.install_id, payload.public_modulus, payload.public_exponent, invite_hash)
+        if not was_enrolled and shutil.disk_usage(DATA_ROOT).free < MINIMUM_FREE_BYTES:
+            raise HTTPException(status_code=507, detail="telemetry storage reserve is active")
+        created = STORE.enroll(
+            payload.install_id,
+            payload.public_modulus,
+            payload.public_exponent,
+            maximum_installations=MAX_INSTALLATIONS,
+            idle_retention_days=UNREFERENCED_INSTALLATION_RETENTION_DAYS,
+        )
+    except InstallationRegistryFullError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    response.status_code = status.HTTP_200_OK if was_enrolled else status.HTTP_201_CREATED
+    response.status_code = status.HTTP_201_CREATED if created else status.HTTP_200_OK
     return {"status": "enrolled", "install_id": payload.install_id}
 
 
