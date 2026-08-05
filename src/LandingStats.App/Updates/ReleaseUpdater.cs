@@ -61,14 +61,14 @@ internal sealed class ReleaseUpdater : IDisposable
         {
             var manifestBytes = await Protocol.DownloadSmallAsync(
                 _client,
-                Protocol.LatestReleaseRoot + Protocol.ManifestName,
-                Protocol.ManifestName,
+                Protocol.LatestReleaseRoot + Protocol.ChannelManifestName,
+                Protocol.ChannelManifestName,
                 16 * 1024,
                 cancellationToken).ConfigureAwait(false);
             var signature = Encoding.ASCII.GetString(await Protocol.DownloadSmallAsync(
                 _client,
-                Protocol.LatestReleaseRoot + Protocol.SignatureName,
-                Protocol.SignatureName,
+                Protocol.LatestReleaseRoot + Protocol.ChannelSignatureName,
+                Protocol.ChannelSignatureName,
                 8 * 1024,
                 cancellationToken).ConfigureAwait(false));
             var manifest = Protocol.VerifyAndParse(manifestBytes, signature);
@@ -109,6 +109,8 @@ internal sealed class ReleaseUpdater : IDisposable
                 $"{manifest.Version.Major}.{manifest.Version.Minor}.{manifest.Version.Build}",
                 "--ready-event",
                 readyEventName,
+                "--manifest",
+                Protocol.ChannelManifestName,
             });
             using var readyEvent = new EventWaitHandle(false, EventResetMode.ManualReset, readyEventName);
             using var started = Process.Start(new ProcessStartInfo

@@ -44,6 +44,7 @@ internal static class Program
         Run("updater accepts a signed manifest and rejects tampering", UpdaterVerifiesSignedManifest);
         Run("updater accepts the issued format-2 manifest shape", UpdaterAcceptsIssuedManifestShape);
         Run("updater accepts the format-3 single executable manifest shape", UpdaterAcceptsSingleExecutableManifestShape);
+        Run("updater preserves bridge and current manifest channels", UpdaterPreservesManifestChannels);
         Run("updater extracts only one bundled executable from legacy package", UpdaterExtractsLegacySingleExecutable);
         Run("updater cleanup refuses paths outside its private root", UpdaterCleanupRefusesUnsafePath);
         Run("updater installs one valid executable transactionally", UpdaterInstallsSingleExecutable);
@@ -235,10 +236,13 @@ internal static class Program
     {
         const string manifest = "format=2\nversion=0.7.1\npackage=MSFS-Landing-Stats.zip\npackage-size=1\npackage-sha256=0000000000000000000000000000000000000000000000000000000000000000\nupdater=MSFS-Landing-Stats.Updater.exe\nupdater-size=1\nupdater-sha256=1111111111111111111111111111111111111111111111111111111111111111\n";
         const string signature = "c7UOGSyNQQxx5454aO2GCoPkhosnnvRrN9G0T3d8T1ZtRr2tK9lEHtCrF5iIS0zhSsQMwPctBKhnSBlajnMakvSbttgLQTrlV72eWO4JWB/gCciFZIs9uJYmTQxHaALJAdAiKP8huIdXgaeEENJvHQDSvcfv395T/ydSRKL4BFuKqnksCf7GrjUNuoGAnInmRG15NqdxvdsFkMYnenhOABM2G/NJ1ECRZ9LHB5fPUoEBHHYBzSROO6glbHQhW4tU8JR/X03acQ2WpZk57ty3fsBClkju4HO0FHAd6j2Huy/Szzj867MJMHuICRjVzUfkR7L+qnMTSdlWYsbLQSO7WLqYD0EmZ6i7T7axQrsqm3vt6Js6P+HWmtYntvOskgmlsPkiRxV+kdBEF9GkIiNuB4ox/9sW6yxBYvPli7z1qUXVXWZ86P39hlKiwJ8iCdi3/ipF5DV1VYnCMRmqTQsKnEs4a2eQvYMa1+tm4sf7HZXVbGPovwxAuvHo8oeuIb8U";
-        using (var updater = new ReleaseUpdater(new UpdateFixtureHandler(manifest, signature)))
+        var signedHandler = new UpdateFixtureHandler(manifest, signature);
+        using (var updater = new ReleaseUpdater(signedHandler))
         {
             var result = updater.CheckAndInstallAsync(new Version(0, 7, 1), CancellationToken.None).GetAwaiter().GetResult();
             Equal(ReleaseUpdateState.Current, result.State, "signed manifest state");
+            Equal(true, signedHandler.RequestPaths.Any(path => path.EndsWith("/update-channel.txt", StringComparison.Ordinal)), "current channel manifest request");
+            Equal(true, signedHandler.RequestPaths.Any(path => path.EndsWith("/update-channel.sig", StringComparison.Ordinal)), "current channel signature request");
         }
         using (var updater = new ReleaseUpdater(new UpdateFixtureHandler(manifest.Replace("0.7.1", "9.9.9"), signature)))
         {
@@ -321,6 +325,46 @@ internal static class Program
         var parsed = parse.Invoke(null, new object[] { new UTF8Encoding(false).GetBytes(manifest) })!;
         var packageAsset = parsed.GetType().GetProperty("PackageAsset")!.GetValue(parsed) as string;
         Equal("MSFS-Landing-Stats.zip", packageAsset, "format-2 package asset");
+    }
+
+    private static void UpdaterPreservesManifestChannels()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "landing-stats-update-channel-test-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            Directory.CreateDirectory(root);
+            var target = Path.Combine(root, "MSFS-Landing-Stats.exe");
+            File.WriteAllText(target, "fixture");
+            var readyEventName = "Local\\MSFSLandingStatsUpdate-" + Guid.NewGuid().ToString("N");
+            var parse = typeof(UpdaterProgram).GetMethod("ParseInvocation", BindingFlags.Static | BindingFlags.NonPublic)!;
+            var common = new[]
+            {
+                "--apply", "--parent-pid", "1", "--target", target,
+                "--version", "0.7.6", "--ready-event", readyEventName,
+            };
+
+            var bridge = parse.Invoke(null, new object[] { common })!;
+            Equal("update-manifest.txt", bridge.GetType().GetProperty("ManifestName")!.GetValue(bridge), "legacy bridge manifest default");
+
+            var channelArgs = common.Concat(new[] { "--manifest", "update-channel.txt" }).ToArray();
+            var current = parse.Invoke(null, new object[] { channelArgs })!;
+            Equal("update-channel.txt", current.GetType().GetProperty("ManifestName")!.GetValue(current), "current manifest channel");
+
+            var rejected = false;
+            try
+            {
+                parse.Invoke(null, new object[] { common.Concat(new[] { "--manifest", "evil.txt" }).ToArray() });
+            }
+            catch (TargetInvocationException exception) when (exception.InnerException is InvalidDataException)
+            {
+                rejected = true;
+            }
+            Equal(true, rejected, "unknown manifest channel rejected");
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
     }
 
     private static void UpdaterExtractsLegacySingleExecutable()
@@ -1687,6 +1731,8 @@ internal static class Program
         private readonly byte[] _manifest;
         private readonly byte[] _signature;
 
+        public List<string> RequestPaths { get; } = new List<string>();
+
         public UpdateFixtureHandler(string manifest, string signature)
         {
             _manifest = Encoding.UTF8.GetBytes(manifest);
@@ -1697,7 +1743,8 @@ internal static class Program
             HttpRequestMessage request,
             CancellationToken cancellationToken)
         {
-            var bytes = request.RequestUri!.AbsolutePath.EndsWith("update-manifest.sig", StringComparison.Ordinal)
+            RequestPaths.Add(request.RequestUri!.AbsolutePath);
+            var bytes = request.RequestUri.AbsolutePath.EndsWith(".sig", StringComparison.Ordinal)
                 ? _signature
                 : _manifest;
             return System.Threading.Tasks.Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)

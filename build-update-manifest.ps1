@@ -1,34 +1,34 @@
 param(
-    [string]$ArtifactsDirectory = (Join-Path $PSScriptRoot "artifacts")
+    [string]$ArtifactsDirectory = (Join-Path $PSScriptRoot "artifacts"),
+    [Version]$BridgeVersion = [Version]"0.7.6"
 )
 
 $ErrorActionPreference = "Stop"
 
 $artifacts = [IO.Path]::GetFullPath($ArtifactsDirectory)
-$packagePath = Join-Path $artifacts "MSFS-Landing-Stats.zip"
-$publicExecutablePath = Join-Path $artifacts "MSFS-Landing-Stats.exe"
+$packagePath = Join-Path $artifacts "MSFS-Landing-Stats.exe"
 $updaterPath = Join-Path $artifacts "MSFS-Landing-Stats.Updater.exe"
-$manifestPath = Join-Path $artifacts "update-manifest.txt"
+$channelManifestPath = Join-Path $artifacts "update-channel.txt"
+$bridgeManifestPath = Join-Path $artifacts "update-manifest.txt"
 
-foreach ($path in @($packagePath, $publicExecutablePath, $updaterPath)) {
+foreach ($path in @($packagePath, $updaterPath)) {
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
         throw "Release artifact is missing: $path"
     }
 }
 
 $assemblyVersion = [Reflection.AssemblyName]::GetAssemblyName($updaterPath).Version
-$version = "$($assemblyVersion.Major).$($assemblyVersion.Minor).$($assemblyVersion.Build)"
+$version = [Version]::new($assemblyVersion.Major, $assemblyVersion.Minor, $assemblyVersion.Build)
+$versionText = "$($version.Major).$($version.Minor).$($version.Build)"
 $package = Get-Item -LiteralPath $packagePath
 $updater = Get-Item -LiteralPath $updaterPath
 $packageSha256 = (Get-FileHash -LiteralPath $packagePath -Algorithm SHA256).Hash.ToLowerInvariant()
 $updaterSha256 = (Get-FileHash -LiteralPath $updaterPath -Algorithm SHA256).Hash.ToLowerInvariant()
 
-# `latest` must remain consumable by every issued updater. v0.7.3 accepts only
-# this exact format-2 shape; future protocols must be additional assets.
 $manifest = @(
-    "format=2"
-    "version=$version"
-    "package=MSFS-Landing-Stats.zip"
+    "format=3"
+    "version=$versionText"
+    "package=MSFS-Landing-Stats.exe"
     "package-size=$($package.Length)"
     "package-sha256=$packageSha256"
     "updater=MSFS-Landing-Stats.Updater.exe"
@@ -36,12 +36,22 @@ $manifest = @(
     "updater-sha256=$updaterSha256"
 ) -join "`n"
 $manifest += "`n"
-[IO.File]::WriteAllBytes($manifestPath, [Text.UTF8Encoding]::new($false).GetBytes($manifest))
+[IO.File]::WriteAllBytes($channelManifestPath, [Text.UTF8Encoding]::new($false).GetBytes($manifest))
 
 & (Join-Path $PSScriptRoot "verify-issued-update-compatibility.ps1") `
-    -ManifestPath $manifestPath `
+    -ManifestPath $channelManifestPath `
     -PackagePath $packagePath `
-    -PublicExecutablePath $publicExecutablePath `
-    -UpdaterPath $updaterPath
+    -UpdaterPath $updaterPath `
+    -ExpectedVersion $versionText
 
-Write-Host "Unsigned update manifest: $manifestPath"
+if ($version -eq $BridgeVersion) {
+    [IO.File]::WriteAllBytes($bridgeManifestPath, [IO.File]::ReadAllBytes($channelManifestPath))
+}
+elseif (Test-Path -LiteralPath $bridgeManifestPath) {
+    Remove-Item -LiteralPath $bridgeManifestPath -Force
+}
+
+Write-Host "Unsigned current-channel manifest: $channelManifestPath"
+if ($version -eq $BridgeVersion) {
+    Write-Host "Unsigned bootstrap bridge manifest: $bridgeManifestPath"
+}

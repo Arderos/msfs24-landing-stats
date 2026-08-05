@@ -1,27 +1,49 @@
 # Update compatibility contract
 
-`releases/latest/download/update-manifest.txt` is a permanent compatibility
-surface, not an implementation detail. Every issued v0.7.x client must be able
-to consume it without reinstalling, clearing a runtime cache, or replacing its
-original executable.
+The update path has two signed stages:
 
-The oldest issued v0.7.3 verifier accepts exactly:
+1. `releases/latest/download/update-manifest.txt` is the immutable bootstrap
+   channel. It always describes v0.7.6, the first bridge client that understands
+   the permanent current-release channel.
+2. `releases/latest/download/update-channel.txt` is the moving channel. It
+   describes the newest supported release.
 
-- manifest `format=2` with eight ordered fields;
-- package name `MSFS-Landing-Stats.zip`;
-- updater name `MSFS-Landing-Stats.Updater.exe`;
-- the original release-signing public key and GitHub-hosted HTTPS downloads.
+This gives every issued client a durable route to the newest version:
 
-The ZIP is transport-only. It contains exactly one root-level
-`MSFS-Landing-Stats.exe`, byte-for-byte identical to the public one-file
-download. Users still download only `MSFS-Landing-Stats.exe`.
+```text
+v0.7.5 -> v0.7.6 bridge -> current release
+```
 
-`build-update-manifest.ps1` creates this lowest-common-denominator manifest.
-`verify-issued-update-compatibility.ps1` reproduces the issued parser's strict
-shape checks and also binds the manifest to the package, updater, public EXE,
-and their assembly versions. `build-app.ps1` runs the check on every build, so a
-protocol-breaking release fails before it can be tagged or published.
+v0.7.5 reads the bootstrap manifest. It downloads the signed v0.7.6 updater
+from the immutable `v0.7.6` release and invokes it using the legacy argument
+shape. The v0.7.6 updater therefore defaults to `update-manifest.txt`, verifies
+the versioned bridge manifest again, installs v0.7.6, and restarts it.
 
-New update protocols may be introduced only as parallel assets until every
-already-issued client has a proven migration path. They must not replace the
-format-2 `latest` contract.
+v0.7.6 and later read `update-channel.txt`. They explicitly pass that fixed
+manifest name to the updater, which verifies the same channel manifest again
+from the immutable versioned release before installing the current executable.
+No arbitrary manifest name is accepted.
+
+Both manifests use format 3 and authorize one `MSFS-Landing-Stats.exe` plus one
+`MSFS-Landing-Stats.Updater.exe` by exact filename, size, and SHA-256. The
+manifest signature is verified with the public key embedded in both the client
+and updater. ZIP transport is no longer part of the release protocol.
+
+## Release gate
+
+`verify-update-chain.ps1` is mandatory for every tagged release after v0.7.5.
+It refuses publication unless:
+
+- the bootstrap manifest has a valid signature and describes the exact v0.7.6
+  bridge files;
+- the channel manifest has a valid signature and describes the exact files and
+  version being released;
+- both use the strict format-3 shape;
+- the current version is not older than the bridge;
+- on v0.7.6, bootstrap and channel manifests are byte-identical.
+
+For v0.7.7 and later, CI downloads the already signed bootstrap manifest and
+its exact authorized files from the `v0.7.6` release, verifies them, and then
+publishes the unchanged bootstrap manifest beside the newly signed channel
+manifest. A future release therefore cannot silently move or remove the bridge
+without failing before `gh release create` is reached.

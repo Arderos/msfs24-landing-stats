@@ -102,15 +102,19 @@ jobs:
         run: |
           & .\tests\LandingStats.App.RegressionTests\bin\Release\net48\LandingStats.App.RegressionTests.exe
 
+      - name: Run update compatibility gate tests
+        shell: pwsh
+        run: |
+          & .\tests\UpdateCompatibility.Tests.ps1 -ArtifactsDirectory .\artifacts
+
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
           name: MSFS-Landing-Stats
           path: |
             artifacts/MSFS-Landing-Stats.exe
-            artifacts/MSFS-Landing-Stats.zip
             artifacts/MSFS-Landing-Stats.Updater.exe
-            artifacts/update-manifest.txt
+            artifacts/update-channel.txt
           if-no-files-found: error
 
       - name: Publish tagged release
@@ -125,21 +129,21 @@ jobs:
             throw "RELEASE_SIGNING_KEY_PKCS8_B64 is not configured. Refusing to publish an unsigned update."
           }
 
-          $packagePath = Join-Path $env:GITHUB_WORKSPACE 'artifacts\MSFS-Landing-Stats.zip'
+          $packagePath = Join-Path $env:GITHUB_WORKSPACE 'artifacts\MSFS-Landing-Stats.exe'
           $updaterPath = Join-Path $env:GITHUB_WORKSPACE 'artifacts\MSFS-Landing-Stats.Updater.exe'
           $assemblyVersion = [Reflection.AssemblyName]::GetAssemblyName($updaterPath).Version
           $builtVersion = "$($assemblyVersion.Major).$($assemblyVersion.Minor).$($assemblyVersion.Build)"
           if ($version -cne $builtVersion) {
             throw "Tag version $version does not match built updater version $builtVersion."
           }
-          $manifestPath = Join-Path $env:GITHUB_WORKSPACE 'artifacts\update-manifest.txt'
-          $signaturePath = Join-Path $env:GITHUB_WORKSPACE 'artifacts\update-manifest.sig'
+          $channelManifestPath = Join-Path $env:GITHUB_WORKSPACE 'artifacts\update-channel.txt'
+          $channelSignaturePath = Join-Path $env:GITHUB_WORKSPACE 'artifacts\update-channel.sig'
           .\verify-issued-update-compatibility.ps1 `
-            -ManifestPath $manifestPath `
+            -ManifestPath $channelManifestPath `
             -PackagePath $packagePath `
-            -PublicExecutablePath (Join-Path $env:GITHUB_WORKSPACE 'artifacts\MSFS-Landing-Stats.exe') `
-            -UpdaterPath $updaterPath
-          $manifestBytes = [IO.File]::ReadAllBytes($manifestPath)
+            -UpdaterPath $updaterPath `
+            -ExpectedVersion $version
+          $manifestBytes = [IO.File]::ReadAllBytes($channelManifestPath)
 
           $privateKey = [Convert]::FromBase64String($env:RELEASE_SIGNING_KEY_PKCS8_B64)
           $rsa = [Security.Cryptography.RSA]::Create()
@@ -154,7 +158,7 @@ jobs:
               [Security.Cryptography.HashAlgorithmName]::SHA256,
               [Security.Cryptography.RSASignaturePadding]::Pkcs1)
             [IO.File]::WriteAllText(
-              $signaturePath,
+              $channelSignaturePath,
               [Convert]::ToBase64String($signature) + "`n",
               [Text.UTF8Encoding]::new($false))
           }
@@ -163,9 +167,41 @@ jobs:
             [Array]::Clear($privateKey, 0, $privateKey.Length)
           }
 
+          $bridgeVersion = '0.7.6'
+          $bridgeManifestPath = Join-Path $env:GITHUB_WORKSPACE 'artifacts\update-manifest.txt'
+          $bridgeSignaturePath = Join-Path $env:GITHUB_WORKSPACE 'artifacts\update-manifest.sig'
+          if ($version -ceq $bridgeVersion) {
+            Copy-Item -LiteralPath $channelManifestPath -Destination $bridgeManifestPath -Force
+            Copy-Item -LiteralPath $channelSignaturePath -Destination $bridgeSignaturePath -Force
+            $bridgePackagePath = $packagePath
+            $bridgeUpdaterPath = $updaterPath
+          }
+          else {
+            $bridgeDirectory = Join-Path $env:RUNNER_TEMP 'msfs-landing-stats-v0.7.6-bridge'
+            New-Item -ItemType Directory -Path $bridgeDirectory -Force | Out-Null
+            $bridgeRoot = 'https://github.com/Arderos/msfs24-landing-stats/releases/download/v0.7.6/'
+            $bridgePackagePath = Join-Path $bridgeDirectory 'MSFS-Landing-Stats.exe'
+            $bridgeUpdaterPath = Join-Path $bridgeDirectory 'MSFS-Landing-Stats.Updater.exe'
+            Invoke-WebRequest -Uri ($bridgeRoot + 'update-manifest.txt') -OutFile $bridgeManifestPath
+            Invoke-WebRequest -Uri ($bridgeRoot + 'update-manifest.sig') -OutFile $bridgeSignaturePath
+            Invoke-WebRequest -Uri ($bridgeRoot + 'MSFS-Landing-Stats.exe') -OutFile $bridgePackagePath
+            Invoke-WebRequest -Uri ($bridgeRoot + 'MSFS-Landing-Stats.Updater.exe') -OutFile $bridgeUpdaterPath
+          }
+
+          .\verify-update-chain.ps1 `
+            -BridgeManifestPath $bridgeManifestPath `
+            -BridgeSignaturePath $bridgeSignaturePath `
+            -BridgePackagePath $bridgePackagePath `
+            -BridgeUpdaterPath $bridgeUpdaterPath `
+            -ChannelManifestPath $channelManifestPath `
+            -ChannelSignaturePath $channelSignaturePath `
+            -ChannelPackagePath $packagePath `
+            -ChannelUpdaterPath $updaterPath `
+            -ExpectedCurrentVersion $version
+
           $changelog = Get-Content -LiteralPath CHANGELOG.md -Raw
           $escapedVersion = [Regex]::Escape($version)
-          $pattern = if ($version -ceq '0.7.5') {
+          $pattern = if ($version -ceq '0.7.6') {
             "(?ms)^## \[$escapedVersion\][^\r\n]*\r?\n(?<body>.*)\z"
           } else {
             "(?ms)^## \[$escapedVersion\][^\r\n]*\r?\n(?<body>.*?)(?=^## \[|\z)"
@@ -179,8 +215,9 @@ jobs:
           $match.Groups['body'].Value.Trim() | Set-Content -LiteralPath $notesPath -Encoding utf8
           gh release create $env:GITHUB_REF_NAME `
             artifacts/MSFS-Landing-Stats.exe `
-            artifacts/MSFS-Landing-Stats.zip `
             artifacts/MSFS-Landing-Stats.Updater.exe `
             artifacts/update-manifest.txt `
             artifacts/update-manifest.sig `
+            artifacts/update-channel.txt `
+            artifacts/update-channel.sig `
             --notes-file $notesPath

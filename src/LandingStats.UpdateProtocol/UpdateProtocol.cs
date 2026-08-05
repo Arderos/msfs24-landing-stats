@@ -45,6 +45,8 @@ internal static class ReleaseUpdateProtocol
     public const string LatestReleaseRoot = "https://github.com/Arderos/msfs24-landing-stats/releases/latest/download/";
     public const string ManifestName = "update-manifest.txt";
     public const string SignatureName = "update-manifest.sig";
+    public const string ChannelManifestName = "update-channel.txt";
+    public const string ChannelSignatureName = "update-channel.sig";
     public const string PackageAssetName = "MSFS-Landing-Stats.exe";
     public const string LegacyPackageAssetName = "MSFS-Landing-Stats.zip";
     public const string UpdaterAssetName = "MSFS-Landing-Stats.Updater.exe";
