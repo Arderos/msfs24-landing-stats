@@ -162,6 +162,8 @@ if ($appVersion.Major -ne $singleFileVersion.Major -or
     throw "Application and updater versions do not match."
 }
 
+& (Join-Path $repositoryRoot "build-update-manifest.ps1") -ArtifactsDirectory $artifactsDirectory
+
 $singleFileHash = (Get-FileHash -LiteralPath $singleFilePath -Algorithm SHA256).Hash.ToLowerInvariant()
 $singleFileSize = (Get-Item -LiteralPath $singleFilePath).Length
 $updaterHash = (Get-FileHash -LiteralPath $updaterArtifactPath -Algorithm SHA256).Hash.ToLowerInvariant()
