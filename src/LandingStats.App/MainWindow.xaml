@@ -59,6 +59,150 @@
             <Setter Property="FontSize" Value="11" />
             <Setter Property="LineHeight" Value="16" />
         </Style>
+        <Style x:Key="HistoryDeleteButtonStyle" TargetType="{x:Type Button}">
+            <Setter Property="Width" Value="28" />
+            <Setter Property="Height" Value="28" />
+            <Setter Property="Foreground" Value="{StaticResource SubtleTextBrush}" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Visibility" Value="Collapsed" />
+            <Setter Property="Focusable" Value="False" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type Button}">
+                        <Border x:Name="Chrome" Background="{TemplateBinding Background}" CornerRadius="5">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Chrome" Property="Background" Value="{StaticResource DangerSoftBrush}" />
+                                <Setter Property="Foreground" Value="{StaticResource DangerBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="Chrome" Property="Background" Value="#5A241A" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding IsMouseOver, RelativeSource={RelativeSource AncestorType={x:Type ListBoxItem}}}" Value="True">
+                    <Setter Property="Visibility" Value="Visible" />
+                </DataTrigger>
+            </Style.Triggers>
+        </Style>
+        <Style x:Key="DangerButtonStyle" TargetType="{x:Type Button}">
+            <Setter Property="Foreground" Value="#FFD8CF" />
+            <Setter Property="Background" Value="#4A1812" />
+            <Setter Property="BorderBrush" Value="{StaticResource DangerBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Padding" Value="18,8" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="FontSize" Value="11" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type Button}">
+                        <Border x:Name="Chrome"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="7"
+                                Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Chrome" Property="Background" Value="#672219" />
+                                <Setter Property="Foreground" Value="White" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="Chrome" Property="Background" Value="#7A281C" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Opacity" Value="0.5" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <Style x:Key="HistoryScrollBarStyle" TargetType="{x:Type ScrollBar}">
+            <Setter Property="Width" Value="11" />
+            <Setter Property="MinWidth" Value="11" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type ScrollBar}">
+                        <Grid Background="Transparent" SnapsToDevicePixels="True">
+                            <Border x:Name="Rail"
+                                    Width="1"
+                                    Margin="0,5"
+                                    HorizontalAlignment="Center"
+                                    Background="{StaticResource BorderBrush}" />
+                            <Track x:Name="PART_Track"
+                                   Margin="0,5"
+                                   IsDirectionReversed="True"
+                                   Focusable="False">
+                                <Track.DecreaseRepeatButton>
+                                    <RepeatButton Command="{x:Static ScrollBar.PageUpCommand}"
+                                                  Focusable="False">
+                                        <RepeatButton.Template>
+                                            <ControlTemplate TargetType="{x:Type RepeatButton}">
+                                                <Border Background="Transparent" />
+                                            </ControlTemplate>
+                                        </RepeatButton.Template>
+                                    </RepeatButton>
+                                </Track.DecreaseRepeatButton>
+                                <Track.Thumb>
+                                    <Thumb MinHeight="24" Cursor="SizeNS">
+                                        <Thumb.Template>
+                                            <ControlTemplate TargetType="{x:Type Thumb}">
+                                                <Grid Background="Transparent">
+                                                    <Border x:Name="Grip"
+                                                            Width="2"
+                                                            HorizontalAlignment="Center"
+                                                            Background="{StaticResource AccentBrush}"
+                                                            CornerRadius="1" />
+                                                </Grid>
+                                                <ControlTemplate.Triggers>
+                                                    <Trigger Property="IsMouseOver" Value="True">
+                                                        <Setter TargetName="Grip" Property="Width" Value="4" />
+                                                    </Trigger>
+                                                    <Trigger Property="IsDragging" Value="True">
+                                                        <Setter TargetName="Grip" Property="Width" Value="4" />
+                                                        <Setter TargetName="Grip" Property="Background" Value="#FF956D" />
+                                                    </Trigger>
+                                                </ControlTemplate.Triggers>
+                                            </ControlTemplate>
+                                        </Thumb.Template>
+                                    </Thumb>
+                                </Track.Thumb>
+                                <Track.IncreaseRepeatButton>
+                                    <RepeatButton Command="{x:Static ScrollBar.PageDownCommand}"
+                                                  Focusable="False">
+                                        <RepeatButton.Template>
+                                            <ControlTemplate TargetType="{x:Type RepeatButton}">
+                                                <Border Background="Transparent" />
+                                            </ControlTemplate>
+                                        </RepeatButton.Template>
+                                    </RepeatButton>
+                                </Track.IncreaseRepeatButton>
+                            </Track>
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Rail" Property="Background" Value="#3A3531" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Opacity" Value="0" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
     </Window.Resources>
     <WindowChrome.WindowChrome>
         <WindowChrome CaptionHeight="0"
@@ -158,7 +302,11 @@
                 <ListBox x:Name="LandingHistoryList" Grid.Row="2"
                          Background="Transparent" BorderThickness="0"
                          SelectionChanged="OnHistorySelectionChanged"
-                         ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                         ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                         ScrollViewer.VerticalScrollBarVisibility="Auto">
+                    <ListBox.Resources>
+                        <Style TargetType="{x:Type ScrollBar}" BasedOn="{StaticResource HistoryScrollBarStyle}" />
+                    </ListBox.Resources>
                     <ListBox.ItemContainerStyle>
                         <Style TargetType="ListBoxItem">
                             <Setter Property="HorizontalContentAlignment" Value="Stretch" />
@@ -199,10 +347,36 @@
                                     </StackPanel>
                                 </StackPanel>
                                 <StackPanel Grid.Column="1" VerticalAlignment="Center" HorizontalAlignment="Right">
+                                    <StackPanel.Style>
+                                        <Style TargetType="{x:Type StackPanel}">
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding IsMouseOver, RelativeSource={RelativeSource AncestorType={x:Type ListBoxItem}}}" Value="True">
+                                                    <Setter Property="Visibility" Value="Collapsed" />
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </StackPanel.Style>
                                     <TextBlock Text="{Binding InertialDisplay}" FontFamily="Cascadia Mono, Consolas" FontSize="14" HorizontalAlignment="Right" />
                                     <TextBlock Text="{Binding G150Display, StringFormat={}{0} G}" Foreground="{StaticResource SubtleTextBrush}"
                                                FontFamily="Cascadia Mono, Consolas" FontSize="10" Margin="0,2,0,0" HorizontalAlignment="Right" />
                                 </StackPanel>
+                                <Button Grid.Column="1"
+                                        Style="{StaticResource HistoryDeleteButtonStyle}"
+                                        HorizontalAlignment="Right"
+                                        Tag="{Binding}"
+                                        Click="OnDeleteLandingClick"
+                                        ToolTip="Delete landing"
+                                        AutomationProperties.Name="Delete landing">
+                                    <Viewbox Width="15" Height="15">
+                                        <Path Data="M 4,5 L 16,5 M 7,5 L 7,3 L 13,3 L 13,5 M 6,5 L 7,17 L 13,17 L 14,5 M 9,8 L 9,14 M 11,8 L 11,14"
+                                              Fill="Transparent"
+                                              Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType={x:Type Button}}}"
+                                              StrokeThickness="1.5"
+                                              StrokeStartLineCap="Round"
+                                              StrokeEndLineCap="Round"
+                                              StrokeLineJoin="Round" />
+                                    </Viewbox>
+                                </Button>
                             </Grid>
                         </DataTemplate>
                     </ListBox.ItemTemplate>
@@ -602,8 +776,8 @@
             <Grid x:Name="EmptyState" Visibility="Collapsed">
                 <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" MaxWidth="470">
                     <Border Width="15" Height="15" Background="{StaticResource AccentBrush}" CornerRadius="3" HorizontalAlignment="Center" />
-                    <TextBlock Text="NO LANDING SESSIONS" FontSize="19" FontWeight="SemiBold" HorizontalAlignment="Center" Margin="0,18,0,0" />
-                    <TextBlock Text="Start MSFS and descend through 500 ft AGL. Recording, analysis and storage happen automatically after touchdown."
+                    <TextBlock x:Name="EmptyStateTitle" Text="NO LANDING SESSIONS" FontSize="19" FontWeight="SemiBold" HorizontalAlignment="Center" Margin="0,18,0,0" />
+                    <TextBlock x:Name="EmptyStateDescription" Text="Start MSFS and descend through 500 ft AGL. Recording, analysis and storage happen automatically after touchdown."
                                Foreground="{StaticResource MutedTextBrush}" FontSize="12" TextAlignment="Center" TextWrapping="Wrap" Margin="0,10,0,0" />
                 </StackPanel>
             </Grid>
@@ -642,5 +816,61 @@
                            TextTrimming="CharacterEllipsis" MaxWidth="310" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />
             </Grid>
         </Border>
+
+        <Grid x:Name="DeleteLandingOverlay"
+              Grid.RowSpan="3" Grid.ColumnSpan="2"
+              Panel.ZIndex="100"
+              Background="#B8000000"
+              Visibility="Collapsed"
+              Focusable="True"
+              KeyboardNavigation.TabNavigation="Cycle"
+              PreviewKeyDown="OnDeleteLandingOverlayKeyDown">
+            <Border Width="430"
+                    MaxWidth="430"
+                    Padding="24"
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Center"
+                    Background="{StaticResource SurfaceRaisedBrush}"
+                    BorderBrush="#3A3531"
+                    BorderThickness="1"
+                    CornerRadius="10">
+                <StackPanel>
+                    <Border Width="34" Height="34" HorizontalAlignment="Left"
+                            Background="{StaticResource DangerSoftBrush}" CornerRadius="17">
+                        <Viewbox Width="17" Height="17" HorizontalAlignment="Center" VerticalAlignment="Center">
+                            <Path Data="M 4,5 L 16,5 M 7,5 L 7,3 L 13,3 L 13,5 M 6,5 L 7,17 L 13,17 L 14,5 M 9,8 L 9,14 M 11,8 L 11,14"
+                                  Fill="Transparent" Stroke="{StaticResource DangerBrush}" StrokeThickness="1.5"
+                                  StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round" />
+                        </Viewbox>
+                    </Border>
+                    <TextBlock Text="DELETE LANDING?" FontSize="17" FontWeight="SemiBold" Margin="0,17,0,0" />
+                    <TextBlock Text="This removes the saved landing and its recorded profile. This cannot be undone."
+                               Foreground="{StaticResource MutedTextBrush}"
+                               FontSize="12" TextWrapping="Wrap" LineHeight="18" Margin="0,8,0,0" />
+                    <Border Background="{StaticResource SurfaceBrush}" CornerRadius="7" Padding="12,10" Margin="0,16,0,0">
+                        <TextBlock x:Name="DeleteLandingDescription"
+                                   Foreground="{StaticResource TextBrush}"
+                                   FontSize="12" TextWrapping="Wrap" LineHeight="18" />
+                    </Border>
+                    <TextBlock x:Name="DeleteLandingErrorText"
+                               Visibility="Collapsed"
+                               Foreground="{StaticResource DangerBrush}"
+                               FontSize="11" TextWrapping="Wrap" Margin="0,12,0,0" />
+                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,20,0,0">
+                        <Button x:Name="CancelDeleteLandingButton"
+                                Content="CANCEL"
+                                Height="34"
+                                Style="{StaticResource OutlineButtonStyle}"
+                                Click="OnCancelDeleteLandingClick" />
+                        <Button x:Name="ConfirmDeleteLandingButton"
+                                Content="DELETE"
+                                Height="34"
+                                Margin="10,0,0,0"
+                                Style="{StaticResource DangerButtonStyle}"
+                                Click="OnConfirmDeleteLandingClick" />
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+        </Grid>
     </Grid>
 </Window>

@@ -56,6 +56,7 @@ internal static class Program
         Run("telemetry CSV preserves doubles and rejects header-row schema mismatch", TelemetryCsvIsStrictAndRoundTrips);
         Run("header wind uses the contact-time sample", HeaderWindUsesContactTimeSample);
         Run("landing history uses lazy columnar v7 details", LandingHistoryUsesLazyColumnarDetails);
+        Run("landing delete removes detail and index entry", LandingDeleteRemovesDetailAndIndexEntry);
         Run("landing index reconciles committed details after an interrupted save", LandingIndexReconcilesCommittedDetails);
         Run("landing filenames are culture invariant", LandingFilenamesAreCultureInvariant);
         Run("airport cache is never overwritten after a transient read failure", AirportCacheSurvivesTransientReadFailure);
@@ -723,6 +724,40 @@ internal static class Program
             Equal(2, recovered.Count, "reconciled landing count");
             Equal(true, recovered.Any(record => record.Id == second.Id), "detail missing from stale index is recovered");
             Equal(2, new LandingRepository(root).LoadAll().Count, "reconciled index is persisted");
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
+    private static void LandingDeleteRemovesDetailAndIndexEntry()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "landing-stats-delete-test-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var repository = new LandingRepository(root);
+            var deleted = new LandingRecord
+            {
+                Id = "delete-me",
+                TimestampUtc = new DateTime(2026, 8, 8, 10, 0, 0, DateTimeKind.Utc),
+            };
+            var retained = new LandingRecord
+            {
+                Id = "keep-me",
+                TimestampUtc = deleted.TimestampUtc.AddMinutes(1),
+            };
+            var deletedPath = repository.Save(deleted);
+            repository.Save(retained);
+            var deletedSummary = repository.LoadAll().Single(record => record.Id == deleted.Id);
+
+            Equal(true, repository.Delete(deleted.Id), "existing landing delete result");
+            Equal(false, File.Exists(deletedPath), "deleted detail file is removed");
+            Equal(false, repository.LoadAll().Any(record => record.Id == deleted.Id), "in-memory index entry is removed");
+            Equal(false, new LandingRepository(root).LoadAll().Any(record => record.Id == deleted.Id), "persisted index entry is removed");
+            Equal(true, new LandingRepository(root).LoadAll().Any(record => record.Id == retained.Id), "unrelated landing remains");
+            Null(repository.LoadDetail(deletedSummary), "deleted detail cannot be loaded");
+            Equal(false, repository.Delete(deleted.Id), "repeated delete is a no-op");
         }
         finally
         {

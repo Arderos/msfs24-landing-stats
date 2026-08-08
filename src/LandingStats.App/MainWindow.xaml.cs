@@ -40,6 +40,7 @@ public partial class MainWindow : Window
     private int? _mainIsolatedSeriesIndex;
     private bool _changingRawDebugToggle;
     private bool _telemetryUploadAllowed;
+    private LandingRecord? _pendingDeleteRecord;
 
     public MainWindow()
     {
@@ -110,12 +111,6 @@ public partial class MainWindow : Window
         ApplySessionFilter();
         StoragePathText.Text = "%LOCALAPPDATA%\\MSFS Landing Stats\\Landings";
         StoragePathText.ToolTip = _repository.RootPath;
-        LandingContent.Visibility = _landings.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
-        EmptyState.Visibility = _landings.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
-        if (_landings.Count == 0)
-        {
-            DataContext = null;
-        }
     }
 
     private void OnHistorySelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs eventArgs)
@@ -253,6 +248,7 @@ public partial class MainWindow : Window
         HistoryCountText.Text = filtered.Count.ToString();
         var selected = selectedId == null ? null : filtered.FirstOrDefault(record => record.Id == selectedId);
         LandingHistoryList.SelectedItem = selected ?? filtered.FirstOrDefault();
+        UpdateHistoryPresentation(filtered.Count);
 
         var now = DateTime.Now;
         var monthly = _landings
@@ -265,6 +261,135 @@ public partial class MainWindow : Window
         AverageRateText.Text = monthly.Length == 0
             ? "—"
             : $"{monthly.Average(record => -record.InertialFpm):+0;-0;0} fpm";
+    }
+
+    private void UpdateHistoryPresentation(int visibleCount)
+    {
+        var hasVisibleLanding = visibleCount > 0;
+        LandingContent.Visibility = hasVisibleLanding ? Visibility.Visible : Visibility.Collapsed;
+        EmptyState.Visibility = hasVisibleLanding ? Visibility.Collapsed : Visibility.Visible;
+        if (hasVisibleLanding)
+        {
+            return;
+        }
+
+        if (_landings.Count == 0)
+        {
+            EmptyStateTitle.Text = "NO LANDING SESSIONS";
+            EmptyStateDescription.Text = "Start MSFS and descend through 500 ft AGL. Recording, analysis and storage happen automatically after touchdown.";
+        }
+        else
+        {
+            EmptyStateTitle.Text = "NO MATCHING SESSIONS";
+            EmptyStateDescription.Text = "No saved landings match the current filter.";
+        }
+
+        ClearSelectedRecord();
+    }
+
+    private void ClearSelectedRecord()
+    {
+        DataContext = null;
+        MainChart.Record = null;
+        MiniGChart.Record = null;
+        MiniPowerChart.Record = null;
+        MiniGearChart.Record = null;
+        Timeline.Record = null;
+    }
+
+    private void OnDeleteLandingClick(object sender, RoutedEventArgs eventArgs)
+    {
+        eventArgs.Handled = true;
+        if (sender is not Button button || button.Tag is not LandingRecord record)
+        {
+            return;
+        }
+
+        _pendingDeleteRecord = record;
+        var contact = record.ContactCount > 1
+            ? $" · contact {record.ContactNumber}/{record.ContactCount}"
+            : string.Empty;
+        DeleteLandingDescription.Text =
+            $"{record.AircraftTitle}\n{record.LocationDisplay} · {record.TimestampDisplay}{contact}";
+        DeleteLandingErrorText.Text = string.Empty;
+        DeleteLandingErrorText.Visibility = Visibility.Collapsed;
+        ConfirmDeleteLandingButton.IsEnabled = true;
+        DeleteLandingOverlay.Visibility = Visibility.Visible;
+        DeleteLandingOverlay.Focus();
+        Keyboard.Focus(CancelDeleteLandingButton);
+    }
+
+    private void OnCancelDeleteLandingClick(object sender, RoutedEventArgs eventArgs)
+    {
+        HideDeleteLandingConfirmation();
+    }
+
+    private void OnDeleteLandingOverlayKeyDown(object sender, KeyEventArgs eventArgs)
+    {
+        if (eventArgs.Key != Key.Escape)
+        {
+            return;
+        }
+
+        eventArgs.Handled = true;
+        HideDeleteLandingConfirmation();
+    }
+
+    private void OnConfirmDeleteLandingClick(object sender, RoutedEventArgs eventArgs)
+    {
+        var record = _pendingDeleteRecord;
+        if (record == null)
+        {
+            HideDeleteLandingConfirmation();
+            return;
+        }
+
+        var visibleRecords = LandingHistoryList.Items.Cast<LandingRecord>().ToList();
+        var selectedId = (LandingHistoryList.SelectedItem as LandingRecord)?.Id;
+        string? preferredSelectionId;
+        if (!string.Equals(selectedId, record.Id, StringComparison.Ordinal))
+        {
+            preferredSelectionId = selectedId;
+        }
+        else
+        {
+            var deletedIndex = visibleRecords.FindIndex(candidate =>
+                string.Equals(candidate.Id, record.Id, StringComparison.Ordinal));
+            var remainingVisible = visibleRecords
+                .Where(candidate => !string.Equals(candidate.Id, record.Id, StringComparison.Ordinal))
+                .ToList();
+            var nextIndex = remainingVisible.Count == 0
+                ? -1
+                : Math.Min(Math.Max(0, deletedIndex), remainingVisible.Count - 1);
+            preferredSelectionId = nextIndex >= 0 ? remainingVisible[nextIndex].Id : null;
+        }
+
+        try
+        {
+            ConfirmDeleteLandingButton.IsEnabled = false;
+            _repository.Delete(record.Id);
+            _loadedDetails.Remove(record.Id);
+            _landings = _landings
+                .Where(candidate => !string.Equals(candidate.Id, record.Id, StringComparison.Ordinal))
+                .ToArray();
+            HideDeleteLandingConfirmation();
+            ApplySessionFilter(preferredSelectionId);
+        }
+        catch (Exception exception)
+        {
+            ConfirmDeleteLandingButton.IsEnabled = true;
+            DeleteLandingErrorText.Text = $"Could not delete this landing. {exception.Message}";
+            DeleteLandingErrorText.Visibility = Visibility.Visible;
+            Keyboard.Focus(CancelDeleteLandingButton);
+        }
+    }
+
+    private void HideDeleteLandingConfirmation()
+    {
+        _pendingDeleteRecord = null;
+        DeleteLandingOverlay.Visibility = Visibility.Collapsed;
+        ConfirmDeleteLandingButton.IsEnabled = true;
+        Keyboard.Focus(LandingHistoryList);
     }
 
     private void OnChartModeChanged(object sender, RoutedEventArgs eventArgs)
@@ -524,8 +649,6 @@ public partial class MainWindow : Window
             .ToArray();
 
         ApplySessionFilter(newestFirst[0].Id);
-        LandingContent.Visibility = Visibility.Visible;
-        EmptyState.Visibility = Visibility.Collapsed;
     }
 
     private void OnAirportFacilitiesUpdated(object? sender, AirportFacilitiesEventArgs eventArgs)
