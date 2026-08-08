@@ -4,6 +4,7 @@ import re
 import secrets
 import shutil
 import time
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -61,11 +62,21 @@ SERVER_PEPPER = PEPPER_PATH.read_bytes().strip()
 if len(SERVER_PEPPER) < 32:
     raise RuntimeError("server pepper is missing or too short")
 
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    STORE.initialize()
+    STORE.prune(RETENTION_DAYS, STORAGE_QUOTA_BYTES)
+    STORE.prune_installations(UNREFERENCED_INSTALLATION_RETENTION_DAYS)
+    yield
+
+
 app = FastAPI(
     title="MSFS Landing Stats telemetry ingress",
     docs_url=None,
     redoc_url=None,
     openapi_url=None,
+    lifespan=lifespan,
 )
 
 
@@ -104,13 +115,6 @@ def _fresh_timestamp(value: str) -> None:
     parsed = parse_utc(value)
     if abs((datetime.now(timezone.utc) - parsed).total_seconds()) > 900:
         raise ValueError("request timestamp is outside the 15 minute window")
-
-
-@app.on_event("startup")
-def startup() -> None:
-    STORE.initialize()
-    STORE.prune(RETENTION_DAYS, STORAGE_QUOTA_BYTES)
-    STORE.prune_installations(UNREFERENCED_INSTALLATION_RETENTION_DAYS)
 
 
 @app.get("/health")
