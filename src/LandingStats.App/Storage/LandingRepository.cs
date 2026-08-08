@@ -113,6 +113,37 @@ public sealed class LandingRepository
         SaveIndex();
     }
 
+    public bool Delete(string id)
+    {
+        if (string.IsNullOrWhiteSpace(id))
+        {
+            throw new ArgumentException("A landing id is required.", nameof(id));
+        }
+
+        EnsureIndexLoaded();
+        var paths = Directory.Exists(RootPath)
+            ? Directory.EnumerateFiles(RootPath, "*.landing.json.gz")
+                .Where(path => PathMatchesRecord(path, id))
+                .ToArray()
+            : Array.Empty<string>();
+
+        foreach (var path in paths)
+        {
+            File.Delete(path);
+        }
+
+        var summaryRemoved = _summaries!.RemoveAll(summary =>
+            string.Equals(summary.Id, id, StringComparison.Ordinal)) > 0;
+
+        if (summaryRemoved || paths.Length > 0)
+        {
+            SaveIndex();
+            return true;
+        }
+
+        return false;
+    }
+
     private void EnsureIndexLoaded()
     {
         if (_summaries != null)

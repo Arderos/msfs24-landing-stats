@@ -2,6 +2,18 @@
 
 All notable changes to MSFS Landing Stats are documented in this file.
 
+## [0.7.7] - 2026-08-08
+
+### Added
+
+- Added landing deletion from the session history. The delete action appears on
+  row hover and requires confirmation in an in-app modal overlay.
+
+### Changed
+
+- Restyled the session-history scrollbar with a compact dark rail and orange
+  thumb matching the rest of the application.
+
 ## [0.7.6] - 2026-08-05
 
 This release supersedes v0.7.5 and includes its complete consolidated history

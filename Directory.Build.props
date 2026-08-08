@@ -4,9 +4,9 @@
     <Nullable>enable</Nullable>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <Deterministic>true</Deterministic>
-    <Version>0.7.6</Version>
-    <AssemblyVersion>0.7.6.0</AssemblyVersion>
-    <FileVersion>0.7.6.0</FileVersion>
+    <Version>0.7.7</Version>
+    <AssemblyVersion>0.7.7.0</AssemblyVersion>
+    <FileVersion>0.7.7.0</FileVersion>
     <Authors>Evgeniy Zaytsev</Authors>
     <Company>Evgeniy Zaytsev</Company>
     <Copyright>Copyright © 2026 Evgeniy Zaytsev</Copyright>
