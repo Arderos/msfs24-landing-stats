@@ -49,7 +49,6 @@ internal sealed class ReleaseUpdateResult
 
 internal sealed class ReleaseUpdater : IDisposable
 {
-    private const string TargetExecutableName = "MSFS-Landing-Stats.exe";
     private const string LauncherPathEnvironmentVariable = "MSFS_LANDING_STATS_LAUNCHER_PATH";
 
     private readonly HttpClient _client;
@@ -277,7 +276,9 @@ internal sealed class ReleaseUpdater : IDisposable
             ? Assembly.GetExecutingAssembly().Location
             : launcherPath;
         targetPath = Path.GetFullPath(targetPath);
-        if (!string.Equals(Path.GetFileName(targetPath), TargetExecutableName, StringComparison.OrdinalIgnoreCase) ||
+        var fileName = Path.GetFileName(targetPath);
+        if (fileName.Length <= ".exe".Length ||
+            !string.Equals(Path.GetExtension(fileName), ".exe", StringComparison.OrdinalIgnoreCase) ||
             !File.Exists(targetPath))
         {
             throw new InvalidDataException("The update target is invalid");

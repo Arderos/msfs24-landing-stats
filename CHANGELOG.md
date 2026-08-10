@@ -2,6 +2,14 @@
 
 All notable changes to MSFS Landing Stats are documented in this file.
 
+## [0.7.9] - 2026-08-10
+
+### Fixed
+
+- Automatic updates now preserve browser-renamed executable names such as
+  `MSFS-Landing-Stats (2).exe`. Process identity, bundle, signature, hash,
+  version, atomic replacement, and rollback checks remain enforced.
+
 ## [0.7.8] - 2026-08-10
 
 ### Added

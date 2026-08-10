@@ -201,7 +201,10 @@ internal static class Program
         }
 
         var targetPath = Path.GetFullPath(args[4]);
-        if (!string.Equals(Path.GetFileName(targetPath), TargetExecutableName, StringComparison.OrdinalIgnoreCase) || !File.Exists(targetPath))
+        var targetFileName = Path.GetFileName(targetPath);
+        if (targetFileName.Length <= ".exe".Length ||
+            !string.Equals(Path.GetExtension(targetFileName), ".exe", StringComparison.OrdinalIgnoreCase) ||
+            !File.Exists(targetPath))
         {
             throw new InvalidDataException("Updater target is invalid");
         }

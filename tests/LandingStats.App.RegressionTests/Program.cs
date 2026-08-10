@@ -55,6 +55,7 @@ internal static class Program
         Run("updater accepts the issued format-2 manifest shape", UpdaterAcceptsIssuedManifestShape);
         Run("updater accepts the format-3 single executable manifest shape", UpdaterAcceptsSingleExecutableManifestShape);
         Run("updater preserves bridge and current manifest channels", UpdaterPreservesManifestChannels);
+        Run("updater accepts browser-renamed executable targets", UpdaterAcceptsBrowserRenamedTarget);
         Run("updater extracts only one bundled executable from legacy package", UpdaterExtractsLegacySingleExecutable);
         Run("updater cleanup refuses paths outside its private root", UpdaterCleanupRefusesUnsafePath);
         Run("updater installs one valid executable transactionally", UpdaterInstallsSingleExecutable);
@@ -592,6 +593,61 @@ internal static class Program
         }
     }
 
+    private static void UpdaterAcceptsBrowserRenamedTarget()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "landing-stats-renamed-update-test-" + Guid.NewGuid().ToString("N"));
+        var previousLauncherPath = Environment.GetEnvironmentVariable("MSFS_LANDING_STATS_LAUNCHER_PATH");
+        try
+        {
+            Directory.CreateDirectory(root);
+            var resolve = typeof(ReleaseUpdater).GetMethod("ResolveUpdateTarget", BindingFlags.Static | BindingFlags.NonPublic)!;
+            var parse = typeof(UpdaterProgram).GetMethod("ParseInvocation", BindingFlags.Static | BindingFlags.NonPublic)!;
+            foreach (var fileName in new[]
+            {
+                "MSFS-Landing-Stats (2).exe",
+                "Landing copy (4).EXE",
+                "моя посадка.exe",
+            })
+            {
+                var target = Path.Combine(root, fileName);
+                File.WriteAllText(target, "fixture");
+                Environment.SetEnvironmentVariable("MSFS_LANDING_STATS_LAUNCHER_PATH", target);
+                Equal(target, resolve.Invoke(null, null), $"application accepts target {fileName}");
+
+                var readyEventName = "Local\\MSFSLandingStatsUpdate-" + Guid.NewGuid().ToString("N");
+                var invocation = parse.Invoke(null, new object[]
+                {
+                    new[]
+                    {
+                        "--apply", "--parent-pid", "1", "--target", target,
+                        "--version", "0.7.9", "--ready-event", readyEventName,
+                        "--manifest", "update-channel.txt",
+                    },
+                })!;
+                Equal(target, invocation.GetType().GetProperty("TargetPath")!.GetValue(invocation), $"external updater accepts target {fileName}");
+            }
+
+            var nonExecutable = Path.Combine(root, "MSFS-Landing-Stats (2).dll");
+            File.WriteAllText(nonExecutable, "fixture");
+            Environment.SetEnvironmentVariable("MSFS_LANDING_STATS_LAUNCHER_PATH", nonExecutable);
+            var rejected = false;
+            try
+            {
+                resolve.Invoke(null, null);
+            }
+            catch (TargetInvocationException exception) when (exception.InnerException is InvalidDataException)
+            {
+                rejected = true;
+            }
+            Equal(true, rejected, "application rejects non-executable target");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("MSFS_LANDING_STATS_LAUNCHER_PATH", previousLauncherPath);
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
     private static void UpdaterExtractsLegacySingleExecutable()
     {
         var root = Path.Combine(Path.GetTempPath(), "landing-stats-legacy-update-test-" + Guid.NewGuid().ToString("N"));
@@ -641,7 +697,7 @@ internal static class Program
     private static void UpdaterInstallsSingleExecutable()
     {
         var root = Path.Combine(Path.GetTempPath(), "landing-stats-single-update-test-" + Guid.NewGuid().ToString("N"));
-        var target = Path.Combine(root, "MSFS-Landing-Stats.exe");
+        var target = Path.Combine(root, "arbitrary downloaded name (4).exe");
         var replacement = Path.Combine(root, "replacement.exe");
         try
         {
