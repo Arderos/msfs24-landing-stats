@@ -1,5 +1,10 @@
 # MSFS 2024 Landing Stats
 
+[![Build](https://github.com/Arderos/msfs24-landing-stats/actions/workflows/build.yml/badge.svg?branch=main)](https://github.com/Arderos/msfs24-landing-stats/actions/workflows/build.yml)
+[![Latest release](https://img.shields.io/github/v/release/Arderos/msfs24-landing-stats?display_name=tag&sort=semver)](https://github.com/Arderos/msfs24-landing-stats/releases/latest)
+![Language](https://img.shields.io/badge/language-C%23-512BD4?logo=dotnet&logoColor=white)
+![Platform](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0078D4?logo=windows&logoColor=white)
+
 ![MSFS Landing Stats dashboard](assets/application.png)
 
 A Windows desktop application that records, analyzes, and visualizes landings in
