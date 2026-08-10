@@ -5,7 +5,7 @@
 ![Language](https://img.shields.io/badge/language-C%23-512BD4?logo=dotnet&logoColor=white)
 ![Platform](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0078D4?logo=windows&logoColor=white)
 
-![MSFS Landing Stats dashboard](assets/application.png)
+![MSFS Landing Stats dashboard](assets/application-2026-08-10.png)
 
 A Windows desktop application that records, analyzes, and visualizes landings in
 Microsoft Flight Simulator 2024 through SimConnect.
