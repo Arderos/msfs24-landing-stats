@@ -4,6 +4,7 @@ obj/
 *.user
 captures/
 artifacts/
+security/
 test-output/
 src/LandingStats.App/*.zip
 server/telemetry-ingest/.env
