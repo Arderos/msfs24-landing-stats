@@ -19,18 +19,55 @@ All notable changes to MSFS Landing Stats are documented in this file.
 - Added an in-app language setting with automatic locale detection and explicit
   English or Russian selection. Unknown future settings are preserved.
 
+### Changed
+
+- Standardized interface terminology in both languages, including LANDINGS,
+  FULL TELEMETRY, engine labels, and the monthly vertical-rate summary.
+
 ### Fixed
 
+- Preserved intentional leading spaces in translated inline suffixes so times,
+  contact numbers, update states, and geometry quality no longer run together.
+- Preserved paragraph breaks in the full-telemetry consent explanation.
+- Updated chart units immediately when the interface language changes.
+- Kept the no-touchdown warning amber, including across a language switch,
+  instead of reverting it to a normal green connected state.
+- Reset full-telemetry status colors after an error rather than leaving later
+  successful statuses red.
+- Restored the explicit "saved locally" status when telemetry upload is
+  unavailable; local capture remains independent from network delivery.
+- Restored distinct screen-reader names and help text for information buttons.
+- Made language-resource replacement independent of hard-coded assembly names,
+  and load each language dictionary only once per session.
+- Removed stale localization resources and display paths that could diverge
+  from the values actually shown by the interface.
+- Made localized update-result construction resistant to ambiguous positional
+  arguments.
 - Kept paused or frozen simulator frames from growing an active landing episode
-  indefinitely, and made telemetry shutdown safe while captures are queued.
-- Corrupt telemetry identities and airport caches now recover without breaking
-  local recording or application startup.
-- Monthly averages now count each landing once instead of counting bounce
-  contacts as additional landings.
-- Corrected translated date, unit, warning, consent, and debug-capture states,
-  including live language switching without changing warning severity.
-- Reduced chart hover, CSV parsing, history persistence, and launcher startup
-  overhead while keeping their stored formats compatible.
+  indefinitely by deduplicating frozen time and enforcing a hard sample cap.
+- Corrected internal chart legend colors to match the rendered series and hover
+  values in every multi-series mode.
+- Kept the telemetry upload worker alive when its protected identity file is
+  corrupt, without disabling local full-rate recording.
+- Made telemetry enqueue and shutdown atomic so a capture finishing while the
+  application closes cannot fault the writer task.
+- Quarantined and rebuilt a permanently corrupt airport cache while preserving
+  the existing read-tolerant behavior for transient file errors.
+- Counted only the primary contact in monthly averages so bounce contacts no
+  longer distort the displayed landing rate.
+- Used the actual display DPI for chart and timeline text, improving alignment
+  and sharpness above 100% Windows scaling.
+- Removed abandoned raw-capture temporary chunks and obsolete versioned runtime
+  directories without touching active or locked data.
+- Batched landing-summary reconciliation so startup writes the compressed index
+  once instead of once per corrected landing.
+
+### Performance
+
+- Replaced per-mouse-move chart sorting with binary search over the already
+  ordered telemetry series.
+- Cached telemetry CSV schema widths and split each data row only once.
+- Removed unused demo-history generation code from the production model.
 
 ## [0.7.7] - 2026-08-08
 
