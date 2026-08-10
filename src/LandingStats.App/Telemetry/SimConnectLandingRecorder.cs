@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Windows.Threading;
 using LandingStats.App.Models;
+using LandingStats.App.Settings;
 using LandingStats.Core;
 using Microsoft.FlightSimulator.SimConnect;
 
@@ -19,15 +20,20 @@ internal enum RecorderState
 
 internal sealed class RecorderStatusEventArgs : EventArgs
 {
-    public RecorderStatusEventArgs(RecorderState state, string message)
+    public RecorderStatusEventArgs(RecorderState state, string messageKey, params object[] messageArguments)
     {
         State = state;
-        Message = message;
+        MessageKey = messageKey;
+        MessageArguments = messageArguments ?? Array.Empty<object>();
     }
 
     public RecorderState State { get; }
 
-    public string Message { get; }
+    public string MessageKey { get; }
+
+    public object[] MessageArguments { get; }
+
+    public string Message => LocalizationManager.Format(MessageKey, MessageArguments);
 }
 
 internal sealed class LandingEpisodeEventArgs : EventArgs
@@ -134,6 +140,7 @@ internal sealed class SimConnectLandingRecorder : IDisposable
     private const double FullTelemetryDisableAglFeet = 3500.0;
     private const double AirportCacheMaximumDistanceNauticalMiles = 20.0;
     private const int PreRollMaximumSamples = 4096;
+    private const int EpisodeMaximumSamples = 65536;
     private static readonly TimeSpan JoystickRefreshInterval = TimeSpan.FromSeconds(5);
 
     private readonly IntPtr _windowHandle;
@@ -260,7 +267,7 @@ internal sealed class SimConnectLandingRecorder : IDisposable
         }
         catch (Exception exception)
         {
-            SetStatus(RecorderState.Error, $"SimConnect receive failed: {exception.Message}");
+            SetStatus(RecorderState.Error, "Recorder.ReceiveFailedFormat", exception.Message);
             Disconnect();
         }
 
@@ -319,7 +326,7 @@ internal sealed class SimConnectLandingRecorder : IDisposable
         }
 
         _lastConnectAttemptUtc = DateTime.UtcNow;
-        SetStatus(RecorderState.Waiting, "Waiting for MSFS — retrying");
+        SetStatus(RecorderState.Waiting, "Recorder.WaitingRetry");
         try
         {
             var connection = new SimConnect(
@@ -339,11 +346,11 @@ internal sealed class SimConnectLandingRecorder : IDisposable
         }
         catch (COMException)
         {
-            SetStatus(RecorderState.Waiting, "Waiting for MSFS — retrying");
+            SetStatus(RecorderState.Waiting, "Recorder.WaitingRetry");
         }
         catch (Exception exception)
         {
-            SetStatus(RecorderState.Error, $"Connection failed: {exception.Message}");
+            SetStatus(RecorderState.Error, "Recorder.ConnectionFailedFormat", exception.Message);
         }
     }
 
@@ -388,11 +395,11 @@ internal sealed class SimConnectLandingRecorder : IDisposable
 
             _simulator = string.IsNullOrWhiteSpace(data.szApplicationName) ? "MSFS" : data.szApplicationName.Trim();
             _recoverStatusAfterFrame = false;
-            SetStatus(RecorderState.Connected, "Connected — waiting for 500 ft AGL");
+            SetStatus(RecorderState.Connected, "Recorder.ConnectedGate");
         }
         catch (Exception exception)
         {
-            SetStatus(RecorderState.Error, $"Telemetry setup failed: {exception.Message}");
+            SetStatus(RecorderState.Error, "Recorder.SetupFailedFormat", exception.Message);
             Disconnect();
         }
     }
@@ -410,7 +417,11 @@ internal sealed class SimConnectLandingRecorder : IDisposable
         _recoverStatusAfterFrame = true;
         SetStatus(
             RecorderState.Error,
-            $"SimConnect error {data.dwException} · send {data.dwSendID} · index {data.dwIndex}{operation}");
+            "Recorder.SimConnectErrorFormat",
+            data.dwException,
+            data.dwSendID,
+            data.dwIndex,
+            operation);
     }
 
     private void OnRecvEvent(SimConnect sender, SIMCONNECT_RECV_EVENT data)
@@ -561,16 +572,31 @@ internal sealed class SimConnectLandingRecorder : IDisposable
 
         if (_episodeSamples != null && !startedNow)
         {
-            _episodeSamples.Add(sample);
+            AppendEpisodeSample(sample);
         }
 
         if (isContact)
         {
             _lastContactTime = sampleTime;
-            SetStatus(RecorderState.Recording, "Contact detected — recording rollout");
+            SetStatus(RecorderState.Recording, "Recorder.ContactRollout");
         }
 
         _previousOnGround = sample.OnGround;
+
+        if (_episodeSamples != null && _episodeSamples.Count >= EpisodeMaximumSamples)
+        {
+            if (_lastContactTime.HasValue)
+            {
+                CompleteEpisode();
+            }
+            else
+            {
+                DiscardEpisode();
+                _armed = true;
+                SetStatus(RecorderState.Connected, "Recorder.ApproachRestarted");
+            }
+            return;
+        }
 
         if (_episodeSamples != null && _lastContactTime.HasValue && sampleTime - _lastContactTime.Value >= PostContactSeconds)
         {
@@ -581,13 +607,13 @@ internal sealed class SimConnectLandingRecorder : IDisposable
         {
             DiscardEpisode();
             _armed = true;
-            SetStatus(RecorderState.Connected, "Go-around — waiting for 500 ft AGL");
+            SetStatus(RecorderState.Connected, "Recorder.GoAround");
         }
         else if (_episodeSamples != null && !_lastContactTime.HasValue && sampleTime - _episodeStartTime >= MaximumApproachSeconds)
         {
             DiscardEpisode();
             _armed = true;
-            SetStatus(RecorderState.Connected, "Approach window restarted — still armed");
+            SetStatus(RecorderState.Connected, "Recorder.ApproachRestarted");
         }
     }
 
@@ -609,7 +635,27 @@ internal sealed class SimConnectLandingRecorder : IDisposable
 
         SetStatus(
             RecorderState.Recording,
-            contactTriggered ? "Late start — contact capture in progress" : "Below 500 ft — landing capture in progress");
+            contactTriggered ? "Recorder.LateStart" : "Recorder.BelowGate");
+    }
+
+    private void AppendEpisodeSample(TelemetrySample sample)
+    {
+        if (_episodeSamples == null)
+        {
+            return;
+        }
+
+        if (_episodeSamples.Count > 0 &&
+            Math.Abs(TimeOf(_episodeSamples[_episodeSamples.Count - 1]) - TimeOf(sample)) <= 0.000000001)
+        {
+            // SIM_FRAME can continue while the simulator clock is paused. Keep the
+            // newest state for that instant instead of retaining an unbounded run
+            // of physically identical timestamps.
+            _episodeSamples[_episodeSamples.Count - 1] = sample;
+            return;
+        }
+
+        _episodeSamples.Add(sample);
     }
 
     private void CompleteEpisode(bool refreshAirportFacilities = true)
@@ -696,7 +742,7 @@ internal sealed class SimConnectLandingRecorder : IDisposable
         catch (Exception exception)
         {
             _fullTelemetryEnabled = false;
-            SetStatus(RecorderState.Error, $"Telemetry mode change failed: {exception.Message}");
+            SetStatus(RecorderState.Error, "Recorder.ModeChangeFailedFormat", exception.Message);
             Disconnect();
         }
     }
@@ -756,7 +802,7 @@ internal sealed class SimConnectLandingRecorder : IDisposable
         ResetFlightDetection();
         if (!_disposed)
         {
-            SetStatus(RecorderState.Waiting, "MSFS disconnected — retrying");
+            SetStatus(RecorderState.Waiting, "Recorder.DisconnectedRetry");
         }
     }
 
@@ -908,9 +954,9 @@ internal sealed class SimConnectLandingRecorder : IDisposable
         return sources;
     }
 
-    private void SetStatus(RecorderState state, string message)
+    private void SetStatus(RecorderState state, string messageKey, params object[] messageArguments)
     {
-        StatusChanged?.Invoke(this, new RecorderStatusEventArgs(state, message));
+        StatusChanged?.Invoke(this, new RecorderStatusEventArgs(state, messageKey, messageArguments));
     }
 
     private void RecoverStatusAfterFrame()
@@ -926,12 +972,12 @@ internal sealed class SimConnectLandingRecorder : IDisposable
             SetStatus(
                 RecorderState.Recording,
                 _lastContactTime.HasValue
-                    ? "Contact detected — recording rollout"
-                    : "Below 500 ft — landing capture in progress");
+                    ? "Recorder.ContactRollout"
+                    : "Recorder.BelowGate");
         }
         else
         {
-            SetStatus(RecorderState.Connected, "Connected — waiting for 500 ft AGL");
+            SetStatus(RecorderState.Connected, "Recorder.ConnectedGate");
         }
     }
 

@@ -13,6 +13,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using LandingStats.App.Settings;
 using LandingStats.Core;
 
 namespace LandingStats.App.TelemetryUpload;
@@ -25,25 +26,31 @@ internal enum TelemetryPreparationState
 
 internal sealed class TelemetryPreparationResult
 {
-    public TelemetryPreparationResult(TelemetryPreparationState state, string message)
+    public TelemetryPreparationResult(TelemetryPreparationState state, string messageKey, params object[] messageArguments)
     {
         State = state;
-        Message = message;
+        MessageKey = messageKey;
+        MessageArguments = messageArguments ?? Array.Empty<object>();
     }
 
     public TelemetryPreparationState State { get; }
-    public string Message { get; }
+    public string MessageKey { get; }
+    public object[] MessageArguments { get; }
+    public string Message => LocalizationManager.Format(MessageKey, MessageArguments);
 }
 
 internal sealed class TelemetryUploadStatusEventArgs : EventArgs
 {
-    public TelemetryUploadStatusEventArgs(string message, bool isError = false)
+    public TelemetryUploadStatusEventArgs(string messageKey, bool isError, params object[] messageArguments)
     {
-        Message = message;
+        MessageKey = messageKey;
+        MessageArguments = messageArguments ?? Array.Empty<object>();
         IsError = isError;
     }
 
-    public string Message { get; }
+    public string MessageKey { get; }
+    public object[] MessageArguments { get; }
+    public string Message => LocalizationManager.Format(MessageKey, MessageArguments);
     public bool IsError { get; }
 }
 
@@ -103,14 +110,14 @@ internal sealed class TelemetryUploadClient : IDisposable
     {
         if (_endpoint == null)
         {
-            return new TelemetryPreparationResult(TelemetryPreparationState.Unavailable, "Telemetry receiver is not configured in this build");
+            return new TelemetryPreparationResult(TelemetryPreparationState.Unavailable, "Telemetry.NotConfigured");
         }
         try
         {
             var config = await GetConfigAsync(cancellationToken).ConfigureAwait(false);
             if (!string.Equals(config.RegistrationMode, "open", StringComparison.OrdinalIgnoreCase))
             {
-                return new TelemetryPreparationResult(TelemetryPreparationState.Unavailable, "Telemetry receiver is not accepting automatic registration");
+                return new TelemetryPreparationResult(TelemetryPreparationState.Unavailable, "Telemetry.RegistrationClosed");
             }
 
             var identity = _identityStore.Identity();
@@ -134,24 +141,30 @@ internal sealed class TelemetryUploadClient : IDisposable
             using var response = await _client.PostAsync(new Uri(_endpoint, "v1/enroll"), content, cancellationToken).ConfigureAwait(false);
             if (response.StatusCode == HttpStatusCode.Forbidden)
             {
-                return new TelemetryPreparationResult(TelemetryPreparationState.Unavailable, "Telemetry registration was rejected or this installation was revoked");
+                return new TelemetryPreparationResult(TelemetryPreparationState.Unavailable, "Telemetry.RegistrationRejected");
             }
             if (!response.IsSuccessStatusCode)
             {
-                return new TelemetryPreparationResult(TelemetryPreparationState.Unavailable, $"Telemetry enrollment failed ({(int)response.StatusCode})");
+                return new TelemetryPreparationResult(TelemetryPreparationState.Unavailable, "Telemetry.EnrollmentFailedFormat", (int)response.StatusCode);
             }
 
             _identityStore.MarkEnrolled(_endpoint, true);
             EnqueueExisting();
-            return new TelemetryPreparationResult(TelemetryPreparationState.Ready, "Secure telemetry upload is ready");
+            return new TelemetryPreparationResult(TelemetryPreparationState.Ready, "Telemetry.Ready");
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            return new TelemetryPreparationResult(TelemetryPreparationState.Unavailable, "Telemetry setup was cancelled");
+            return new TelemetryPreparationResult(TelemetryPreparationState.Unavailable, "Telemetry.Cancelled");
         }
-        catch (Exception exception) when (exception is HttpRequestException || exception is IOException || exception is CryptographicException || exception is SerializationException)
+        catch (Exception exception) when (
+            exception is HttpRequestException ||
+            exception is IOException ||
+            exception is CryptographicException ||
+            exception is SerializationException ||
+            exception is InvalidDataException ||
+            exception is FormatException)
         {
-            return new TelemetryPreparationResult(TelemetryPreparationState.Unavailable, "Telemetry receiver is unavailable: " + exception.Message);
+            return new TelemetryPreparationResult(TelemetryPreparationState.Unavailable, "Telemetry.ReceiverUnavailableFormat", exception.Message);
         }
     }
 
@@ -166,7 +179,7 @@ internal sealed class TelemetryUploadClient : IDisposable
         var acceptedForUpload = EnqueueCore(path);
         if (capacityExceeded)
         {
-            RaiseStatus("Telemetry upload queue reached 256 MB; local DEBUG RAW continues and queued captures stay on disk", true);
+            RaiseStatus("Telemetry.QueueLimit", true);
             return false;
         }
 
@@ -178,18 +191,32 @@ internal sealed class TelemetryUploadClient : IDisposable
         var fullPath = Path.GetFullPath(path);
         lock (_queueGate)
         {
+            if (Volatile.Read(ref _disposed) != 0 || _queue.IsAddingCompleted)
+            {
+                return false;
+            }
             if (!_queued.Add(fullPath))
             {
                 return true;
             }
-            if (!_queue.TryAdd(fullPath))
+            try
             {
+                if (!_queue.TryAdd(fullPath))
+                {
+                    _queued.Remove(fullPath);
+                    RaiseStatus("Telemetry.QueueBusy", true);
+                    return false;
+                }
+            }
+            catch (InvalidOperationException)
+            {
+                // Dispose may have completed the collection after the caller's
+                // initial disposed check. Treat shutdown as a rejected enqueue.
                 _queued.Remove(fullPath);
-                RaiseStatus("Telemetry queue is busy; capture remains on disk for the next start", true);
                 return false;
             }
         }
-        RaiseStatus($"Queued {Path.GetFileName(path)} for secure upload");
+        RaiseStatus("Telemetry.QueuedFormat", false, Path.GetFileName(path));
         return true;
     }
 
@@ -200,7 +227,13 @@ internal sealed class TelemetryUploadClient : IDisposable
             return;
         }
         _cancellation.Cancel();
-        _queue.CompleteAdding();
+        lock (_queueGate)
+        {
+            if (!_queue.IsAddingCompleted)
+            {
+                _queue.CompleteAdding();
+            }
+        }
         try
         {
             _worker.Wait(TimeSpan.FromSeconds(5));
@@ -225,7 +258,7 @@ internal sealed class TelemetryUploadClient : IDisposable
                 {
                     if (_endpoint == null || !_identityStore.IsEnrolled(_endpoint))
                     {
-                        RaiseStatus("Telemetry capture is waiting for enrollment");
+                        RaiseStatus("Telemetry.WaitingEnrollment");
                         continue;
                     }
                     if (!File.Exists(path))
@@ -237,7 +270,7 @@ internal sealed class TelemetryUploadClient : IDisposable
                     if (uploaded)
                     {
                         File.Delete(path);
-                        RaiseStatus($"Uploaded {Path.GetFileName(path)} · local queue copy removed");
+                        RaiseStatus("Telemetry.UploadedFormat", false, Path.GetFileName(path));
                     }
                     else if (_endpoint != null && _identityStore.IsEnrolled(_endpoint))
                     {
@@ -248,9 +281,15 @@ internal sealed class TelemetryUploadClient : IDisposable
                 {
                     return;
                 }
-                catch (Exception exception) when (exception is HttpRequestException || exception is IOException || exception is CryptographicException)
+                catch (Exception exception) when (
+                    exception is HttpRequestException ||
+                    exception is IOException ||
+                    exception is CryptographicException ||
+                    exception is SerializationException ||
+                    exception is InvalidDataException ||
+                    exception is FormatException)
                 {
-                    RaiseStatus("Telemetry upload deferred: " + exception.Message, true);
+                    RaiseStatus("Telemetry.DeferredFormat", true, exception.Message);
                     retry = true;
                 }
                 finally
@@ -301,12 +340,12 @@ internal sealed class TelemetryUploadClient : IDisposable
         if (response.StatusCode == HttpStatusCode.Forbidden)
         {
             _identityStore.MarkEnrolled(_endpoint!, false);
-            RaiseStatus("Telemetry installation must be enrolled again; queued capture was kept", true);
+            RaiseStatus("Telemetry.EnrollAgain", true);
             return false;
         }
         if ((int)response.StatusCode == 429 || (int)response.StatusCode >= 500)
         {
-            RaiseStatus($"Telemetry receiver deferred the upload ({(int)response.StatusCode}); capture was kept", true);
+            RaiseStatus("Telemetry.ReceiverDeferredFormat", true, (int)response.StatusCode);
             return false;
         }
         response.EnsureSuccessStatusCode();
@@ -353,11 +392,11 @@ internal sealed class TelemetryUploadClient : IDisposable
             .Sum();
     }
 
-    private void RaiseStatus(string message, bool isError = false)
+    private void RaiseStatus(string messageKey, bool isError = false, params object[] messageArguments)
     {
         try
         {
-            StatusChanged?.Invoke(this, new TelemetryUploadStatusEventArgs(message, isError));
+            StatusChanged?.Invoke(this, new TelemetryUploadStatusEventArgs(messageKey, isError, messageArguments));
         }
         catch
         {

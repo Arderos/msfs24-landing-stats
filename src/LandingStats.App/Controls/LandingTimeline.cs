@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Windows;
 using System.Windows.Media;
 using LandingStats.App.Models;
+using LandingStats.App.Settings;
 
 namespace LandingStats.App.Controls;
 
@@ -57,7 +58,7 @@ public sealed class LandingTimeline : FrameworkElement
                 : $"{tick:+0;-0;0}";
             if (last)
             {
-                label += " s";
+                label += " " + LocalizationManager.Text("Unit.SecondSuffix");
             }
 
             var formatted = Formatted(label, Math.Abs(tick) < 0.0001 ? ContactBrush : TextBrush);
@@ -70,7 +71,7 @@ public sealed class LandingTimeline : FrameworkElement
         }
     }
 
-    private static FormattedText Formatted(string text, Brush brush)
+    private FormattedText Formatted(string text, Brush brush)
     {
         return new FormattedText(
             text,
@@ -79,7 +80,7 @@ public sealed class LandingTimeline : FrameworkElement
             new Typeface("Cascadia Mono"),
             10,
             brush,
-            1.0);
+            VisualTreeHelper.GetDpi(this).PixelsPerDip);
     }
 
     private static Brush FrozenBrush(string color)

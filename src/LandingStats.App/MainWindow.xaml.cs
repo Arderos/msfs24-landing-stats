@@ -12,6 +12,7 @@ using System.Windows.Media;
 using System.Windows.Navigation;
 using LandingStats.App.Controls;
 using LandingStats.App.Models;
+using LandingStats.App.Settings;
 using LandingStats.App.Storage;
 using LandingStats.App.Telemetry;
 using LandingStats.App.TelemetryUpload;
@@ -22,6 +23,8 @@ namespace LandingStats.App;
 
 public partial class MainWindow : Window
 {
+    private readonly ApplicationSettingsRepository _settingsRepository;
+    private readonly ApplicationSettings _settings;
     private readonly LandingRepository _repository = new LandingRepository();
     private readonly RawCaptureRepository _rawCaptureRepository = new RawCaptureRepository();
     private readonly AirportFacilityRepository _airportFacilityRepository = new AirportFacilityRepository();
@@ -39,11 +42,24 @@ public partial class MainWindow : Window
     private int _primaryGearSeriesIndex;
     private int? _mainIsolatedSeriesIndex;
     private bool _changingRawDebugToggle;
+    private bool _changingLanguageSelection;
     private bool _telemetryUploadAllowed;
     private LandingRecord? _pendingDeleteRecord;
+    private double? _zoomStartSeconds;
+    private double? _zoomEndSeconds;
+    private RecorderState _lastRecorderState = RecorderState.Waiting;
+    private string _connectionStatusKey = "Top.Waiting";
+    private object[] _connectionStatusArguments = Array.Empty<object>();
+    private bool _connectionStatusIsWarning;
+    private string _rawStatusKey = "Footer.UploadDisabled";
+    private object[] _rawStatusArguments = Array.Empty<object>();
+    private bool _rawStatusIsError;
 
     public MainWindow()
     {
+        _settingsRepository = new ApplicationSettingsRepository();
+        _settings = _settingsRepository.Load();
+        LocalizationManager.Apply(_settings.Language);
         InitializeComponent();
         var assembly = typeof(MainWindow).Assembly;
         var version = assembly.GetName().Version;
@@ -67,9 +83,10 @@ public partial class MainWindow : Window
         MainChart.Mode = LandingChartMode.VerticalSpeed;
         _mainIsolatedSeriesIndex = null;
         MainChart.SetIsolatedSeries(null);
-        MainChartDescription.Text = "vertical speed · climb + / descent −";
+        MainChartDescription.Text = LocalizationManager.Text("Chart.DescriptionVertical");
         ModeUnitText.Text = "fpm";
         UpdateMainLegend(LandingChartMode.VerticalSpeed);
+        RefreshSettingsPresentation();
 
         SourceInitialized += OnSourceInitialized;
         Loaded += OnWindowLoaded;
@@ -84,13 +101,13 @@ public partial class MainWindow : Window
         VersionAuthorText.ToolTip = result.Path == null ? result.Message : result.Message + "\n" + result.Path;
         if (result.State == ReleaseUpdateState.UpdateStarted && result.Version != null)
         {
-            VersionAuthorRun.Text += $" · updating to v{result.Version}";
+            VersionAuthorRun.Text += LocalizationManager.Format("Update.StatusUpdatingFormat", result.Version);
             VersionAuthorText.Foreground = Brush("#8FD6A8");
             Application.Current.Shutdown();
         }
         else if (result.State == ReleaseUpdateState.Rejected)
         {
-            VersionAuthorRun.Text += " · update rejected";
+            VersionAuthorRun.Text += LocalizationManager.Text("Update.StatusRejected");
             VersionAuthorText.Foreground = Brush("#FF8A6A");
         }
     }
@@ -98,14 +115,17 @@ public partial class MainWindow : Window
     private void LoadHistory()
     {
         var stored = _repository.LoadAll().ToList();
+        var changedRecords = new List<LandingRecord>();
         foreach (var record in stored)
         {
             var changed = TryResolveAirport(record, _airportFacilities);
             if (changed)
             {
-                _repository.UpdateSummary(record);
+                changedRecords.Add(record);
             }
         }
+
+        _repository.UpdateSummaries(changedRecords);
 
         _landings = stored;
         ApplySessionFilter();
@@ -194,6 +214,8 @@ public partial class MainWindow : Window
 
     private void ApplyZoom(double? startSeconds, double? endSeconds)
     {
+        _zoomStartSeconds = startSeconds;
+        _zoomEndSeconds = endSeconds;
         foreach (var chart in _charts)
         {
             chart.SetZoomRange(startSeconds, endSeconds);
@@ -202,11 +224,16 @@ public partial class MainWindow : Window
         Timeline.SetZoomRange(startSeconds, endSeconds);
         if (startSeconds.HasValue && endSeconds.HasValue)
         {
-            ChartWindowButton.Content = $"Contact view  {startSeconds:+0;-0;0} … {endSeconds:+0;-0;0}s";
+            ChartWindowButton.Content = LocalizationManager.Format(
+                "View.ContactFormat",
+                startSeconds.Value,
+                endSeconds.Value);
         }
         else if (DataContext is LandingRecord record && record.Series.Count > 1)
         {
-            ChartWindowButton.Content = $"Full approach  {record.Series[0].TimeSeconds:+0;-0;0} … +15s";
+            ChartWindowButton.Content = LocalizationManager.Format(
+                "View.FullApproachFormat",
+                record.Series[0].TimeSeconds);
         }
     }
 
@@ -250,17 +277,25 @@ public partial class MainWindow : Window
         LandingHistoryList.SelectedItem = selected ?? filtered.FirstOrDefault();
         UpdateHistoryPresentation(filtered.Count);
 
-        var now = DateTime.Now;
-        var monthly = _landings
+        var monthlyAverage = MonthlyAverageDisplayedFpm(_landings, DateTime.Now);
+        AverageRateText.Text = !monthlyAverage.HasValue
+            ? "—"
+            : $"{monthlyAverage.Value:+0;-0;0} fpm";
+    }
+
+    internal static double? MonthlyAverageDisplayedFpm(IEnumerable<LandingRecord> records, DateTime localNow)
+    {
+        var primaryContacts = records
+            .Where(record => record.ContactNumber == 1)
             .Where(record =>
             {
                 var local = record.TimestampUtc.ToLocalTime();
-                return local.Year == now.Year && local.Month == now.Month;
+                return local.Year == localNow.Year && local.Month == localNow.Month;
             })
             .ToArray();
-        AverageRateText.Text = monthly.Length == 0
-            ? "—"
-            : $"{monthly.Average(record => -record.InertialFpm):+0;-0;0} fpm";
+        return primaryContacts.Length == 0
+            ? (double?)null
+            : primaryContacts.Average(record => -record.InertialFpm);
     }
 
     private void UpdateHistoryPresentation(int visibleCount)
@@ -275,13 +310,13 @@ public partial class MainWindow : Window
 
         if (_landings.Count == 0)
         {
-            EmptyStateTitle.Text = "NO LANDING SESSIONS";
-            EmptyStateDescription.Text = "Start MSFS and descend through 500 ft AGL. Recording, analysis and storage happen automatically after touchdown.";
+            EmptyStateTitle.Text = LocalizationManager.Text("History.NoLandingsTitle");
+            EmptyStateDescription.Text = LocalizationManager.Text("History.NoLandingsBody");
         }
         else
         {
-            EmptyStateTitle.Text = "NO MATCHING SESSIONS";
-            EmptyStateDescription.Text = "No saved landings match the current filter.";
+            EmptyStateTitle.Text = LocalizationManager.Text("History.NoMatchesTitle");
+            EmptyStateDescription.Text = LocalizationManager.Text("History.NoMatchesBody");
         }
 
         ClearSelectedRecord();
@@ -306,11 +341,7 @@ public partial class MainWindow : Window
         }
 
         _pendingDeleteRecord = record;
-        var contact = record.ContactCount > 1
-            ? $" · contact {record.ContactNumber}/{record.ContactCount}"
-            : string.Empty;
-        DeleteLandingDescription.Text =
-            $"{record.AircraftTitle}\n{record.LocationDisplay} · {record.TimestampDisplay}{contact}";
+        UpdateDeleteLandingDescription(record);
         DeleteLandingErrorText.Text = string.Empty;
         DeleteLandingErrorText.Visibility = Visibility.Collapsed;
         ConfirmDeleteLandingButton.IsEnabled = true;
@@ -378,7 +409,7 @@ public partial class MainWindow : Window
         catch (Exception exception)
         {
             ConfirmDeleteLandingButton.IsEnabled = true;
-            DeleteLandingErrorText.Text = $"Could not delete this landing. {exception.Message}";
+            DeleteLandingErrorText.Text = LocalizationManager.Format("Delete.ErrorFormat", exception.Message);
             DeleteLandingErrorText.Visibility = Visibility.Visible;
             Keyboard.Focus(CancelDeleteLandingButton);
         }
@@ -390,6 +421,157 @@ public partial class MainWindow : Window
         DeleteLandingOverlay.Visibility = Visibility.Collapsed;
         ConfirmDeleteLandingButton.IsEnabled = true;
         Keyboard.Focus(LandingHistoryList);
+    }
+
+    private void OnSettingsClick(object sender, RoutedEventArgs eventArgs)
+    {
+        eventArgs.Handled = true;
+        if (DeleteLandingOverlay.Visibility == Visibility.Visible)
+        {
+            HideDeleteLandingConfirmation();
+        }
+
+        SettingsErrorText.Text = string.Empty;
+        SettingsErrorText.Visibility = Visibility.Collapsed;
+        SetLanguageSelection(_settings.Language);
+        RefreshSettingsPresentation();
+        SettingsOverlay.Visibility = Visibility.Visible;
+        SettingsOverlay.Focus();
+        Keyboard.Focus(CloseSettingsButton);
+    }
+
+    private void OnCloseSettingsClick(object sender, RoutedEventArgs eventArgs)
+    {
+        HideSettings();
+    }
+
+    private void OnSettingsOverlayKeyDown(object sender, KeyEventArgs eventArgs)
+    {
+        if (eventArgs.Key != Key.Escape)
+        {
+            return;
+        }
+
+        eventArgs.Handled = true;
+        HideSettings();
+    }
+
+    private void HideSettings()
+    {
+        SettingsOverlay.Visibility = Visibility.Collapsed;
+        Keyboard.Focus(LandingHistoryList);
+    }
+
+    private void OnLanguageSelectionChanged(object sender, RoutedEventArgs eventArgs)
+    {
+        if (_changingLanguageSelection ||
+            sender is not RadioButton button ||
+            button.IsChecked != true ||
+            button.Tag is not string preference)
+        {
+            return;
+        }
+
+        preference = LocalizationManager.NormalizePreference(preference);
+        if (string.Equals(_settings.Language, preference, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        var previous = _settings.Language;
+        _settings.Language = preference;
+        try
+        {
+            _settingsRepository.Save(_settings);
+        }
+        catch (Exception exception)
+        {
+            _settings.Language = previous;
+            SetLanguageSelection(previous);
+            SettingsErrorText.Text = LocalizationManager.Format("Settings.SaveErrorFormat", exception.Message);
+            SettingsErrorText.Visibility = Visibility.Visible;
+            return;
+        }
+
+        LocalizationManager.Apply(preference);
+        SettingsErrorText.Text = string.Empty;
+        SettingsErrorText.Visibility = Visibility.Collapsed;
+        RefreshLocalizedPresentation();
+    }
+
+    private void SetLanguageSelection(string preference)
+    {
+        _changingLanguageSelection = true;
+        try
+        {
+            var normalized = LocalizationManager.NormalizePreference(preference);
+            SettingsLanguageAuto.IsChecked = normalized == LocalizationManager.AutomaticLanguage;
+            SettingsLanguageEnglish.IsChecked = normalized == LocalizationManager.EnglishLanguage;
+            SettingsLanguageRussian.IsChecked = normalized == LocalizationManager.RussianLanguage;
+        }
+        finally
+        {
+            _changingLanguageSelection = false;
+        }
+    }
+
+    private void RefreshSettingsPresentation()
+    {
+        var effectiveName = LocalizationManager.Text(
+            LocalizationManager.EffectiveLanguage == LocalizationManager.RussianLanguage
+                ? "Settings.Russian"
+                : "Settings.English");
+        SettingsAutomaticLanguageText.Text = LocalizationManager.Format(
+            "Settings.AutomaticResolvedFormat",
+            effectiveName);
+        SettingsFileText.Text = LocalizationManager.Format(
+            "Settings.FileFormat",
+            "%LOCALAPPDATA%\\MSFS Landing Stats\\settings.json");
+        SettingsFileText.ToolTip = _settingsRepository.Path;
+    }
+
+    private void RefreshLocalizedPresentation()
+    {
+        RefreshSettingsPresentation();
+        SetLanguageSelection(_settings.Language);
+
+        LandingHistoryList.Items.Refresh();
+        if (DataContext is LandingRecord selected)
+        {
+            DataContext = null;
+            DataContext = selected;
+        }
+
+        UpdateHistoryPresentation(LandingHistoryList.Items.Count);
+        UpdateChartDescription(MainChart.Mode);
+        UpdateModeUnit(MainChart.Mode);
+        UpdateMainLegend(MainChart.Mode);
+        ApplyZoom(_zoomStartSeconds, _zoomEndSeconds);
+        UpdateRecorderPresentation(_lastRecorderState);
+        SetConnectionStatusCore(
+            _connectionStatusKey,
+            _connectionStatusArguments,
+            _connectionStatusIsWarning);
+        RawDebugToggle.Content = LocalizationManager.Text(
+            RawDebugToggle.IsChecked == true ? "Footer.DebugOn" : "Footer.DebugOff");
+        SetRawStatusCore(_rawStatusKey, _rawStatusArguments, _rawStatusIsError);
+
+        if (_pendingDeleteRecord != null)
+        {
+            UpdateDeleteLandingDescription(_pendingDeleteRecord);
+        }
+    }
+
+    private void UpdateDeleteLandingDescription(LandingRecord record)
+    {
+        var contact = record.ContactCount > 1
+            ? LocalizationManager.Format(
+                "Delete.ContactSuffixFormat",
+                record.ContactNumber,
+                record.ContactCount)
+            : string.Empty;
+        DeleteLandingDescription.Text =
+            $"{record.AircraftTitle}\n{record.LocationDisplay} · {record.TimestampDisplay}{contact}";
     }
 
     private void OnChartModeChanged(object sender, RoutedEventArgs eventArgs)
@@ -406,17 +588,22 @@ public partial class MainWindow : Window
         MainChart.Mode = mode;
         _mainIsolatedSeriesIndex = null;
         UpdateChartDescription(mode);
+        UpdateModeUnit(mode);
+        UpdateMainLegend(mode);
+    }
+
+    private void UpdateModeUnit(LandingChartMode mode)
+    {
         ModeUnitText.Text = mode switch
         {
             LandingChartMode.VerticalSpeed => "fpm",
             LandingChartMode.LoadFactors => "G",
-            LandingChartMode.FlightControls => "% travel",
-            LandingChartMode.Attitude => "degrees",
+            LandingChartMode.FlightControls => LocalizationManager.Text("Chart.UnitTravel"),
+            LandingChartMode.Attitude => LocalizationManager.Text("Chart.UnitDegrees"),
             LandingChartMode.Power => "% N1",
-            LandingChartMode.Gear => "% stroke",
+            LandingChartMode.Gear => LocalizationManager.Text("Chart.UnitStroke"),
             _ => string.Empty,
         };
-        UpdateMainLegend(mode);
     }
 
     private void UpdateChartDescription(LandingChartMode mode)
@@ -424,14 +611,17 @@ public partial class MainWindow : Window
         var record = DataContext as LandingRecord;
         MainChartDescription.Text = mode switch
         {
-            LandingChartMode.VerticalSpeed => "vertical speed · climb + / descent −",
-            LandingChartMode.LoadFactors => "three axes at the strut",
+            LandingChartMode.VerticalSpeed => LocalizationManager.Text("Chart.DescriptionVertical"),
+            LandingChartMode.LoadFactors => LocalizationManager.Text("Chart.DescriptionLoads"),
             LandingChartMode.FlightControls when record?.HasRawPitchInput == true =>
-                $"raw pitch C{record.RawPitchInputSourceIndex} · {record.RawPitchInputLagSeconds * 1000.0:F0} ms · dashed surfaces",
-            LandingChartMode.FlightControls => "processed SimConnect commands · dashed surfaces",
-            LandingChartMode.Attitude => "pitch, bank and AoA",
-            LandingChartMode.Power => "solid N1, dashed lever",
-            LandingChartMode.Gear => "strut compression per point",
+                LocalizationManager.Format(
+                    "Chart.DescriptionRawControlsFormat",
+                    record.RawPitchInputSourceIndex,
+                    record.RawPitchInputLagSeconds * 1000.0),
+            LandingChartMode.FlightControls => LocalizationManager.Text("Chart.DescriptionControls"),
+            LandingChartMode.Attitude => LocalizationManager.Text("Chart.DescriptionAttitude"),
+            LandingChartMode.Power => LocalizationManager.Text("Chart.DescriptionPower"),
+            LandingChartMode.Gear => LocalizationManager.Text("Chart.DescriptionGear"),
             _ => string.Empty,
         };
     }
@@ -462,34 +652,64 @@ public partial class MainWindow : Window
         switch (mode)
         {
             case LandingChartMode.VerticalSpeed:
-                labels = new[] { "aircraft", "VSI (lagged)", "surface closure" };
+                labels = new[]
+                {
+                    LocalizationManager.Text("Chart.Aircraft"),
+                    LocalizationManager.Text("Chart.VsiLagged"),
+                    LocalizationManager.Text("Chart.SurfaceClosure"),
+                };
                 colors = new[] { "#FF7A45", "#D9C46A", "#5FA8F5" };
                 dashed = new[] { false, false, true };
                 count = record?.HasSurfaceLatchData == true ? 3 : 2;
                 break;
             case LandingChartMode.LoadFactors:
-                labels = new[] { "vertical", "longitudinal", "lateral" };
+                labels = new[]
+                {
+                    LocalizationManager.Text("Chart.Vertical"),
+                    LocalizationManager.Text("Chart.Longitudinal"),
+                    LocalizationManager.Text("Chart.Lateral"),
+                };
                 colors = new[] { "#FF7A45", "#5FA8F5", "#D9C46A" };
                 dashed = new[] { false, false, false };
                 break;
             case LandingChartMode.FlightControls:
-                labels = new[] { record?.HasRawPitchInput == true ? "pitch raw" : "pitch (sim)", "roll", "yaw" };
+                labels = new[]
+                {
+                    LocalizationManager.Text(record?.HasRawPitchInput == true ? "Chart.PitchRaw" : "Chart.PitchSim"),
+                    LocalizationManager.Text("Chart.Roll"),
+                    LocalizationManager.Text("Chart.Yaw"),
+                };
                 colors = new[] { "#FF7A45", "#5FA8F5", "#D9C46A" };
                 dashed = new[] { false, false, false };
                 break;
             case LandingChartMode.Attitude:
-                labels = new[] { "pitch", "bank", "AoA" };
+                labels = new[]
+                {
+                    LocalizationManager.Text("Chart.Pitch"),
+                    LocalizationManager.Text("Chart.Bank"),
+                    LocalizationManager.Text("Chart.Aoa"),
+                };
                 colors = new[] { "#FF7A45", "#5FA8F5", "#D9C46A" };
                 dashed = new[] { false, false, false };
                 break;
             case LandingChartMode.Power:
-                labels = new[] { "engine 1", "engine 2", "engine 3" };
+                labels = new[]
+                {
+                    LocalizationManager.Format("Chart.EngineFormat", 1),
+                    LocalizationManager.Format("Chart.EngineFormat", 2),
+                    LocalizationManager.Format("Chart.EngineFormat", 3),
+                };
                 colors = new[] { "#FF7A45", "#5FA8F5", "#D9C46A" };
                 dashed = new[] { false, false, false };
                 count = Math.Min(3, record?.Engines.Count ?? 0);
                 break;
             case LandingChartMode.Gear:
-                labels = new[] { "point 1", "point 2", "point 3" };
+                labels = new[]
+                {
+                    LocalizationManager.Format("Chart.ContactPointFormat", 1),
+                    LocalizationManager.Format("Chart.ContactPointFormat", 2),
+                    LocalizationManager.Format("Chart.ContactPointFormat", 3),
+                };
                 colors = new[] { "#FF7A45", "#5FA8F5", "#D9C46A" };
                 dashed = new[] { false, false, false };
                 count = Math.Min(3, record?.ContactPoints.Count ?? 0);
@@ -548,15 +768,21 @@ public partial class MainWindow : Window
 
     private void OnRecorderStatusChanged(object? sender, RecorderStatusEventArgs eventArgs)
     {
-        ConnectionStatusText.Text = eventArgs.Message;
-        RecorderModeText.Text = eventArgs.State switch
+        SetConnectionStatus(eventArgs.MessageKey, eventArgs.MessageArguments);
+        UpdateRecorderPresentation(eventArgs.State);
+    }
+
+    private void UpdateRecorderPresentation(RecorderState state)
+    {
+        _lastRecorderState = state;
+        RecorderModeText.Text = state switch
         {
-            RecorderState.Connected => "armed",
-            RecorderState.Recording => "recording",
-            RecorderState.Error => "error",
-            _ => "offline",
+            RecorderState.Connected => LocalizationManager.Text("Recorder.Armed"),
+            RecorderState.Recording => LocalizationManager.Text("Recorder.Recording"),
+            RecorderState.Error => LocalizationManager.Text("Recorder.Error"),
+            _ => LocalizationManager.Text("Top.Offline"),
         };
-        ConnectionStatusDot.Fill = eventArgs.State switch
+        ConnectionStatusDot.Fill = state switch
         {
             RecorderState.Connected => Brush("#8FD6A8"),
             RecorderState.Recording => Brush("#FF7A45"),
@@ -587,9 +813,8 @@ public partial class MainWindow : Window
             var touchdowns = TouchdownAnalysis.Analyze(samples);
             if (touchdowns.Count == 0)
             {
-                ConnectionStatusText.Text = "Capture ended, but no touchdown was detected";
-                ConnectionStatusDot.Fill = Brush("#FF8A6A");
-                RecorderModeText.Text = "armed";
+                UpdateRecorderPresentation(RecorderState.Connected);
+                SetConnectionWarning("Recorder.NoTouchdown");
                 return;
             }
 
@@ -615,18 +840,42 @@ public partial class MainWindow : Window
             }
 
             AddLandingRecords(savedRecords);
-            var landingStatus = touchdowns.Count == 1
-                ? "Landing analyzed and saved"
-                : $"{touchdowns.Count} contacts analyzed and saved";
-            ConnectionStatusText.Text = landingStatus;
-            ConnectionStatusDot.Fill = Brush("#8FD6A8");
-            RecorderModeText.Text = "armed";
+            if (touchdowns.Count == 1)
+            {
+                SetConnectionStatus("Recorder.LandingSaved");
+            }
+            else
+            {
+                SetConnectionStatus("Recorder.ContactsSavedFormat", touchdowns.Count);
+            }
+            UpdateRecorderPresentation(RecorderState.Connected);
         }
         catch (Exception exception)
         {
-            ConnectionStatusText.Text = $"Landing analysis failed: {exception.Message}";
+            SetConnectionStatus("Recorder.AnalysisFailedFormat", exception.Message);
+            UpdateRecorderPresentation(RecorderState.Error);
+        }
+    }
+
+    private void SetConnectionStatus(string key, params object[] arguments)
+    {
+        SetConnectionStatusCore(key, arguments, false);
+    }
+
+    private void SetConnectionWarning(string key, params object[] arguments)
+    {
+        SetConnectionStatusCore(key, arguments, true);
+    }
+
+    private void SetConnectionStatusCore(string key, object[]? arguments, bool isWarning)
+    {
+        _connectionStatusKey = key;
+        _connectionStatusArguments = arguments ?? Array.Empty<object>();
+        _connectionStatusIsWarning = isWarning;
+        ConnectionStatusText.Text = LocalizationManager.Format(key, _connectionStatusArguments);
+        if (isWarning)
+        {
             ConnectionStatusDot.Fill = Brush("#FF8A6A");
-            RecorderModeText.Text = "error";
         }
     }
 
@@ -727,22 +976,20 @@ public partial class MainWindow : Window
             return;
         }
         var enabled = RawDebugToggle.IsChecked == true;
-        RawDebugToggle.Content = enabled ? "DEBUG RAW · ON" : "DEBUG RAW · OFF";
+        RawDebugToggle.Content = LocalizationManager.Text(enabled ? "Footer.DebugOn" : "Footer.DebugOff");
         if (!enabled)
         {
             var wasEnabled = _recorder?.RawDebugEnabled == true;
             _recorder?.SetRawDebugEnabled(false);
             if (!wasEnabled)
             {
-                RawDebugStatusText.Text = "Full-rate capture is disabled";
+                SetRawStatus("Raw.Disabled");
             }
             return;
         }
 
         _recorder?.SetRawDebugEnabled(true);
-        RawDebugStatusText.Text = _recorder == null
-            ? "Local full-rate capture armed · starts after SimConnect initializes"
-            : "LIVE · saved locally · every SIM_FRAME sample · 15 s pre-roll";
+        SetRawStatus(_recorder == null ? "Raw.Armed" : "Raw.Live");
 
         TelemetryUploadClient uploadClient;
         try
@@ -751,7 +998,7 @@ public partial class MainWindow : Window
         }
         catch (Exception exception)
         {
-            RawDebugStatusText.Text = $"Local DEBUG RAW is active · upload unavailable: {exception.Message}";
+            SetRawError("Raw.UploadUnavailableFormat", exception.Message);
             return;
         }
 
@@ -763,7 +1010,7 @@ public partial class MainWindow : Window
         catch (Exception exception)
         {
             _telemetryUploadAllowed = false;
-            RawDebugStatusText.Text = $"LIVE · saved locally · upload identity unavailable: {exception.Message}";
+            SetRawError("Raw.IdentityUnavailableFormat", exception.Message);
             return;
         }
 
@@ -771,17 +1018,14 @@ public partial class MainWindow : Window
         {
             var consent = MessageBox.Show(
                 this,
-                "DEBUG RAW is already recording locally. It can also send full-rate flight telemetry " +
-                "to the MSFS Landing Stats maintainer, including aircraft state, coordinates and " +
-                "controller/input channels. A local queue copy is removed only after the server accepts it.\n\n" +
-                "Yes: allow upload. No: keep recording locally only.",
-                "Enable telemetry upload",
+                LocalizationManager.Text("Raw.ConsentBody"),
+                LocalizationManager.Text("Raw.ConsentTitle"),
                 MessageBoxButton.YesNo,
                 MessageBoxImage.Warning);
             if (consent != MessageBoxResult.Yes)
             {
                 _telemetryUploadAllowed = false;
-                RawDebugStatusText.Text = "LIVE · saved locally · telemetry upload is disabled";
+                SetRawStatus("Raw.UploadDisabled");
                 return;
             }
             try
@@ -791,13 +1035,13 @@ public partial class MainWindow : Window
             catch (Exception exception)
             {
                 _telemetryUploadAllowed = false;
-                RawDebugStatusText.Text = $"LIVE · saved locally · upload consent could not be saved: {exception.Message}";
+                SetRawError("Raw.ConsentSaveFailedFormat", exception.Message);
                 return;
             }
         }
         _telemetryUploadAllowed = true;
 
-        RawDebugStatusText.Text = "LIVE · saved locally · preparing secure upload…";
+        SetRawStatus("Raw.Preparing");
         TelemetryPreparationResult preparation;
         try
         {
@@ -811,7 +1055,7 @@ public partial class MainWindow : Window
         {
             if (RawDebugToggle.IsChecked == true)
             {
-                RawDebugStatusText.Text = $"LIVE · saved locally · upload unavailable: {exception.Message}";
+                SetRawError("Raw.LiveUploadUnavailableFormat", exception.Message);
             }
             return;
         }
@@ -819,9 +1063,14 @@ public partial class MainWindow : Window
         {
             return;
         }
-        RawDebugStatusText.Text = preparation.State == TelemetryPreparationState.Ready
-            ? "LIVE · saved locally · secure upload ready"
-            : $"LIVE · saved locally · {preparation.Message}";
+        if (preparation.State == TelemetryPreparationState.Ready)
+        {
+            SetRawStatus("Raw.Ready");
+        }
+        else
+        {
+            SetRawError(preparation.MessageKey, preparation.MessageArguments);
+        }
     }
 
     private void OnRawDebugCaptureStarted(object? sender, RawDebugCaptureStartedEventArgs eventArgs)
@@ -843,11 +1092,11 @@ public partial class MainWindow : Window
             {
                 OnRawCaptureFailed(_rawCaptureSession.Failure);
             }
-            RawDebugStatusText.Text = "LIVE · saved locally · every SIM_FRAME sample · 15 s pre-roll";
+            SetRawStatus("Raw.Live");
         }
         catch (Exception exception)
         {
-            RawDebugStatusText.Text = $"Raw capture failed: {exception.Message}";
+            SetRawError("Raw.CaptureFailedFormat", exception.Message);
         }
     }
 
@@ -859,7 +1108,7 @@ public partial class MainWindow : Window
     private void OnRawDebugCaptureStopped(object? sender, EventArgs eventArgs)
     {
         StopRawCaptureSession();
-        RawDebugStatusText.Text = "Full-rate capture is disabled";
+        SetRawStatus("Raw.Disabled");
     }
 
     private void StopRawCaptureSession()
@@ -877,7 +1126,7 @@ public partial class MainWindow : Window
         }
         catch (Exception exception)
         {
-            RawDebugStatusText.Text = $"Raw capture failed: {exception.Message}";
+            SetRawError("Raw.CaptureFailedFormat", exception.Message);
         }
         finally
         {
@@ -892,11 +1141,18 @@ public partial class MainWindow : Window
         var queued = uploadAllowed && _telemetryUploadClient?.Enqueue(eventArgs.Path) == true;
         Dispatcher.BeginInvoke(new Action(() =>
         {
-            RawDebugStatusText.Text = !uploadAllowed
-                ? $"Saved {eventArgs.SampleCount:N0} frames locally · telemetry upload is disabled"
-                : queued
-                    ? $"Saved {eventArgs.SampleCount:N0} frames locally · queued for secure upload"
-                    : $"Saved {eventArgs.SampleCount:N0} frames locally · upload unavailable · {eventArgs.Path}";
+            if (!uploadAllowed)
+            {
+                SetRawStatus("Raw.SavedDisabledFormat", eventArgs.SampleCount);
+            }
+            else if (queued)
+            {
+                SetRawStatus("Raw.SavedQueuedFormat", eventArgs.SampleCount);
+            }
+            else
+            {
+                SetRawError("Raw.SavedUnavailableFormat", eventArgs.SampleCount, eventArgs.Path);
+            }
         }));
     }
 
@@ -917,8 +1173,7 @@ public partial class MainWindow : Window
     {
         Dispatcher.BeginInvoke(new Action(() =>
         {
-            RawDebugStatusText.Text = eventArgs.Message;
-            RawDebugStatusText.Foreground = eventArgs.IsError ? Brush("#FF8A6A") : Brush("#AEB8C2");
+            SetRawStatusCore(eventArgs.MessageKey, eventArgs.MessageArguments, eventArgs.IsError);
         }));
     }
 
@@ -928,7 +1183,7 @@ public partial class MainWindow : Window
         try
         {
             RawDebugToggle.IsChecked = enabled;
-            RawDebugToggle.Content = enabled ? "DEBUG RAW · ON" : "DEBUG RAW · OFF";
+            RawDebugToggle.Content = LocalizationManager.Text(enabled ? "Footer.DebugOn" : "Footer.DebugOff");
             if (!enabled)
             {
                 _recorder?.SetRawDebugEnabled(false);
@@ -948,8 +1203,27 @@ public partial class MainWindow : Window
             {
                 RawDebugToggle.IsChecked = false;
             }
-            RawDebugStatusText.Text = $"Raw capture failed: {exception.Message}";
+            SetRawError("Raw.CaptureFailedFormat", exception.Message);
         }));
+    }
+
+    private void SetRawStatus(string key, params object[] arguments)
+    {
+        SetRawStatusCore(key, arguments, false);
+    }
+
+    private void SetRawError(string key, params object[] arguments)
+    {
+        SetRawStatusCore(key, arguments, true);
+    }
+
+    private void SetRawStatusCore(string key, object[]? arguments, bool isError)
+    {
+        _rawStatusKey = key;
+        _rawStatusArguments = arguments ?? Array.Empty<object>();
+        _rawStatusIsError = isError;
+        RawDebugStatusText.Text = LocalizationManager.Format(key, _rawStatusArguments);
+        RawDebugStatusText.Foreground = isError ? Brush("#FF8A6A") : Brush("#AEB8C2");
     }
 
     private static int PrimaryGearSeriesIndex(LandingRecord record)
@@ -979,8 +1253,46 @@ public partial class MainWindow : Window
             return;
         }
 
-        var point = record.Series.OrderBy(candidate => Math.Abs(candidate.TimeSeconds - timeSeconds)).First();
-        HoverTimeText.Text = $"{point.TimeSeconds:+0.00;-0.00;0.00}s";
+        var point = record.Series[ClosestSeriesPointIndex(record.Series, timeSeconds)];
+        HoverTimeText.Text =
+            $"{point.TimeSeconds:+0.00;-0.00;0.00}{LocalizationManager.Text("Unit.SecondSuffix")}";
+    }
+
+    internal static int ClosestSeriesPointIndex(IReadOnlyList<LandingSeriesPoint> points, double targetTime)
+    {
+        if (points == null || points.Count == 0)
+        {
+            throw new ArgumentException("At least one series point is required.", nameof(points));
+        }
+
+        if (points.Count == 1 || targetTime <= points[0].TimeSeconds)
+        {
+            return 0;
+        }
+
+        if (targetTime >= points[points.Count - 1].TimeSeconds)
+        {
+            return points.Count - 1;
+        }
+
+        var low = 0;
+        var high = points.Count - 1;
+        while (high - low > 1)
+        {
+            var middle = low + (high - low) / 2;
+            if (points[middle].TimeSeconds < targetTime)
+            {
+                low = middle;
+            }
+            else
+            {
+                high = middle;
+            }
+        }
+
+        return targetTime - points[low].TimeSeconds <= points[high].TimeSeconds - targetTime
+            ? low
+            : high;
     }
 
     private void OnWindowClosed(object? sender, EventArgs eventArgs)

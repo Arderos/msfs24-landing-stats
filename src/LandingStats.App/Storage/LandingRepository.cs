@@ -98,19 +98,42 @@ public sealed class LandingRepository
             throw new ArgumentNullException(nameof(record));
         }
 
-        EnsureIndexLoaded();
-        var summary = CreateSummary(record);
-        var index = _summaries!.FindIndex(candidate => string.Equals(candidate.Id, record.Id, StringComparison.Ordinal));
-        if (index >= 0)
+        UpdateSummaries(new[] { record });
+    }
+
+    public void UpdateSummaries(IEnumerable<LandingRecord> records)
+    {
+        if (records == null)
         {
-            _summaries[index] = summary;
-        }
-        else
-        {
-            _summaries.Add(summary);
+            throw new ArgumentNullException(nameof(records));
         }
 
-        SaveIndex();
+        EnsureIndexLoaded();
+        var changed = false;
+        foreach (var record in records)
+        {
+            if (record == null)
+            {
+                throw new ArgumentException("A landing summary cannot be null.", nameof(records));
+            }
+
+            var summary = CreateSummary(record);
+            var index = _summaries!.FindIndex(candidate => string.Equals(candidate.Id, record.Id, StringComparison.Ordinal));
+            if (index >= 0)
+            {
+                _summaries[index] = summary;
+            }
+            else
+            {
+                _summaries.Add(summary);
+            }
+            changed = true;
+        }
+
+        if (changed)
+        {
+            SaveIndex();
+        }
     }
 
     public bool Delete(string id)

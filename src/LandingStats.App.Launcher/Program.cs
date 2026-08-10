@@ -109,6 +109,7 @@ internal static class Program
                     string.Equals(File.ReadAllText(markerPath).Trim(), versionText, StringComparison.Ordinal) &&
                     RuntimeIsComplete(runtimeDirectory))
                 {
+                    CleanupOldRuntimeDirectories(runtimeRoot, runtimeDirectory);
                     return runtimeDirectory;
                 }
 
@@ -141,6 +142,7 @@ internal static class Program
                     }
                 }
 
+                CleanupOldRuntimeDirectories(runtimeRoot, runtimeDirectory);
                 return runtimeDirectory;
             }
             finally
@@ -243,6 +245,59 @@ internal static class Program
             var path = Path.Combine(runtimeDirectory, file);
             return File.Exists(path) && new FileInfo(path).Length > 0;
         });
+    }
+
+    private static void CleanupOldRuntimeDirectories(string runtimeRoot, string currentRuntimeDirectory)
+    {
+        if (!Directory.Exists(runtimeRoot))
+        {
+            return;
+        }
+
+        var resolvedRoot = Path.GetFullPath(runtimeRoot).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        var resolvedCurrent = Path.GetFullPath(currentRuntimeDirectory).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        IEnumerable<string> candidates;
+        try
+        {
+            candidates = Directory.EnumerateDirectories(resolvedRoot).ToArray();
+        }
+        catch (IOException)
+        {
+            return;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return;
+        }
+
+        foreach (var candidate in candidates)
+        {
+            try
+            {
+                var resolvedCandidate = Path.GetFullPath(candidate).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                var parent = Directory.GetParent(resolvedCandidate)?.FullName
+                    .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                var name = Path.GetFileName(resolvedCandidate);
+                if (!string.Equals(parent, resolvedRoot, StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(resolvedCandidate, resolvedCurrent, StringComparison.OrdinalIgnoreCase) ||
+                    !Version.TryParse(name, out _) ||
+                    (File.GetAttributes(resolvedCandidate) & FileAttributes.ReparsePoint) != 0)
+                {
+                    continue;
+                }
+
+                Directory.Delete(resolvedCandidate, true);
+            }
+            catch (IOException)
+            {
+                // A running older process can still have files loaded. Keep it and
+                // retry after that process exits on a later launch.
+            }
+            catch (UnauthorizedAccessException)
+            {
+                // Cleanup is best-effort and must not block application startup.
+            }
+        }
     }
 
     private static string QuoteArgument(string argument)

@@ -2,6 +2,28 @@
 
 All notable changes to MSFS Landing Stats are documented in this file.
 
+## [0.7.8] - 2026-08-10
+
+### Added
+
+- Added complete English and Russian interface localization, including charts,
+  reconstruction details, status messages, dialogs, and explanatory tooltips.
+- Added an in-app language setting with automatic locale detection and explicit
+  English or Russian selection. Unknown future settings are preserved.
+
+### Fixed
+
+- Kept paused or frozen simulator frames from growing an active landing episode
+  indefinitely, and made telemetry shutdown safe while captures are queued.
+- Corrupt telemetry identities and airport caches now recover without breaking
+  local recording or application startup.
+- Monthly averages now count each landing once instead of counting bounce
+  contacts as additional landings.
+- Corrected translated date, unit, warning, consent, and debug-capture states,
+  including live language switching without changing warning severity.
+- Reduced chart hover, CSV parsing, history persistence, and launcher startup
+  overhead while keeping their stored formats compatible.
+
 ## [0.7.7] - 2026-08-08
 
 ### Added

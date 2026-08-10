@@ -14,9 +14,11 @@ using System.Runtime.Serialization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
+using System.Threading.Tasks;
 using LandingStats.App;
 using LandingStats.App.Controls;
 using LandingStats.App.Models;
+using LandingStats.App.Settings;
 using LandingStats.App.Storage;
 using LandingStats.App.Telemetry;
 using LandingStats.App.TelemetryUpload;
@@ -31,16 +33,24 @@ internal static class Program
     private const BindingFlags InstancePrivate = BindingFlags.Instance | BindingFlags.NonPublic;
     private static int _failures;
 
+    [STAThread]
     private static int Main()
     {
+        _ = new System.Windows.Application();
+        LocalizationManager.Apply("en");
+
         Run("deduplicator keeps the last same-time frame", DeduplicatorKeepsLastFrame);
         Run("approach timeout re-arms capture", ApproachTimeoutRearmsCapture);
+        Run("paused simulator frames do not grow the active episode", PausedFramesDoNotGrowEpisode);
         Run("pre-roll uses monotonic receipt time and remains bounded", PreRollUsesReceiptTimeAndRemainsBounded);
         Run("full telemetry gate has AGL hysteresis and RAW override", FullTelemetryGateHasHysteresis);
         Run("raw debug streams into a temporary queue zip", RawDebugStreamsIntoZip);
+        Run("raw capture startup removes only abandoned temp chunks", RawCaptureCleansAbandonedTempChunks);
         Run("raw telemetry queue never blocks its producer", RawTelemetryQueueNeverBlocksProducer);
         Run("telemetry identity is stable, protected, and signs", TelemetryIdentityIsStableAndSigns);
         Run("telemetry registration is automatic and hardware anonymous", TelemetryRegistrationIsAutomaticAndAnonymous);
+        Run("corrupt telemetry identity does not fault the upload worker", CorruptTelemetryIdentityDoesNotFaultWorker);
+        Run("telemetry enqueue is safe during disposal", TelemetryEnqueueIsSafeDuringDisposal);
         Run("updater accepts a signed manifest and rejects tampering", UpdaterVerifiesSignedManifest);
         Run("updater accepts the issued format-2 manifest shape", UpdaterAcceptsIssuedManifestShape);
         Run("updater accepts the format-3 single executable manifest shape", UpdaterAcceptsSingleExecutableManifestShape);
@@ -60,9 +70,12 @@ internal static class Program
         Run("landing index reconciles committed details after an interrupted save", LandingIndexReconcilesCommittedDetails);
         Run("landing filenames are culture invariant", LandingFilenamesAreCultureInvariant);
         Run("airport cache is never overwritten after a transient read failure", AirportCacheSurvivesTransientReadFailure);
+        Run("corrupt airport cache is quarantined and rebuilt", CorruptAirportCacheIsRebuilt);
         Run("chart ranges discard non-finite telemetry", ChartRangesDiscardNonFiniteTelemetry);
+        Run("lane hover finds the nearest point without sorting", LaneHoverFindsNearestPoint);
         Run("closure reconstruction survives history round-trip", ClosureReconstructionSurvivesHistoryRoundTrip);
         Run("bounce history shows the latest contact first", BounceHistoryShowsLatestContactFirst);
+        Run("monthly average counts each landing once", MonthlyAverageCountsPrimaryContactsOnly);
         Run("columnar v7 is smaller than the object layout", ColumnarV7IsSmallerThanObjectLayout);
         Run("stored controller columns retain only live sources", StoredControllerColumnsAreCompact);
         Run("closure reconstruction keeps the raw latch independent", ClosureReconstructionKeepsRawLatchIndependent);
@@ -79,11 +92,115 @@ internal static class Program
         Run("closure reconstruction rejects mixed main-nose contact", ClosureReconstructionRejectsMixedMainNoseContact);
         Run("closure reconstruction rejects nose-first contact without changing raw metrics", ClosureReconstructionRejectsNoseFirstContact);
         Run("telemetry geometry recovers an analytic arm from permuted points", TelemetryGeometryRecoversAnalyticArm);
+        Run("language auto-detection is Russian-only with an English fallback", LanguageAutoDetectionIsRussianOnly);
+        Run("English landing dates use an English month and 24-hour time", EnglishLandingDateFormatIsStable);
+        Run("settings preserve unknown future options", SettingsPreserveUnknownFutureOptions);
+        Run("WPF resources switch completely between English and Russian", WpfResourcesSwitchCompletely);
+        Run("localized whitespace survives WPF resource loading", LocalizedWhitespaceSurvivesWpfLoading);
+        Run("landing feel severity is independent of translated text", LandingFeelSeverityIsLanguageIndependent);
 
         Console.WriteLine(_failures == 0
             ? "All regression tests passed."
             : $"{_failures} regression test(s) failed.");
         return _failures == 0 ? 0 : 1;
+    }
+
+    private static void LanguageAutoDetectionIsRussianOnly()
+    {
+        Equal("ru", LocalizationManager.ResolveLanguage("auto", CultureInfo.GetCultureInfo("ru-RU")), "Russian automatic language");
+        Equal("en", LocalizationManager.ResolveLanguage("auto", CultureInfo.GetCultureInfo("en-US")), "English automatic language");
+        Equal("en", LocalizationManager.ResolveLanguage("auto", CultureInfo.GetCultureInfo("de-DE")), "unsupported locale fallback");
+        Equal("ru", LocalizationManager.ResolveLanguage("ru", CultureInfo.GetCultureInfo("de-DE")), "explicit Russian override");
+        Equal("en", LocalizationManager.ResolveLanguage("en", CultureInfo.GetCultureInfo("ru-RU")), "explicit English override");
+    }
+
+    private static void EnglishLandingDateFormatIsStable()
+    {
+        var value = new DateTime(2026, 8, 5, 21, 37, 0, DateTimeKind.Local);
+        Equal(
+            "05 Aug · 21:37",
+            value.ToString("dd MMM · HH:mm", LocalizationManager.CultureFor("en")),
+            "English landing timestamp");
+    }
+
+    private static void SettingsPreserveUnknownFutureOptions()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "landing-stats-settings-test-" + Guid.NewGuid().ToString("N"));
+        var path = Path.Combine(root, "settings.json");
+        try
+        {
+            Directory.CreateDirectory(root);
+            var repository = new ApplicationSettingsRepository(path);
+            repository.Save(new ApplicationSettings { Language = "en" });
+            var issued = File.ReadAllText(path, Encoding.UTF8).TrimEnd();
+            File.WriteAllText(
+                path,
+                issued.Substring(0, issued.Length - 1) + ",\"futureOption\":{\"enabled\":true}}",
+                new UTF8Encoding(false));
+
+            var settings = repository.Load();
+            Equal("en", settings.Language, "stored language");
+
+            repository.Save(settings);
+            var saved = File.ReadAllText(path, Encoding.UTF8);
+            Equal(true, saved.Contains("\"futureOption\""), "unknown option survives save");
+
+            settings.Language = "de";
+            repository.Save(settings);
+            Equal("auto", repository.Load().Language, "unsupported saved preference normalizes to automatic");
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, true);
+            }
+        }
+    }
+
+    private static void WpfResourcesSwitchCompletely()
+    {
+        LocalizationManager.Apply("en");
+        Equal("SETTINGS", System.Windows.Application.Current.TryFindResource("Settings.Title"), "English WPF resource");
+
+        LocalizationManager.Apply("ru");
+        Equal("НАСТРОЙКИ", System.Windows.Application.Current.TryFindResource("Settings.Title"), "Russian WPF resource");
+        Equal("Landing Stats", System.Windows.Application.Current.TryFindResource("Product.Name"), "application brand is not translated");
+        Equal(
+            "Средняя вертикальная скорость за месяц",
+            System.Windows.Application.Current.TryFindResource("History.AverageRate"),
+            "Russian history resource");
+
+        var localizationDictionaries = System.Windows.Application.Current.Resources.MergedDictionaries.Count(
+            dictionary => dictionary.Source?.OriginalString.IndexOf(
+                "Localization/Strings.",
+                StringComparison.OrdinalIgnoreCase) >= 0);
+        Equal(1, localizationDictionaries, "only one localization dictionary remains active");
+        LocalizationManager.Apply("en");
+    }
+
+    private static void LandingFeelSeverityIsLanguageIndependent()
+    {
+        var record = new LandingRecord { InertialFpm = 300.0 };
+        LocalizationManager.Apply("ru");
+        Equal("ЖЁСТКАЯ", record.LandingFeelDisplay, "Russian firm label");
+        Equal(true, record.IsFirmLanding, "firm severity flag");
+
+        record.InertialFpm = 200.0;
+        Equal("МЯГКАЯ", record.LandingFeelDisplay, "Russian smooth label");
+        Equal(false, record.IsFirmLanding, "smooth severity flag");
+        LocalizationManager.Apply("en");
+    }
+
+    private static void LocalizedWhitespaceSurvivesWpfLoading()
+    {
+        LocalizationManager.Apply("en");
+        Equal(true, LocalizationManager.Text("Delete.ContactSuffixFormat").StartsWith(" · ", StringComparison.Ordinal), "delete suffix leading space");
+        Equal(true, LocalizationManager.Text("Update.StatusUpdatingFormat").StartsWith(" · ", StringComparison.Ordinal), "updating suffix leading space");
+        Equal(true, LocalizationManager.Text("Update.StatusRejected").StartsWith(" · ", StringComparison.Ordinal), "rejected suffix leading space");
+        Equal(true, LocalizationManager.Text("Model.GeometryQualityFormat").StartsWith(" · ", StringComparison.Ordinal), "geometry suffix leading space");
+        Equal(true, LocalizationManager.Text("Raw.ConsentBody").IndexOf("\n\n", StringComparison.Ordinal) >= 0, "consent paragraph break");
+        Equal(true, LocalizationManager.Text("Footer.DebugHelp").StartsWith("Not intended for long flights.", StringComparison.Ordinal), "full telemetry warning remains explicit");
     }
 
     private static void DeduplicatorKeepsLastFrame()
@@ -111,6 +228,22 @@ internal static class Program
 
         Invoke(recorder, "ProcessSample", ApproachSample(302.02));
         NotNull(Field(recorder, "_episodeSamples"), "next descending frame should start a fresh episode");
+    }
+
+    private static void PausedFramesDoNotGrowEpisode()
+    {
+        using var recorder = NewRecorder();
+        Invoke(recorder, "ProcessSample", ApproachSample(1));
+        for (var index = 0; index < 10000; index++)
+        {
+            var paused = ApproachSample(1);
+            paused.Sequence = index + 2;
+            paused.HostElapsedSeconds = index * 0.02;
+            Invoke(recorder, "ProcessSample", paused);
+        }
+
+        var samples = (ICollection)Field(recorder, "_episodeSamples")!;
+        Equal(1, samples.Count, "one retained sample for a frozen simulator instant");
     }
 
     private static void PreRollUsesReceiptTimeAndRemainsBounded()
@@ -180,6 +313,28 @@ internal static class Program
             {
                 Directory.Delete(root, true);
             }
+        }
+    }
+
+    private static void RawCaptureCleansAbandonedTempChunks()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "landing-stats-raw-cleanup-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            Directory.CreateDirectory(root);
+            var abandoned = Path.Combine(root, "old_raw.zip.tmp");
+            var active = Path.Combine(root, "active_raw.zip.tmp");
+            File.WriteAllText(abandoned, "old");
+            File.WriteAllText(active, "active");
+            File.SetLastWriteTimeUtc(abandoned, DateTime.UtcNow.AddDays(-2));
+
+            _ = new RawCaptureRepository(root);
+            Equal(false, File.Exists(abandoned), "abandoned temporary chunk removed");
+            Equal(true, File.Exists(active), "fresh temporary chunk retained");
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, true);
         }
     }
 
@@ -276,6 +431,75 @@ internal static class Program
             Equal(false, payload.IndexOf("invite", StringComparison.OrdinalIgnoreCase) >= 0, "invite field absence");
             Equal(false, payload.IndexOf("hardware", StringComparison.OrdinalIgnoreCase) >= 0, "hardware identifier absence");
             Equal(false, payload.IndexOf("machineguid", StringComparison.OrdinalIgnoreCase) >= 0, "MachineGuid absence");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("MSFS_LANDING_STATS_TELEMETRY_URL", previousEndpoint);
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
+    private static void TelemetryEnqueueIsSafeDuringDisposal()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "landing-stats-dispose-race-" + Guid.NewGuid().ToString("N"));
+        var previousEndpoint = Environment.GetEnvironmentVariable("MSFS_LANDING_STATS_TELEMETRY_URL");
+        try
+        {
+            Directory.CreateDirectory(root);
+            var queue = Path.Combine(root, "queue");
+            Directory.CreateDirectory(queue);
+            var capture = Path.Combine(queue, "race_raw.zip");
+            File.WriteAllBytes(capture, new byte[] { 1, 2, 3 });
+            Environment.SetEnvironmentVariable("MSFS_LANDING_STATS_TELEMETRY_URL", "https://telemetry.example.test/");
+            var client = new TelemetryUploadClient(queue, new TelemetryEnrollmentFixtureHandler(), Path.Combine(root, "identity"));
+            Exception? producerFailure = null;
+            var producer = new Thread(() =>
+            {
+                try
+                {
+                    for (var index = 0; index < 5000; index++)
+                    {
+                        client.Enqueue(capture);
+                    }
+                }
+                catch (Exception exception)
+                {
+                    producerFailure = exception;
+                }
+            });
+            producer.Start();
+            client.Dispose();
+            producer.Join();
+            Null(producerFailure, "enqueue/dispose race exception");
+            Equal(false, client.Enqueue(capture), "enqueue after disposal");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("MSFS_LANDING_STATS_TELEMETRY_URL", previousEndpoint);
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
+    private static void CorruptTelemetryIdentityDoesNotFaultWorker()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "landing-stats-corrupt-identity-" + Guid.NewGuid().ToString("N"));
+        var previousEndpoint = Environment.GetEnvironmentVariable("MSFS_LANDING_STATS_TELEMETRY_URL");
+        try
+        {
+            var queue = Path.Combine(root, "queue");
+            var identity = Path.Combine(root, "identity");
+            Directory.CreateDirectory(queue);
+            Directory.CreateDirectory(identity);
+            File.WriteAllText(Path.Combine(identity, "identity.json"), "{\"install_id\":\"damaged\"}");
+            File.WriteAllBytes(Path.Combine(queue, "corrupt_identity_raw.zip"), new byte[] { 1, 2, 3 });
+            Environment.SetEnvironmentVariable("MSFS_LANDING_STATS_TELEMETRY_URL", "https://telemetry.example.test/");
+
+            using var client = new TelemetryUploadClient(queue, new TelemetryEnrollmentFixtureHandler(), identity);
+            var preparation = client.PrepareAsync(CancellationToken.None).GetAwaiter().GetResult();
+            Equal(TelemetryPreparationState.Unavailable, preparation.State, "corrupt identity preparation state");
+            Thread.Sleep(100);
+            var worker = (Task)Field(client, "_worker")!;
+            Equal(false, worker.IsFaulted, "upload worker remains alive");
         }
         finally
         {
@@ -826,6 +1050,32 @@ internal static class Program
         }
     }
 
+    private static void CorruptAirportCacheIsRebuilt()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "landing-stats-corrupt-airport-cache-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        var path = Path.Combine(root, "airports.json.gz");
+        try
+        {
+            File.WriteAllText(path, "not a gzip stream", Encoding.UTF8);
+            var repository = new AirportFacilityRepository(path);
+            Equal(0, repository.Load().Count, "corrupt cache load result");
+            Equal(false, File.Exists(path), "corrupt cache moved aside");
+            Equal(1, Directory.GetFiles(root, "airports.json.gz.corrupt-*").Length, "quarantined cache count");
+
+            var rebuilt = repository.MergeAndSave(new[]
+            {
+                new AirportFacility { Ident = "LBSF", Region = "BG", LatitudeDegrees = 42.7, LongitudeDegrees = 23.4 },
+            });
+            Equal(1, rebuilt.Count, "rebuilt cache count");
+            Equal("LBSF", repository.Load()[0].Ident, "rebuilt cache content");
+        }
+        finally
+        {
+            Directory.Delete(root, true);
+        }
+    }
+
     private static void ChartRangesDiscardNonFiniteTelemetry()
     {
         var finite = ChartValueSanitizer.FiniteValues(new[]
@@ -839,6 +1089,37 @@ internal static class Program
         Equal(2, finite.Length, "finite chart value count");
         Near(12.5, finite[0], 0, "first finite chart value");
         Near(-3.0, finite[1], 0, "second finite chart value");
+    }
+
+    private static void LaneHoverFindsNearestPoint()
+    {
+        var points = new[]
+        {
+            new LandingSeriesPoint { TimeSeconds = -2 },
+            new LandingSeriesPoint { TimeSeconds = 0 },
+            new LandingSeriesPoint { TimeSeconds = 5 },
+            new LandingSeriesPoint { TimeSeconds = 9 },
+        };
+
+        Equal(0, MainWindow.ClosestSeriesPointIndex(points, -10), "hover before series");
+        Equal(1, MainWindow.ClosestSeriesPointIndex(points, 1), "hover nearest lower point");
+        Equal(2, MainWindow.ClosestSeriesPointIndex(points, 4), "hover nearest upper point");
+        Equal(3, MainWindow.ClosestSeriesPointIndex(points, 20), "hover after series");
+    }
+
+    private static void MonthlyAverageCountsPrimaryContactsOnly()
+    {
+        var timestamp = DateTime.UtcNow;
+        var records = new[]
+        {
+            new LandingRecord { TimestampUtc = timestamp, ContactNumber = 1, ContactCount = 2, InertialFpm = -100 },
+            new LandingRecord { TimestampUtc = timestamp, ContactNumber = 2, ContactCount = 2, InertialFpm = -900 },
+            new LandingRecord { TimestampUtc = timestamp, ContactNumber = 1, ContactCount = 1, InertialFpm = -300 },
+        };
+
+        var average = MainWindow.MonthlyAverageDisplayedFpm(records, DateTime.Now);
+        Equal(true, average.HasValue, "monthly average availability");
+        Near(200, average!.Value, 0, "secondary bounce contact excluded");
     }
 
     private static void StoredControllerColumnsAreCompact()

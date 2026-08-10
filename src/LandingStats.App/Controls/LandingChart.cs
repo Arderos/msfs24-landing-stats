@@ -6,6 +6,7 @@ using System.Windows;
 using System.Windows.Input;
 using System.Windows.Media;
 using LandingStats.App.Models;
+using LandingStats.App.Settings;
 
 namespace LandingStats.App.Controls;
 
@@ -78,7 +79,6 @@ public sealed class LandingChart : FrameworkElement
     private static readonly Brush TextBrush = Brush("#F5F3F0");
     private static readonly Brush AccentBrush = Brush("#FF7A45");
     private static readonly Brush AmberBrush = Brush("#D9C46A");
-    private static readonly Brush VioletBrush = Brush("#5FA8F5");
     private static readonly Brush BlueBrush = Brush("#5FA8F5");
     private static readonly Brush PinkBrush = Brush("#8FD6A8");
     private static readonly Brush TooltipBrush = Brush("#1F1D1B");
@@ -88,17 +88,15 @@ public sealed class LandingChart : FrameworkElement
     private static readonly Pen GridPen = Pen(GridBrush, 1);
     private static readonly Pen AccentPen = Pen(AccentBrush, 2.1);
     private static readonly Pen AmberPen = Pen(AmberBrush, 1.8);
-    private static readonly Pen VioletPen = Pen(VioletBrush, 1.8);
     private static readonly Pen BluePen = Pen(BlueBrush, 1.8);
     private static readonly Pen PinkPen = Pen(PinkBrush, 1.8);
     private static readonly Pen AccentDashedPen = DashedPen(AccentBrush, 1.3, 5, 4);
     private static readonly Pen AmberDashedPen = DashedPen(AmberBrush, 1.3, 5, 4);
-    private static readonly Pen VioletDashedPen = DashedPen(VioletBrush, 1.3, 5, 4);
     private static readonly Pen BlueDashedPen = DashedPen(BlueBrush, 1.3, 5, 4);
     private static readonly Pen ContactPen = Pen(Brush("#33302C"), 1);
     private static readonly Pen LaneContactPen = Pen(LaneContactBrush, 1);
     private static readonly Pen FlarePen = DashedPen(FlareBrush, 1.1, 2, 4);
-    private static readonly Pen SurfacePen = DashedPen(VioletBrush, 1.4, 6, 4);
+    private static readonly Pen SurfacePen = DashedPen(BlueBrush, 1.4, 6, 4);
     private static readonly Pen HoverPen = Pen(Brush("#73F5F3F0"), 1);
     private static readonly Pen[] SolidPens = { AccentPen, BluePen, AmberPen, PinkPen };
     private static readonly Pen[] DashedPens = { AccentDashedPen, BlueDashedPen, AmberDashedPen };
@@ -260,7 +258,7 @@ public sealed class LandingChart : FrameworkElement
         var minimumHeight = CompactLane ? 18 : 90;
         if (points == null || points.Count < 2 || ActualWidth < 140 || ActualHeight < minimumHeight)
         {
-            DrawText(context, "No chart data", new Point(18, 18), MutedBrush, 12);
+            DrawText(context, LocalizationManager.Text("Chart.NoData"), new Point(18, 18), MutedBrush, 12);
             return;
         }
 
@@ -469,60 +467,60 @@ public sealed class LandingChart : FrameworkElement
         switch (Mode)
         {
             case LandingChartMode.VerticalSpeed:
-                x = DrawLegendItem(context, x, "aircraft", AccentPen, 0);
-                x = DrawLegendItem(context, x, "VSI (lagged)", AmberPen, 1);
+                x = DrawLegendItem(context, x, LocalizationManager.Text("Chart.Aircraft"), AccentPen, 0);
+                x = DrawLegendItem(context, x, LocalizationManager.Text("Chart.VsiLagged"), AmberPen, 1);
                 if (HasSurfaceLatchData)
                 {
-                    DrawLegendItem(context, x, "surface closure", SurfacePen, 2);
+                    DrawLegendItem(context, x, LocalizationManager.Text("Chart.SurfaceClosure"), SurfacePen, 2);
                 }
                 else
                 {
                     context.PushOpacity(0.45);
                     context.DrawLine(SurfacePen, new Point(x, 9), new Point(x + 14, 9));
-                    DrawText(context, "surface closure n/a", new Point(x + 19, 2), MutedBrush, 10);
+                    DrawText(context, LocalizationManager.Text("Chart.SurfaceClosureNa"), new Point(x + 19, 2), MutedBrush, 10);
                     context.Pop();
                 }
                 break;
             case LandingChartMode.LoadFactors:
-                x = DrawLegendItem(context, x, "vertical", AccentPen, 0);
+                x = DrawLegendItem(context, x, LocalizationManager.Text("Chart.Vertical"), AccentPen, 0);
                 if (HasHorizontalLoadData)
                 {
-                    x = DrawLegendItem(context, x, "longitudinal", AmberPen, 1);
-                    DrawLegendItem(context, x, "lateral", VioletPen, 2);
+                    x = DrawLegendItem(context, x, LocalizationManager.Text("Chart.Longitudinal"), BluePen, 1);
+                    DrawLegendItem(context, x, LocalizationManager.Text("Chart.Lateral"), AmberPen, 2);
                 }
                 else
                 {
-                    DrawText(context, "horizontal G was not recorded in this landing", new Point(x + 4, 2), MutedBrush, 10);
+                    DrawText(context, LocalizationManager.Text("Chart.HorizontalNotRecorded"), new Point(x + 4, 2), MutedBrush, 10);
                 }
                 break;
             case LandingChartMode.FlightControls:
-                x = DrawLegendItem(context, x, _record?.HasRawPitchInput == true ? "pitch raw" : "pitch (sim)", AccentPen, 0);
-                x = DrawLegendItem(context, x, "roll", AmberPen, 1);
-                x = DrawLegendItem(context, x, "yaw", VioletPen, 2);
-                DrawText(context, "solid input · dashed surface", new Point(x + 4, 2), MutedBrush, 10);
+                x = DrawLegendItem(context, x, LocalizationManager.Text(_record?.HasRawPitchInput == true ? "Chart.PitchRaw" : "Chart.PitchSim"), AccentPen, 0);
+                x = DrawLegendItem(context, x, LocalizationManager.Text("Chart.Roll"), BluePen, 1);
+                x = DrawLegendItem(context, x, LocalizationManager.Text("Chart.Yaw"), AmberPen, 2);
+                DrawText(context, LocalizationManager.Text("Chart.InputSurfaceStyle"), new Point(x + 4, 2), MutedBrush, 10);
                 break;
             case LandingChartMode.Attitude:
-                x = DrawLegendItem(context, x, "pitch", AccentPen, 0);
-                x = DrawLegendItem(context, x, "bank", AmberPen, 1);
-                DrawLegendItem(context, x, "AoA", VioletPen, 2);
+                x = DrawLegendItem(context, x, LocalizationManager.Text("Chart.Pitch"), AccentPen, 0);
+                x = DrawLegendItem(context, x, LocalizationManager.Text("Chart.Bank"), BluePen, 1);
+                DrawLegendItem(context, x, LocalizationManager.Text("Chart.Aoa"), AmberPen, 2);
                 break;
             case LandingChartMode.Power:
                 if (_record != null)
                 {
                     for (var index = 0; index < _record.Engines.Count; index++)
                     {
-                        x = DrawLegendItem(context, x, $"ENG {_record.Engines[index].EngineNumber}", SolidPens[index % SolidPens.Length], index);
+                        x = DrawLegendItem(context, x, LocalizationManager.Format("Chart.EngineFormat", _record.Engines[index].EngineNumber), SolidPens[index % SolidPens.Length], index);
                     }
                 }
 
-                DrawText(context, "solid N1/RPM · dashed throttle", new Point(x + 4, 2), MutedBrush, 10);
+                DrawText(context, LocalizationManager.Text("Chart.PowerStyle"), new Point(x + 4, 2), MutedBrush, 10);
                 break;
             case LandingChartMode.Gear:
                 if (_record != null)
                 {
                     for (var index = 0; index < _record.ContactPoints.Count; index++)
                     {
-                        x = DrawLegendItem(context, x, $"CP {_record.ContactPoints[index].ContactPointIndex}", SolidPens[index % SolidPens.Length], index);
+                        x = DrawLegendItem(context, x, LocalizationManager.Format("Chart.ContactPointFormat", _record.ContactPoints[index].ContactPointIndex), SolidPens[index % SolidPens.Length], index);
                     }
                 }
                 break;
@@ -838,7 +836,7 @@ public sealed class LandingChart : FrameworkElement
             context.DrawLine(touchdownPen, new Point(touchdownX, plot.Top), new Point(touchdownX, plot.Bottom));
             if (drawLabels)
             {
-                DrawText(context, "TOUCHDOWN", new Point(touchdownX + 6, plot.Top + 3), MutedBrush, 9);
+                DrawText(context, LocalizationManager.Text("Chart.Touchdown"), new Point(touchdownX + 6, plot.Top + 3), MutedBrush, 9);
             }
         }
 
@@ -848,7 +846,7 @@ public sealed class LandingChart : FrameworkElement
             context.DrawLine(FlarePen, new Point(flareX, plot.Top), new Point(flareX, plot.Bottom));
             if (drawLabels)
             {
-                DrawText(context, "FLARE", new Point(flareX + 6, plot.Top + 3), FlareBrush, 9);
+                DrawText(context, LocalizationManager.Text("Chart.Flare"), new Point(flareX + 6, plot.Top + 3), FlareBrush, 9);
             }
         }
     }
@@ -875,7 +873,9 @@ public sealed class LandingChart : FrameworkElement
         {
             var x = MapX(tick, plot, minTime, maxTime);
             context.DrawLine(GridPen, new Point(x, plot.Top), new Point(x, plot.Bottom));
-            var label = tick == 0 ? "TD" : $"{tick:+0;-0;0}s";
+            var label = tick == 0
+                ? LocalizationManager.Text("Chart.TouchdownShort")
+                : $"{tick:+0;-0;0}{LocalizationManager.Text("Unit.SecondSuffix")}";
             if (ShowXAxisLabels)
             {
                 DrawText(context, label, new Point(x - 10, plot.Bottom + 7), tick == 0 ? TextBrush : MutedBrush, 10);
@@ -987,7 +987,7 @@ public sealed class LandingChart : FrameworkElement
                 AddFlag(-point.IndicatedFpm, AmberBrush, IsSeriesVisible(1));
                 if (HasSurfaceLatchData)
                 {
-                    AddFlag(-_record!.SurfaceFpm, BlueBrush, IsSeriesVisible(2), "surface");
+                    AddFlag(-_record!.SurfaceFpm, BlueBrush, IsSeriesVisible(2), LocalizationManager.Text("Chart.HoverSurface"));
                 }
                 break;
             case LandingChartMode.LoadFactors:
@@ -1002,9 +1002,9 @@ public sealed class LandingChart : FrameworkElement
                 AddFlag(PitchInput(point), AccentBrush, IsSeriesVisible(0));
                 AddFlag(point.PilotRollPercent, BlueBrush, IsSeriesVisible(1));
                 AddFlag(point.PilotYawPercent, AmberBrush, IsSeriesVisible(2));
-                AddFlag(point.ElevatorPercent, AccentBrush, IsSeriesVisible(0), "elev");
-                AddFlag(point.AileronPercent, BlueBrush, IsSeriesVisible(1), "ail");
-                AddFlag(point.RudderPercent, AmberBrush, IsSeriesVisible(2), "rud");
+                AddFlag(point.ElevatorPercent, AccentBrush, IsSeriesVisible(0), LocalizationManager.Text("Chart.HoverElevator"));
+                AddFlag(point.AileronPercent, BlueBrush, IsSeriesVisible(1), LocalizationManager.Text("Chart.HoverAileron"));
+                AddFlag(point.RudderPercent, AmberBrush, IsSeriesVisible(2), LocalizationManager.Text("Chart.HoverRudder"));
                 break;
             case LandingChartMode.Attitude:
                 AddFlag(-point.PitchDegrees, AccentBrush, IsSeriesVisible(0));
@@ -1037,7 +1037,7 @@ public sealed class LandingChart : FrameworkElement
                     AddFlag(power, brush, true);
                     if (PowerShowThrottle)
                     {
-                        AddFlag(enginePoint.ThrottlePercent, brush, true, "thr");
+                        AddFlag(enginePoint.ThrottlePercent, brush, true, LocalizationManager.Text("Chart.HoverThrottle"));
                     }
                 }
                 break;
@@ -1153,19 +1153,32 @@ public sealed class LandingChart : FrameworkElement
 
     private static int ClosestIndex(int count, Func<int, double> timeAt, double target)
     {
-        var nearest = 0;
-        var distance = double.MaxValue;
-        for (var index = 0; index < count; index++)
+        if (count <= 1 || target <= timeAt(0))
         {
-            var candidate = Math.Abs(timeAt(index) - target);
-            if (candidate < distance)
+            return 0;
+        }
+
+        if (target >= timeAt(count - 1))
+        {
+            return count - 1;
+        }
+
+        var low = 0;
+        var high = count - 1;
+        while (high - low > 1)
+        {
+            var middle = low + (high - low) / 2;
+            if (timeAt(middle) < target)
             {
-                distance = candidate;
-                nearest = index;
+                low = middle;
+            }
+            else
+            {
+                high = middle;
             }
         }
 
-        return nearest;
+        return target - timeAt(low) <= timeAt(high) - target ? low : high;
     }
 
     private static double MapX(double value, Rect plot, double minimum, double maximum)
@@ -1179,12 +1192,12 @@ public sealed class LandingChart : FrameworkElement
         return plot.Bottom - Math.Max(0, Math.Min(1, normalized)) * plot.Height;
     }
 
-    private static void DrawText(DrawingContext context, string text, Point origin, Brush brush, double size)
+    private void DrawText(DrawingContext context, string text, Point origin, Brush brush, double size)
     {
         context.DrawText(Formatted(text, brush, size), origin);
     }
 
-    private static FormattedText Formatted(string text, Brush brush, double size)
+    private FormattedText Formatted(string text, Brush brush, double size)
     {
         return new FormattedText(
             text,
@@ -1193,10 +1206,10 @@ public sealed class LandingChart : FrameworkElement
             new Typeface("Segoe UI"),
             size,
             brush,
-            1.0);
+            VisualTreeHelper.GetDpi(this).PixelsPerDip);
     }
 
-    private static FormattedText FormattedMono(string text, Brush brush, double size)
+    private FormattedText FormattedMono(string text, Brush brush, double size)
     {
         return new FormattedText(
             text,
@@ -1205,7 +1218,7 @@ public sealed class LandingChart : FrameworkElement
             new Typeface("Cascadia Mono"),
             size,
             brush,
-            1.0);
+            VisualTreeHelper.GetDpi(this).PixelsPerDip);
     }
 
     private static Brush Brush(string color)

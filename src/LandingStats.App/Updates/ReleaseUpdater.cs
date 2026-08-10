@@ -10,6 +10,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using LandingStats.App.Settings;
 using Protocol = LandingStats.UpdateProtocol.ReleaseUpdateProtocol;
 
 namespace LandingStats.App.Updates;
@@ -24,16 +25,24 @@ internal enum ReleaseUpdateState
 
 internal sealed class ReleaseUpdateResult
 {
-    public ReleaseUpdateResult(ReleaseUpdateState state, string message, Version? version = null, string? path = null)
+    public ReleaseUpdateResult(
+        ReleaseUpdateState state,
+        string messageKey,
+        Version? version = null,
+        string? path = null,
+        object[]? messageArguments = null)
     {
         State = state;
-        Message = message;
+        MessageKey = messageKey;
+        MessageArguments = messageArguments ?? Array.Empty<object>();
         Version = version;
         Path = path;
     }
 
     public ReleaseUpdateState State { get; }
-    public string Message { get; }
+    public string MessageKey { get; }
+    public object[] MessageArguments { get; }
+    public string Message => LocalizationManager.Format(MessageKey, MessageArguments);
     public Version? Version { get; }
     public string? Path { get; }
 }
@@ -74,7 +83,10 @@ internal sealed class ReleaseUpdater : IDisposable
             var manifest = Protocol.VerifyAndParse(manifestBytes, signature);
             if (manifest.Version <= currentVersion)
             {
-                return new ReleaseUpdateResult(ReleaseUpdateState.Current, "The installed version is current", manifest.Version);
+                return new ReleaseUpdateResult(
+                    ReleaseUpdateState.Current,
+                    "Update.Current",
+                    version: manifest.Version);
             }
 
             var targetPath = ResolveUpdateTarget();
@@ -140,21 +152,22 @@ internal sealed class ReleaseUpdater : IDisposable
             updaterStarted = true;
             return new ReleaseUpdateResult(
                 ReleaseUpdateState.UpdateStarted,
-                $"Verified updater started for v{manifest.Version}",
-                manifest.Version,
-                updaterPath);
+                "Update.StartedFormat",
+                version: manifest.Version,
+                path: updaterPath,
+                messageArguments: new object[] { manifest.Version });
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            return new ReleaseUpdateResult(ReleaseUpdateState.Unavailable, "Update check was cancelled");
+            return new ReleaseUpdateResult(ReleaseUpdateState.Unavailable, "Update.Cancelled");
         }
         catch (HttpRequestException)
         {
-            return new ReleaseUpdateResult(ReleaseUpdateState.Unavailable, "GitHub update metadata is unavailable");
+            return new ReleaseUpdateResult(ReleaseUpdateState.Unavailable, "Update.MetadataUnavailable");
         }
         catch (TaskCanceledException)
         {
-            return new ReleaseUpdateResult(ReleaseUpdateState.Unavailable, "GitHub update check timed out");
+            return new ReleaseUpdateResult(ReleaseUpdateState.Unavailable, "Update.Timeout");
         }
         catch (Exception exception) when (
             exception is IOException ||
@@ -163,11 +176,17 @@ internal sealed class ReleaseUpdater : IDisposable
             exception is TimeoutException ||
             exception is Win32Exception)
         {
-            return new ReleaseUpdateResult(ReleaseUpdateState.Unavailable, "Update could not be started: " + exception.Message);
+            return new ReleaseUpdateResult(
+                ReleaseUpdateState.Unavailable,
+                "Update.StartFailedFormat",
+                messageArguments: new object[] { exception.Message });
         }
         catch (Exception exception) when (exception is InvalidDataException || exception is CryptographicException || exception is FormatException)
         {
-            return new ReleaseUpdateResult(ReleaseUpdateState.Rejected, "Update rejected: " + exception.Message);
+            return new ReleaseUpdateResult(
+                ReleaseUpdateState.Rejected,
+                "Update.RejectedFormat",
+                messageArguments: new object[] { exception.Message });
         }
         finally
         {

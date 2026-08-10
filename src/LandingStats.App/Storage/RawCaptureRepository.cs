@@ -14,6 +14,7 @@ namespace LandingStats.App.Storage;
 public sealed class RawCaptureRepository
 {
     public const int ChunkMaximumSamples = 30000;
+    private static readonly TimeSpan AbandonedTemporaryFileAge = TimeSpan.FromHours(24);
 
     public RawCaptureRepository(string? rootPath = null)
     {
@@ -21,6 +22,7 @@ public sealed class RawCaptureRepository
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "MSFS Landing Stats",
             "Telemetry Queue");
+        CleanupAbandonedTemporaryFiles();
     }
 
     public string RootPath { get; }
@@ -69,6 +71,45 @@ public sealed class RawCaptureRepository
         return string.IsNullOrWhiteSpace(value)
             ? "unknown"
             : value!.Trim().Replace("\r", " ").Replace("\n", " ");
+    }
+
+    private void CleanupAbandonedTemporaryFiles()
+    {
+        if (!Directory.Exists(RootPath))
+        {
+            return;
+        }
+
+        var cutoffUtc = DateTime.UtcNow - AbandonedTemporaryFileAge;
+        try
+        {
+            foreach (var path in Directory.EnumerateFiles(RootPath, "*_raw.zip.tmp", SearchOption.TopDirectoryOnly))
+            {
+                try
+                {
+                    if (File.GetLastWriteTimeUtc(path) < cutoffUtc)
+                    {
+                        File.Delete(path);
+                    }
+                }
+                catch (IOException)
+                {
+                    // A live writer or antivirus scan owns the file; retry next start.
+                }
+                catch (UnauthorizedAccessException)
+                {
+                    // Cleanup must never prevent local capture from starting.
+                }
+            }
+        }
+        catch (IOException)
+        {
+            // The queue remains usable even if enumeration is temporarily blocked.
+        }
+        catch (UnauthorizedAccessException)
+        {
+            // StartCapture will report any real write-permission problem later.
+        }
     }
 }
 

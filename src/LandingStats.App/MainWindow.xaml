@@ -2,7 +2,7 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:controls="clr-namespace:LandingStats.App.Controls"
-        Title="MSFS Landing Stats"
+        Title="{DynamicResource Product.Name}"
         Width="1680"
         Height="940"
         MinWidth="1180"
@@ -15,7 +15,7 @@
         UseLayoutRounding="True">
     <Window.Resources>
         <BooleanToVisibilityConverter x:Key="BooleanToVisibilityConverter" />
-        <Style x:Key="ReconstructionInfoIconStyle" TargetType="{x:Type ContentControl}">
+        <Style x:Key="InfoIconStyle" TargetType="{x:Type ContentControl}">
             <Setter Property="Width" Value="15" />
             <Setter Property="Height" Value="15" />
             <Setter Property="Margin" Value="5,0,0,0" />
@@ -53,11 +53,47 @@
                 </Setter.Value>
             </Setter>
         </Style>
-        <Style x:Key="ReconstructionToolTipTextStyle" TargetType="{x:Type TextBlock}">
+        <Style x:Key="InfoToolTipTextStyle" TargetType="{x:Type TextBlock}">
             <Setter Property="MaxWidth" Value="390" />
             <Setter Property="TextWrapping" Value="Wrap" />
             <Setter Property="FontSize" Value="11" />
             <Setter Property="LineHeight" Value="16" />
+        </Style>
+        <Style x:Key="SettingsChoiceStyle" TargetType="{x:Type RadioButton}">
+            <Setter Property="Foreground" Value="{StaticResource MutedTextBrush}" />
+            <Setter Property="Background" Value="{StaticResource SurfaceBrush}" />
+            <Setter Property="BorderBrush" Value="#34302D" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Padding" Value="15,9" />
+            <Setter Property="Margin" Value="0,0,8,0" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="FontSize" Value="11" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type RadioButton}">
+                        <Border x:Name="Chrome"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="7"
+                                Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Chrome" Property="Background" Value="{StaticResource SurfaceRaisedBrush}" />
+                                <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="Chrome" Property="Background" Value="{StaticResource AccentSoftBrush}" />
+                                <Setter TargetName="Chrome" Property="BorderBrush" Value="{StaticResource AccentBrush}" />
+                                <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
         </Style>
         <Style x:Key="HistoryDeleteButtonStyle" TargetType="{x:Type Button}">
             <Setter Property="Width" Value="28" />
@@ -236,19 +272,26 @@
                 </Grid.ColumnDefinitions>
                 <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
                     <Image Source="Assets/AppIcon.ico" Width="18" Height="18" SnapsToDevicePixels="True" />
-                    <TextBlock Text="Landing Stats" FontSize="13" FontWeight="SemiBold" Margin="9,0,0,0" />
+                    <TextBlock Text="{DynamicResource Product.Name}" FontSize="13" FontWeight="SemiBold" Margin="9,0,0,0" />
                 </StackPanel>
                 <Border Grid.Column="1" Width="1" Height="16" Background="#262321" Margin="14,0" />
                 <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
                     <Ellipse x:Name="ConnectionStatusDot" Width="6" Height="6" Fill="{StaticResource AmberBrush}" />
-                    <TextBlock x:Name="ConnectionStatusText" Text="Waiting for MSFS" Foreground="{StaticResource MutedTextBrush}" FontSize="12" Margin="7,0,0,0" />
+                    <TextBlock x:Name="ConnectionStatusText" Text="{DynamicResource Top.Waiting}" Foreground="{StaticResource MutedTextBrush}" FontSize="12" Margin="7,0,0,0" />
                     <TextBlock Text="·" Foreground="{StaticResource LabelTextBrush}" Margin="9,0" />
-                    <TextBlock x:Name="RecorderModeText" Text="offline" Foreground="{StaticResource MutedTextBrush}" FontSize="12" />
+                    <TextBlock x:Name="RecorderModeText" Text="{DynamicResource Top.Offline}" Foreground="{StaticResource MutedTextBrush}" FontSize="12" />
                 </StackPanel>
                 <StackPanel Grid.Column="3" Orientation="Horizontal">
-                    <Button Content="—" Width="34" Height="28" Style="{StaticResource TopBarButtonStyle}" Click="OnMinimizeClick" />
-                    <Button Content="□" Width="34" Height="28" Style="{StaticResource TopBarButtonStyle}" Click="OnMaximizeClick" FontSize="10" />
-                    <Button Content="×" Width="34" Height="28" Style="{StaticResource TopBarButtonStyle}" Click="OnCloseClick" FontSize="13" />
+                    <Button Width="34" Height="28" Style="{StaticResource TopBarButtonStyle}" Click="OnSettingsClick"
+                            ToolTip="{DynamicResource Top.Settings}" AutomationProperties.Name="{DynamicResource Top.Settings}">
+                        <TextBlock Text="&#xE713;" FontFamily="Segoe MDL2 Assets" FontSize="13" />
+                    </Button>
+                    <Button Content="—" Width="34" Height="28" Style="{StaticResource TopBarButtonStyle}" Click="OnMinimizeClick"
+                            ToolTip="{DynamicResource Top.Minimize}" AutomationProperties.Name="{DynamicResource Top.Minimize}" />
+                    <Button Content="□" Width="34" Height="28" Style="{StaticResource TopBarButtonStyle}" Click="OnMaximizeClick" FontSize="10"
+                            ToolTip="{DynamicResource Top.Maximize}" AutomationProperties.Name="{DynamicResource Top.Maximize}" />
+                    <Button Content="×" Width="34" Height="28" Style="{StaticResource TopBarButtonStyle}" Click="OnCloseClick" FontSize="13"
+                            ToolTip="{DynamicResource Top.Close}" AutomationProperties.Name="{DynamicResource Top.Close}" />
                 </StackPanel>
             </Grid>
         </Border>
@@ -262,7 +305,7 @@
                     <RowDefinition Height="26" />
                 </Grid.RowDefinitions>
                 <Grid Grid.Row="0" Margin="16,0">
-                    <TextBlock Text="SESSIONS" Style="{StaticResource SectionLabelStyle}" Foreground="{StaticResource SubtleTextBrush}" VerticalAlignment="Center" />
+                    <TextBlock Text="{DynamicResource History.Title}" Style="{StaticResource SectionLabelStyle}" Foreground="{StaticResource SubtleTextBrush}" VerticalAlignment="Center" />
                     <TextBlock x:Name="HistoryCountText" HorizontalAlignment="Right" VerticalAlignment="Center"
                                Foreground="{StaticResource SubtleTextBrush}" FontFamily="Cascadia Mono, Consolas" FontSize="11" />
                 </Grid>
@@ -281,8 +324,8 @@
                                  VerticalContentAlignment="Center"
                                  Padding="0,0,8,0"
                                  TextChanged="OnSessionFilterChanged"
-                                 ToolTip="Filter by aircraft or airport" />
-                        <TextBlock Grid.Column="1" Text="Filter by aircraft or airport"
+                                 ToolTip="{DynamicResource History.Filter}" />
+                        <TextBlock Grid.Column="1" Text="{DynamicResource History.Filter}"
                                    Foreground="{StaticResource SubtleTextBrush}" FontSize="12"
                                    VerticalAlignment="Center" IsHitTestVisible="False" Margin="1,0,0,0">
                             <TextBlock.Style>
@@ -365,8 +408,8 @@
                                         HorizontalAlignment="Right"
                                         Tag="{Binding}"
                                         Click="OnDeleteLandingClick"
-                                        ToolTip="Delete landing"
-                                        AutomationProperties.Name="Delete landing">
+                                        ToolTip="{DynamicResource History.Delete}"
+                                        AutomationProperties.Name="{DynamicResource History.Delete}">
                                     <Viewbox Width="15" Height="15">
                                         <Path Data="M 4,5 L 16,5 M 7,5 L 7,3 L 13,3 L 13,5 M 6,5 L 7,17 L 13,17 L 14,5 M 9,8 L 9,14 M 11,8 L 11,14"
                                               Fill="Transparent"
@@ -383,7 +426,7 @@
                 </ListBox>
 
                 <Grid Grid.Row="3" Margin="16,0" VerticalAlignment="Center">
-                    <TextBlock Text="Avg rate this month" Foreground="{StaticResource SubtleTextBrush}" FontSize="11" />
+                    <TextBlock Text="{DynamicResource History.AverageRate}" Foreground="{StaticResource SubtleTextBrush}" FontSize="11" />
                     <TextBlock x:Name="AverageRateText" HorizontalAlignment="Right" Foreground="{StaticResource MutedTextBrush}"
                                FontFamily="Cascadia Mono, Consolas" FontSize="11" />
                 </Grid>
@@ -426,7 +469,7 @@
                         </StackPanel>
                     </StackPanel>
                     <Button x:Name="ChartWindowButton" Grid.Column="1" Height="28" Padding="11,0"
-                            Content="Contact view  −6 … +8s" Style="{StaticResource OutlineButtonStyle}"
+                            Content="{DynamicResource View.ContactFormat}" Style="{StaticResource OutlineButtonStyle}"
                             Click="OnChartWindowClick" VerticalAlignment="Top" FontSize="12" />
                 </Grid>
 
@@ -447,56 +490,184 @@
                         <RowDefinition Height="Auto" />
                     </Grid.RowDefinitions>
 
-                    <TextBlock Grid.Column="0" Text="AIRCRAFT VERTICAL RATE" Style="{StaticResource SectionLabelStyle}" Foreground="{StaticResource LabelTextBrush}" />
+                    <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
+                        <TextBlock Text="{DynamicResource Metric.AircraftRate}" Style="{StaticResource SectionLabelStyle}" Foreground="{StaticResource LabelTextBrush}" />
+                        <ContentControl Style="{StaticResource InfoIconStyle}"
+                                        AutomationProperties.Name="{DynamicResource Metric.AircraftRate}"
+                                        AutomationProperties.HelpText="{DynamicResource Help.AircraftRate}">
+                            <ContentControl.ToolTip>
+                                <TextBlock Style="{StaticResource InfoToolTipTextStyle}"
+                                           Text="{DynamicResource Help.AircraftRate}" />
+                            </ContentControl.ToolTip>
+                        </ContentControl>
+                    </StackPanel>
                     <StackPanel Grid.Column="0" Grid.Row="1" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,7,0,0">
                         <TextBlock Text="{Binding InertialDisplay}" FontSize="44" FontWeight="SemiBold" />
                         <TextBlock Text="fpm" Foreground="{StaticResource MutedTextBrush}" FontSize="14" VerticalAlignment="Bottom" Margin="8,0,0,8" />
                         <TextBlock Text="{Binding LandingFeelDisplay}" FontSize="9" FontWeight="SemiBold"
-                                   VerticalAlignment="Bottom" Margin="8,0,0,9" ToolTip="{Binding LandingFeelTooltip}">
+                                   VerticalAlignment="Bottom" Margin="8,0,0,9">
                             <TextBlock.Style>
                                 <Style TargetType="TextBlock">
                                     <Setter Property="Foreground" Value="{StaticResource SuccessBrush}" />
                                     <Style.Triggers>
-                                        <DataTrigger Binding="{Binding LandingFeelDisplay}" Value="FIRM">
+                                        <DataTrigger Binding="{Binding IsFirmLanding}" Value="True">
                                             <Setter Property="Foreground" Value="{StaticResource AccentBrush}" />
                                         </DataTrigger>
                                     </Style.Triggers>
                                 </Style>
                             </TextBlock.Style>
                         </TextBlock>
+                        <ContentControl Style="{StaticResource InfoIconStyle}"
+                                        Margin="4,0,0,8"
+                                        VerticalAlignment="Bottom"
+                                        AutomationProperties.Name="{DynamicResource Help.LandingFeelName}"
+                                        AutomationProperties.HelpText="{Binding LandingFeelTooltip}">
+                            <ContentControl.ToolTip>
+                                <TextBlock Style="{StaticResource InfoToolTipTextStyle}"
+                                           Text="{Binding LandingFeelTooltip}" />
+                            </ContentControl.ToolTip>
+                        </ContentControl>
                     </StackPanel>
-                    <TextBlock Grid.Column="0" Grid.Row="2" Text="vertical speed at contact" Style="{StaticResource MetricSublineStyle}" />
+                    <TextBlock Grid.Column="0" Grid.Row="2" Text="{DynamicResource Metric.AircraftRateSubline}" Style="{StaticResource MetricSublineStyle}" />
 
                     <Border Grid.Column="1" Grid.RowSpan="3" Width="1" HorizontalAlignment="Center" Background="{StaticResource BorderBrush}" />
 
-                    <TextBlock Grid.Column="2" Text="SURFACE CLOSURE RATE" Style="{StaticResource SectionLabelStyle}"
-                               Foreground="{StaticResource LabelTextBrush}" ToolTip="{Binding SurfaceQualityDisplay}" />
+                    <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                        <TextBlock Text="{DynamicResource Metric.SurfaceClosure}" Style="{StaticResource SectionLabelStyle}"
+                                   Foreground="{StaticResource LabelTextBrush}" />
+                        <ContentControl Style="{StaticResource InfoIconStyle}"
+                                        AutomationProperties.Name="{DynamicResource Metric.SurfaceClosure}"
+                                        AutomationProperties.HelpText="{DynamicResource Help.SurfaceClosure}">
+                            <ContentControl.ToolTip>
+                                <StackPanel MaxWidth="390">
+                                    <TextBlock Style="{StaticResource InfoToolTipTextStyle}"
+                                               Text="{DynamicResource Help.SurfaceClosure}" />
+                                    <TextBlock Margin="0,5,0,0" Foreground="{StaticResource SubtleTextBrush}"
+                                               FontSize="10" Text="{Binding SurfaceQualityDisplay}" />
+                                </StackPanel>
+                            </ContentControl.ToolTip>
+                        </ContentControl>
+                    </StackPanel>
                     <StackPanel Grid.Column="2" Grid.Row="1" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,7,0,0">
                         <TextBlock Text="{Binding SurfaceValueDisplay}" FontSize="44" FontWeight="SemiBold" />
                         <TextBlock Text="{Binding SurfaceUnitDisplay}" Foreground="{StaticResource MutedTextBrush}"
                                    FontSize="14" VerticalAlignment="Bottom" Margin="8,0,0,8" />
                         <TextBlock Text="{Binding DeltaDisplay, StringFormat={}  Δ {0}}" Foreground="{StaticResource BlueBrush}"
                                    FontFamily="Cascadia Mono, Consolas" FontSize="11" VerticalAlignment="Bottom" Margin="7,0,0,8" />
+                        <ContentControl Style="{StaticResource InfoIconStyle}"
+                                        Margin="4,0,0,7"
+                                        VerticalAlignment="Bottom"
+                                        AutomationProperties.Name="{DynamicResource Metric.SurfaceDelta}"
+                                        AutomationProperties.HelpText="{DynamicResource Help.SurfaceDelta}">
+                            <ContentControl.ToolTip>
+                                <TextBlock Style="{StaticResource InfoToolTipTextStyle}"
+                                           Text="{DynamicResource Help.SurfaceDelta}" />
+                            </ContentControl.ToolTip>
+                        </ContentControl>
                     </StackPanel>
-                    <TextBlock Grid.Column="2" Grid.Row="2" Text="{Binding TerrainDisplay}" Style="{StaticResource MetricSublineStyle}" />
+                    <StackPanel Grid.Column="2" Grid.Row="2" Orientation="Horizontal" VerticalAlignment="Center">
+                        <TextBlock Text="{Binding TerrainMetricDisplay}" Style="{StaticResource MetricSublineStyle}" />
+                        <ContentControl Style="{StaticResource InfoIconStyle}"
+                                        Margin="4,0,0,0"
+                                        AutomationProperties.Name="{DynamicResource Metric.Terrain}"
+                                        AutomationProperties.HelpText="{DynamicResource Help.Terrain}">
+                            <ContentControl.ToolTip>
+                                <TextBlock Style="{StaticResource InfoToolTipTextStyle}"
+                                           Text="{DynamicResource Help.Terrain}" />
+                            </ContentControl.ToolTip>
+                        </ContentControl>
+                        <TextBlock Text="  ·  " Style="{StaticResource MetricSublineStyle}" />
+                        <TextBlock Text="{Binding UnresolvedMetricDisplay}" Style="{StaticResource MetricSublineStyle}" />
+                        <ContentControl Style="{StaticResource InfoIconStyle}"
+                                        Margin="4,0,0,0"
+                                        AutomationProperties.Name="{DynamicResource Metric.Unresolved}"
+                                        AutomationProperties.HelpText="{DynamicResource Help.Unresolved}">
+                            <ContentControl.ToolTip>
+                                <TextBlock Style="{StaticResource InfoToolTipTextStyle}"
+                                           Text="{DynamicResource Help.Unresolved}" />
+                            </ContentControl.ToolTip>
+                        </ContentControl>
+                    </StackPanel>
 
                     <Border Grid.Column="3" Grid.RowSpan="3" Width="1" HorizontalAlignment="Center" Background="{StaticResource BorderBrush}" />
 
-                    <TextBlock Grid.Column="4" Text="PEAK G · 150 MS" Style="{StaticResource SectionLabelStyle}" Foreground="{StaticResource LabelTextBrush}" />
+                    <StackPanel Grid.Column="4" Orientation="Horizontal" VerticalAlignment="Center">
+                        <TextBlock Text="{DynamicResource Metric.PeakG150}" Style="{StaticResource SectionLabelStyle}" Foreground="{StaticResource LabelTextBrush}" />
+                        <ContentControl Style="{StaticResource InfoIconStyle}"
+                                        AutomationProperties.Name="{DynamicResource Metric.PeakG150}"
+                                        AutomationProperties.HelpText="{DynamicResource Help.PeakG150}">
+                            <ContentControl.ToolTip>
+                                <TextBlock Style="{StaticResource InfoToolTipTextStyle}"
+                                           Text="{DynamicResource Help.PeakG150}" />
+                            </ContentControl.ToolTip>
+                        </ContentControl>
+                    </StackPanel>
                     <TextBlock Grid.Column="4" Grid.Row="1" Text="{Binding G150Display}" FontSize="22" FontWeight="Medium" VerticalAlignment="Center" Margin="0,7,0,0" />
-                    <TextBlock Grid.Column="4" Grid.Row="2" Text="{Binding G2SecondsDisplay}" Style="{StaticResource MetricSublineStyle}" />
+                    <StackPanel Grid.Column="4" Grid.Row="2" Orientation="Horizontal" VerticalAlignment="Center">
+                        <TextBlock Text="{Binding G2SecondsDisplay}" Style="{StaticResource MetricSublineStyle}" />
+                        <ContentControl Style="{StaticResource InfoIconStyle}"
+                                        Margin="4,0,0,0"
+                                        AutomationProperties.Name="{DynamicResource Metric.PeakG2}"
+                                        AutomationProperties.HelpText="{DynamicResource Help.PeakG2}">
+                            <ContentControl.ToolTip>
+                                <TextBlock Style="{StaticResource InfoToolTipTextStyle}"
+                                           Text="{DynamicResource Help.PeakG2}" />
+                            </ContentControl.ToolTip>
+                        </ContentControl>
+                    </StackPanel>
 
-                    <TextBlock Grid.Column="5" Text="IAS AT CONTACT" Style="{StaticResource SectionLabelStyle}" Foreground="{StaticResource LabelTextBrush}" Margin="22,0,0,0" />
+                    <StackPanel Grid.Column="5" Orientation="Horizontal" VerticalAlignment="Center" Margin="22,0,0,0">
+                        <TextBlock Text="{DynamicResource Metric.Ias}" Style="{StaticResource SectionLabelStyle}" Foreground="{StaticResource LabelTextBrush}" />
+                        <ContentControl Style="{StaticResource InfoIconStyle}"
+                                        AutomationProperties.Name="{DynamicResource Metric.Ias}"
+                                        AutomationProperties.HelpText="{DynamicResource Help.Ias}">
+                            <ContentControl.ToolTip>
+                                <TextBlock Style="{StaticResource InfoToolTipTextStyle}"
+                                           Text="{DynamicResource Help.Ias}" />
+                            </ContentControl.ToolTip>
+                        </ContentControl>
+                    </StackPanel>
                     <TextBlock Grid.Column="5" Grid.Row="1" Text="{Binding AirspeedDisplay}" FontSize="22" FontWeight="Medium" VerticalAlignment="Center" Margin="22,7,0,0" />
-                    <TextBlock Grid.Column="5" Grid.Row="2" Text="indicated" Style="{StaticResource MetricSublineStyle}" Margin="22,7,0,0" />
+                    <TextBlock Grid.Column="5" Grid.Row="2" Text="{DynamicResource Metric.Indicated}" Style="{StaticResource MetricSublineStyle}" Margin="22,7,0,0" />
 
-                    <TextBlock Grid.Column="6" Text="PITCH · BANK" Style="{StaticResource SectionLabelStyle}" Foreground="{StaticResource LabelTextBrush}" Margin="22,0,0,0" />
+                    <StackPanel Grid.Column="6" Orientation="Horizontal" VerticalAlignment="Center" Margin="22,0,0,0">
+                        <TextBlock Text="{DynamicResource Metric.PitchBank}" Style="{StaticResource SectionLabelStyle}" Foreground="{StaticResource LabelTextBrush}" />
+                        <ContentControl Style="{StaticResource InfoIconStyle}"
+                                        AutomationProperties.Name="{DynamicResource Metric.PitchBank}"
+                                        AutomationProperties.HelpText="{DynamicResource Help.PitchBank}">
+                            <ContentControl.ToolTip>
+                                <TextBlock Style="{StaticResource InfoToolTipTextStyle}"
+                                           Text="{DynamicResource Help.PitchBank}" />
+                            </ContentControl.ToolTip>
+                        </ContentControl>
+                    </StackPanel>
                     <TextBlock Grid.Column="6" Grid.Row="1" Text="{Binding AttitudeDisplay}" FontSize="18" FontWeight="Medium" VerticalAlignment="Center" Margin="22,7,0,0" />
-                    <TextBlock Grid.Column="6" Grid.Row="2" Text="{Binding AngleOfAttackDisplay}" Style="{StaticResource MetricSublineStyle}" Margin="22,7,0,0" />
+                    <StackPanel Grid.Column="6" Grid.Row="2" Orientation="Horizontal" VerticalAlignment="Center" Margin="22,7,0,0">
+                        <TextBlock Text="{Binding AngleOfAttackDisplay}" Style="{StaticResource MetricSublineStyle}" />
+                        <ContentControl Style="{StaticResource InfoIconStyle}"
+                                        Margin="4,0,0,0"
+                                        AutomationProperties.Name="{DynamicResource Chart.Aoa}"
+                                        AutomationProperties.HelpText="{DynamicResource Help.Aoa}">
+                            <ContentControl.ToolTip>
+                                <TextBlock Style="{StaticResource InfoToolTipTextStyle}"
+                                           Text="{DynamicResource Help.Aoa}" />
+                            </ContentControl.ToolTip>
+                        </ContentControl>
+                    </StackPanel>
 
-                    <TextBlock Grid.Column="7" Text="GROUND SPEED" Style="{StaticResource SectionLabelStyle}" Foreground="{StaticResource LabelTextBrush}" Margin="22,0,0,0" />
+                    <StackPanel Grid.Column="7" Orientation="Horizontal" VerticalAlignment="Center" Margin="22,0,0,0">
+                        <TextBlock Text="{DynamicResource Metric.GroundSpeed}" Style="{StaticResource SectionLabelStyle}" Foreground="{StaticResource LabelTextBrush}" />
+                        <ContentControl Style="{StaticResource InfoIconStyle}"
+                                        AutomationProperties.Name="{DynamicResource Metric.GroundSpeed}"
+                                        AutomationProperties.HelpText="{DynamicResource Help.GroundSpeed}">
+                            <ContentControl.ToolTip>
+                                <TextBlock Style="{StaticResource InfoToolTipTextStyle}"
+                                           Text="{DynamicResource Help.GroundSpeed}" />
+                            </ContentControl.ToolTip>
+                        </ContentControl>
+                    </StackPanel>
                     <TextBlock Grid.Column="7" Grid.Row="1" Text="{Binding GroundSpeedDisplay}" FontSize="22" FontWeight="Medium" VerticalAlignment="Center" Margin="22,7,0,0" />
-                    <TextBlock Grid.Column="7" Grid.Row="2" Text="at contact" Style="{StaticResource MetricSublineStyle}" Margin="22,7,0,0" />
+                    <TextBlock Grid.Column="7" Grid.Row="2" Text="{DynamicResource Metric.AtContact}" Style="{StaticResource MetricSublineStyle}" Margin="22,7,0,0" />
                 </Grid>
 
                 <Border x:Name="ClosureReconstructionPanel"
@@ -519,16 +690,16 @@
                                 <ColumnDefinition Width="Auto" />
                             </Grid.ColumnDefinitions>
                             <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                                <TextBlock Text="EXPERIMENTAL CLOSURE RECONSTRUCTION"
+                                <TextBlock Text="{DynamicResource Recon.Title}"
                                            Style="{StaticResource SectionLabelStyle}"
                                            Foreground="{StaticResource LabelTextBrush}"
                                            VerticalAlignment="Center" />
-                                <ContentControl Style="{StaticResource ReconstructionInfoIconStyle}"
-                                                AutomationProperties.Name="Reconstruction information"
-                                                AutomationProperties.HelpText="Explains how to interpret the experimental reconstruction panel.">
+                                <ContentControl Style="{StaticResource InfoIconStyle}"
+                                                AutomationProperties.Name="{DynamicResource Recon.Title}"
+                                                AutomationProperties.HelpText="{DynamicResource Recon.Help}">
                                     <ContentControl.ToolTip>
-                                        <TextBlock Style="{StaticResource ReconstructionToolTipTextStyle}"
-                                                   Text="Diagnostic reconstruction of the simulator touchdown latch from recorded telemetry. It never replaces the headline Surface Closure Rate. Displayed FPM use the app convention: negative means downward or closing." />
+                                        <TextBlock Style="{StaticResource InfoToolTipTextStyle}"
+                                                   Text="{DynamicResource Recon.Help}" />
                                     </ContentControl.ToolTip>
                                 </ContentControl>
                             </StackPanel>
@@ -538,12 +709,12 @@
                                        TextTrimming="CharacterEllipsis"
                                        HorizontalAlignment="Right" VerticalAlignment="Center" />
                             <ContentControl Grid.Column="2"
-                                            Style="{StaticResource ReconstructionInfoIconStyle}"
-                                            AutomationProperties.Name="Reconstruction model information"
-                                            AutomationProperties.HelpText="Explains the frozen reconstruction model identifier.">
+                                            Style="{StaticResource InfoIconStyle}"
+                                            AutomationProperties.Name="{DynamicResource Recon.Model}"
+                                            AutomationProperties.HelpText="{DynamicResource Recon.ModelHelp}">
                                 <ContentControl.ToolTip>
-                                    <TextBlock Style="{StaticResource ReconstructionToolTipTextStyle}"
-                                               Text="Frozen model identifier. quad250 means quadratic fits over 250 ms; tc-minus-75ms means evaluation 75 ms before estimated contact; pitch-v1 includes pitch rotation. Its parameters are not tuned against this landing's latch." />
+                                    <TextBlock Style="{StaticResource InfoToolTipTextStyle}"
+                                               Text="{DynamicResource Recon.ModelHelp}" />
                                 </ContentControl.ToolTip>
                             </ContentControl>
                         </Grid>
@@ -560,14 +731,14 @@
 
                             <StackPanel Grid.Column="0">
                                 <StackPanel Orientation="Horizontal">
-                                    <TextBlock Text="MODELED CLOSURE" Style="{StaticResource SectionLabelStyle}"
+                                    <TextBlock Text="{DynamicResource Recon.ModeledClosure}" Style="{StaticResource SectionLabelStyle}"
                                                Foreground="{StaticResource SubtleTextBrush}" />
-                                    <ContentControl Style="{StaticResource ReconstructionInfoIconStyle}"
-                                                    AutomationProperties.Name="Modeled closure information"
-                                                    AutomationProperties.HelpText="Explains the modeled closure value.">
+                                    <ContentControl Style="{StaticResource InfoIconStyle}"
+                                                    AutomationProperties.Name="{DynamicResource Recon.ModeledClosure}"
+                                                    AutomationProperties.HelpText="{DynamicResource Recon.ModeledClosureHelp}">
                                         <ContentControl.ToolTip>
-                                            <TextBlock Style="{StaticResource ReconstructionToolTipTextStyle}"
-                                                       Text="Expected surface closure at the latch's effective sampling time. It is the sum of inertial, terrain, and pitch below. Read it as a cross-check of the raw simulator value, not a replacement." />
+                                            <TextBlock Style="{StaticResource InfoToolTipTextStyle}"
+                                                       Text="{DynamicResource Recon.ModeledClosureHelp}" />
                                         </ContentControl.ToolTip>
                                     </ContentControl>
                                 </StackPanel>
@@ -577,14 +748,14 @@
 
                             <StackPanel Grid.Column="1" Margin="18,0,0,0">
                                 <StackPanel Orientation="Horizontal">
-                                    <TextBlock Text="RAW − MODEL" Style="{StaticResource SectionLabelStyle}"
+                                    <TextBlock Text="{DynamicResource Recon.RawMinusModel}" Style="{StaticResource SectionLabelStyle}"
                                                Foreground="{StaticResource SubtleTextBrush}" />
-                                    <ContentControl Style="{StaticResource ReconstructionInfoIconStyle}"
-                                                    AutomationProperties.Name="Raw minus model information"
-                                                    AutomationProperties.HelpText="Explains the reconstruction residual.">
+                                    <ContentControl Style="{StaticResource InfoIconStyle}"
+                                                    AutomationProperties.Name="{DynamicResource Recon.RawMinusModel}"
+                                                    AutomationProperties.HelpText="{DynamicResource Recon.RawMinusModelHelp}">
                                         <ContentControl.ToolTip>
-                                            <TextBlock Style="{StaticResource ReconstructionToolTipTextStyle}"
-                                                       Text="Raw Surface Closure Rate minus Modeled Closure. Closer to zero means stronger agreement. Treat a residual inside the stated uncertainty as explained by the model." />
+                                            <TextBlock Style="{StaticResource InfoToolTipTextStyle}"
+                                                       Text="{DynamicResource Recon.RawMinusModelHelp}" />
                                         </ContentControl.ToolTip>
                                     </ContentControl>
                                 </StackPanel>
@@ -595,14 +766,14 @@
 
                             <StackPanel Grid.Column="2" Margin="18,0,0,0">
                                 <StackPanel Orientation="Horizontal">
-                                    <TextBlock Text="MODELED COMPONENTS" Style="{StaticResource SectionLabelStyle}"
+                                    <TextBlock Text="{DynamicResource Recon.Components}" Style="{StaticResource SectionLabelStyle}"
                                                Foreground="{StaticResource SubtleTextBrush}" />
-                                    <ContentControl Style="{StaticResource ReconstructionInfoIconStyle}"
-                                                    AutomationProperties.Name="Modeled components information"
-                                                    AutomationProperties.HelpText="Explains inertial, terrain, and pitch components.">
+                                    <ContentControl Style="{StaticResource InfoIconStyle}"
+                                                    AutomationProperties.Name="{DynamicResource Recon.Components}"
+                                                    AutomationProperties.HelpText="{DynamicResource Recon.ComponentsHelp}">
                                         <ContentControl.ToolTip>
-                                            <TextBlock Style="{StaticResource ReconstructionToolTipTextStyle}"
-                                                       Text="The three values add up to Modeled Closure. Inertial uses a 250 ms quadratic fit evaluated 75 ms before estimated wheel contact, so it can differ from Aircraft Vertical Rate above, which uses a 200 ms linear fit extrapolated to contact. Terrain is local runway elevation motion; pitch is main-gear motion caused by aircraft rotation." />
+                                            <TextBlock Style="{StaticResource InfoToolTipTextStyle}"
+                                                       Text="{DynamicResource Recon.ComponentsHelp}" />
                                         </ContentControl.ToolTip>
                                     </ContentControl>
                                 </StackPanel>
@@ -614,14 +785,14 @@
 
                             <StackPanel Grid.Column="3" Margin="18,0,0,0">
                                 <StackPanel Orientation="Horizontal">
-                                    <TextBlock Text="UNCERTAINTY" Style="{StaticResource SectionLabelStyle}"
+                                    <TextBlock Text="{DynamicResource Recon.Uncertainty}" Style="{StaticResource SectionLabelStyle}"
                                                Foreground="{StaticResource SubtleTextBrush}" />
-                                    <ContentControl Style="{StaticResource ReconstructionInfoIconStyle}"
-                                                    AutomationProperties.Name="Reconstruction uncertainty information"
-                                                    AutomationProperties.HelpText="Explains the reconstruction uncertainty envelope.">
+                                    <ContentControl Style="{StaticResource InfoIconStyle}"
+                                                    AutomationProperties.Name="{DynamicResource Recon.Uncertainty}"
+                                                    AutomationProperties.HelpText="{DynamicResource Recon.UncertaintyHelp}">
                                         <ContentControl.ToolTip>
-                                            <TextBlock Style="{StaticResource ReconstructionToolTipTextStyle}"
-                                                       Text="Conservative validation envelope: ±10 fpm for a well-timed primary two-main-gear contact; ±15 fpm for a bounce, fallback timing, or three-main-gear layout. It is not an error bar on the raw simulator latch." />
+                                            <TextBlock Style="{StaticResource InfoToolTipTextStyle}"
+                                                       Text="{DynamicResource Recon.UncertaintyHelp}" />
                                         </ContentControl.ToolTip>
                                     </ContentControl>
                                 </StackPanel>
@@ -633,14 +804,14 @@
 
                             <StackPanel Grid.Column="4" Margin="18,0,0,0">
                                 <StackPanel Orientation="Horizontal">
-                                    <TextBlock Text="GEOMETRY SOURCE" Style="{StaticResource SectionLabelStyle}"
+                                    <TextBlock Text="{DynamicResource Recon.Geometry}" Style="{StaticResource SectionLabelStyle}"
                                                Foreground="{StaticResource SubtleTextBrush}" />
-                                    <ContentControl Style="{StaticResource ReconstructionInfoIconStyle}"
-                                                    AutomationProperties.Name="Geometry source information"
-                                                    AutomationProperties.HelpText="Explains the recovered gear geometry and quality score.">
+                                    <ContentControl Style="{StaticResource InfoIconStyle}"
+                                                    AutomationProperties.Name="{DynamicResource Recon.Geometry}"
+                                                    AutomationProperties.HelpText="{DynamicResource Recon.GeometryHelp}">
                                         <ContentControl.ToolTip>
-                                            <TextBlock Style="{StaticResource ReconstructionToolTipTextStyle}"
-                                                       Text="Longitudinal main-gear arm relative to the simulator's velocity reference. 'Telemetry' means it was recovered from rollout data; quality is an identifiability score, not a probability. No aircraft configuration file is required." />
+                                            <TextBlock Style="{StaticResource InfoToolTipTextStyle}"
+                                                       Text="{DynamicResource Recon.GeometryHelp}" />
                                         </ContentControl.ToolTip>
                                     </ContentControl>
                                 </StackPanel>
@@ -663,11 +834,11 @@
                                 </Style>
                             </Grid.Style>
                             <StackPanel VerticalAlignment="Center">
-                                <TextBlock Text="RECONSTRUCTION UNAVAILABLE FOR THIS RECORD"
+                                <TextBlock Text="{DynamicResource Recon.UnavailableTitle}"
                                            Style="{StaticResource SectionLabelStyle}"
                                            Foreground="{StaticResource SubtleTextBrush}" />
                                 <TextBlock Margin="0,4,0,0"
-                                           Text="This landing was saved before the model was added, or its telemetry did not contain enough geometry or pre-contact samples. Raw measurements above are unchanged."
+                                           Text="{DynamicResource Recon.UnavailableBody}"
                                            Foreground="{StaticResource MutedTextBrush}"
                                            FontSize="11" TextWrapping="Wrap" />
                             </StackPanel>
@@ -684,14 +855,14 @@
                         <ColumnDefinition Width="Auto" />
                     </Grid.ColumnDefinitions>
                     <StackPanel Orientation="Horizontal" VerticalAlignment="Bottom">
-                        <RadioButton x:Name="VerticalRateTab" Content="Vertical rate" Tag="VerticalSpeed" GroupName="ChartMode" Style="{StaticResource ChartTabStyle}" Checked="OnChartModeChanged" />
-                        <RadioButton Content="Loads" Tag="LoadFactors" GroupName="ChartMode" Style="{StaticResource ChartTabStyle}" Checked="OnChartModeChanged" />
-                        <RadioButton Content="Controls" Tag="FlightControls" GroupName="ChartMode" Style="{StaticResource ChartTabStyle}" Checked="OnChartModeChanged" />
-                        <RadioButton Content="Attitude" Tag="Attitude" GroupName="ChartMode" Style="{StaticResource ChartTabStyle}" Checked="OnChartModeChanged" />
-                        <RadioButton Content="Power" Tag="Power" GroupName="ChartMode" Style="{StaticResource ChartTabStyle}" Checked="OnChartModeChanged" />
-                        <RadioButton Content="Gear" Tag="Gear" GroupName="ChartMode" Style="{StaticResource ChartTabStyle}" Checked="OnChartModeChanged" />
+                        <RadioButton x:Name="VerticalRateTab" Content="{DynamicResource Chart.TabVerticalRate}" Tag="VerticalSpeed" GroupName="ChartMode" Style="{StaticResource ChartTabStyle}" Checked="OnChartModeChanged" />
+                        <RadioButton Content="{DynamicResource Chart.TabLoads}" Tag="LoadFactors" GroupName="ChartMode" Style="{StaticResource ChartTabStyle}" Checked="OnChartModeChanged" />
+                        <RadioButton Content="{DynamicResource Chart.TabControls}" Tag="FlightControls" GroupName="ChartMode" Style="{StaticResource ChartTabStyle}" Checked="OnChartModeChanged" />
+                        <RadioButton Content="{DynamicResource Chart.TabAttitude}" Tag="Attitude" GroupName="ChartMode" Style="{StaticResource ChartTabStyle}" Checked="OnChartModeChanged" />
+                        <RadioButton Content="{DynamicResource Chart.TabPower}" Tag="Power" GroupName="ChartMode" Style="{StaticResource ChartTabStyle}" Checked="OnChartModeChanged" />
+                        <RadioButton Content="{DynamicResource Chart.TabGear}" Tag="Gear" GroupName="ChartMode" Style="{StaticResource ChartTabStyle}" Checked="OnChartModeChanged" />
                     </StackPanel>
-                    <TextBlock Grid.Column="2" x:Name="MainChartDescription" Text="vertical speed · climb + / descent −"
+                    <TextBlock Grid.Column="2" x:Name="MainChartDescription" Text="{DynamicResource Chart.DescriptionVertical}"
                                Foreground="{StaticResource SubtleTextBrush}" FontSize="11" VerticalAlignment="Bottom" Margin="0,0,0,10" />
                     <Border Grid.Column="3" Width="1" Height="12" Background="#262321" Margin="22,0,22,10" VerticalAlignment="Bottom" />
                     <StackPanel Grid.Column="4" Orientation="Horizontal" VerticalAlignment="Bottom">
@@ -728,7 +899,7 @@
                     <Grid>
                         <Grid.ColumnDefinitions><ColumnDefinition Width="96" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
                         <StackPanel Margin="24,9,0,0">
-                            <TextBlock Text="Vertical G" Foreground="{StaticResource MutedTextBrush}" FontSize="11" />
+                            <TextBlock Text="{DynamicResource Chart.VerticalG}" Foreground="{StaticResource MutedTextBrush}" FontSize="11" />
                         </StackPanel>
                         <Grid Grid.Column="1" Margin="0,8,0,8">
                             <controls:LandingChart x:Name="MiniGChart" Mode="LoadFactors" ShowLegend="False" ShowHoverTooltip="True" ShowXAxisLabels="False" CompactLane="True" />
@@ -754,7 +925,7 @@
                     <Grid>
                         <Grid.ColumnDefinitions><ColumnDefinition Width="96" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
                         <StackPanel Margin="24,9,0,0">
-                            <TextBlock Text="Main gear" Foreground="{StaticResource MutedTextBrush}" FontSize="11" />
+                            <TextBlock Text="{DynamicResource Chart.MainGear}" Foreground="{StaticResource MutedTextBrush}" FontSize="11" />
                         </StackPanel>
                         <Grid Grid.Column="1" Margin="0,8,0,8">
                             <controls:LandingChart x:Name="MiniGearChart" Mode="Gear" ShowLegend="False" ShowHoverTooltip="True" ShowXAxisLabels="False" CompactLane="True" />
@@ -776,8 +947,8 @@
             <Grid x:Name="EmptyState" Visibility="Collapsed">
                 <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" MaxWidth="470">
                     <Border Width="15" Height="15" Background="{StaticResource AccentBrush}" CornerRadius="3" HorizontalAlignment="Center" />
-                    <TextBlock x:Name="EmptyStateTitle" Text="NO LANDING SESSIONS" FontSize="19" FontWeight="SemiBold" HorizontalAlignment="Center" Margin="0,18,0,0" />
-                    <TextBlock x:Name="EmptyStateDescription" Text="Start MSFS and descend through 500 ft AGL. Recording, analysis and storage happen automatically after touchdown."
+                    <TextBlock x:Name="EmptyStateTitle" Text="{DynamicResource History.NoLandingsTitle}" FontSize="19" FontWeight="SemiBold" HorizontalAlignment="Center" Margin="0,18,0,0" />
+                    <TextBlock x:Name="EmptyStateDescription" Text="{DynamicResource History.NoLandingsBody}"
                                Foreground="{StaticResource MutedTextBrush}" FontSize="12" TextAlignment="Center" TextWrapping="Wrap" Margin="0,10,0,0" />
                 </StackPanel>
             </Grid>
@@ -793,7 +964,7 @@
                     <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
-                <TextBlock Text="Window: 500 ft gate → t+15 s" Foreground="{StaticResource LabelTextBrush}" FontSize="11" VerticalAlignment="Center" />
+                <TextBlock Text="{DynamicResource Footer.Window}" Foreground="{StaticResource LabelTextBrush}" FontSize="11" VerticalAlignment="Center" />
                 <TextBlock Grid.Column="1" Text="{Binding RecordSummaryDisplay}" Foreground="{StaticResource LabelTextBrush}" FontSize="11" VerticalAlignment="Center" Margin="16,0,0,0" />
                 <TextBlock Grid.Column="2" x:Name="VersionAuthorText" Foreground="{StaticResource LabelTextBrush}"
                            FontFamily="Cascadia Mono, Consolas" FontSize="10" VerticalAlignment="Center"
@@ -803,19 +974,105 @@
                         <Run x:Name="VersionAuthorRun" />
                     </Hyperlink>
                 </TextBlock>
-                <TextBlock Grid.Column="3" x:Name="RawDebugStatusText" Text="Telemetry upload disabled" Foreground="{StaticResource SubtleTextBrush}" FontSize="10" VerticalAlignment="Center" Margin="0,0,10,0" />
+                <TextBlock Grid.Column="3" x:Name="RawDebugStatusText" Text="{DynamicResource Footer.UploadDisabled}" Foreground="{StaticResource SubtleTextBrush}" FontSize="10" VerticalAlignment="Center" Margin="0,0,10,0" />
                 <StackPanel Grid.Column="4" Orientation="Horizontal" VerticalAlignment="Center">
-                    <ToggleButton x:Name="RawDebugToggle" Content="DEBUG RAW · OFF" Style="{StaticResource RawDebugToggleStyle}" FontSize="10"
+                    <ToggleButton x:Name="RawDebugToggle" Content="{DynamicResource Footer.DebugOff}" Style="{StaticResource RawDebugToggleStyle}" FontSize="10"
                                   Checked="OnRawDebugModeChanged" Unchecked="OnRawDebugModeChanged"
-                                  ToolTip="SENDS FULL-RATE TELEMETRY TO THE MAINTAINER · SHORT TEST FLIGHTS ONLY" />
-                    <TextBlock Text="· NOT FOR LONG FLIGHTS" Foreground="{StaticResource DangerBrush}" FontSize="9"
-                               VerticalAlignment="Center" Margin="7,0,0,0" IsHitTestVisible="False" />
+                                  ToolTip="{DynamicResource Footer.DebugHelp}" />
                 </StackPanel>
                 <TextBlock Grid.Column="5" x:Name="StoragePathText" Foreground="{StaticResource LabelTextBrush}"
                            FontFamily="Cascadia Mono, Consolas" FontSize="10" VerticalAlignment="Center" Margin="16,0,0,0"
                            TextTrimming="CharacterEllipsis" MaxWidth="310" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />
             </Grid>
         </Border>
+
+        <Grid x:Name="SettingsOverlay"
+              Grid.RowSpan="3" Grid.ColumnSpan="2"
+              Panel.ZIndex="110"
+              Background="#B8000000"
+              Visibility="Collapsed"
+              Focusable="True"
+              KeyboardNavigation.TabNavigation="Cycle"
+              PreviewKeyDown="OnSettingsOverlayKeyDown">
+            <Border Width="520"
+                    MaxWidth="520"
+                    Padding="24"
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Center"
+                    Background="{StaticResource SurfaceRaisedBrush}"
+                    BorderBrush="#3A3531"
+                    BorderThickness="1"
+                    CornerRadius="10">
+                <StackPanel>
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <Border Width="34" Height="34" Background="{StaticResource AccentSoftBrush}" CornerRadius="17">
+                            <TextBlock Text="&#xE713;" FontFamily="Segoe MDL2 Assets" FontSize="15"
+                                       Foreground="{StaticResource AccentBrush}"
+                                       HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Border>
+                        <TextBlock Grid.Column="1" Text="{DynamicResource Settings.Title}"
+                                   FontSize="17" FontWeight="SemiBold"
+                                   VerticalAlignment="Center" Margin="13,0,0,0" />
+                        <Button Grid.Column="2" Content="×" Width="30" Height="30"
+                                Style="{StaticResource TopBarButtonStyle}"
+                                Click="OnCloseSettingsClick"
+                                AutomationProperties.Name="{DynamicResource Top.Close}" />
+                    </Grid>
+
+                    <Border Background="{StaticResource SurfaceBrush}" CornerRadius="8"
+                            BorderBrush="{StaticResource BorderBrush}" BorderThickness="1"
+                            Padding="16" Margin="0,20,0,0">
+                        <StackPanel>
+                            <TextBlock Text="{DynamicResource Settings.Language}"
+                                       Style="{StaticResource SectionLabelStyle}"
+                                       Foreground="{StaticResource LabelTextBrush}" />
+                            <TextBlock Text="{DynamicResource Settings.LanguageBody}"
+                                       Foreground="{StaticResource MutedTextBrush}"
+                                       FontSize="11" LineHeight="17" TextWrapping="Wrap" Margin="0,7,0,0" />
+                            <StackPanel Orientation="Horizontal" Margin="0,15,0,0">
+                                <RadioButton x:Name="SettingsLanguageAuto"
+                                             Content="{DynamicResource Settings.Automatic}"
+                                             Tag="auto" GroupName="ApplicationLanguage"
+                                             Style="{StaticResource SettingsChoiceStyle}"
+                                             Checked="OnLanguageSelectionChanged" />
+                                <RadioButton x:Name="SettingsLanguageEnglish"
+                                             Content="{DynamicResource Settings.English}"
+                                             Tag="en" GroupName="ApplicationLanguage"
+                                             Style="{StaticResource SettingsChoiceStyle}"
+                                             Checked="OnLanguageSelectionChanged" />
+                                <RadioButton x:Name="SettingsLanguageRussian"
+                                             Content="{DynamicResource Settings.Russian}"
+                                             Tag="ru" GroupName="ApplicationLanguage"
+                                             Style="{StaticResource SettingsChoiceStyle}"
+                                             Checked="OnLanguageSelectionChanged" />
+                            </StackPanel>
+                            <TextBlock x:Name="SettingsAutomaticLanguageText"
+                                       Foreground="{StaticResource SubtleTextBrush}"
+                                       FontSize="10" Margin="0,11,0,0" />
+                        </StackPanel>
+                    </Border>
+
+                    <TextBlock x:Name="SettingsErrorText"
+                               Visibility="Collapsed"
+                               Foreground="{StaticResource DangerBrush}"
+                               FontSize="11" TextWrapping="Wrap" Margin="0,12,0,0" />
+                    <TextBlock x:Name="SettingsFileText"
+                               Foreground="{StaticResource SubtleTextBrush}"
+                               FontFamily="Cascadia Mono, Consolas"
+                               FontSize="9" TextTrimming="CharacterEllipsis" Margin="0,14,0,0" />
+                    <Button x:Name="CloseSettingsButton"
+                            Content="{DynamicResource Common.Done}"
+                            Height="34" HorizontalAlignment="Right" Margin="0,18,0,0"
+                            Style="{StaticResource OutlineButtonStyle}"
+                            Click="OnCloseSettingsClick" />
+                </StackPanel>
+            </Border>
+        </Grid>
 
         <Grid x:Name="DeleteLandingOverlay"
               Grid.RowSpan="3" Grid.ColumnSpan="2"
@@ -843,8 +1100,8 @@
                                   StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round" />
                         </Viewbox>
                     </Border>
-                    <TextBlock Text="DELETE LANDING?" FontSize="17" FontWeight="SemiBold" Margin="0,17,0,0" />
-                    <TextBlock Text="This removes the saved landing and its recorded profile. This cannot be undone."
+                    <TextBlock Text="{DynamicResource Delete.Title}" FontSize="17" FontWeight="SemiBold" Margin="0,17,0,0" />
+                    <TextBlock Text="{DynamicResource Delete.Body}"
                                Foreground="{StaticResource MutedTextBrush}"
                                FontSize="12" TextWrapping="Wrap" LineHeight="18" Margin="0,8,0,0" />
                     <Border Background="{StaticResource SurfaceBrush}" CornerRadius="7" Padding="12,10" Margin="0,16,0,0">
@@ -858,12 +1115,12 @@
                                FontSize="11" TextWrapping="Wrap" Margin="0,12,0,0" />
                     <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,20,0,0">
                         <Button x:Name="CancelDeleteLandingButton"
-                                Content="CANCEL"
+                                Content="{DynamicResource Common.Cancel}"
                                 Height="34"
                                 Style="{StaticResource OutlineButtonStyle}"
                                 Click="OnCancelDeleteLandingClick" />
                         <Button x:Name="ConfirmDeleteLandingButton"
-                                Content="DELETE"
+                                Content="{DynamicResource Common.Delete}"
                                 Height="34"
                                 Margin="10,0,0,0"
                                 Style="{StaticResource DangerButtonStyle}"

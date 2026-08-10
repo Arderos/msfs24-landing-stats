@@ -35,9 +35,14 @@ public sealed class AirportFacilityRepository
             return ReadExisting();
         }
         catch (Exception exception) when (
-            exception is IOException ||
             exception is InvalidDataException ||
             exception is System.Runtime.Serialization.SerializationException)
+        {
+            TryQuarantineCorruptCache();
+            return Array.Empty<AirportFacility>();
+        }
+        catch (Exception exception) when (
+            exception is IOException)
         {
             return Array.Empty<AirportFacility>();
         }
@@ -59,6 +64,13 @@ public sealed class AirportFacilityRepository
         }
         catch (DirectoryNotFoundException)
         {
+            existing = Array.Empty<AirportFacility>();
+        }
+        catch (Exception exception) when (
+            exception is InvalidDataException ||
+            exception is System.Runtime.Serialization.SerializationException)
+        {
+            QuarantineCorruptCache();
             existing = Array.Empty<AirportFacility>();
         }
 
@@ -113,5 +125,35 @@ public sealed class AirportFacilityRepository
         {
             return (_serializer.ReadObject(gzip) as List<AirportFacility>) ?? new List<AirportFacility>();
         }
+    }
+
+    private void TryQuarantineCorruptCache()
+    {
+        try
+        {
+            QuarantineCorruptCache();
+        }
+        catch (IOException)
+        {
+            // Load remains read-tolerant. MergeAndSave will retry the quarantine
+            // and will not overwrite the unreadable file if it is merely locked.
+        }
+        catch (UnauthorizedAccessException)
+        {
+            // Same policy as a transient read failure: keep the original intact.
+        }
+    }
+
+    private void QuarantineCorruptCache()
+    {
+        if (!File.Exists(Path))
+        {
+            return;
+        }
+
+        var quarantinePath = Path + ".corrupt-" +
+                             DateTime.UtcNow.ToString("yyyyMMdd-HHmmssfff", System.Globalization.CultureInfo.InvariantCulture) +
+                             "-" + Guid.NewGuid().ToString("N");
+        File.Move(Path, quarantinePath);
     }
 }

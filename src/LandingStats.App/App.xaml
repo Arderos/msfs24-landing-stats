@@ -3,6 +3,7 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              StartupUri="MainWindow.xaml">
     <Application.Resources>
+        <ResourceDictionary>
         <SolidColorBrush x:Key="AppBackgroundBrush" Color="#0D0C0B" />
         <SolidColorBrush x:Key="SidebarBrush" Color="#100F0D" />
         <SolidColorBrush x:Key="SurfaceBrush" Color="#161514" />
@@ -17,7 +18,6 @@
         <SolidColorBrush x:Key="SuccessBrush" Color="#8FD6A8" />
         <SolidColorBrush x:Key="BlueBrush" Color="#5FA8F5" />
         <SolidColorBrush x:Key="AmberBrush" Color="#D9C46A" />
-        <SolidColorBrush x:Key="VioletBrush" Color="#5FA8F5" />
         <SolidColorBrush x:Key="DangerBrush" Color="#FF8A6A" />
         <SolidColorBrush x:Key="DangerSoftBrush" Color="#3A1F17" />
 
@@ -206,5 +206,6 @@
                 </Setter.Value>
             </Setter>
         </Style>
+        </ResourceDictionary>
     </Application.Resources>
 </Application>

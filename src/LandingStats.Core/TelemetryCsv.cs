@@ -28,6 +28,12 @@ public static class TelemetryCsv
     public static readonly string Header = BuildCompactHeader();
 
     private static readonly CultureInfo Invariant = CultureInfo.InvariantCulture;
+    private static readonly int LegacyColumnCount = ColumnCount(LegacyHeader);
+    private static readonly int DiagnosticWithoutPositionColumnCount = ColumnCount(DiagnosticWithoutPositionHeader);
+    private static readonly int PreviousColumnCount = ColumnCount(PreviousHeader);
+    private static readonly int BlackBoxV3ColumnCount = ColumnCount(BlackBoxV3Header);
+    private static readonly int V4ColumnCount = ColumnCount(V4Header);
+    private static readonly int CurrentColumnCount = ColumnCount(Header);
 
     public static string Format(TelemetrySample sample)
     {
@@ -149,7 +155,7 @@ public static class TelemetryCsv
             throw new InvalidDataException("The telemetry CSV header is missing or belongs to an unsupported version.");
         }
 
-        var expectedColumnCount = header!.Split(',').Length;
+        var expectedColumnCount = ColumnCount(header!);
 
         string? line;
         var lineNumber = 1;
@@ -161,7 +167,8 @@ public static class TelemetryCsv
                 continue;
             }
 
-            if (line.Split(',').Length != expectedColumnCount || !TryParse(line, out var sample))
+            var values = line.Split(',');
+            if (values.Length != expectedColumnCount || !TryParse(values, out var sample))
             {
                 throw new InvalidDataException($"Invalid telemetry data at line {lineNumber}.");
             }
@@ -174,15 +181,18 @@ public static class TelemetryCsv
 
     public static bool TryParse(string line, out TelemetrySample sample)
     {
+        return TryParse(line.Split(','), out sample);
+    }
+
+    private static bool TryParse(string[] values, out TelemetrySample sample)
+    {
         sample = new TelemetrySample();
-        var values = line.Split(',');
-        var isLegacy = values.Length == 22;
-        var isDiagnosticWithoutPosition = values.Length == DiagnosticWithoutPositionHeader.Split(',').Length;
-        var isPrevious = values.Length == PreviousHeader.Split(',').Length;
-        var isBlackBoxV3 = values.Length == BlackBoxV3Header.Split(',').Length;
-        var isV4 = values.Length == V4Header.Split(',').Length;
-        var expectedCurrentColumns = Header.Split(',').Length;
-        var isCurrent = values.Length == expectedCurrentColumns;
+        var isLegacy = values.Length == LegacyColumnCount;
+        var isDiagnosticWithoutPosition = values.Length == DiagnosticWithoutPositionColumnCount;
+        var isPrevious = values.Length == PreviousColumnCount;
+        var isBlackBoxV3 = values.Length == BlackBoxV3ColumnCount;
+        var isV4 = values.Length == V4ColumnCount;
+        var isCurrent = values.Length == CurrentColumnCount;
         if (isCurrent)
         {
             return TryParseCompact(values, out sample);
@@ -458,6 +468,19 @@ public static class TelemetryCsv
         }
 
         return true;
+    }
+
+    private static int ColumnCount(string header)
+    {
+        var count = 1;
+        for (var index = 0; index < header.Length; index++)
+        {
+            if (header[index] == ',')
+            {
+                count++;
+            }
+        }
+        return count;
     }
 
     private static bool TryParseCompact(string[] values, out TelemetrySample sample)
