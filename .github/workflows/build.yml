@@ -207,6 +207,19 @@ jobs:
             [Array]::Clear($privateKey, 0, $privateKey.Length)
           }
 
+          $previousClientVersion = '0.7.9'
+          $previousClientDirectory = Join-Path $env:RUNNER_TEMP "msfs-landing-stats-v$previousClientVersion-client"
+          New-Item -ItemType Directory -Path $previousClientDirectory -Force | Out-Null
+          $previousClientPath = Join-Path $previousClientDirectory 'MSFS-Landing-Stats.exe'
+          $previousClientRoot = "https://github.com/Arderos/msfs24-landing-stats/releases/download/v$previousClientVersion/"
+          Invoke-WebRequest -Uri ($previousClientRoot + 'MSFS-Landing-Stats.exe') -OutFile $previousClientPath
+          .\verify-previous-client-update.ps1 `
+            -PreviousPackagePath $previousClientPath `
+            -PreviousVersion $previousClientVersion `
+            -ManifestPath $channelManifestPath `
+            -SignaturePath $channelSignaturePath `
+            -ExpectedVersion $version
+
           $bridgeVersion = '0.7.6'
           $bridgeManifestPath = Join-Path $env:GITHUB_WORKSPACE 'artifacts\update-manifest.txt'
           $bridgeSignaturePath = Join-Path $env:GITHUB_WORKSPACE 'artifacts\update-manifest.sig'

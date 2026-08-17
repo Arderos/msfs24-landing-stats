@@ -13,6 +13,10 @@ $payloadPath = Join-Path $workDirectory "payload.zip"
 $singleFilePath = Join-Path $artifactsDirectory "MSFS-Landing-Stats.exe"
 $updaterArtifactPath = Join-Path $artifactsDirectory "MSFS-Landing-Stats.Updater.exe"
 $obsoletePackagePath = Join-Path $artifactsDirectory "MSFS-Landing-Stats.zip"
+$obsoleteWorkDirectories = @(
+    (Join-Path $artifactsDirectory "app-bundle-work"),
+    (Join-Path $artifactsDirectory "bundle-work")
+)
 $allowedPrefix = $artifactsDirectory.TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
 
 if (-not $workDirectory.StartsWith($allowedPrefix, [StringComparison]::OrdinalIgnoreCase)) {
@@ -28,6 +32,15 @@ if ($LASTEXITCODE -ne 0) {
 
 if (Test-Path -LiteralPath $workDirectory) {
     Remove-Item -LiteralPath $workDirectory -Recurse -Force
+}
+foreach ($obsoleteWorkDirectory in $obsoleteWorkDirectories) {
+    $resolvedObsoleteWorkDirectory = [IO.Path]::GetFullPath($obsoleteWorkDirectory)
+    if (-not $resolvedObsoleteWorkDirectory.StartsWith($allowedPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Refusing to remove a legacy package work directory outside artifacts."
+    }
+    if (Test-Path -LiteralPath $resolvedObsoleteWorkDirectory) {
+        Remove-Item -LiteralPath $resolvedObsoleteWorkDirectory -Recurse -Force
+    }
 }
 New-Item -ItemType Directory -Path $artifactsDirectory -Force | Out-Null
 New-Item -ItemType Directory -Path $packageDirectory -Force | Out-Null
@@ -150,3 +163,7 @@ Write-Host "Updater: $updaterArtifactPath"
 Write-Host "Updater size: $updaterSize bytes"
 Write-Host "Updater SHA-256: $updaterHash"
 Write-Host "Release version: $($appVersion.Major).$($appVersion.Minor).$($appVersion.Build)"
+
+if (Test-Path -LiteralPath $workDirectory) {
+    Remove-Item -LiteralPath $workDirectory -Recurse -Force
+}

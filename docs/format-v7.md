@@ -18,6 +18,9 @@ pitch components, raw-minus-model residual, uncertainty band, fit-point count,
 signed gear arm, geometry quality, and arm provenance. These are ordinary
 `LandingRecord` data members; they do not add or change any time-series column.
 Older v7 files omit them and are read as reconstruction unavailable.
+Arm provenance is an optional string (`FlightModelConfig`, `Telemetry`, or the
+legacy `Provided` value). Older v7 records without the string retain the prior
+boolean telemetry-provenance fallback.
 
 Series are stored column-wise. For example, `t`, `iv`, `vsi`, and `g` are parallel arrays for time, inertial vertical rate, indicated vertical rate, and vertical load. The complete key-to-property mapping is defined by the `DataMember(Name=...)` declarations in `LandingRecordFile.cs`.
 

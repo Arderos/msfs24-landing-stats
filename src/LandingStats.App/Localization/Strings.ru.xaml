@@ -58,9 +58,9 @@
     <system:String x:Key="Recon.Components">СОСТАВЛЯЮЩИЕ МОДЕЛИ</system:String>
     <system:String x:Key="Recon.ComponentsHelp">Три составляющие, сумма которых даёт расчётное сближение. «Самолёт» — его вертикальное движение, «рельеф» — подъём или снижение ВПП, «тангаж» — вертикальное движение основных стоек при вращении самолёта. Первая составляющая может отличаться от главной вертикальной скорости, потому что показание MSFS относится к немного более раннему моменту.</system:String>
     <system:String x:Key="Recon.Uncertainty">НЕОПРЕДЕЛЁННОСТЬ</system:String>
-    <system:String x:Key="Recon.UncertaintyHelp">Ожидаемый допуск реконструкции по результатам испытательных посадок. Обычно это ±10 fpm, а для отскока, менее точного времени контакта или трёх групп основных стоек — ±15 fpm. Этот допуск относится к модели, а не к исходному значению MSFS.</system:String>
+    <system:String x:Key="Recon.UncertaintyHelp">Ожидаемый допуск реконструкции по результатам испытательных посадок. Обычно это ±10 fpm, а для отскока, менее точного времени контакта, трёх групп основных стоек или многостоечной схемы с геометрией из модели полёта — ±15 fpm. Для многостоечного самолёта с геометрией, восстановленной по телеметрии, сохраняется консервативный допуск ±50 fpm. Этот допуск относится к модели, а не к исходному значению MSFS.</system:String>
     <system:String x:Key="Recon.Geometry">ИСТОЧНИК ГЕОМЕТРИИ</system:String>
-    <system:String x:Key="Recon.GeometryHelp">Как приложение определило расстояние между основными стойками и точкой, скорость которой сообщает MSFS. «Телеметрия» означает, что расстояние восстановлено по посадке и пробегу без чтения конфигурационных файлов самолёта. Качество показывает, насколько отчётливо геометрия проявилась в данных; это не вероятность.</system:String>
+    <system:String x:Key="Recon.GeometryHelp">Как приложение определило расстояние между основными стойками и точкой, скорость которой сообщает MSFS. Сначала используется доступная модель полёта, а для зашифрованных или недоступных конфигураций — телеметрия. Качество показывает, насколько отчётливо геометрия проявилась в данных; это не вероятность.</system:String>
     <system:String x:Key="Recon.UnavailableTitle">РЕКОНСТРУКЦИЯ ДЛЯ ЭТОЙ ЗАПИСИ НЕДОСТУПНА</system:String>
     <system:String x:Key="Recon.UnavailableBody">Записанных данных недостаточно для достоверной реконструкции. Это может быть старая запись, неясная последовательность касания стоек или слишком малое число пригодных отсчётов. Измеренные значения выше остаются доступными и не изменяются.</system:String>
 
@@ -92,6 +92,12 @@
     <system:String x:Key="Chart.EngineFormat">ДВИГ {0}</system:String>
     <system:String x:Key="Chart.PowerStyle">сплошная — N1/RPM · пунктир — РУД</system:String>
     <system:String x:Key="Chart.ContactPointFormat">ТК {0}</system:String>
+    <system:String x:Key="Chart.ContactPointGroupFormat">ТК {0}</system:String>
+    <system:String x:Key="Chart.GearStrutFormat">Стойка {0}</system:String>
+    <system:String x:Key="Chart.GearNose">Носовая</system:String>
+    <system:String x:Key="Chart.GearMainOne">Основная 1</system:String>
+    <system:String x:Key="Chart.GearMainTwo">Основная 2</system:String>
+    <system:String x:Key="Chart.GearMainThree">Основная 3</system:String>
     <system:String x:Key="Chart.Touchdown">КАСАНИЕ</system:String>
     <system:String x:Key="Chart.TouchdownShort">КАС.</system:String>
     <system:String x:Key="Chart.Flare">ВЫРАВНИВАНИЕ</system:String>
@@ -124,6 +130,9 @@
     <system:String x:Key="Common.Cancel">ОТМЕНА</system:String>
     <system:String x:Key="Common.Delete">УДАЛИТЬ</system:String>
     <system:String x:Key="Common.Done">ГОТОВО</system:String>
+    <system:String x:Key="Common.Close">ЗАКРЫТЬ</system:String>
+    <system:String x:Key="Replay.Title">Реплеи не поддерживаются</system:String>
+    <system:String x:Key="Replay.Body">Реплей MSFS не отдаёт физически корректную полётную телеметрию, поэтому такую посадку нельзя проанализировать или сохранить. Запись реального полёта возобновится автоматически, когда самолёт окажется в воздухе.</system:String>
 
     <system:String x:Key="Settings.Title">НАСТРОЙКИ</system:String>
     <system:String x:Key="Settings.Language">ЯЗЫК</system:String>
@@ -142,6 +151,7 @@
     <system:String x:Key="Model.GeometryUnavailable">геометрия недоступна</system:String>
     <system:String x:Key="Model.Telemetry">телеметрия</system:String>
     <system:String x:Key="Model.Provided">задано</system:String>
+    <system:String x:Key="Model.FlightModelConfig">модель полёта</system:String>
     <system:String x:Key="Model.GeometryQualityFormat" xml:space="preserve"> · качество {0:P0}</system:String>
     <system:String x:Key="Model.GeometryFormat">плечо {0:+0.0;-0.0;0.0} фт · {1}{2}</system:String>
     <system:String x:Key="Model.SurfaceDeltaNa">дельта: н/д</system:String>
@@ -184,6 +194,8 @@
     <system:String x:Key="Recorder.SetupFailedFormat">Ошибка настройки телеметрии: {0}</system:String>
     <system:String x:Key="Recorder.SimConnectErrorFormat">Ошибка SimConnect {0} · отправка {1} · индекс {2}{3}</system:String>
     <system:String x:Key="Recorder.GoAround">Уход на второй круг — ожидание снижения ниже 500 фт AGL</system:String>
+    <system:String x:Key="Recorder.ReplayActive">Идёт реплей — запись посадки отключена</system:String>
+    <system:String x:Key="Recorder.ReplayIgnored">Обнаружена телеметрия реплея — посадка не сохранена</system:String>
     <system:String x:Key="Recorder.LateStart">Поздний запуск — идёт запись касания</system:String>
     <system:String x:Key="Recorder.ModeChangeFailedFormat">Не удалось изменить режим телеметрии: {0}</system:String>
     <system:String x:Key="Recorder.NoTouchdown">Запись завершена, но касание не обнаружено</system:String>
@@ -225,6 +237,7 @@
     <system:String x:Key="Telemetry.DeferredFormat">Отправка телеметрии отложена: {0}</system:String>
     <system:String x:Key="Telemetry.EnrollAgain">Требуется повторная регистрация установки; запись сохранена в очереди</system:String>
     <system:String x:Key="Telemetry.ReceiverDeferredFormat">Сервер отложил отправку ({0}); запись сохранена</system:String>
+    <system:String x:Key="Telemetry.RejectedFormat">Сервер отклонил {0} ({1}); данные сохранены как {2} и больше не будут отправляться</system:String>
     <system:String x:Key="Update.Current">Установлена актуальная версия</system:String>
     <system:String x:Key="Update.StartedFormat">Проверенный модуль обновления запущен для v{0}</system:String>
     <system:String x:Key="Update.Cancelled">Проверка обновлений отменена</system:String>

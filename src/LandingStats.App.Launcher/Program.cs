@@ -5,6 +5,7 @@ using System.IO;
 using System.IO.Compression;
 using System.Linq;
 using System.Reflection;
+using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
 using System.Windows.Forms;
@@ -26,6 +27,19 @@ internal static class Program
         "LandingStats.Core.dll",
         "Microsoft.FlightSimulator.SimConnect.dll",
         "SimConnect.dll",
+    };
+
+    private static readonly string[][] LegacyRuntimeFileSets =
+    {
+        new[]
+        {
+            ".complete",
+            "LandingStats.App.exe",
+            "LandingStats.App.exe.config",
+            "LandingStats.Core.dll",
+            "Microsoft.FlightSimulator.SimConnect.dll",
+            "SimConnect.dll",
+        },
     };
 
     [STAThread]
@@ -82,6 +96,7 @@ internal static class Program
             "App");
         var runtimeDirectory = Path.Combine(runtimeRoot, versionText);
         var markerPath = Path.Combine(runtimeDirectory, ".bootstrap");
+        var payloadIdentity = PayloadIdentity(payload);
         var mutexName = "Local\\MSFSLandingStatsBootstrap-" + versionText.Replace('.', '-');
 
         using (var mutex = new Mutex(false, mutexName))
@@ -106,10 +121,11 @@ internal static class Program
                 // The signed external updater replaces the private runtime in place. Once this
                 // bootstrap has created it, never restore the embedded version over an update.
                 if (File.Exists(markerPath) &&
-                    string.Equals(File.ReadAllText(markerPath).Trim(), versionText, StringComparison.Ordinal) &&
+                    string.Equals(File.ReadAllText(markerPath).Trim(), payloadIdentity, StringComparison.Ordinal) &&
                     RuntimeIsComplete(runtimeDirectory))
                 {
                     CleanupOldRuntimeDirectories(runtimeRoot, runtimeDirectory);
+                    CleanupLegacyRuntimeRoot(runtimeRoot);
                     return runtimeDirectory;
                 }
 
@@ -125,7 +141,7 @@ internal static class Program
 
                     File.WriteAllText(
                         Path.Combine(stagingDirectory, ".bootstrap"),
-                        versionText,
+                        payloadIdentity,
                         new UTF8Encoding(false));
                     if (Directory.Exists(runtimeDirectory))
                     {
@@ -143,6 +159,7 @@ internal static class Program
                 }
 
                 CleanupOldRuntimeDirectories(runtimeRoot, runtimeDirectory);
+                CleanupLegacyRuntimeRoot(runtimeRoot);
                 return runtimeDirectory;
             }
             finally
@@ -247,6 +264,12 @@ internal static class Program
         });
     }
 
+    private static string PayloadIdentity(byte[] payload)
+    {
+        using var sha256 = SHA256.Create();
+        return string.Concat(sha256.ComputeHash(payload).Select(value => value.ToString("x2")));
+    }
+
     private static void CleanupOldRuntimeDirectories(string runtimeRoot, string currentRuntimeDirectory)
     {
         if (!Directory.Exists(runtimeRoot))
@@ -280,8 +303,8 @@ internal static class Program
                 var name = Path.GetFileName(resolvedCandidate);
                 if (!string.Equals(parent, resolvedRoot, StringComparison.OrdinalIgnoreCase) ||
                     string.Equals(resolvedCandidate, resolvedCurrent, StringComparison.OrdinalIgnoreCase) ||
-                    !Version.TryParse(name, out _) ||
-                    (File.GetAttributes(resolvedCandidate) & FileAttributes.ReparsePoint) != 0)
+                    (File.GetAttributes(resolvedCandidate) & FileAttributes.ReparsePoint) != 0 ||
+                    (!Version.TryParse(name, out _) && !IsLegacyHashRuntimeDirectory(resolvedCandidate, name)))
                 {
                     continue;
                 }
@@ -297,6 +320,95 @@ internal static class Program
             {
                 // Cleanup is best-effort and must not block application startup.
             }
+        }
+    }
+
+    private static void CleanupLegacyRuntimeRoot(string currentRuntimeRoot)
+    {
+        var legacyRoot = Directory.GetParent(currentRuntimeRoot)?.FullName;
+        if (string.IsNullOrEmpty(legacyRoot) || !Directory.Exists(legacyRoot))
+        {
+            return;
+        }
+
+        var resolvedRoot = Path.GetFullPath(legacyRoot)
+            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        IEnumerable<string> candidates;
+        try
+        {
+            candidates = Directory.EnumerateDirectories(resolvedRoot).ToArray();
+        }
+        catch (IOException)
+        {
+            return;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return;
+        }
+
+        foreach (var candidate in candidates)
+        {
+            try
+            {
+                var resolvedCandidate = Path.GetFullPath(candidate)
+                    .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                var parent = Directory.GetParent(resolvedCandidate)?.FullName
+                    .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                var name = Path.GetFileName(resolvedCandidate);
+                if (!string.Equals(parent, resolvedRoot, StringComparison.OrdinalIgnoreCase) ||
+                    (File.GetAttributes(resolvedCandidate) & FileAttributes.ReparsePoint) != 0 ||
+                    !IsLegacyHashRuntimeDirectory(resolvedCandidate, name))
+                {
+                    continue;
+                }
+
+                Directory.Delete(resolvedCandidate, true);
+            }
+            catch (IOException)
+            {
+                // A running legacy process can still hold the runtime open.
+            }
+            catch (UnauthorizedAccessException)
+            {
+                // Cleanup is best-effort and must not block application startup.
+            }
+        }
+    }
+
+    private static bool IsLegacyHashRuntimeDirectory(string directory, string name)
+    {
+        if (name.Length != 64 || name.Any(value => !Uri.IsHexDigit(value)))
+        {
+            return false;
+        }
+
+        var markerPath = Path.Combine(directory, ".complete");
+        try
+        {
+            if (!File.Exists(markerPath) ||
+                !string.Equals(File.ReadAllText(markerPath).Trim(), name, StringComparison.OrdinalIgnoreCase) ||
+                Directory.EnumerateDirectories(directory).Any())
+            {
+                return false;
+            }
+
+            var actualFiles = Directory.EnumerateFiles(directory)
+                .Select(Path.GetFileName)
+                .OrderBy(value => value, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            return LegacyRuntimeFileSets.Any(expected =>
+                actualFiles.SequenceEqual(
+                    expected.OrderBy(value => value, StringComparer.OrdinalIgnoreCase),
+                    StringComparer.OrdinalIgnoreCase));
+        }
+        catch (IOException)
+        {
+            return false;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return false;
         }
     }
 

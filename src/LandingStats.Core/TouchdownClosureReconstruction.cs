@@ -21,6 +21,12 @@ internal static class TouchdownClosureReconstruction
     internal const string ModelName = "quad250-tc-minus-75ms-pitch-v1";
     internal const double PrimaryUncertaintyFpm = 10.0;
     internal const double FallbackUncertaintyFpm = 15.0;
+    // Multi-bogie aircraft can touch on a different wheel within a tilting
+    // truck from one landing to the next. When no readable flight-model
+    // geometry exists, the telemetry fit may identify a different effective
+    // arm on each rollout. Keep the wider empirical band for that fallback;
+    // readable configuration geometry uses the ordinary conservative band.
+    internal const double MultiBogieTelemetryUncertaintyFpm = 50.0;
 
     private const double FitWindowSeconds = 0.250;
     private const double EvaluationOffsetSeconds = -0.075;

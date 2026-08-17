@@ -66,6 +66,8 @@ public sealed class TouchdownResult
 
     public bool ClosureReconstructionArmRecoveredFromTelemetry { get; set; }
 
+    public TouchdownGeometrySource ClosureReconstructionGeometrySource { get; set; }
+
     public double LastAirToFirstGroundSeconds { get; set; }
 
     public double FirstGroundToNextFrameSeconds { get; set; }

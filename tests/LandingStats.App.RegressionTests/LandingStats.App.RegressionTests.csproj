@@ -7,6 +7,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <None Include="..\..\server\telemetry-ingest\schema-v5.header" Link="schema-v5.header" CopyToOutputDirectory="PreserveNewest" />
     <ProjectReference Include="..\..\src\LandingStats.App\LandingStats.App.csproj" />
     <ProjectReference Include="..\..\src\LandingStats.App.Updater\LandingStats.App.Updater.csproj" />
     <ProjectReference Include="..\..\src\LandingStats.Core\LandingStats.Core.csproj" />

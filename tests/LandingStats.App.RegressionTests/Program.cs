@@ -51,6 +51,7 @@ internal static class Program
         Run("telemetry registration is automatic and hardware anonymous", TelemetryRegistrationIsAutomaticAndAnonymous);
         Run("corrupt telemetry identity does not fault the upload worker", CorruptTelemetryIdentityDoesNotFaultWorker);
         Run("telemetry enqueue is safe during disposal", TelemetryEnqueueIsSafeDuringDisposal);
+        Run("permanently rejected telemetry is quarantined once", PermanentlyRejectedTelemetryIsQuarantined);
         Run("updater accepts a signed manifest and rejects tampering", UpdaterVerifiesSignedManifest);
         Run("updater accepts the issued format-2 manifest shape", UpdaterAcceptsIssuedManifestShape);
         Run("updater accepts the format-3 single executable manifest shape", UpdaterAcceptsSingleExecutableManifestShape);
@@ -61,10 +62,15 @@ internal static class Program
         Run("updater installs one valid executable transactionally", UpdaterInstallsSingleExecutable);
         Run("updater rolls back an invalid executable replacement", UpdaterRollsBackInvalidExecutableReplacement);
         Run("valid frame clears transient error state", ValidFrameClearsTransientErrorState);
+        Run("MSFS replay flow events disable and re-arm landing capture", ReplayFlowEventsDisableCapture);
+        Run("recorder reports airborne state for replay overlay", RecorderReportsAirborneState);
+        Run("replay frames do not alter live state or raw telemetry", ReplayFramesDoNotAlterLiveStateOrRawTelemetry);
+        Run("replay kinematic inconsistencies are rejected conservatively", ReplayKinematicInconsistenciesAreRejected);
         Run("legacy SimConnect controller path is absent", LegacyControllerPathIsAbsent);
         Run("compact frame matches the SimConnect payload contract", CompactFrameMatchesPayloadContract);
         Run("telemetry schema v5 reads current and v4 rows", TelemetrySchemaReadsCurrentAndV4Rows);
         Run("telemetry CSV preserves doubles and rejects header-row schema mismatch", TelemetryCsvIsStrictAndRoundTrips);
+        Run("telemetry receiver header exactly matches the client schema", TelemetryReceiverHeaderMatchesClient);
         Run("header wind uses the contact-time sample", HeaderWindUsesContactTimeSample);
         Run("landing history uses lazy columnar v7 details", LandingHistoryUsesLazyColumnarDetails);
         Run("landing delete removes detail and index entry", LandingDeleteRemovesDetailAndIndexEntry);
@@ -72,9 +78,16 @@ internal static class Program
         Run("landing filenames are culture invariant", LandingFilenamesAreCultureInvariant);
         Run("airport cache is never overwritten after a transient read failure", AirportCacheSurvivesTransientReadFailure);
         Run("corrupt airport cache is quarantined and rebuilt", CorruptAirportCacheIsRebuilt);
+        Run("episode airport snapshots cannot roll back a newer refresh", EpisodeAirportSnapshotKeepsNewerRefresh);
         Run("chart ranges discard non-finite telemetry", ChartRangesDiscardNonFiniteTelemetry);
+        Run("chart value ticks always label a visible zero", ChartValueTicksIncludeZero);
         Run("lane hover finds the nearest point without sorting", LaneHoverFindsNearestPoint);
+        Run("A340 gear chart groups wheels into four struts", A340GearChartGroupsFourStruts);
+        Run("A340 gear chart survives crosswind timing and airborne window end", A340GearChartSurvivesCrosswindAndTouchAndGo);
+        Run("A340 gear chart excludes helpers when the nose never touches", A340GearChartExcludesHelpersWithoutNoseContact);
+        Run("fourth-engine throttle uses the fourth-engine color", FourthEngineThrottleUsesMatchingColor);
         Run("closure reconstruction survives history round-trip", ClosureReconstructionSurvivesHistoryRoundTrip);
+        Run("legacy reconstruction provenance remains telemetry", LegacyReconstructionProvenanceRemainsTelemetry);
         Run("bounce history shows the latest contact first", BounceHistoryShowsLatestContactFirst);
         Run("monthly average counts each landing once", MonthlyAverageCountsPrimaryContactsOnly);
         Run("columnar v7 is smaller than the object layout", ColumnarV7IsSmallerThanObjectLayout);
@@ -88,11 +101,18 @@ internal static class Program
         Run("closure reconstruction marks last-air contact-time fallback", ClosureReconstructionMarksContactTimeFallback);
         Run("closure reconstruction accepts permuted staggered mains", ClosureReconstructionAcceptsPermutedStaggeredMains);
         Run("closure reconstruction accepts A340 center main conservatively", ClosureReconstructionAcceptsCenterMainConservatively);
-        Run("closure reconstruction rejects five-point topology", ClosureReconstructionRejectsFivePointTopology);
+        Run("closure reconstruction accepts clustered A340 wheel contacts", ClosureReconstructionAcceptsClusteredA340Wheels);
+        Run("closure reconstruction accepts irregular A340 wheel timing", ClosureReconstructionAcceptsIrregularA340WheelTiming);
+        Run("closure reconstruction accepts four mains and one nose point", ClosureReconstructionAcceptsFivePointTopology);
+        Run("configured gear topology ignores unrelated contact helpers", ConfiguredGearTopologyIgnoresHelpers);
         Run("closure reconstruction keeps sustained main-gear bounces", ClosureReconstructionKeepsMainGearBounces);
         Run("closure reconstruction rejects mixed main-nose contact", ClosureReconstructionRejectsMixedMainNoseContact);
         Run("closure reconstruction rejects nose-first contact without changing raw metrics", ClosureReconstructionRejectsNoseFirstContact);
         Run("telemetry geometry recovers an analytic arm from permuted points", TelemetryGeometryRecoversAnalyticArm);
+        Run("datum calibration rejects inconsistent phases", DatumCalibrationRejectsInconsistentPhases);
+        Run("flight model parser merges modular geometry and named points", FlightModelParserMergesModularGeometry);
+        Run("flight model resolver maps aircraft title and model", FlightModelResolverMapsAircraftIdentity);
+        Run("flight model async failures fall back to telemetry", FlightModelAsyncFailuresFallBackToTelemetry);
         Run("language auto-detection is Russian-only with an English fallback", LanguageAutoDetectionIsRussianOnly);
         Run("English landing dates use an English month and 24-hour time", EnglishLandingDateFormatIsStable);
         Run("settings preserve unknown future options", SettingsPreserveUnknownFutureOptions);
@@ -202,6 +222,14 @@ internal static class Program
         Equal(true, LocalizationManager.Text("Model.GeometryQualityFormat").StartsWith(" · ", StringComparison.Ordinal), "geometry suffix leading space");
         Equal(true, LocalizationManager.Text("Raw.ConsentBody").IndexOf("\n\n", StringComparison.Ordinal) >= 0, "consent paragraph break");
         Equal(true, LocalizationManager.Text("Footer.DebugHelp").StartsWith("Not intended for long flights.", StringComparison.Ordinal), "full telemetry warning remains explicit");
+    }
+
+    private static void TelemetryReceiverHeaderMatchesClient()
+    {
+        var serverHeader = File.ReadAllText(
+            Path.Combine(AppContext.BaseDirectory, "schema-v5.header"),
+            Encoding.UTF8).Trim();
+        Equal(TelemetryCsv.Header, serverHeader, "server/client telemetry header");
     }
 
     private static void DeduplicatorKeepsLastFrame()
@@ -481,6 +509,41 @@ internal static class Program
         }
     }
 
+    private static void PermanentlyRejectedTelemetryIsQuarantined()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "landing-stats-rejected-upload-" + Guid.NewGuid().ToString("N"));
+        var previousEndpoint = Environment.GetEnvironmentVariable("MSFS_LANDING_STATS_TELEMETRY_URL");
+        try
+        {
+            var queue = Path.Combine(root, "queue");
+            Directory.CreateDirectory(queue);
+            Environment.SetEnvironmentVariable("MSFS_LANDING_STATS_TELEMETRY_URL", "https://telemetry.example.test/");
+            var handler = new TelemetryRejectingFixtureHandler();
+            using var client = new TelemetryUploadClient(queue, handler, Path.Combine(root, "identity"));
+            var preparation = client.PrepareAsync(CancellationToken.None).GetAwaiter().GetResult();
+            Equal(TelemetryPreparationState.Ready, preparation.State, "rejection fixture enrollment");
+
+            var capture = Path.Combine(queue, "permanent_raw.zip");
+            File.WriteAllBytes(capture, Enumerable.Repeat((byte)0x5A, 64).ToArray());
+            Equal(true, client.Enqueue(capture), "capture accepted into upload queue");
+            Equal(
+                true,
+                SpinWait.SpinUntil(
+                    () => Directory.EnumerateFiles(queue, "*.rejected-422.zip").Any(),
+                    TimeSpan.FromSeconds(5)),
+                "permanent rejection quarantine");
+            Thread.Sleep(150);
+            Equal(1, handler.CaptureCount, "permanently rejected capture is not retried");
+            Equal(false, File.Exists(capture), "rejected raw queue name removed");
+            Equal(0L, (long)Field(client, "_queueBytes")!, "quarantined bytes leave queue accounting");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("MSFS_LANDING_STATS_TELEMETRY_URL", previousEndpoint);
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
     private static void CorruptTelemetryIdentityDoesNotFaultWorker()
     {
         var root = Path.Combine(Path.GetTempPath(), "landing-stats-corrupt-identity-" + Guid.NewGuid().ToString("N"));
@@ -620,7 +683,7 @@ internal static class Program
                     new[]
                     {
                         "--apply", "--parent-pid", "1", "--target", target,
-                        "--version", "0.7.9", "--ready-event", readyEventName,
+                        "--version", "0.8.0", "--ready-event", readyEventName,
                         "--manifest", "update-channel.txt",
                     },
                 })!;
@@ -765,6 +828,104 @@ internal static class Program
         SetField(recorder, "_recoverStatusAfterFrame", true);
         Invoke(recorder, "RecoverStatusAfterFrame");
         Equal(false, Field(recorder, "_recoverStatusAfterFrame"), "transient error recovery flag");
+    }
+
+    private static void ReplayFlowEventsDisableCapture()
+    {
+        using var recorder = NewRecorder();
+        Invoke(recorder, "ProcessSample", ApproachSample(1));
+        NotNull(Field(recorder, "_episodeSamples"), "episode before replay");
+
+        Invoke(
+            recorder,
+            "OnRecvFlowEvent",
+            null!,
+            ReplayFlowEvent("REPLAY_START"));
+        Equal(true, Field(recorder, "_replayActive"), "replay active flag");
+        Equal(false, Field(recorder, "_armed"), "capture disarmed during replay");
+        Null(Field(recorder, "_episodeSamples"), "approach discarded at replay start");
+
+        Invoke(recorder, "ProcessSample", ApproachSample(2));
+        Null(Field(recorder, "_episodeSamples"), "replay frame cannot start an episode");
+
+        Invoke(
+            recorder,
+            "OnRecvFlowEvent",
+            null!,
+            ReplayFlowEvent("REPLAY_END"));
+        Equal(false, Field(recorder, "_replayActive"), "replay cleared flag");
+        Equal(true, Field(recorder, "_armed"), "capture re-armed after replay");
+
+        Invoke(recorder, "ProcessSample", ApproachSample(3));
+        NotNull(Field(recorder, "_episodeSamples"), "normal capture resumes after replay");
+    }
+
+    private static void RecorderReportsAirborneState()
+    {
+        using var recorder = NewRecorder();
+        NotNull(RecorderType().GetEvent("AircraftGroundStateChanged"), "aircraft ground-state event");
+
+        Invoke(recorder, "ProcessSample", new TelemetrySample
+        {
+            SimulationTimeSeconds = 1.0,
+            OnGround = true,
+            AboveGroundLevelFeet = 0.0,
+        });
+        Invoke(recorder, "ProcessSample", new TelemetrySample
+        {
+            SimulationTimeSeconds = 2.0,
+            OnGround = false,
+            AboveGroundLevelFeet = 50.0,
+        });
+
+        Equal(false, Field(recorder, "_aircraftOnGround"), "latest tracked state is airborne");
+        Equal(
+            true,
+            RecorderType().GetProperty("IsAircraftAirborne")!.GetValue(recorder),
+            "airborne state exposed to overlay");
+    }
+
+    private static void ReplayFramesDoNotAlterLiveStateOrRawTelemetry()
+    {
+        using var recorder = NewRecorder();
+        var rawFrames = 0;
+        EventHandler<RawDebugSampleEventArgs> rawHandler = (_, _) => rawFrames++;
+        RecorderType().GetEvent("RawDebugSampleReceived")!.AddEventHandler(recorder, rawHandler);
+        SetField(recorder, "_rawDebugEnabled", true);
+
+        Invoke(recorder, "ProcessSample", new TelemetrySample
+        {
+            SimulationTimeSeconds = 1.0,
+            OnGround = true,
+        });
+        Equal(1, rawFrames, "live frame enters raw stream");
+        Equal(true, Field(recorder, "_aircraftOnGround"), "live ground state before replay");
+
+        Invoke(recorder, "OnRecvFlowEvent", null!, ReplayFlowEvent("REPLAY_START"));
+        Invoke(recorder, "ProcessSample", new TelemetrySample
+        {
+            SimulationTimeSeconds = 2.0,
+            OnGround = false,
+            AboveGroundLevelFeet = 100.0,
+        });
+
+        Equal(1, rawFrames, "replay frame excluded from raw stream");
+        Equal(true, Field(recorder, "_aircraftOnGround"), "replay frame cannot replace live ground state");
+    }
+
+    private static void ReplayKinematicInconsistenciesAreRejected()
+    {
+        Equal(false, ReplayTelemetryDetector.IsReplayLike(ReplayDetectionSamples(false)), "consistent flight telemetry");
+        Equal(true, ReplayTelemetryDetector.IsReplayLike(ReplayDetectionSamples(true)), "replayed pose with inert telemetry");
+
+        var stationary = ReplayDetectionSamples(true);
+        foreach (var sample in stationary)
+        {
+            sample.LatitudeDegrees = 42.0;
+            sample.LongitudeDegrees = 23.0;
+        }
+
+        Equal(false, ReplayTelemetryDetector.IsReplayLike(stationary), "stationary aircraft is not replay evidence");
     }
 
     private static void LegacyControllerPathIsAbsent()
@@ -1132,6 +1293,43 @@ internal static class Program
         }
     }
 
+    private static void EpisodeAirportSnapshotKeepsNewerRefresh()
+    {
+        var staleEpisodeSnapshot = new[]
+        {
+            new AirportFacility
+            {
+                Ident = "LBSF",
+                Region = "BG",
+                LatitudeDegrees = 42.6900,
+                LongitudeDegrees = 23.4000,
+            },
+        };
+        var latestRefresh = new[]
+        {
+            new AirportFacility
+            {
+                Ident = "LBSF",
+                Region = "BG",
+                LatitudeDegrees = 42.6952,
+                LongitudeDegrees = 23.4062,
+            },
+            new AirportFacility
+            {
+                Ident = "UUEE",
+                Region = "RU",
+                LatitudeDegrees = 55.9726,
+                LongitudeDegrees = 37.4146,
+            },
+        };
+
+        var merged = MainWindow.MergeAirportFacilities(staleEpisodeSnapshot, latestRefresh);
+        Equal(2, merged.Count, "latest facility count");
+        var lbsf = merged.Single(facility => facility.Ident == "LBSF");
+        Near(42.6952, lbsf.LatitudeDegrees, 1e-12, "latest duplicate facility wins");
+        Equal(true, merged.Any(facility => facility.Ident == "UUEE"), "new refresh facility survives stale episode completion");
+    }
+
     private static void ChartRangesDiscardNonFiniteTelemetry()
     {
         var finite = ChartValueSanitizer.FiniteValues(new[]
@@ -1145,6 +1343,19 @@ internal static class Program
         Equal(2, finite.Length, "finite chart value count");
         Near(12.5, finite[0], 0, "first finite chart value");
         Near(-3.0, finite[1], 0, "second finite chart value");
+    }
+
+    private static void ChartValueTicksIncludeZero()
+    {
+        var crossingTicks = LandingChart.ValueTicks(-1300.0, 200.0);
+        Equal(true, crossingTicks.Any(value => Math.Abs(value) < 1e-12), "crossing range zero tick");
+        Equal(1, crossingTicks.Count(value => Math.Abs(value) < 1e-12), "crossing range unique zero tick");
+
+        var boundaryTicks = LandingChart.ValueTicks(0.0, 50.0);
+        Equal(1, boundaryTicks.Count(value => Math.Abs(value) < 1e-12), "boundary range unique zero tick");
+
+        var positiveTicks = LandingChart.ValueTicks(0.8, 1.6);
+        Equal(false, positiveTicks.Any(value => Math.Abs(value) < 1e-12), "positive range has no artificial zero");
     }
 
     private static void LaneHoverFindsNearestPoint()
@@ -1161,6 +1372,138 @@ internal static class Program
         Equal(1, MainWindow.ClosestSeriesPointIndex(points, 1), "hover nearest lower point");
         Equal(2, MainWindow.ClosestSeriesPointIndex(points, 4), "hover nearest upper point");
         Equal(3, MainWindow.ClosestSeriesPointIndex(points, 20), "hover after series");
+    }
+
+    private static void A340GearChartGroupsFourStruts()
+    {
+        var contacts = new List<LandingContactSeries>
+        {
+            GearContactSeries(0, 1.40, 24.0),
+            GearContactSeries(1, 0.30, 20.0),
+            GearContactSeries(2, 0.28, 21.0),
+            GearContactSeries(3, 0.28, 19.0),
+            GearContactSeries(4, 0.98, 38.0),
+            GearContactSeries(5, 0.98, 39.0),
+            GearContactSeries(6, 1.04, 40.0),
+            GearContactSeries(7, 0.00, 31.0),
+            GearContactSeries(8, 0.13, 32.0),
+            GearContactSeries(10, 2.80, 1.0, endTime: 3.40),
+            GearContactSeries(11, 1.67, 14.0),
+            GearContactSeries(12, 0.94, 15.0),
+            GearContactSeries(13, 1.10, 5.0, endTime: 2.30),
+            GearContactSeries(14, 1.90, 11.0),
+            GearContactSeries(15, 0.50, 8.0, endTime: 1.80),
+        };
+
+        var record = new LandingRecord
+        {
+            AircraftTitle = "ToLiss A340-600",
+            ContactPoints = contacts,
+        };
+        var gear = LandingGearSeriesBuilder.Build(record);
+
+        Equal(4, gear.Count, "A340 displayed strut count");
+        Equal(LandingGearRole.Nose, gear[0].Role, "A340 nose role");
+        Equal(LandingGearRole.MainOne, gear[1].Role, "A340 first main role");
+        Equal(LandingGearRole.MainTwo, gear[2].Role, "A340 second main role");
+        Equal(LandingGearRole.MainThree, gear[3].Role, "A340 third neutral main role");
+        Equal("0", string.Join(",", gear[0].ContactPointIndices), "A340 nose members");
+        Equal("1,2,3", string.Join(",", gear[1].ContactPointIndices), "A340 first main members");
+        Equal("4,5,6", string.Join(",", gear[2].ContactPointIndices), "A340 second main members");
+        Equal("7,8", string.Join(",", gear[3].ContactPointIndices), "A340 third main members");
+        Near(20.0, gear[1].Points[gear[1].Points.Count - 1].CompressionPercent, 1e-12, "A340 averaged main compression");
+        Same(gear, LandingGearSeriesBuilder.Build(record), "A340 grouping cached per immutable record");
+
+        var otherA340 = LandingGearSeriesBuilder.Build(new LandingRecord
+        {
+            AircraftTitle = "Generic A340-600",
+            ContactPoints = contacts,
+        });
+        Equal(
+            false,
+            otherA340.Any(series => series.Role != LandingGearRole.Generic),
+            "unknown A340 variants do not inherit ToLiss CP semantics");
+    }
+
+    private static void A340GearChartSurvivesCrosswindAndTouchAndGo()
+    {
+        var contacts = new List<LandingContactSeries>
+        {
+            GearContactSeries(0, 1.50, 18.0, endTime: 2.50),
+            GearContactSeries(1, 0.00, 42.0, endTime: 2.50),
+            GearContactSeries(2, 0.30, 40.0, endTime: 2.50),
+            GearContactSeries(3, 0.60, 41.0, endTime: 2.50),
+            GearContactSeries(4, 0.85, 9.0, endTime: 2.50),
+            GearContactSeries(5, 1.10, 10.0, endTime: 2.50),
+            GearContactSeries(6, 1.35, 8.0, endTime: 2.50),
+            GearContactSeries(7, 0.10, 25.0, endTime: 2.50),
+            GearContactSeries(8, 0.35, 27.0, endTime: 2.50),
+        };
+        var record = new LandingRecord
+        {
+            AircraftTitle = "ToLiss A340-600",
+            ContactPoints = contacts,
+        };
+
+        var gear = LandingGearSeriesBuilder.Build(record);
+
+        Equal(4, gear.Count, "crosswind A340 strut count after airborne window end");
+        Equal("1,2,3", string.Join(",", gear[1].ContactPointIndices), "crosswind first main remains separate");
+        Equal("4,5,6", string.Join(",", gear[2].ContactPointIndices), "crosswind second main remains separate");
+        Near(41.0, gear[1].PeakCompressionPercent, 1.1, "crosswind loaded main preserved");
+        Near(9.0, gear[2].PeakCompressionPercent, 1.1, "crosswind light main preserved");
+    }
+
+    private static void A340GearChartExcludesHelpersWithoutNoseContact()
+    {
+        var contacts = new List<LandingContactSeries>();
+        for (var index = 1; index <= 8; index++)
+        {
+            contacts.Add(GearContactSeries(index, 0.1 * index, 20.0 + index));
+        }
+        contacts.Add(GearContactSeries(11, 1.2, 12.0));
+        contacts.Add(GearContactSeries(12, 1.3, 13.0));
+        contacts.Add(GearContactSeries(14, 1.4, 14.0));
+        var record = new LandingRecord
+        {
+            AircraftTitle = "ToLiss A340-600",
+            ContactPoints = contacts,
+        };
+
+        var gear = LandingGearSeriesBuilder.Build(record);
+
+        Equal(3, gear.Count, "A340 contacted struts without nose contact");
+        Equal(false, gear.SelectMany(series => series.ContactPointIndices).Any(index => index > 8), "A340 helpers excluded");
+        Equal(LandingGearRole.MainOne, gear[0].Role, "first remaining A340 role");
+        Equal(LandingGearRole.MainThree, gear[2].Role, "last remaining A340 role");
+    }
+
+    private static void FourthEngineThrottleUsesMatchingColor()
+    {
+        Same(LandingChart.SeriesBrushAt(3), LandingChart.PowerThrottleBrushAt(3), "engine four N1/throttle color");
+    }
+
+    private static LandingContactSeries GearContactSeries(
+        int contactPointIndex,
+        double startTime,
+        double compressionPercent,
+        double endTime = double.PositiveInfinity)
+    {
+        var series = new LandingContactSeries { ContactPointIndex = contactPointIndex };
+        for (var index = 0; index <= 60; index++)
+        {
+            var time = -1.0 + index * 0.10;
+            var onGround = time >= startTime - 1e-9 && time <= endTime + 1e-9;
+            series.Points.Add(new LandingContactPoint
+            {
+                TimeSeconds = time,
+                OnGround = onGround,
+                CompressionPercent = onGround ? compressionPercent : 0.0,
+                PositionPercent = onGround ? 100.0 : 0.0,
+            });
+        }
+
+        return series;
     }
 
     private static void MonthlyAverageCountsPrimaryContactsOnly()
@@ -1225,6 +1568,7 @@ internal static class Program
                 ClosureReconstructionLongitudinalArmFeet = -7.5,
                 ClosureReconstructionGeometryQuality = 0.84,
                 ClosureReconstructionArmRecoveredFromTelemetry = true,
+                ClosureReconstructionGeometrySource = TouchdownGeometrySource.Telemetry,
             };
             var record = LandingRecordFactory.Create(result, Array.Empty<TelemetrySample>(), "Test", "TEST");
 
@@ -1251,6 +1595,7 @@ internal static class Program
             Equal(7, detail.ClosureReconstructionFitPointCount, "detail fit point count");
             Near(-7.5, detail.ClosureReconstructionLongitudinalArmFeet, 1e-12, "detail longitudinal arm");
             Equal(true, detail.ClosureReconstructionArmRecoveredFromTelemetry, "detail arm provenance");
+            Equal(nameof(TouchdownGeometrySource.Telemetry), detail.ClosureReconstructionGeometrySource, "detail geometry source");
             AssertNoStorageSentinel(detail);
 
             var legacyPath = Path.Combine(root, "20260804-000000Z-legacy-missing-reconstruction.landing.json.gz");
@@ -1271,6 +1616,31 @@ internal static class Program
         {
             if (Directory.Exists(root)) Directory.Delete(root, true);
         }
+    }
+
+    private static void LegacyReconstructionProvenanceRemainsTelemetry()
+    {
+        var result = new TouchdownResult
+        {
+            ContactNumber = 1,
+            EstimatedContactTimeSeconds = 0,
+            ClosureReconstructionAvailable = true,
+            ReconstructedClosureFpm = 250.0,
+            ClosureReconstructionLongitudinalArmFeet = -7.5,
+            ClosureReconstructionArmRecoveredFromTelemetry = true,
+            // Older producers do not know ClosureReconstructionGeometrySource,
+            // so the new enum remains at its Unavailable default.
+        };
+
+        var record = LandingRecordFactory.Create(result, Array.Empty<TelemetrySample>(), "Test", "TEST");
+        Equal(
+            nameof(TouchdownGeometrySource.Telemetry),
+            record.ClosureReconstructionGeometrySource,
+            "legacy factory geometry source");
+        Equal(true, record.ClosureGeometryDisplay.Contains("telemetry"), "legacy telemetry provenance display");
+
+        record.ClosureReconstructionGeometrySource = nameof(TouchdownGeometrySource.Unavailable);
+        Equal(true, record.ClosureGeometryDisplay.Contains("telemetry"), "stored unavailable source uses legacy provenance");
     }
 
     private static void ClosureReconstructionKeepsRawLatchIndependent()
@@ -1309,6 +1679,7 @@ internal static class Program
         Near(armFeet, result.ClosureReconstructionLongitudinalArmFeet, 1e-8, "passport arm");
         Equal(true, double.IsNaN(result.ClosureReconstructionGeometryQuality), "passport geometry quality");
         Equal(false, result.ClosureReconstructionArmRecoveredFromTelemetry, "passport arm provenance");
+        Equal(TouchdownGeometrySource.Provided, result.ClosureReconstructionGeometrySource, "passport geometry source");
 
         var changedLatch = TouchdownAnalysis.Analyze(
             ReconstructionSamples(contactTime, rawLatch + 100.0),
@@ -1500,7 +1871,124 @@ internal static class Program
         Near(15.0, result.ClosureReconstructionUncertaintyFpm, 1e-12, "center-main uncertainty");
     }
 
-    private static void ClosureReconstructionRejectsFivePointTopology()
+    private static void ClosureReconstructionAcceptsClusteredA340Wheels()
+    {
+        var samples = ReconstructionSamples(
+            0.010,
+            280.0,
+            noseContactTime: 0.60,
+            sampleEndTime: 15.00);
+        AddSettledPoint(samples, 3, 0.050);
+        AddSettledPoint(samples, 7, 0.075);
+        AddSettledPoint(samples, 8, 0.100);
+        AddSettledPoint(samples, 4, 0.625);
+        AddSettledPoint(samples, 5, 0.650);
+        AddSettledPoint(samples, 6, 0.675);
+        AddSettledPoint(samples, 11, 0.700);
+        AddSettledPoint(samples, 12, 0.725);
+        AddSettledPoint(samples, 14, 0.750);
+        AddTemporaryPoint(samples, 15, 0.050, 0.900);
+        AddTemporaryPoint(samples, 13, 0.650, 0.900);
+        // Reproduce a short automatic capture ending while a rollout-only helper
+        // contact is active. The truncated run must not become a thirteenth
+        // "settled wheel" and invalidate the genuine A340 gear clusters.
+        AddTemporaryPoint(samples, 10, 13.000, 20.000);
+
+        var result = TouchdownAnalysis.Analyze(
+            samples,
+            new TouchdownAnalysisOptions
+            {
+                LongitudinalMainGearArmFeet = -8.0,
+                LongitudinalMainGearArmSource = TouchdownGeometrySource.Telemetry,
+                RecoverLongitudinalMainGearArmFromTelemetry = false,
+            }).Single();
+
+        Equal(true, result.ClosureReconstructionAvailable, "clustered-wheel reconstruction availability");
+        Near(50.0, result.ClosureReconstructionUncertaintyFpm, 1e-12, "clustered-wheel uncertainty");
+
+        var configured = TouchdownAnalysis.Analyze(
+            samples,
+            new TouchdownAnalysisOptions
+            {
+                LongitudinalMainGearArmFeet = -8.0,
+                LongitudinalMainGearArmSource = TouchdownGeometrySource.FlightModelConfig,
+                RecoverLongitudinalMainGearArmFromTelemetry = false,
+            }).Single();
+        Near(15.0, configured.ClosureReconstructionUncertaintyFpm, 1e-12, "configured multi-bogie uncertainty");
+    }
+
+    private static void ClosureReconstructionAcceptsIrregularA340WheelTiming()
+    {
+        var samples = ReconstructionSamples(
+            0.010,
+            377.0,
+            firstMainIndex: 7,
+            secondMainIndex: 8,
+            secondMainDelaySeconds: 0.125,
+            noseIndex: 0,
+            noseContactTime: 1.425,
+            sampleEndTime: 15.00);
+        AddSettledPoint(samples, 2, 0.275);
+        AddSettledPoint(samples, 3, 0.275);
+        AddSettledPoint(samples, 1, 0.300);
+        AddSettledPoint(samples, 12, 0.925);
+        AddSettledPoint(samples, 4, 0.975);
+        AddSettledPoint(samples, 5, 0.975);
+        AddSettledPoint(samples, 6, 1.025);
+        AddSettledPoint(samples, 11, 1.675);
+        AddSettledPoint(samples, 14, 1.925);
+        AddTemporaryPoint(samples, 15, 0.525, 1.800);
+        AddTemporaryPoint(samples, 13, 1.125, 2.350);
+        AddTemporaryPoint(samples, 10, 8.625, 9.450);
+
+        // The latest real A340 trace gained only about 0.45 degrees between
+        // the final main-wheel onset and the first later cluster. That is
+        // still coherent positive derotation, but the previous 0.50-degree
+        // clustered-wheel gate rejected the otherwise complete topology.
+        foreach (var sample in samples)
+        {
+            var time = sample.SimulationTimeSeconds;
+            sample.PitchDegrees = time <= 0.300
+                ? -3.400
+                : time >= 0.925
+                    ? -2.950
+                    : -3.400 + 0.450 * (time - 0.300) / 0.625;
+        }
+
+        var result = TouchdownAnalysis.Analyze(
+            samples,
+            new TouchdownAnalysisOptions
+            {
+                LongitudinalMainGearArmFeet = -10.0,
+                LongitudinalMainGearArmSource = TouchdownGeometrySource.Telemetry,
+                RecoverLongitudinalMainGearArmFromTelemetry = false,
+            }).Single();
+
+        Equal(true, result.ClosureReconstructionAvailable, "irregular A340 reconstruction availability");
+        Near(50.0, result.ClosureReconstructionUncertaintyFpm, 1e-12, "irregular A340 uncertainty");
+
+        var configWithNonMatchingCompressionIndices = TouchdownAnalysis.Analyze(
+            samples,
+            new TouchdownAnalysisOptions
+            {
+                LongitudinalMainGearArmFeet = -8.0,
+                LongitudinalMainGearArmSource = TouchdownGeometrySource.FlightModelConfig,
+                RecoverLongitudinalMainGearArmFromTelemetry = false,
+                MainGearContactPoints = new[]
+                {
+                    new TouchdownMainGearContactPoint(1, -9.0),
+                    new TouchdownMainGearContactPoint(2, -9.0),
+                    new TouchdownMainGearContactPoint(3, -6.0),
+                },
+                NoseGearContactPointIndices = new[] { 0 },
+            }).Single();
+        Equal(true, configWithNonMatchingCompressionIndices.ClosureReconstructionAvailable, "A340 CFG-index fallback availability");
+        Equal(TouchdownGeometrySource.FlightModelConfig, configWithNonMatchingCompressionIndices.ClosureReconstructionGeometrySource, "A340 CFG-index fallback source");
+        Near(-8.0, configWithNonMatchingCompressionIndices.ClosureReconstructionLongitudinalArmFeet, 1e-12, "A340 CFG-index fallback median arm");
+        Near(15.0, configWithNonMatchingCompressionIndices.ClosureReconstructionUncertaintyFpm, 1e-12, "A340 configured-arm fallback uncertainty");
+    }
+
+    private static void ClosureReconstructionAcceptsFivePointTopology()
     {
         var samples = ReconstructionSamples(0.010, 280.0);
         AddSettledMainPoint(samples, 7);
@@ -1514,8 +2002,47 @@ internal static class Program
                 RecoverLongitudinalMainGearArmFromTelemetry = false,
             }).Single();
 
-        Equal(false, result.ClosureReconstructionAvailable, "five-point reconstruction availability");
+        Equal(true, result.ClosureReconstructionAvailable, "five-point reconstruction availability");
+        Near(15.0, result.ClosureReconstructionUncertaintyFpm, 1e-12, "five-point uncertainty");
         Near(280.0, result.LatchedNormalFpm, 1e-8, "five-point raw latch fallback");
+    }
+
+    private static void ConfiguredGearTopologyIgnoresHelpers()
+    {
+        var samples = ReconstructionSamples(0.010, 280.0);
+        AddSettledMainPoint(samples, 7);
+        AddSettledMainPoint(samples, 8);
+        AddSettledMainPoint(samples, 11);
+
+        var withoutConfiguration = TouchdownAnalysis.Analyze(
+            samples,
+            new TouchdownAnalysisOptions
+            {
+                LongitudinalMainGearArmFeet = -3.5,
+                RecoverLongitudinalMainGearArmFromTelemetry = false,
+            }).Single();
+        Equal(false, withoutConfiguration.ClosureReconstructionAvailable, "ambiguous helper topology without configuration");
+
+        var configured = TouchdownAnalysis.Analyze(
+            samples,
+            new TouchdownAnalysisOptions
+            {
+                LongitudinalMainGearArmFeet = -3.5,
+                LongitudinalMainGearArmSource = TouchdownGeometrySource.FlightModelConfig,
+                RecoverLongitudinalMainGearArmFromTelemetry = false,
+                MainGearContactPoints = new[]
+                {
+                    new TouchdownMainGearContactPoint(1, -11.0),
+                    new TouchdownMainGearContactPoint(2, -11.0),
+                    new TouchdownMainGearContactPoint(7, 4.0),
+                    new TouchdownMainGearContactPoint(8, 4.0),
+                },
+                NoseGearContactPointIndices = new[] { 0 },
+            }).Single();
+
+        Equal(true, configured.ClosureReconstructionAvailable, "configured helper topology reconstruction");
+        Equal(TouchdownGeometrySource.FlightModelConfig, configured.ClosureReconstructionGeometrySource, "configured helper topology source");
+        Near(-3.5, configured.ClosureReconstructionLongitudinalArmFeet, 1e-12, "contact-active configured arm");
     }
 
     private static void AddSettledMainPoint(IReadOnlyList<TelemetrySample> samples, int point)
@@ -1529,6 +2056,44 @@ internal static class Program
 
             sample.ContactPointOnGround[point] = true;
             sample.ContactPointCompression[point] = (sample.SimulationTimeSeconds - 0.010) * 100.0;
+        }
+    }
+
+    private static void AddSettledPoint(
+        IReadOnlyList<TelemetrySample> samples,
+        int point,
+        double startTime)
+    {
+        foreach (var sample in samples)
+        {
+            if (sample.SimulationTimeSeconds < startTime - 1e-9)
+            {
+                continue;
+            }
+
+            sample.ContactPointOnGround[point] = true;
+            sample.ContactPointCompression[point] =
+                Math.Max(0.01, (sample.SimulationTimeSeconds - startTime) * 100.0);
+        }
+    }
+
+    private static void AddTemporaryPoint(
+        IReadOnlyList<TelemetrySample> samples,
+        int point,
+        double startTime,
+        double endTime)
+    {
+        foreach (var sample in samples)
+        {
+            if (sample.SimulationTimeSeconds < startTime - 1e-9 ||
+                sample.SimulationTimeSeconds > endTime + 1e-9)
+            {
+                continue;
+            }
+
+            sample.ContactPointOnGround[point] = true;
+            sample.ContactPointCompression[point] =
+                Math.Max(0.01, (sample.SimulationTimeSeconds - startTime) * 100.0);
         }
     }
 
@@ -1716,11 +2281,457 @@ internal static class Program
         }
 
         Equal(true, TelemetryGeometryCalibration.TryCalibrate(samples, out var calibration), "geometry calibration");
+        Equal(true, TelemetryGeometryCalibration.TryRecoverDatumOffset(samples, out var datumOnly), "datum-only calibration");
         Near(pitchArmFeet, calibration.PitchArmFeet, 1e-8, "pitch arm");
         Near(datumOffsetFeet, calibration.DatumOffsetFeet, 1e-8, "datum offset");
+        Near(datumOffsetFeet, datumOnly.DatumOffsetFeet, 1e-8, "datum-only offset");
+        Equal(4, datumOnly.PhaseCount, "datum-only phase count");
         Near(expectedArmFeet, calibration.LongitudinalArmFeet, 1e-8, "longitudinal arm");
         Equal(4, calibration.DatumPhaseCount, "datum phase count");
         Equal(true, calibration.Quality >= 0.20 && calibration.Quality <= 1.0, "geometry quality range");
+
+        var configRoot = Path.Combine(Path.GetTempPath(), "landing-stats-flight-model-datum-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var aircraftRoot = Path.Combine(configRoot, "Community", "analytic-aircraft", "SimObjects", "Airplanes", "AnalyticJet");
+            Directory.CreateDirectory(aircraftRoot);
+            File.WriteAllText(
+                Path.Combine(aircraftRoot, "aircraft.cfg"),
+                "[FLTSIM.0]\ntitle = \"AnalyticJet\"\natc_model = \"ANLT\"\nisUserSelectable = 1\n");
+            File.WriteAllText(
+                Path.Combine(aircraftRoot, "flight_model.cfg"),
+                "[CONTACT_POINTS]\n" +
+                "point.0 = 1, 25, 0, -9\n" +
+                "point.1 = 1, -12, -10, -9\n" +
+                "point.2 = 1, -12, 10, -9\n");
+
+            var resolver = new FlightModelGeometryResolver(new[] { configRoot }, false);
+            Equal(
+                true,
+                resolver.TryCreateAnalysisOptions("AnalyticJet", "AIRBUS", "ANLT", samples, out var configOptions),
+                "flight-model geometry plus telemetry datum");
+            Near(expectedArmFeet, configOptions.LongitudinalMainGearArmFeet!.Value, 1e-8, "flight-model corrected arm");
+            Equal(TouchdownGeometrySource.FlightModelConfig, configOptions.LongitudinalMainGearArmSource, "flight-model geometry source");
+            Near(datumOnly.Quality, configOptions.LongitudinalMainGearArmQuality!.Value, 1e-12, "flight-model datum quality");
+            Equal("1,2", string.Join(",", configOptions.MainGearContactPoints.Select(point => point.ContactPointIndex)), "flight-model main indices");
+            Equal("0", string.Join(",", configOptions.NoseGearContactPointIndices), "flight-model nose indices");
+            Near(-12.0 + datumOnly.DatumOffsetFeet, configOptions.MainGearContactPoints[0].LongitudinalArmFeet, 1e-8, "flight-model point arm");
+        }
+        finally
+        {
+            if (Directory.Exists(configRoot)) Directory.Delete(configRoot, true);
+        }
+
+        var clusteredMainPoints = new[] { (Point: 1, Start: 0.050), (Point: 2, Start: 0.075), (Point: 3, Start: 0.100) };
+        var clusteredNosePoints = new[]
+        {
+            (Point: 0, Start: 0.625),
+            (Point: 5, Start: 0.650),
+            (Point: 6, Start: 0.675),
+            (Point: 12, Start: 0.700),
+            (Point: 14, Start: 0.725),
+            (Point: 15, Start: 0.750),
+        };
+        foreach (var sample in samples.Where(sample => sample.OnGround))
+        {
+            foreach (var point in clusteredMainPoints)
+            {
+                if (sample.SimulationTimeSeconds >= point.Start - 1e-9)
+                {
+                    sample.ContactPointOnGround[point.Point] = true;
+                    sample.ContactPointCompression[point.Point] = sample.ContactPointCompression[firstMainIndex];
+                }
+            }
+
+            foreach (var point in clusteredNosePoints)
+            {
+                if (sample.SimulationTimeSeconds >= point.Start - 1e-9)
+                {
+                    sample.ContactPointOnGround[point.Point] = true;
+                }
+            }
+        }
+
+        Equal(
+            true,
+            TelemetryGeometryCalibration.TryCalibrate(samples, out var clusteredCalibration),
+            "clustered-wheel geometry calibration");
+        Near(pitchArmFeet, clusteredCalibration.PitchArmFeet, 1e-8, "clustered-wheel pitch arm");
+        Near(datumOffsetFeet, clusteredCalibration.DatumOffsetFeet, 1e-8, "clustered-wheel datum offset");
+        Near(expectedArmFeet, clusteredCalibration.LongitudinalArmFeet, 1e-8, "clustered-wheel longitudinal arm");
+    }
+
+    private static void DatumCalibrationRejectsInconsistentPhases()
+    {
+        Equal(
+            false,
+            TelemetryGeometryCalibration.TryScoreDatumCalibration(3, 5.0, out var poorQuality),
+            "inconsistent datum phases accepted");
+        Equal(true, poorQuality < 0.20, "inconsistent datum quality is not below the acceptance floor");
+
+        Equal(
+            true,
+            TelemetryGeometryCalibration.TryScoreDatumCalibration(4, 0.5, out var goodQuality),
+            "consistent datum phases rejected");
+        Equal(true, goodQuality >= 0.20, "consistent datum quality is below the acceptance floor");
+    }
+
+    private static void FlightModelParserMergesModularGeometry()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "landing-stats-flight-model-parser-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var common = Path.Combine(root, "common.cfg");
+            var preset = Path.Combine(root, "preset.cfg");
+            Directory.CreateDirectory(root);
+            File.WriteAllText(
+                common,
+                "[CONTACT_POINTS]\n" +
+                "point.0 = 1, 30, 0, -10\n" +
+                "point.1 = 1, -10, -12, -10\n" +
+                "point.2 = 1, -10, 12, -10\n" +
+                "point.3 = 2, -50, 0, 3\n");
+            File.WriteAllText(
+                preset,
+                "[CONTACT_POINTS]\n" +
+                "point.1 = Name:\"Left_main\"#Properties:1, -12.5, -13, -11\n" +
+                "point.2 = Name:\"Right_main\"#Properties:1, -12.5, 13, -11\n");
+
+            Equal(
+                true,
+                FlightModelConfigParser.TryReadMainGearLongitudinal(
+                    new[] { common, preset },
+                    out var arm,
+                    out var sourcePath),
+                "modular flight-model parse");
+            // Indexed point.N parameters append during modular auto-merge. The
+            // two preset mains therefore coexist with the two common mains.
+            Near(-11.25, arm, 1e-12, "preset main-gear append and reindex");
+            Equal(preset, sourcePath, "geometry source config");
+            Equal(
+                true,
+                FlightModelConfigParser.TryReadGearGeometry(new[] { common, preset }, out var modularGeometry),
+                "modular gear topology parse");
+            Equal("1,2,4,5", string.Join(",", modularGeometry.MainGearPoints.Select(point => point.ContactPointIndex)), "modular main indices");
+            Equal("0", string.Join(",", modularGeometry.NoseGearContactPointIndices), "modular nose indices");
+
+            var a380 = Path.Combine(root, "a380.cfg");
+            File.WriteAllText(
+                a380,
+                "[CONTACT_POINTS]\n" +
+                "point.0 = 1, 99.15, 0, -15.08\n" +
+                "point.1 = 1, -5.7, -11.5, -15.75\n" +
+                "point.2 = 1, -5.7, 11.5, -15.75\n" +
+                "point.3 = 1, 5.7, -23.0, -15.63\n" +
+                "point.4 = 1, 5.7, 23.0, -15.63\n" +
+                "point.5 = 2, 4, -84, -3\n");
+            Equal(
+                true,
+                FlightModelConfigParser.TryReadGearGeometry(new[] { a380 }, out var a380Geometry),
+                "A380 gear topology parse");
+            Near(0.0, a380Geometry.MainGearLongitudinalFeet, 1e-12, "A380 median main arm");
+            Equal("1,2,3,4", string.Join(",", a380Geometry.MainGearPoints.Select(point => point.ContactPointIndex)), "A380 main indices");
+            Equal("0", string.Join(",", a380Geometry.NoseGearContactPointIndices), "A380 nose index");
+
+            var manual = Path.Combine(root, "manual.cfg");
+            File.WriteAllText(
+                manual,
+                "[MODULAR_MERGE]\nauto = false\n" +
+                "[CONTACT_POINTS]\n" +
+                "point.0 = 1, 25, 0, -9\n" +
+                "point.1 = 1, -8, -8, -9\n" +
+                "point.2 = 1, -8, 8, -9\n");
+            Equal(
+                false,
+                FlightModelConfigParser.TryReadMainGearLongitudinal(
+                    new[] { manual },
+                    out _,
+                    out _),
+                "manual modular merge fails closed");
+
+            var dynamic = Path.Combine(root, "dynamic.cfg");
+            File.WriteAllText(
+                dynamic,
+                "[CONTACT_POINTS]\n" +
+                "point.0 = 1, 25, 0, -9\n" +
+                "point.1 = Name:left[uid]#Properties:1, [left_wheel_position], 2000\n" +
+                "point.2 = 1, -8, 8, -9\n");
+            Equal(
+                false,
+                FlightModelConfigParser.TryReadMainGearLongitudinal(
+                    new[] { dynamic },
+                    out _,
+                    out _),
+                "unresolved dynamic contact geometry fails closed");
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
+    private static void FlightModelResolverMapsAircraftIdentity()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "landing-stats-flight-model-resolver-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var packageRoot = Path.Combine(root, "Community", "test-aircraft");
+            var simObjectRoot = Path.Combine(packageRoot, "SimObjects", "Airplanes", "TestJet");
+            var presetConfig = Path.Combine(simObjectRoot, "presets", "vendor", "TestJet_Default", "config");
+            var attachmentConfig = Path.Combine(simObjectRoot, "attachments", "vendor", "Function_Exterior", "config");
+            var baseAttachmentConfig = Path.Combine(simObjectRoot, "attachments", "vendor", "BaseGear", "config");
+            Directory.CreateDirectory(presetConfig);
+            Directory.CreateDirectory(attachmentConfig);
+            Directory.CreateDirectory(baseAttachmentConfig);
+            File.WriteAllText(
+                Path.Combine(presetConfig, "aircraft.cfg"),
+                "[GENERAL]\n" +
+                "title = \"TestJet Default\"\n" +
+                "atc_model = \"TJET\"\n");
+            File.WriteAllText(
+                Path.Combine(presetConfig, "attached_objects.cfg"),
+                "[sim_attachment.0]\n" +
+                "alias = \"Function_Exterior\"\n" +
+                "attachment_root = \"SimObjects/Airplanes/TestJet/attachments/vendor/Function_Exterior\"\n");
+            File.WriteAllText(
+                Path.Combine(Path.GetDirectoryName(attachmentConfig)!, "attachment.cfg"),
+                "[Inherit]\n" +
+                "base = \"SimObjects/Airplanes/TestJet/attachments/vendor/BaseGear\"\n");
+            File.WriteAllText(
+                Path.Combine(baseAttachmentConfig, "flight_model.cfg"),
+                "[CONTACT_POINTS]\n" +
+                "point.0 = 1, 25, 0, -9\n" +
+                "point.1 = 1, -10, -10, -9\n" +
+                "point.2 = 1, -10, 10, -9\n");
+            File.WriteAllText(
+                Path.Combine(attachmentConfig, "flight_model.cfg"),
+                "[CONTACT_POINTS]\n" +
+                "point.0 = 1, -18, -10, -9\n" +
+                "point.1 = 1, -18, 10, -9\n");
+
+            var guidRoot = Path.Combine(packageRoot, "SimObjects", "Airplanes", "GuidJet");
+            var guidCommon = Path.Combine(guidRoot, "common", "config");
+            var guidPreset = Path.Combine(guidRoot, "presets", "vendor", "default", "config");
+            Directory.CreateDirectory(guidCommon);
+            Directory.CreateDirectory(guidPreset);
+            File.WriteAllText(
+                Path.Combine(guidCommon, "flight_model.cfg"),
+                "[CONTACT_POINTS]\n" +
+                "point.0 = 1, 20, 0, -8\n" +
+                "point.1 = 1, -8, -8, -8\n" +
+                "point.2 = 1, -8, 8, -8\n");
+            File.WriteAllText(
+                Path.Combine(guidPreset, "aircraft.cfg"),
+                "[GENERAL]\ntitle = \"GuidJet\"\n");
+            File.WriteAllText(
+                Path.Combine(guidPreset, "attached_objects.cfg"),
+                "[SIM_ATTACHMENT.0]\n" +
+                "alias = \"UnknownGear\"\n" +
+                "attachment_guid = \"{11111111-2222-3333-4444-555555555555}\"\n");
+
+            var baseJet = Path.Combine(root, "Community", "base-package", "SimObjects", "Airplanes", "BaseJet");
+            var livery = Path.Combine(root, "Community", "livery-package", "SimObjects", "Airplanes", "BaseJet_Livery");
+            Directory.CreateDirectory(baseJet);
+            Directory.CreateDirectory(livery);
+            File.WriteAllText(
+                Path.Combine(root, "Community", "base-package", "manifest.json"),
+                "{\"content_type\":\"AIRCRAFT\"}");
+            File.WriteAllText(
+                Path.Combine(root, "Community", "livery-package", "manifest.json"),
+                "{\"content_type\":\"Livery\"}");
+            File.WriteAllText(
+                Path.Combine(baseJet, "aircraft.cfg"),
+                "[FLTSIM.0]\ntitle = \"BaseJet\"\nisUserSelectable = 1\n");
+            File.WriteAllText(
+                Path.Combine(baseJet, "flight_model.cfg"),
+                "[CONTACT_POINTS]\n" +
+                "point.0 = 1, 20, 0, -8\n" +
+                "point.1 = 1, -9, -8, -8\n" +
+                "point.2 = 1, -9, 8, -8\n");
+            File.WriteAllText(
+                Path.Combine(livery, "aircraft.cfg"),
+                "[VARIATION]\nbase_container = \"..\\BaseJet\"\n" +
+                "[FLTSIM.0]\ntitle = \"BaseJet Livery\"\nisUserSelectable = 1\n");
+
+            var mutableJet = Path.Combine(
+                root,
+                "Community",
+                "mutable-package",
+                "SimObjects",
+                "Airplanes",
+                "MutableJet");
+            Directory.CreateDirectory(mutableJet);
+            File.WriteAllText(
+                Path.Combine(mutableJet, "aircraft.cfg"),
+                "[FLTSIM.0]\ntitle = \"MutableJet\"\nisUserSelectable = 1\n");
+            var mutableFlightModel = Path.Combine(mutableJet, "flight_model.cfg");
+            File.WriteAllText(
+                mutableFlightModel,
+                "[CONTACT_POINTS]\n" +
+                "point.0 = 1, 20, 0, -8\n" +
+                "point.1 = 1, -5, -8, -8\n" +
+                "point.2 = 1, -5, 8, -8\n");
+            var mutableResolver = new FlightModelGeometryResolver(new[] { root }, false);
+            File.WriteAllText(
+                mutableFlightModel,
+                "[CONTACT_POINTS]\n" +
+                "point.0 = 1, 20, 0, -8\n" +
+                "point.1 = 1, -7, -8, -8\n" +
+                "point.2 = 1, -7, 8, -8\n");
+            Equal(
+                true,
+                mutableResolver.TryResolve("MutableJet", "unknown", "", out var refreshedMutable),
+                "exact title refreshes a stale catalog");
+            Near(-7, refreshedMutable.MainGearLongitudinalFeet, 1e-12, "refreshed exact-title arm");
+
+            var resolver = new FlightModelGeometryResolver(new[] { root }, false);
+            Equal(true, resolver.TryResolve("TestJet Default", "unknown", "", out var byTitle), "title geometry lookup");
+            Near(-14, byTitle.MainGearLongitudinalFeet, 1e-12, "title geometry arm");
+            Equal(false, resolver.TryResolve("Unknown title", "unknown", "TJET", out _), "unknown title fails closed");
+            Equal(false, resolver.TryResolve("GuidJet", "unknown", "", out _), "GUID-only attachment fails closed");
+            Equal(true, resolver.TryResolve("BaseJet Livery", "unknown", "", out var byBaseContainer), "cross-package base-container lookup");
+            Near(-9, byBaseContainer.MainGearLongitudinalFeet, 1e-12, "cross-package base-container arm");
+
+            var duplicateBase = Path.Combine(
+                root,
+                "Community",
+                "duplicate-base-package",
+                "SimObjects",
+                "Airplanes",
+                "BaseJet");
+            Directory.CreateDirectory(duplicateBase);
+            File.WriteAllText(
+                Path.Combine(duplicateBase, "aircraft.cfg"),
+                "[FLTSIM.0]\ntitle = \"Other BaseJet\"\nisUserSelectable = 1\n");
+            File.WriteAllText(
+                Path.Combine(duplicateBase, "flight_model.cfg"),
+                "[CONTACT_POINTS]\n" +
+                "point.0 = 1, 20, 0, -8\n" +
+                "point.1 = 1, -100, -8, -8\n" +
+                "point.2 = 1, -100, 8, -8\n");
+            var ambiguousBaseResolver = new FlightModelGeometryResolver(new[] { root }, false);
+            Equal(
+                false,
+                ambiguousBaseResolver.TryResolve("BaseJet Livery", "unknown", "", out _),
+                "ambiguous cross-package base-container fails closed");
+
+            var sharedPackage = Path.Combine(root, "Community", "shared-attachment-package");
+            var sharedGear = Path.Combine(
+                sharedPackage,
+                "SimObjects",
+                "Airplanes",
+                "SharedJet",
+                "attachments",
+                "vendor",
+                "SharedGear",
+                "config");
+            Directory.CreateDirectory(sharedGear);
+            File.WriteAllText(Path.Combine(sharedPackage, "manifest.json"), "{\"content_type\":\"AIRCRAFT\"}");
+            File.WriteAllText(
+                Path.Combine(sharedGear, "flight_model.cfg"),
+                "[CONTACT_POINTS]\n" +
+                "point.0 = 1, -20, -12, -9\n" +
+                "point.1 = 1, -20, 12, -9\n");
+
+            var externalRoot = Path.Combine(
+                root,
+                "Community",
+                "external-aircraft-package",
+                "SimObjects",
+                "Airplanes",
+                "ExternalJet");
+            var externalCommon = Path.Combine(externalRoot, "common", "config");
+            var externalPreset = Path.Combine(externalRoot, "presets", "vendor", "default", "config");
+            Directory.CreateDirectory(externalCommon);
+            Directory.CreateDirectory(externalPreset);
+            File.WriteAllText(
+                Path.Combine(externalCommon, "flight_model.cfg"),
+                "[CONTACT_POINTS]\n" +
+                "point.0 = 1, 25, 0, -9\n" +
+                "point.1 = 1, -10, -10, -9\n" +
+                "point.2 = 1, -10, 10, -9\n");
+            File.WriteAllText(
+                Path.Combine(externalPreset, "aircraft.cfg"),
+                "[GENERAL]\ntitle = \"ExternalJet\"\n");
+            File.WriteAllText(
+                Path.Combine(externalPreset, "attached_objects.cfg"),
+                "[SIM_ATTACHMENT.0]\n" +
+                "alias = \"SharedGear\"\n" +
+                "attachment_root = \"SimObjects/Airplanes/SharedJet/attachments/vendor/SharedGear\"\n");
+            var externalResolver = new FlightModelGeometryResolver(new[] { root }, false);
+            Equal(
+                true,
+                externalResolver.TryResolve("ExternalJet", "unknown", "", out var external),
+                "cross-package VFS attachment lookup");
+            Near(-15, external.MainGearLongitudinalFeet, 1e-12, "cross-package VFS attachment arm");
+
+            var lateRoot = Path.Combine(root, "late-packages");
+            var lateResolver = new FlightModelGeometryResolver(new[] { lateRoot }, false);
+            Equal(0, lateResolver.CatalogForTesting().Count, "initial late-package catalog");
+            var lateAircraft = Path.Combine(lateRoot, "Community", "late-aircraft", "SimObjects", "Airplanes", "LateJet");
+            Directory.CreateDirectory(lateAircraft);
+            File.WriteAllText(
+                Path.Combine(lateAircraft, "aircraft.cfg"),
+                "[FLTSIM.0]\ntitle = \"LateJet\"\nisUserSelectable = 1\n");
+            File.WriteAllText(
+                Path.Combine(lateAircraft, "flight_model.cfg"),
+                "[CONTACT_POINTS]\n" +
+                "point.0 = 1, 20, 0, -8\n" +
+                "point.1 = 1, -7, -8, -8\n" +
+                "point.2 = 1, -7, 8, -8\n");
+            Equal(true, lateResolver.TryResolve("LateJet", "unknown", "", out var late), "catalog refreshes after title miss");
+            Near(-7, late.MainGearLongitudinalFeet, 1e-12, "late-package arm");
+
+            IReadOnlyList<string> discoveredRoots = Array.Empty<string>();
+            var discoveredResolver = new FlightModelGeometryResolver(
+                Array.Empty<string>(),
+                false,
+                () => discoveredRoots);
+            var discoveredRoot = Path.Combine(root, "discovered-after-start");
+            var discoveredAircraft = Path.Combine(
+                discoveredRoot,
+                "Community",
+                "discovered-aircraft",
+                "SimObjects",
+                "Airplanes",
+                "DiscoveredJet");
+            Directory.CreateDirectory(discoveredAircraft);
+            File.WriteAllText(
+                Path.Combine(discoveredAircraft, "aircraft.cfg"),
+                "[FLTSIM.0]\ntitle = \"DiscoveredJet\"\nisUserSelectable = 1\n");
+            File.WriteAllText(
+                Path.Combine(discoveredAircraft, "flight_model.cfg"),
+                "[CONTACT_POINTS]\n" +
+                "point.0 = 1, 20, 0, -8\n" +
+                "point.1 = 1, -6, -8, -8\n" +
+                "point.2 = 1, -6, 8, -8\n");
+            discoveredRoots = new[] { discoveredRoot };
+            Equal(
+                true,
+                discoveredResolver.TryResolve("DiscoveredJet", "unknown", "", out var discovered),
+                "refresh discovers a package root created after startup");
+            Near(-6, discovered.MainGearLongitudinalFeet, 1e-12, "newly discovered package-root arm");
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
+    private static void FlightModelAsyncFailuresFallBackToTelemetry()
+    {
+        var resolver = new FlightModelGeometryResolver(
+            Array.Empty<string>(),
+            false,
+            () => throw new IOException("simulated package discovery failure"));
+        var options = resolver.CreateAnalysisOptionsAsync(
+                "Missing aircraft",
+                "unknown",
+                string.Empty,
+                Array.Empty<TelemetrySample>())
+            .GetAwaiter()
+            .GetResult();
+        Equal<TouchdownAnalysisOptions?>(null, options, "optional geometry failure did not fall back");
     }
 
     private static List<TelemetrySample> ReconstructionSamples(
@@ -1943,6 +2954,37 @@ internal static class Program
         };
     }
 
+    private static List<TelemetrySample> ReplayDetectionSamples(bool replay)
+    {
+        const double latitudeDegrees = 42.0;
+        const double groundSpeedKnots = 120.0;
+        const double verticalRateFps = -10.0;
+        var longitudeDegreesPerSecond = groundSpeedKnots /
+                                        (3600.0 * 60.0 * Math.Cos(latitudeDegrees * Math.PI / 180.0));
+        var samples = new List<TelemetrySample>();
+        for (var index = 0; index <= 170; index++)
+        {
+            var time = -16.0 + index * 0.1;
+            samples.Add(new TelemetrySample
+            {
+                Sequence = index,
+                SimulationTimeSeconds = time,
+                MotionSimulation = true,
+                OnGround = time >= -1e-9,
+                LatitudeDegrees = latitudeDegrees,
+                LongitudeDegrees = 23.0 + (time + 16.0) * longitudeDegreesPerSecond,
+                PlaneAltitudeFeet = 500.0 + verticalRateFps * time,
+                GroundAltitudeFeet = 500.0,
+                AboveGroundLevelFeet = Math.Max(0.0, -verticalRateFps * time),
+                GroundSpeedKnots = replay ? 0.1 : groundSpeedKnots,
+                IndicatedAirspeedKnots = replay ? 1.0 : 125.0,
+                VelocityWorldYFps = replay ? -0.2 : verticalRateFps,
+            });
+        }
+
+        return samples;
+    }
+
     private static IDisposable NewRecorder()
     {
         var recorder = Activator.CreateInstance(
@@ -1960,6 +3002,23 @@ internal static class Program
                    "LandingStats.App.Telemetry.SimConnectLandingRecorder",
                    true)
                ?? throw new TypeLoadException("SimConnectLandingRecorder");
+    }
+
+    private static object ReplayFlowEvent(string name)
+    {
+        var assembly = Assembly.Load("Microsoft.FlightSimulator.SimConnect");
+        var eventType = assembly.GetType(
+                            "Microsoft.FlightSimulator.SimConnect.SIMCONNECT_RECV_FLOW_EVENT",
+                            true)
+                        ?? throw new TypeLoadException("SIMCONNECT_RECV_FLOW_EVENT");
+        var valueType = assembly.GetType(
+                            "Microsoft.FlightSimulator.SimConnect.SIMCONNECT_FLOW_EVENT",
+                            true)
+                        ?? throw new TypeLoadException("SIMCONNECT_FLOW_EVENT");
+        var instance = Activator.CreateInstance(eventType)
+                       ?? throw new InvalidOperationException("Could not construct replay flow event.");
+        eventType.GetField("FlowEvent")!.SetValue(instance, Enum.Parse(valueType, name));
+        return instance;
     }
 
     private static object? Field(object target, string name)
@@ -2160,6 +3219,55 @@ internal static class Program
             }
 
             return System.Threading.Tasks.Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound)
+            {
+                RequestMessage = request,
+            });
+        }
+    }
+
+    private sealed class TelemetryRejectingFixtureHandler : HttpMessageHandler
+    {
+        public int CaptureCount { get; private set; }
+
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            if (request.Method == HttpMethod.Get &&
+                request.RequestUri!.AbsolutePath.EndsWith("/v1/config", StringComparison.Ordinal))
+            {
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    RequestMessage = request,
+                    Content = new StringContent(
+                        "{\"protocol\":1,\"registration_mode\":\"open\",\"telemetry_schema\":5,\"max_upload_bytes\":16777216}",
+                        Encoding.UTF8,
+                        "application/json"),
+                });
+            }
+
+            if (request.Method == HttpMethod.Post &&
+                request.RequestUri!.AbsolutePath.EndsWith("/v1/enroll", StringComparison.Ordinal))
+            {
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.Created)
+                {
+                    RequestMessage = request,
+                    Content = new StringContent("{\"status\":\"enrolled\"}", Encoding.UTF8, "application/json"),
+                });
+            }
+
+            if (request.Method == HttpMethod.Post &&
+                request.RequestUri!.AbsolutePath.EndsWith("/v1/captures", StringComparison.Ordinal))
+            {
+                CaptureCount++;
+                return Task.FromResult(new HttpResponseMessage((HttpStatusCode)422)
+                {
+                    RequestMessage = request,
+                    Content = new StringContent("{\"detail\":\"invalid capture\"}", Encoding.UTF8, "application/json"),
+                });
+            }
+
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound)
             {
                 RequestMessage = request,
             });

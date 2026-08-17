@@ -4,12 +4,14 @@ using System.Diagnostics;
 using System.Linq;
 using System.Reflection;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Navigation;
+using System.Windows.Shapes;
 using LandingStats.App.Controls;
 using LandingStats.App.Models;
 using LandingStats.App.Settings;
@@ -28,8 +30,14 @@ public partial class MainWindow : Window
     private readonly LandingRepository _repository = new LandingRepository();
     private readonly RawCaptureRepository _rawCaptureRepository = new RawCaptureRepository();
     private readonly AirportFacilityRepository _airportFacilityRepository = new AirportFacilityRepository();
+    private readonly FlightModelGeometryResolver _flightModelGeometryResolver = new FlightModelGeometryResolver();
     private readonly ReleaseUpdater _releaseUpdater = new ReleaseUpdater();
     private readonly CancellationTokenSource _lifetimeCancellation = new CancellationTokenSource();
+    private readonly object _episodeProcessingGate = new object();
+    private readonly object _landingRepositoryGate = new object();
+    private readonly object _airportFacilityRepositoryGate = new object();
+    private readonly object _telemetryUploadClientGate = new object();
+    private Task _episodePersistenceTask = Task.CompletedTask;
     private TelemetryUploadClient? _telemetryUploadClient;
     private IReadOnlyList<LandingRecord> _landings = Array.Empty<LandingRecord>();
     private IReadOnlyList<AirportFacility> _airportFacilities = Array.Empty<AirportFacility>();
@@ -54,6 +62,7 @@ public partial class MainWindow : Window
     private string _rawStatusKey = "Footer.UploadDisabled";
     private object[] _rawStatusArguments = Array.Empty<object>();
     private bool _rawStatusIsError;
+    private bool _isClosed;
 
     public MainWindow()
     {
@@ -65,7 +74,10 @@ public partial class MainWindow : Window
         var version = assembly.GetName().Version;
         var company = assembly.GetCustomAttribute<AssemblyCompanyAttribute>()?.Company ?? "Evgeniy Zaytsev";
         VersionAuthorRun.Text = $"v{version?.Major ?? 0}.{version?.Minor ?? 0}.{version?.Build ?? 0} · {company}";
-        _airportFacilities = _airportFacilityRepository.Load();
+        lock (_airportFacilityRepositoryGate)
+        {
+            _airportFacilities = _airportFacilityRepository.Load();
+        }
         LoadHistory();
         _charts = new[] { MainChart, MiniGChart, MiniPowerChart, MiniGearChart };
         foreach (var chart in _charts)
@@ -114,7 +126,11 @@ public partial class MainWindow : Window
 
     private void LoadHistory()
     {
-        var stored = _repository.LoadAll().ToList();
+        List<LandingRecord> stored;
+        lock (_landingRepositoryGate)
+        {
+            stored = _repository.LoadAll().ToList();
+        }
         var changedRecords = new List<LandingRecord>();
         foreach (var record in stored)
         {
@@ -125,7 +141,10 @@ public partial class MainWindow : Window
             }
         }
 
-        _repository.UpdateSummaries(changedRecords);
+        lock (_landingRepositoryGate)
+        {
+            _repository.UpdateSummaries(changedRecords);
+        }
 
         _landings = stored;
         ApplySessionFilter();
@@ -154,12 +173,18 @@ public partial class MainWindow : Window
             }
             else
             {
-                detail = _repository.LoadDetail(selected) ?? selected;
+                lock (_landingRepositoryGate)
+                {
+                    detail = _repository.LoadDetail(selected) ?? selected;
+                }
                 if (!detail.IsSummaryOnly)
                 {
                     if (detail.FormatVersion >= 6 && LandingRecordFactory.RefreshRawPitchInputSelection(detail))
                     {
-                        _repository.Save(detail);
+                        lock (_landingRepositoryGate)
+                        {
+                            _repository.Save(detail);
+                        }
                     }
 
                     _loadedDetails[selected.Id] = detail;
@@ -398,7 +423,10 @@ public partial class MainWindow : Window
         try
         {
             ConfirmDeleteLandingButton.IsEnabled = false;
-            _repository.Delete(record.Id);
+            lock (_landingRepositoryGate)
+            {
+                _repository.Delete(record.Id);
+            }
             _loadedDetails.Remove(record.Id);
             _landings = _landings
                 .Where(candidate => !string.Equals(candidate.Id, record.Id, StringComparison.Ordinal))
@@ -644,10 +672,9 @@ public partial class MainWindow : Window
     private void UpdateMainLegend(LandingChartMode mode)
     {
         string[] labels;
-        string[] colors;
+        Brush[] brushes;
         bool[] dashed;
         var record = DataContext as LandingRecord;
-        var count = 3;
 
         switch (mode)
         {
@@ -658,9 +685,14 @@ public partial class MainWindow : Window
                     LocalizationManager.Text("Chart.VsiLagged"),
                     LocalizationManager.Text("Chart.SurfaceClosure"),
                 };
-                colors = new[] { "#FF7A45", "#D9C46A", "#5FA8F5" };
+                brushes = new[] { LandingChart.SeriesBrushAt(0), LandingChart.SeriesBrushAt(2), LandingChart.SeriesBrushAt(1) };
                 dashed = new[] { false, false, true };
-                count = record?.HasSurfaceLatchData == true ? 3 : 2;
+                if (record?.HasSurfaceLatchData != true)
+                {
+                    labels = labels.Take(2).ToArray();
+                    brushes = brushes.Take(2).ToArray();
+                    dashed = dashed.Take(2).ToArray();
+                }
                 break;
             case LandingChartMode.LoadFactors:
                 labels = new[]
@@ -669,7 +701,7 @@ public partial class MainWindow : Window
                     LocalizationManager.Text("Chart.Longitudinal"),
                     LocalizationManager.Text("Chart.Lateral"),
                 };
-                colors = new[] { "#FF7A45", "#5FA8F5", "#D9C46A" };
+                brushes = new[] { LandingChart.SeriesBrushAt(0), LandingChart.SeriesBrushAt(1), LandingChart.SeriesBrushAt(2) };
                 dashed = new[] { false, false, false };
                 break;
             case LandingChartMode.FlightControls:
@@ -679,7 +711,7 @@ public partial class MainWindow : Window
                     LocalizationManager.Text("Chart.Roll"),
                     LocalizationManager.Text("Chart.Yaw"),
                 };
-                colors = new[] { "#FF7A45", "#5FA8F5", "#D9C46A" };
+                brushes = new[] { LandingChart.SeriesBrushAt(0), LandingChart.SeriesBrushAt(1), LandingChart.SeriesBrushAt(2) };
                 dashed = new[] { false, false, false };
                 break;
             case LandingChartMode.Attitude:
@@ -689,55 +721,62 @@ public partial class MainWindow : Window
                     LocalizationManager.Text("Chart.Bank"),
                     LocalizationManager.Text("Chart.Aoa"),
                 };
-                colors = new[] { "#FF7A45", "#5FA8F5", "#D9C46A" };
+                brushes = new[] { LandingChart.SeriesBrushAt(0), LandingChart.SeriesBrushAt(1), LandingChart.SeriesBrushAt(2) };
                 dashed = new[] { false, false, false };
                 break;
             case LandingChartMode.Power:
-                labels = new[]
-                {
-                    LocalizationManager.Format("Chart.EngineFormat", 1),
-                    LocalizationManager.Format("Chart.EngineFormat", 2),
-                    LocalizationManager.Format("Chart.EngineFormat", 3),
-                };
-                colors = new[] { "#FF7A45", "#5FA8F5", "#D9C46A" };
-                dashed = new[] { false, false, false };
-                count = Math.Min(3, record?.Engines.Count ?? 0);
+                labels = record?.Engines
+                    .Select(engine => LocalizationManager.Format("Chart.EngineFormat", engine.EngineNumber))
+                    .ToArray() ?? Array.Empty<string>();
+                brushes = labels.Select((_, index) => LandingChart.SeriesBrushAt(index)).ToArray();
+                dashed = labels.Select(_ => false).ToArray();
                 break;
             case LandingChartMode.Gear:
-                labels = new[]
-                {
-                    LocalizationManager.Format("Chart.ContactPointFormat", 1),
-                    LocalizationManager.Format("Chart.ContactPointFormat", 2),
-                    LocalizationManager.Format("Chart.ContactPointFormat", 3),
-                };
-                colors = new[] { "#FF7A45", "#5FA8F5", "#D9C46A" };
-                dashed = new[] { false, false, false };
-                count = Math.Min(3, record?.ContactPoints.Count ?? 0);
+                var gearSeries = LandingGearSeriesBuilder.Build(record);
+                labels = gearSeries.Select(LandingGearSeriesBuilder.DisplayName).ToArray();
+                brushes = labels.Select((_, index) => LandingChart.SeriesBrushAt(index)).ToArray();
+                dashed = labels.Select(_ => false).ToArray();
                 break;
             default:
                 return;
         }
 
-        var buttons = new[] { LegendButton0, LegendButton1, LegendButton2 };
-        var lines = new[] { LegendLine0, LegendLine1, LegendLine2 };
-        var textBlocks = new[] { LegendLabel0, LegendLabel1, LegendLabel2 };
-        for (var index = 0; index < buttons.Length; index++)
+        MainLegendPanel.Children.Clear();
+        MainLegendSeparator.Visibility = labels.Length == 0 ? Visibility.Collapsed : Visibility.Visible;
+        for (var index = 0; index < labels.Length; index++)
         {
-            var visible = index < count;
-            buttons[index].Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
-            if (!visible)
+            var line = new Line
             {
-                continue;
-            }
-
-            lines[index].Stroke = Brush(colors[index]);
-            lines[index].StrokeDashArray = dashed[index]
-                ? new DoubleCollection { 4, 3 }
-                : null;
-            textBlocks[index].Text = labels[index];
-            buttons[index].Opacity = !_mainIsolatedSeriesIndex.HasValue || _mainIsolatedSeriesIndex == index
-                ? 1.0
-                : 0.32;
+                X1 = 0,
+                X2 = 14,
+                Y1 = 0,
+                Y2 = 0,
+                Stroke = brushes[index],
+                StrokeThickness = 2,
+                StrokeDashArray = dashed[index] ? new DoubleCollection { 4, 3 } : null,
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+            var label = new TextBlock
+            {
+                Text = labels[index],
+                FontSize = 11,
+                Foreground = (Brush)FindResource("MutedTextBrush"),
+                Margin = new Thickness(7, 0, 0, 0),
+            };
+            var content = new StackPanel { Orientation = Orientation.Horizontal };
+            content.Children.Add(line);
+            content.Children.Add(label);
+            var button = new Button
+            {
+                Tag = index,
+                Style = (Style)FindResource("ChartLegendButtonStyle"),
+                Margin = new Thickness(index == 0 ? 0 : 22, 0, 0, 0),
+                Content = content,
+                Opacity = !_mainIsolatedSeriesIndex.HasValue || _mainIsolatedSeriesIndex == index ? 1.0 : 0.32,
+                ToolTip = labels[index],
+            };
+            button.Click += OnMainLegendClick;
+            MainLegendPanel.Children.Add(button);
         }
     }
 
@@ -753,6 +792,7 @@ public partial class MainWindow : Window
         _recorder.RawDebugCaptureStarted += OnRawDebugCaptureStarted;
         _recorder.RawDebugSampleReceived += OnRawDebugSampleReceived;
         _recorder.RawDebugCaptureStopped += OnRawDebugCaptureStopped;
+        _recorder.AircraftGroundStateChanged += OnAircraftGroundStateChanged;
         _recorder.SeedAirportFacilities(_airportFacilities);
         _recorder.Start();
         if (RawDebugToggle.IsChecked == true)
@@ -770,6 +810,68 @@ public partial class MainWindow : Window
     {
         SetConnectionStatus(eventArgs.MessageKey, eventArgs.MessageArguments);
         UpdateRecorderPresentation(eventArgs.State);
+        if (string.Equals(eventArgs.MessageKey, "Recorder.ReplayActive", StringComparison.Ordinal))
+        {
+            ShowReplayUnsupportedOverlay();
+        }
+        else if (_recorder?.IsAircraftAirborne == true)
+        {
+            HideReplayUnsupportedOverlay();
+        }
+    }
+
+    private void OnAircraftGroundStateChanged(object? sender, AircraftGroundStateEventArgs eventArgs)
+    {
+        if (!eventArgs.OnGround)
+        {
+            HideReplayUnsupportedOverlay();
+        }
+    }
+
+    private void ShowReplayUnsupportedOverlay()
+    {
+        ReplayUnsupportedOverlay.Visibility = Visibility.Visible;
+        ReplayUnsupportedOverlay.Focus();
+        Keyboard.Focus(CloseReplayUnsupportedButton);
+    }
+
+    private void HideReplayUnsupportedOverlay()
+    {
+        if (ReplayUnsupportedOverlay.Visibility != Visibility.Visible)
+        {
+            return;
+        }
+
+        ReplayUnsupportedOverlay.Visibility = Visibility.Collapsed;
+        Keyboard.Focus(LandingHistoryList);
+    }
+
+    private void OnCloseReplayUnsupportedClick(object sender, RoutedEventArgs eventArgs)
+    {
+        eventArgs.Handled = true;
+        HideReplayUnsupportedOverlay();
+    }
+
+    private void OnReplayOverlayBackgroundClick(object sender, MouseButtonEventArgs eventArgs)
+    {
+        eventArgs.Handled = true;
+        HideReplayUnsupportedOverlay();
+    }
+
+    private void OnReplayDialogClick(object sender, MouseButtonEventArgs eventArgs)
+    {
+        eventArgs.Handled = true;
+    }
+
+    private void OnReplayOverlayKeyDown(object sender, KeyEventArgs eventArgs)
+    {
+        if (eventArgs.Key != Key.Escape)
+        {
+            return;
+        }
+
+        eventArgs.Handled = true;
+        HideReplayUnsupportedOverlay();
     }
 
     private void UpdateRecorderPresentation(RecorderState state)
@@ -791,70 +893,165 @@ public partial class MainWindow : Window
         };
     }
 
-    private void OnEpisodeCompleted(object? sender, LandingEpisodeEventArgs eventArgs)
+    private async void OnEpisodeCompleted(object? sender, LandingEpisodeEventArgs eventArgs)
     {
         var episodeTimestampUtc = DateTime.UtcNow;
-        try
+        Task<ProcessedEpisode> processingTask;
+        lock (_episodeProcessingGate)
         {
-            _airportFacilities = _airportFacilityRepository.MergeAndSave(eventArgs.AirportFacilities);
-        }
-        catch
-        {
-            _airportFacilities = _airportFacilities
-                .Concat(eventArgs.AirportFacilities)
-                .GroupBy(facility => facility.Key, StringComparer.OrdinalIgnoreCase)
-                .Select(group => group.Last())
-                .ToArray();
+            var predecessor = _episodePersistenceTask;
+            var knownFacilities = _airportFacilities;
+            processingTask = ProcessEpisodeAfterAsync(
+                predecessor,
+                eventArgs,
+                knownFacilities,
+                episodeTimestampUtc);
+            _episodePersistenceTask = processingTask;
         }
 
         try
         {
-            var samples = TelemetryDeduplicator.Deduplicate(eventArgs.Samples);
-            var touchdowns = TouchdownAnalysis.Analyze(samples);
-            if (touchdowns.Count == 0)
+            var processed = await processingTask;
+            if (_isClosed)
+            {
+                return;
+            }
+
+            if (processed.ReplayLike)
+            {
+                UpdateRecorderPresentation(RecorderState.Connected);
+                SetConnectionWarning("Recorder.ReplayIgnored");
+                ShowReplayUnsupportedOverlay();
+                return;
+            }
+
+            // A facility refresh can finish while the episode is being analyzed.
+            // Keep the newest in-memory entries and resolve this just-saved landing
+            // again so an earlier episode snapshot cannot roll the cache backward
+            // or leave the landing as Unknown until the next application start.
+            _airportFacilities = MergeAirportFacilities(
+                processed.AirportFacilities,
+                _airportFacilities);
+            var airportUpdates = new List<LandingRecord>();
+            foreach (var record in processed.Records)
+            {
+                if (TryResolveAirport(record, _airportFacilities))
+                {
+                    airportUpdates.Add(record);
+                }
+            }
+            if (airportUpdates.Count > 0)
+            {
+                lock (_landingRepositoryGate)
+                {
+                    _repository.UpdateSummaries(airportUpdates);
+                }
+            }
+            if (processed.Records.Count == 0)
             {
                 UpdateRecorderPresentation(RecorderState.Connected);
                 SetConnectionWarning("Recorder.NoTouchdown");
                 return;
             }
 
-            var savedRecords = new List<LandingRecord>(touchdowns.Count);
-            foreach (var touchdown in touchdowns)
+            foreach (var record in processed.Records)
             {
-                var aircraftType = eventArgs.AircraftType == "unknown"
-                    ? eventArgs.AircraftModel
-                    : eventArgs.AircraftType;
-                var record = LandingRecordFactory.Create(
-                    touchdown,
-                    samples,
-                    eventArgs.AircraftTitle,
-                    aircraftType,
-                    contactCount: touchdowns.Count,
-                    timestampUtc: episodeTimestampUtc);
-                record.Simulator = eventArgs.Simulator;
-                record.ControlInputSources = eventArgs.ControlInputSources.ToList();
-                TryResolveAirport(record, _airportFacilities);
-                _repository.Save(record);
                 _loadedDetails[record.Id] = record;
-                savedRecords.Add(record);
             }
 
-            AddLandingRecords(savedRecords);
-            if (touchdowns.Count == 1)
+            AddLandingRecords(processed.Records);
+            if (processed.Records.Count == 1)
             {
                 SetConnectionStatus("Recorder.LandingSaved");
             }
             else
             {
-                SetConnectionStatus("Recorder.ContactsSavedFormat", touchdowns.Count);
+                SetConnectionStatus("Recorder.ContactsSavedFormat", processed.Records.Count);
             }
             UpdateRecorderPresentation(RecorderState.Connected);
         }
         catch (Exception exception)
         {
+            if (_isClosed)
+            {
+                return;
+            }
+
             SetConnectionStatus("Recorder.AnalysisFailedFormat", exception.Message);
             UpdateRecorderPresentation(RecorderState.Error);
         }
+    }
+
+    private async Task<ProcessedEpisode> ProcessEpisodeAfterAsync(
+        Task predecessor,
+        LandingEpisodeEventArgs eventArgs,
+        IReadOnlyList<AirportFacility> knownFacilities,
+        DateTime episodeTimestampUtc)
+    {
+        try
+        {
+            await predecessor.ConfigureAwait(false);
+        }
+        catch
+        {
+            // A failed episode must not poison persistence of later landings.
+        }
+
+        return await Task.Run(() => ProcessEpisodeAsync(
+                eventArgs,
+                knownFacilities,
+                episodeTimestampUtc))
+            .ConfigureAwait(false);
+    }
+
+    private async Task<ProcessedEpisode> ProcessEpisodeAsync(
+        LandingEpisodeEventArgs eventArgs,
+        IReadOnlyList<AirportFacility> knownFacilities,
+        DateTime episodeTimestampUtc)
+    {
+        var samples = TelemetryDeduplicator.Deduplicate(eventArgs.Samples);
+        if (ReplayTelemetryDetector.IsReplayLike(samples))
+        {
+            return ProcessedEpisode.Replay();
+        }
+
+        // The episode carries a point-in-time copy of the recorder's facility
+        // list. Use it for this analysis, but never write it back to the shared
+        // cache: a newer facilities event may already have been persisted while
+        // geometry analysis was running, and this stale snapshot must not win.
+        var facilities = MergeAirportFacilities(knownFacilities, eventArgs.AirportFacilities);
+
+        var analysisOptions = await _flightModelGeometryResolver.CreateAnalysisOptionsAsync(
+                eventArgs.AircraftTitle,
+                eventArgs.AircraftType,
+                eventArgs.AircraftModel,
+                samples)
+            .ConfigureAwait(false);
+        var touchdowns = TouchdownAnalysis.Analyze(samples, analysisOptions);
+        var savedRecords = new List<LandingRecord>(touchdowns.Count);
+        foreach (var touchdown in touchdowns)
+        {
+            var aircraftType = eventArgs.AircraftType == "unknown"
+                ? eventArgs.AircraftModel
+                : eventArgs.AircraftType;
+            var record = LandingRecordFactory.Create(
+                touchdown,
+                samples,
+                eventArgs.AircraftTitle,
+                aircraftType,
+                contactCount: touchdowns.Count,
+                timestampUtc: episodeTimestampUtc);
+            record.Simulator = eventArgs.Simulator;
+            record.ControlInputSources = eventArgs.ControlInputSources.ToList();
+            TryResolveAirport(record, facilities);
+            lock (_landingRepositoryGate)
+            {
+                _repository.Save(record);
+            }
+            savedRecords.Add(record);
+        }
+
+        return ProcessedEpisode.Completed(facilities, savedRecords);
     }
 
     private void SetConnectionStatus(string key, params object[] arguments)
@@ -904,15 +1101,14 @@ public partial class MainWindow : Window
     {
         try
         {
-            _airportFacilities = _airportFacilityRepository.MergeAndSave(eventArgs.Facilities);
+            lock (_airportFacilityRepositoryGate)
+            {
+                _airportFacilities = _airportFacilityRepository.MergeAndSave(eventArgs.Facilities);
+            }
         }
         catch
         {
-            _airportFacilities = _airportFacilities
-                .Concat(eventArgs.Facilities)
-                .GroupBy(facility => facility.Key, StringComparer.OrdinalIgnoreCase)
-                .Select(group => group.Last())
-                .ToArray();
+            _airportFacilities = MergeAirportFacilities(_airportFacilities, eventArgs.Facilities);
         }
 
         var changed = false;
@@ -923,7 +1119,10 @@ public partial class MainWindow : Window
                 continue;
             }
 
-            _repository.UpdateSummary(record);
+            lock (_landingRepositoryGate)
+            {
+                _repository.UpdateSummary(record);
+            }
             if (_loadedDetails.TryGetValue(record.Id, out var detail))
             {
                 detail.Airport = record.Airport;
@@ -969,6 +1168,17 @@ public partial class MainWindow : Window
         return true;
     }
 
+    internal static IReadOnlyList<AirportFacility> MergeAirportFacilities(
+        IEnumerable<AirportFacility> baseline,
+        IEnumerable<AirportFacility> updates)
+    {
+        return (baseline ?? Enumerable.Empty<AirportFacility>())
+            .Concat(updates ?? Enumerable.Empty<AirportFacility>())
+            .GroupBy(facility => facility.Key, StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.Last())
+            .ToArray();
+    }
+
     private async void OnRawDebugModeChanged(object sender, RoutedEventArgs eventArgs)
     {
         if (_changingRawDebugToggle)
@@ -994,7 +1204,7 @@ public partial class MainWindow : Window
         TelemetryUploadClient uploadClient;
         try
         {
-            uploadClient = EnsureTelemetryUploadClient();
+            uploadClient = await Task.Run(EnsureTelemetryUploadClient);
         }
         catch (Exception exception)
         {
@@ -1005,7 +1215,7 @@ public partial class MainWindow : Window
         bool consentAccepted;
         try
         {
-            consentAccepted = uploadClient.ConsentAccepted;
+            consentAccepted = await Task.Run(() => uploadClient.ConsentAccepted);
         }
         catch (Exception exception)
         {
@@ -1030,7 +1240,7 @@ public partial class MainWindow : Window
             }
             try
             {
-                uploadClient.AcceptConsent();
+                await Task.Run(uploadClient.AcceptConsent);
             }
             catch (Exception exception)
             {
@@ -1158,15 +1368,18 @@ public partial class MainWindow : Window
 
     private TelemetryUploadClient EnsureTelemetryUploadClient()
     {
-        if (_telemetryUploadClient != null)
+        lock (_telemetryUploadClientGate)
         {
-            return _telemetryUploadClient;
-        }
+            if (_telemetryUploadClient != null)
+            {
+                return _telemetryUploadClient;
+            }
 
-        var client = new TelemetryUploadClient(_rawCaptureRepository.RootPath);
-        client.StatusChanged += OnTelemetryUploadStatusChanged;
-        _telemetryUploadClient = client;
-        return client;
+            var client = new TelemetryUploadClient(_rawCaptureRepository.RootPath);
+            client.StatusChanged += OnTelemetryUploadStatusChanged;
+            _telemetryUploadClient = client;
+            return client;
+        }
     }
 
     private void OnTelemetryUploadStatusChanged(object? sender, TelemetryUploadStatusEventArgs eventArgs)
@@ -1228,17 +1441,18 @@ public partial class MainWindow : Window
 
     private static int PrimaryGearSeriesIndex(LandingRecord record)
     {
-        if (record.ContactPoints.Count == 0)
+        var gearSeries = LandingGearSeriesBuilder.Build(record);
+        if (gearSeries.Count == 0)
         {
             return 0;
         }
 
-        return record.ContactPoints
+        return gearSeries
             .Select((series, index) => new
             {
                 Index = index,
-                FirstContact = series.Points.Where(point => point.OnGround).Select(point => point.TimeSeconds).DefaultIfEmpty(double.MaxValue).Min(),
-                Peak = series.Points.Select(point => point.CompressionPercent).DefaultIfEmpty(0).Max(),
+                FirstContact = series.FirstContactSeconds,
+                Peak = series.PeakCompressionPercent,
             })
             .OrderBy(candidate => candidate.FirstContact)
             .ThenByDescending(candidate => candidate.Peak)
@@ -1297,9 +1511,9 @@ public partial class MainWindow : Window
 
     private void OnWindowClosed(object? sender, EventArgs eventArgs)
     {
+        _isClosed = true;
         _lifetimeCancellation.Cancel();
         _releaseUpdater.Dispose();
-        _lifetimeCancellation.Dispose();
         Loaded -= OnWindowLoaded;
         foreach (var chart in _charts)
         {
@@ -1319,6 +1533,25 @@ public partial class MainWindow : Window
             _recorder = null;
         }
 
+        Task pendingEpisodePersistence;
+        lock (_episodeProcessingGate)
+        {
+            pendingEpisodePersistence = _episodePersistenceTask;
+        }
+
+        try
+        {
+            // Recorder.Dispose can complete an active rollout and enqueue its
+            // landing here. Persistence runs off the dispatcher, so draining it
+            // cannot deadlock UI shutdown and prevents losing that landing.
+            pendingEpisodePersistence.GetAwaiter().GetResult();
+        }
+        catch
+        {
+            // The normal episode handler already owns diagnostics. Shutdown
+            // must continue even if disk I/O or analysis failed.
+        }
+
         StopRawCaptureSession();
         if (_telemetryUploadClient != null)
         {
@@ -1332,6 +1565,37 @@ public partial class MainWindow : Window
             _messageSource.RemoveHook(WindowProcedure);
             _messageSource = null;
         }
+
+        _lifetimeCancellation.Dispose();
+    }
+
+    private sealed class ProcessedEpisode
+    {
+        private ProcessedEpisode(
+            bool replayLike,
+            IReadOnlyList<AirportFacility> airportFacilities,
+            IReadOnlyList<LandingRecord> records)
+        {
+            ReplayLike = replayLike;
+            AirportFacilities = airportFacilities;
+            Records = records;
+        }
+
+        public bool ReplayLike { get; }
+
+        public IReadOnlyList<AirportFacility> AirportFacilities { get; }
+
+        public IReadOnlyList<LandingRecord> Records { get; }
+
+        public static ProcessedEpisode Replay() => new ProcessedEpisode(
+            true,
+            Array.Empty<AirportFacility>(),
+            Array.Empty<LandingRecord>());
+
+        public static ProcessedEpisode Completed(
+            IReadOnlyList<AirportFacility> airportFacilities,
+            IReadOnlyList<LandingRecord> records) =>
+            new ProcessedEpisode(false, airportFacilities, records);
     }
 
     private static Brush Brush(string color)

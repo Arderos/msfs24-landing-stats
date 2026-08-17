@@ -81,6 +81,14 @@ public sealed class LandingChart : FrameworkElement
     private static readonly Brush AmberBrush = Brush("#D9C46A");
     private static readonly Brush BlueBrush = Brush("#5FA8F5");
     private static readonly Brush PinkBrush = Brush("#8FD6A8");
+    private static readonly Brush PurpleBrush = Brush("#B58AF5");
+    private static readonly Brush CoralBrush = Brush("#F08C8C");
+    private static readonly Brush CyanBrush = Brush("#59C6D2");
+    private static readonly Brush LimeBrush = Brush("#A8C66C");
+    private static readonly Brush RoseBrush = Brush("#E78AB2");
+    private static readonly Brush SkyBrush = Brush("#82B8FF");
+    private static readonly Brush TanBrush = Brush("#C69A72");
+    private static readonly Brush SilverBrush = Brush("#AEB8C2");
     private static readonly Brush TooltipBrush = Brush("#1F1D1B");
     private static readonly Brush FlareBrush = Brush("#D5A08050");
     private static readonly Brush SelectionBrush = Brush("#33FF7A45");
@@ -98,12 +106,55 @@ public sealed class LandingChart : FrameworkElement
     private static readonly Pen FlarePen = DashedPen(FlareBrush, 1.1, 2, 4);
     private static readonly Pen SurfacePen = DashedPen(BlueBrush, 1.4, 6, 4);
     private static readonly Pen HoverPen = Pen(Brush("#73F5F3F0"), 1);
-    private static readonly Pen[] SolidPens = { AccentPen, BluePen, AmberPen, PinkPen };
-    private static readonly Pen[] DashedPens = { AccentDashedPen, BlueDashedPen, AmberDashedPen };
-    private static readonly Brush[] SeriesBrushes = { AccentBrush, BlueBrush, AmberBrush, PinkBrush };
+    private static readonly Pen[] SolidPens =
+    {
+        AccentPen,
+        BluePen,
+        AmberPen,
+        PinkPen,
+        Pen(PurpleBrush, 1.8),
+        Pen(CoralBrush, 1.8),
+        Pen(CyanBrush, 1.8),
+        Pen(LimeBrush, 1.8),
+        Pen(RoseBrush, 1.8),
+        Pen(SkyBrush, 1.8),
+        Pen(TanBrush, 1.8),
+        Pen(SilverBrush, 1.8),
+    };
+    private static readonly Pen[] DashedPens =
+    {
+        AccentDashedPen,
+        BlueDashedPen,
+        AmberDashedPen,
+        DashedPen(PinkBrush, 1.3, 5, 4),
+        DashedPen(PurpleBrush, 1.3, 5, 4),
+        DashedPen(CoralBrush, 1.3, 5, 4),
+        DashedPen(CyanBrush, 1.3, 5, 4),
+        DashedPen(LimeBrush, 1.3, 5, 4),
+        DashedPen(RoseBrush, 1.3, 5, 4),
+        DashedPen(SkyBrush, 1.3, 5, 4),
+        DashedPen(TanBrush, 1.3, 5, 4),
+        DashedPen(SilverBrush, 1.3, 5, 4),
+    };
+    private static readonly Brush[] SeriesBrushes =
+    {
+        AccentBrush,
+        BlueBrush,
+        AmberBrush,
+        PinkBrush,
+        PurpleBrush,
+        CoralBrush,
+        CyanBrush,
+        LimeBrush,
+        RoseBrush,
+        SkyBrush,
+        TanBrush,
+        SilverBrush,
+    };
 
     private readonly List<LegendHitTarget> _legendHitTargets = new();
     private LandingRecord? _record;
+    private IReadOnlyList<LandingGearSeries> _gearSeries = Array.Empty<LandingGearSeries>();
     private int _hoveredIndex = -1;
     private int? _isolatedSeriesIndex;
     private double? _zoomStartSeconds;
@@ -117,6 +168,11 @@ public sealed class LandingChart : FrameworkElement
     private bool _showXAxisLabels = true;
     private bool _compactLane;
     private bool _powerShowThrottle = true;
+    private LandingRecord? _gearRangeRecord;
+    private int? _gearRangeIsolation;
+    private double _gearRangeMinimumTime = double.NaN;
+    private double _gearRangeMaximumTime = double.NaN;
+    private double _gearRangeMaximum = double.NaN;
 
     public LandingRecord? Record
     {
@@ -124,6 +180,8 @@ public sealed class LandingChart : FrameworkElement
         set
         {
             _record = value;
+            _gearSeries = LandingGearSeriesBuilder.Build(value);
+            InvalidateGearRange();
             _hoveredIndex = -1;
             _isolatedSeriesIndex = null;
             InvalidateVisual();
@@ -142,6 +200,7 @@ public sealed class LandingChart : FrameworkElement
 
             _mode = value;
             _isolatedSeriesIndex = null;
+            InvalidateGearRange();
             InvalidateVisual();
         }
     }
@@ -208,6 +267,7 @@ public sealed class LandingChart : FrameworkElement
     public void SetIsolatedSeries(int? seriesIndex)
     {
         _isolatedSeriesIndex = seriesIndex;
+        InvalidateGearRange();
         InvalidateVisual();
     }
 
@@ -376,6 +436,7 @@ public sealed class LandingChart : FrameworkElement
             _isolatedSeriesIndex = _isolatedSeriesIndex == legendTarget.SeriesIndex
                 ? (int?)null
                 : legendTarget.SeriesIndex;
+            InvalidateGearRange();
             InvalidateVisual();
             eventArgs.Handled = true;
             return;
@@ -516,12 +577,14 @@ public sealed class LandingChart : FrameworkElement
                 DrawText(context, LocalizationManager.Text("Chart.PowerStyle"), new Point(x + 4, 2), MutedBrush, 10);
                 break;
             case LandingChartMode.Gear:
-                if (_record != null)
+                for (var index = 0; index < _gearSeries.Count; index++)
                 {
-                    for (var index = 0; index < _record.ContactPoints.Count; index++)
-                    {
-                        x = DrawLegendItem(context, x, LocalizationManager.Format("Chart.ContactPointFormat", _record.ContactPoints[index].ContactPointIndex), SolidPens[index % SolidPens.Length], index);
-                    }
+                    x = DrawLegendItem(
+                        context,
+                        x,
+                        LandingGearSeriesBuilder.DisplayName(_gearSeries[index]),
+                        SolidPens[index % SolidPens.Length],
+                        index);
                 }
                 break;
         }
@@ -564,10 +627,6 @@ public sealed class LandingChart : FrameworkElement
                 case LandingChartMode.Power:
                     minimum = 0;
                     maximum = 100;
-                    return;
-                case LandingChartMode.Gear:
-                    minimum = 0;
-                    maximum = 70;
                     return;
             }
         }
@@ -675,13 +734,52 @@ public sealed class LandingChart : FrameworkElement
                 break;
             case LandingChartMode.Gear:
                 minimum = 0;
-                maximum = 100;
+                var minimumTime = points.Count == 0 ? double.NegativeInfinity : points[0].TimeSeconds;
+                var maximumTime = points.Count == 0 ? double.PositiveInfinity : points[points.Count - 1].TimeSeconds;
+                var peakCompression = GearRangeMaximum(minimumTime, maximumTime);
+                var paddedMaximum = Math.Max(5.0, peakCompression * 1.12);
+                var gearStep = paddedMaximum <= 20.0 ? 5.0 : paddedMaximum <= 50.0 ? 10.0 : 20.0;
+                maximum = Math.Ceiling(paddedMaximum / gearStep) * gearStep;
                 break;
             default:
                 minimum = 0;
                 maximum = 1;
                 break;
         }
+    }
+
+    private double GearRangeMaximum(double minimumTime, double maximumTime)
+    {
+        if (!ReferenceEquals(_gearRangeRecord, _record) ||
+            _gearRangeIsolation != _isolatedSeriesIndex ||
+            _gearRangeMinimumTime != minimumTime ||
+            _gearRangeMaximumTime != maximumTime ||
+            double.IsNaN(_gearRangeMaximum))
+        {
+            var gearValues = _gearSeries
+                .Where((series, index) => IsSeriesVisible(index))
+                .SelectMany(series => series.Points)
+                .Where(point => point.TimeSeconds >= minimumTime && point.TimeSeconds <= maximumTime)
+                .Select(point => point.CompressionPercent);
+            _gearRangeMaximum = ChartValueSanitizer.FiniteValues(gearValues)
+                .DefaultIfEmpty(0.0)
+                .Max();
+            _gearRangeRecord = _record;
+            _gearRangeIsolation = _isolatedSeriesIndex;
+            _gearRangeMinimumTime = minimumTime;
+            _gearRangeMaximumTime = maximumTime;
+        }
+
+        return _gearRangeMaximum;
+    }
+
+    private void InvalidateGearRange()
+    {
+        _gearRangeRecord = null;
+        _gearRangeIsolation = null;
+        _gearRangeMinimumTime = double.NaN;
+        _gearRangeMaximumTime = double.NaN;
+        _gearRangeMaximum = double.NaN;
     }
 
     private void DrawMode(
@@ -709,9 +807,12 @@ public sealed class LandingChart : FrameworkElement
                     var surfaceY = MapY(-_record!.SurfaceFpm, plot, minValue, maxValue);
                     context.DrawLine(SurfacePen, new Point(plot.Left, surfaceY), new Point(plot.Right, surfaceY));
                 }
-                DrawBaseline(context, plot, 0, minValue, maxValue);
                 break;
             case LandingChartMode.LoadFactors:
+                if (IsSeriesVisible(0))
+                {
+                    DrawBaseline(context, plot, 1, minValue, maxValue);
+                }
                 if (HasHorizontalLoadData)
                 {
                     if (IsSeriesVisible(1))
@@ -722,15 +823,10 @@ public sealed class LandingChart : FrameworkElement
                     {
                         DrawSeries(context, points, point => point.TimeSeconds, point => point.LateralLoadG, plot, minTime, maxTime, minValue, maxValue, AmberPen);
                     }
-                    if (_isolatedSeriesIndex != 0)
-                    {
-                        DrawBaseline(context, plot, 0, minValue, maxValue);
-                    }
                 }
                 if (IsSeriesVisible(0))
                 {
                     DrawSeries(context, points, point => point.TimeSeconds, point => point.GForce, plot, minTime, maxTime, minValue, maxValue, CompactLane ? PinkPen : AccentPen);
-                    DrawBaseline(context, plot, 1, minValue, maxValue);
                 }
                 break;
             case LandingChartMode.FlightControls:
@@ -749,7 +845,6 @@ public sealed class LandingChart : FrameworkElement
                     DrawSeries(context, points, point => point.TimeSeconds, point => point.PilotYawPercent, plot, minTime, maxTime, minValue, maxValue, AmberPen);
                     DrawSeries(context, points, point => point.TimeSeconds, point => point.RudderPercent, plot, minTime, maxTime, minValue, maxValue, AmberDashedPen);
                 }
-                DrawBaseline(context, plot, 0, minValue, maxValue);
                 break;
             case LandingChartMode.Attitude:
                 if (IsSeriesVisible(1))
@@ -764,7 +859,6 @@ public sealed class LandingChart : FrameworkElement
                 {
                     DrawSeries(context, points, point => point.TimeSeconds, point => -point.PitchDegrees, plot, minTime, maxTime, minValue, maxValue, AccentPen);
                 }
-                DrawBaseline(context, plot, 0, minValue, maxValue);
                 break;
             case LandingChartMode.Power:
                 DrawPower(context, plot, minTime, maxTime, minValue, maxValue);
@@ -807,19 +901,19 @@ public sealed class LandingChart : FrameworkElement
 
     private void DrawGear(DrawingContext context, Rect plot, double minTime, double maxTime, double minValue, double maxValue)
     {
-        if (_record == null)
+        if (_gearSeries.Count == 0)
         {
             return;
         }
 
-        for (var index = 0; index < _record.ContactPoints.Count; index++)
+        for (var index = 0; index < _gearSeries.Count; index++)
         {
             if (!IsSeriesVisible(index))
             {
                 continue;
             }
 
-            var contact = _record.ContactPoints[index];
+            var contact = _gearSeries[index];
             DrawSeries(context, contact.Points, point => point.TimeSeconds, point => point.CompressionPercent,
                 plot, minTime, maxTime, minValue, maxValue, CompactLane ? AmberPen : SolidPens[index % SolidPens.Length]);
         }
@@ -853,12 +947,13 @@ public sealed class LandingChart : FrameworkElement
 
     private void DrawGrid(DrawingContext context, Rect plot, double minTime, double maxTime, double minValue, double maxValue)
     {
-        for (var index = 0; index <= 4; index++)
+        foreach (var value in ValueTicks(minValue, maxValue))
         {
-            var y = plot.Top + index * plot.Height / 4.0;
+            var y = MapY(value, plot, minValue, maxValue);
             context.DrawLine(GridPen, new Point(plot.Left, y), new Point(plot.Right, y));
-            var value = maxValue - index * (maxValue - minValue) / 4.0;
-            var valueLabel = Mode switch
+            var valueLabel = Math.Abs(value) <= Math.Max(1.0, maxValue - minValue) * 1e-9
+                ? "0"
+                : Mode switch
             {
                 LandingChartMode.LoadFactors => value.ToString("F1", CultureInfo.CurrentCulture),
                 LandingChartMode.VerticalSpeed => value.ToString("+0;-0;0", CultureInfo.CurrentCulture),
@@ -881,6 +976,21 @@ public sealed class LandingChart : FrameworkElement
                 DrawText(context, label, new Point(x - 10, plot.Bottom + 7), tick == 0 ? TextBrush : MutedBrush, 10);
             }
         }
+    }
+
+    internal static IReadOnlyList<double> ValueTicks(double minimum, double maximum)
+    {
+        var ticks = Enumerable.Range(0, 5)
+            .Select(index => maximum - index * (maximum - minimum) / 4.0)
+            .ToList();
+        var tolerance = Math.Max(1.0, maximum - minimum) * 1e-9;
+        if (minimum <= 0.0 && maximum >= 0.0 && ticks.All(value => Math.Abs(value) > tolerance))
+        {
+            ticks.Add(0.0);
+            ticks.Sort((left, right) => right.CompareTo(left));
+        }
+
+        return ticks;
     }
 
     private static void DrawBaseline(DrawingContext context, Rect plot, double value, double minValue, double maxValue)
@@ -1042,21 +1152,25 @@ public sealed class LandingChart : FrameworkElement
                 }
                 break;
             case LandingChartMode.Gear:
-                if (_record == null)
+                if (_gearSeries.Count == 0)
                 {
                     break;
                 }
-                for (var index = 0; index < _record.ContactPoints.Count; index++)
+                for (var index = 0; index < _gearSeries.Count; index++)
                 {
                     if (!IsSeriesVisible(index))
                     {
                         continue;
                     }
 
-                    var contactPoint = ContactPointAt(point.TimeSeconds, index);
+                    var contactPoint = GearPointAt(point.TimeSeconds, index);
                     if (contactPoint != null)
                     {
-                        AddFlag(contactPoint.CompressionPercent, CompactLane ? AmberBrush : SeriesBrushes[index % SeriesBrushes.Length], true);
+                        AddFlag(
+                            contactPoint.CompressionPercent,
+                            CompactLane ? AmberBrush : SeriesBrushes[index % SeriesBrushes.Length],
+                            true,
+                            LandingGearSeriesBuilder.DisplayName(_gearSeries[index]));
                     }
                 }
                 break;
@@ -1138,10 +1252,10 @@ public sealed class LandingChart : FrameworkElement
         return points[ClosestIndex(points.Count, index => points[index].TimeSeconds, time)];
     }
 
-    private LandingContactPoint? ContactPointAt(double time, int contactIndex)
+    private LandingContactPoint? GearPointAt(double time, int contactIndex)
     {
-        var points = _record != null && contactIndex >= 0 && contactIndex < _record.ContactPoints.Count
-            ? _record.ContactPoints[contactIndex].Points
+        var points = contactIndex >= 0 && contactIndex < _gearSeries.Count
+            ? _gearSeries[contactIndex].Points
             : null;
         if (points == null || points.Count == 0)
         {
@@ -1150,6 +1264,10 @@ public sealed class LandingChart : FrameworkElement
 
         return points[ClosestIndex(points.Count, index => points[index].TimeSeconds, time)];
     }
+
+    internal static Brush SeriesBrushAt(int index) => SeriesBrushes[index % SeriesBrushes.Length];
+
+    internal static Brush PowerThrottleBrushAt(int index) => DashedPens[index % DashedPens.Length].Brush;
 
     private static int ClosestIndex(int count, Func<int, double> timeAt, double target)
     {

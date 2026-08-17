@@ -27,6 +27,14 @@ public static class LandingRecordFactory
         int contactCount = 1,
         DateTime? timestampUtc = null)
     {
+        var geometrySource = result.ClosureReconstructionGeometrySource;
+        if (result.ClosureReconstructionAvailable && geometrySource == TouchdownGeometrySource.Unavailable)
+        {
+            geometrySource = result.ClosureReconstructionArmRecoveredFromTelemetry
+                ? TouchdownGeometrySource.Telemetry
+                : TouchdownGeometrySource.Provided;
+        }
+
         var record = new LandingRecord
         {
             TimestampUtc = timestampUtc ?? DateTime.UtcNow,
@@ -64,6 +72,7 @@ public static class LandingRecordFactory
             ClosureReconstructionLongitudinalArmFeet = result.ClosureReconstructionLongitudinalArmFeet,
             ClosureReconstructionGeometryQuality = result.ClosureReconstructionGeometryQuality,
             ClosureReconstructionArmRecoveredFromTelemetry = result.ClosureReconstructionArmRecoveredFromTelemetry,
+            ClosureReconstructionGeometrySource = geometrySource.ToString(),
         };
 
         var contactTime = result.EstimatedContactTimeSeconds;

@@ -126,6 +126,16 @@ internal sealed class RawDebugSampleEventArgs : EventArgs
     public TelemetrySample Sample { get; }
 }
 
+internal sealed class AircraftGroundStateEventArgs : EventArgs
+{
+    public AircraftGroundStateEventArgs(bool onGround)
+    {
+        OnGround = onGround;
+    }
+
+    public bool OnGround { get; }
+}
+
 internal sealed class SimConnectLandingRecorder : IDisposable
 {
     public const int WindowMessage = 0x0403;
@@ -175,6 +185,8 @@ internal sealed class SimConnectLandingRecorder : IDisposable
     private bool _recoverStatusAfterFrame;
     private bool _fullTelemetryEnabled;
     private bool _airportFacilityRequestPending;
+    private bool _replayActive;
+    private bool? _aircraftOnGround;
     private bool _disposed;
 
     public SimConnectLandingRecorder(IntPtr windowHandle)
@@ -195,7 +207,11 @@ internal sealed class SimConnectLandingRecorder : IDisposable
 
     public event EventHandler? RawDebugCaptureStopped;
 
+    public event EventHandler<AircraftGroundStateEventArgs>? AircraftGroundStateChanged;
+
     public bool RawDebugEnabled => _rawDebugEnabled;
+
+    public bool IsAircraftAirborne => _aircraftOnGround == false;
 
     public void SeedAirportFacilities(IEnumerable<AirportFacility> facilities)
     {
@@ -342,6 +358,7 @@ internal sealed class SimConnectLandingRecorder : IDisposable
             connection.OnRecvAirportList += OnRecvAirportList;
             connection.OnRecvEvent += OnRecvEvent;
             connection.OnRecvEventEx1 += OnRecvEventEx1;
+            connection.OnRecvFlowEvent += OnRecvFlowEvent;
             _simConnect = connection;
         }
         catch (COMException)
@@ -392,6 +409,7 @@ internal sealed class SimConnectLandingRecorder : IDisposable
                 RequestAirportFacilities(sender);
             }
             RegisterControlEvents(sender);
+            TrySubscribeToFlowEvents(sender);
 
             _simulator = string.IsNullOrWhiteSpace(data.szApplicationName) ? "MSFS" : data.szApplicationName.Trim();
             _recoverStatusAfterFrame = false;
@@ -432,6 +450,32 @@ internal sealed class SimConnectLandingRecorder : IDisposable
     private void OnRecvEventEx1(SimConnect sender, SIMCONNECT_RECV_EVENT_EX1 data)
     {
         ProcessControlEvent(data.uEventID, data.dwData0);
+    }
+
+    private void OnRecvFlowEvent(SimConnect sender, SIMCONNECT_RECV_FLOW_EVENT data)
+    {
+        if (data.FlowEvent == SIMCONNECT_FLOW_EVENT.REPLAY_START)
+        {
+            if (_lastContactTime.HasValue)
+            {
+                CompleteEpisode(false);
+            }
+            else
+            {
+                DiscardEpisode();
+            }
+
+            ResetFlightDetection();
+            _replayActive = true;
+            _armed = false;
+            SetStatus(RecorderState.Connected, "Recorder.ReplayActive");
+        }
+        else if (data.FlowEvent == SIMCONNECT_FLOW_EVENT.REPLAY_END)
+        {
+            _replayActive = false;
+            ResetFlightDetection();
+            SetStatus(RecorderState.Connected, "Recorder.ConnectedGate");
+        }
     }
 
     private void ProcessControlEvent(uint rawEventId, uint rawValue)
@@ -532,6 +576,22 @@ internal sealed class SimConnectLandingRecorder : IDisposable
     private void ProcessSample(TelemetrySample sample)
     {
         var sampleTime = TimeOf(sample);
+        if (_replayActive)
+        {
+            _lastSimulationTime = sample.SimulationTimeSeconds;
+            _previousOnGround = sample.OnGround;
+            return;
+        }
+
+        // Replay frames describe the replay camera/aircraft, not the live
+        // aircraft. They must not close the replay warning or enter the raw
+        // community telemetry stream without provenance.
+        UpdateAircraftGroundState(sample.OnGround);
+        if (_rawDebugEnabled)
+        {
+            RawDebugSampleReceived?.Invoke(this, new RawDebugSampleEventArgs(sample));
+        }
+
         if (!double.IsNaN(_lastSimulationTime) && sample.SimulationTimeSeconds < _lastSimulationTime - 0.001)
         {
             if (_lastContactTime.HasValue)
@@ -548,10 +608,6 @@ internal sealed class SimConnectLandingRecorder : IDisposable
 
         _lastSimulationTime = sample.SimulationTimeSeconds;
         AddToPreRoll(sample);
-        if (_rawDebugEnabled)
-        {
-            RawDebugSampleReceived?.Invoke(this, new RawDebugSampleEventArgs(sample));
-        }
 
         if (!sample.OnGround)
         {
@@ -615,6 +671,17 @@ internal sealed class SimConnectLandingRecorder : IDisposable
             _armed = true;
             SetStatus(RecorderState.Connected, "Recorder.ApproachRestarted");
         }
+    }
+
+    private void UpdateAircraftGroundState(bool onGround)
+    {
+        if (_aircraftOnGround == onGround)
+        {
+            return;
+        }
+
+        _aircraftOnGround = onGround;
+        AircraftGroundStateChanged?.Invoke(this, new AircraftGroundStateEventArgs(onGround));
     }
 
     private void StartEpisode(TelemetrySample trigger, bool contactTriggered)
@@ -798,6 +865,7 @@ internal sealed class SimConnectLandingRecorder : IDisposable
         _fullTelemetryEnabled = false;
         _airportFacilityRequestPending = false;
         _pendingAirportFacilities = null;
+        _replayActive = false;
         _recoverStatusAfterFrame = false;
         ResetFlightDetection();
         if (!_disposed)
@@ -1152,6 +1220,19 @@ internal sealed class SimConnectLandingRecorder : IDisposable
             () => connection.SetNotificationGroupPriority(
                 NotificationGroups.ControlEvents,
                 SimConnect.SIMCONNECT_GROUP_PRIORITY_STANDARD));
+    }
+
+    private static void TrySubscribeToFlowEvents(SimConnect connection)
+    {
+        try
+        {
+            connection.SubscribeToFlowEvent();
+        }
+        catch
+        {
+            // Flow events are an MSFS 2024 addition. Older SimConnect servers can
+            // still use the kinematic replay detector when an episode completes.
+        }
     }
 
     private void TrackOperation(SimConnect connection, string name, Action action)

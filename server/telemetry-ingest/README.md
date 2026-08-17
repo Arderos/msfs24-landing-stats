@@ -21,8 +21,10 @@ hardware identifier or invitation code is collected.
 An accepted archive is never extracted to disk. The service validates its
 signature, replay nonce, exact ZIP members, expansion bounds, session metadata,
 schema-v5 header, row width, finite numeric values, boolean fields, sequence,
-and declared sample count before atomically moving it from `incoming` to
-`accepted`.
+declared sample count, and replay-like kinematic inconsistencies before
+atomically moving it from `incoming` to `accepted`. The replay check mirrors
+the conservative compound desktop detector: position must move at flight speed
+while reported horizontal, air, and vertical velocities remain inert.
 
 Capacity is fail-closed: 16 MiB per request, 64 MiB expanded, 512 MiB per
 installation per rolling day, and the same 512 MiB fixed-day budget counts all

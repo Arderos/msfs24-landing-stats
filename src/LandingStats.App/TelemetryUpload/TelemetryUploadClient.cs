@@ -15,6 +15,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using LandingStats.App.Settings;
 using LandingStats.Core;
+using Protocol = LandingStats.UpdateProtocol.ReleaseUpdateProtocol;
 
 namespace LandingStats.App.TelemetryUpload;
 
@@ -56,6 +57,26 @@ internal sealed class TelemetryUploadStatusEventArgs : EventArgs
 
 internal sealed class TelemetryUploadClient : IDisposable
 {
+    private enum UploadDisposition
+    {
+        Uploaded,
+        Deferred,
+        Rejected,
+        EnrollmentRequired,
+    }
+
+    private readonly struct UploadOutcome
+    {
+        public UploadOutcome(UploadDisposition disposition, int statusCode = 0)
+        {
+            Disposition = disposition;
+            StatusCode = statusCode;
+        }
+
+        public UploadDisposition Disposition { get; }
+        public int StatusCode { get; }
+    }
+
     private const long MaximumQueueBytes = 256L * 1024 * 1024;
     private const string EndpointEnvironmentVariable = "MSFS_LANDING_STATS_TELEMETRY_URL";
     private const string DefaultEndpoint = "https://msfsls.fallensky.us/";
@@ -65,10 +86,12 @@ internal sealed class TelemetryUploadClient : IDisposable
     private readonly TelemetryUploadIdentityStore _identityStore;
     private readonly BlockingCollection<string> _queue = new BlockingCollection<string>(new ConcurrentQueue<string>(), 128);
     private readonly HashSet<string> _queued = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, long> _knownQueueFiles = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
     private readonly object _queueGate = new object();
     private readonly CancellationTokenSource _cancellation = new CancellationTokenSource();
     private readonly HttpClient _client;
     private readonly Task _worker;
+    private long _queueBytes;
     private int _disposed;
 
     public TelemetryUploadClient(string queuePath, HttpMessageHandler? handler = null, string? identityRoot = null)
@@ -96,6 +119,7 @@ internal sealed class TelemetryUploadClient : IDisposable
         _client.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0");
         _client.DefaultRequestHeaders.UserAgent.ParseAdd("(Windows NT 10.0; Win64; x64)");
         _client.DefaultRequestHeaders.UserAgent.ParseAdd("MSFS-Landing-Stats-Telemetry/1");
+        InitializeQueueAccounting();
         EnqueueExisting();
         _worker = Task.Run(UploadLoop);
     }
@@ -175,7 +199,8 @@ internal sealed class TelemetryUploadClient : IDisposable
             return false;
         }
 
-        var capacityExceeded = QueueBytes() > MaximumQueueBytes;
+        TrackQueueFile(path);
+        var capacityExceeded = Interlocked.Read(ref _queueBytes) > MaximumQueueBytes;
         var acceptedForUpload = EnqueueCore(path);
         if (capacityExceeded)
         {
@@ -263,16 +288,29 @@ internal sealed class TelemetryUploadClient : IDisposable
                     }
                     if (!File.Exists(path))
                     {
+                        ForgetQueueFile(path);
                         continue;
                     }
 
-                    var uploaded = await UploadAsync(path, _cancellation.Token).ConfigureAwait(false);
-                    if (uploaded)
+                    var outcome = await UploadAsync(path, _cancellation.Token).ConfigureAwait(false);
+                    if (outcome.Disposition == UploadDisposition.Uploaded)
                     {
                         File.Delete(path);
+                        ForgetQueueFile(path);
                         RaiseStatus("Telemetry.UploadedFormat", false, Path.GetFileName(path));
                     }
-                    else if (_endpoint != null && _identityStore.IsEnrolled(_endpoint))
+                    else if (outcome.Disposition == UploadDisposition.Rejected)
+                    {
+                        var quarantined = QuarantineRejectedCapture(path, outcome.StatusCode);
+                        RaiseStatus(
+                            "Telemetry.RejectedFormat",
+                            true,
+                            Path.GetFileName(path),
+                            outcome.StatusCode,
+                            Path.GetFileName(quarantined));
+                    }
+                    else if (outcome.Disposition == UploadDisposition.Deferred &&
+                             _endpoint != null && _identityStore.IsEnrolled(_endpoint))
                     {
                         retry = true;
                     }
@@ -313,7 +351,7 @@ internal sealed class TelemetryUploadClient : IDisposable
         }
     }
 
-    private async Task<bool> UploadAsync(string path, CancellationToken cancellationToken)
+    private async Task<UploadOutcome> UploadAsync(string path, CancellationToken cancellationToken)
     {
         var identity = _identityStore.Identity();
         var size = new FileInfo(path).Length;
@@ -341,15 +379,18 @@ internal sealed class TelemetryUploadClient : IDisposable
         {
             _identityStore.MarkEnrolled(_endpoint!, false);
             RaiseStatus("Telemetry.EnrollAgain", true);
-            return false;
+            return new UploadOutcome(UploadDisposition.EnrollmentRequired, (int)response.StatusCode);
         }
         if ((int)response.StatusCode == 429 || (int)response.StatusCode >= 500)
         {
             RaiseStatus("Telemetry.ReceiverDeferredFormat", true, (int)response.StatusCode);
-            return false;
+            return new UploadOutcome(UploadDisposition.Deferred, (int)response.StatusCode);
         }
-        response.EnsureSuccessStatusCode();
-        return true;
+        if (!response.IsSuccessStatusCode)
+        {
+            return new UploadOutcome(UploadDisposition.Rejected, (int)response.StatusCode);
+        }
+        return new UploadOutcome(UploadDisposition.Uploaded, (int)response.StatusCode);
     }
 
     private async Task<ReceiverConfig> GetConfigAsync(CancellationToken cancellationToken)
@@ -377,19 +418,76 @@ internal sealed class TelemetryUploadClient : IDisposable
         }
     }
 
-    private long QueueBytes()
+    private void InitializeQueueAccounting()
     {
         if (!Directory.Exists(_queuePath))
         {
-            return 0;
+            return;
         }
-        return Directory.EnumerateFiles(_queuePath, "*_raw.zip", SearchOption.TopDirectoryOnly)
-            .Select(path =>
+
+        foreach (var path in Directory.EnumerateFiles(_queuePath, "*_raw.zip", SearchOption.TopDirectoryOnly))
+        {
+            TrackQueueFile(path);
+        }
+    }
+
+    private void TrackQueueFile(string path)
+    {
+        var fullPath = Path.GetFullPath(path);
+        long length;
+        try
+        {
+            length = new FileInfo(fullPath).Length;
+        }
+        catch (IOException)
+        {
+            return;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return;
+        }
+
+        lock (_queueGate)
+        {
+            if (_knownQueueFiles.ContainsKey(fullPath))
             {
-                try { return new FileInfo(path).Length; }
-                catch (IOException) { return 0L; }
-            })
-            .Sum();
+                return;
+            }
+
+            _knownQueueFiles.Add(fullPath, length);
+            Interlocked.Add(ref _queueBytes, length);
+        }
+    }
+
+    private void ForgetQueueFile(string path)
+    {
+        var fullPath = Path.GetFullPath(path);
+        lock (_queueGate)
+        {
+            if (_knownQueueFiles.TryGetValue(fullPath, out var length))
+            {
+                _knownQueueFiles.Remove(fullPath);
+                Interlocked.Add(ref _queueBytes, -length);
+            }
+        }
+    }
+
+    private string QuarantineRejectedCapture(string path, int statusCode)
+    {
+        var directory = Path.GetDirectoryName(path) ?? _queuePath;
+        var stem = Path.GetFileNameWithoutExtension(path);
+        var destination = Path.Combine(directory, $"{stem}.rejected-{statusCode}.zip");
+        if (File.Exists(destination))
+        {
+            destination = Path.Combine(
+                directory,
+                $"{stem}.rejected-{statusCode}-{DateTime.UtcNow:yyyyMMddHHmmssfff}.zip");
+        }
+
+        File.Move(path, destination);
+        ForgetQueueFile(path);
+        return destination;
     }
 
     private void RaiseStatus(string messageKey, bool isError = false, params object[] messageArguments)
@@ -436,12 +534,7 @@ internal sealed class TelemetryUploadClient : IDisposable
         return Convert.ToBase64String(bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_');
     }
 
-    private static string HashFile(string path)
-    {
-        using var input = File.OpenRead(path);
-        using var sha256 = SHA256.Create();
-        return string.Concat(sha256.ComputeHash(input).Select(value => value.ToString("x2", CultureInfo.InvariantCulture)));
-    }
+    private static string HashFile(string path) => Protocol.HashFile(path);
 
     private static string ApplicationVersion()
     {

@@ -2,6 +2,74 @@
 
 All notable changes to MSFS Landing Stats are documented in this file.
 
+## [0.8.0] - 2026-08-17
+
+### Added
+
+- Added CFG-aware landing-gear geometry. The application discovers readable
+  `flight_model.cfg` files in Microsoft Store/Xbox and Steam installations,
+  follows safe `base_container` and MSFS 2024 modular attachment layers, and
+  uses exact aircraft-title matching rather than guessing from an ATC model.
+- Added per-wheel main/nose roles and longitudinal arms when the final CFG
+  indices agree with live SimConnect compression channels. Complex or
+  encrypted aircraft retain the telemetry fallback; observed A380 and ToLiss
+  A340 layouts are both supported.
+- Added explicit replay handling. MSFS replay flow events disable capture and
+  show a dismissible in-app warning, while an independent kinematic detector
+  rejects replay-like episodes when flow events are unavailable. Live capture
+  re-arms automatically after the aircraft is airborne.
+- Added physical-strut grouping to the landing-gear chart, including four
+  A340 gear groups, helper-contact filtering, and enough distinct colors for
+  multi-gear and four-engine aircraft.
+
+### Changed
+
+- Reconstruction now records whether landing geometry came from the installed
+  flight model or telemetry. CFG wheel coordinates receive the independently
+  recovered simulator-datum correction before the contact-time pitch component
+  is calculated.
+- Three-to-five settled contact-point layouts are supported with delayed-nose
+  and positive-derotation checks. Larger multi-bogie layouts use conservative
+  clustered inference instead of being rejected solely by point count.
+- Full SimConnect telemetry is gated below 3,000 ft AGL with hysteresis; cruise
+  uses a compact five-field frame guard, while `DEBUG RAW` still forces the
+  complete full-rate stream.
+- Landing analysis, installed-aircraft scanning, persistence, and telemetry
+  consent initialization now run away from the UI thread. Aircraft metadata is
+  requested only when changed, and the global airport list is refreshed only
+  when the local cache cannot resolve the landing safely.
+- The single-file launcher keys its private runtime to the embedded payload,
+  not just the visible version number, and safely removes obsolete runtime and
+  packaging directories.
+
+### Fixed
+
+- Preserved A340 reconstruction when an add-on exposes extra visual-bogie
+  compression channels whose numbering does not match its readable CFG. The
+  configured median arm is retained while gear roles fall back to telemetry.
+- Prevented an airport-facility refresh racing landing analysis from leaving a
+  new record as `Unknown airport` or rolling the persistent cache backward.
+- Drained in-flight episode persistence during shutdown so a landing completed
+  while the application closes is not lost.
+- Kept replay frames out of both landing history and the consented raw
+  telemetry queue.
+- Corrected A340 crosswind/touch-and-go gear grouping, helper contacts with an
+  unsettled nose, the fourth engine's throttle color, and missing zero labels
+  on charts.
+- Quarantined permanently rejected telemetry archives instead of retrying them
+  forever, while retaining the local data and correct queue accounting.
+- Made optional CFG discovery, modular parsing, and catalog refresh failures
+  fail closed to telemetry analysis instead of losing the landing.
+
+### Security
+
+- The telemetry receiver now rejects replay-like captures independently by
+  comparing recorded position and altitude motion with reported flight
+  velocities before an archive enters the accepted corpus.
+- The tagged-release gate now proves that the verifier embedded in the actual
+  published v0.7.9 client accepts the signed v0.8.0 channel manifest before the
+  GitHub release is created.
+
 ## [0.7.9] - 2026-08-10
 
 ### Fixed

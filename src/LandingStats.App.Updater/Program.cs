@@ -16,7 +16,6 @@ namespace LandingStats.App.Updater;
 
 internal static class Program
 {
-    private const string TargetExecutableName = "MSFS-Landing-Stats.exe";
     private static readonly byte[] BundleMagic = Encoding.ASCII.GetBytes("MSFSLSABUNDLE1");
 
     [STAThread]
@@ -128,7 +127,7 @@ internal static class Program
             throw new InvalidDataException("Signed application package name is unsupported");
         }
 
-        var replacementPath = Path.Combine(updateRoot, TargetExecutableName);
+        var replacementPath = Path.Combine(updateRoot, Protocol.PackageAssetName);
         ExtractLegacySingleExecutable(packagePath, replacementPath);
         return replacementPath;
     }
@@ -146,8 +145,8 @@ internal static class Program
             }
 
             var entry = archive.Entries[0];
-            if (!string.Equals(entry.FullName, TargetExecutableName, StringComparison.Ordinal) ||
-                !string.Equals(entry.Name, TargetExecutableName, StringComparison.Ordinal) ||
+            if (!string.Equals(entry.FullName, Protocol.PackageAssetName, StringComparison.Ordinal) ||
+                !string.Equals(entry.Name, Protocol.PackageAssetName, StringComparison.Ordinal) ||
                 entry.Length <= 0 ||
                 entry.Length > Protocol.MaximumPackageBytes)
             {

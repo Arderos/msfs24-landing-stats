@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.Runtime.Serialization;
 using LandingStats.App.Settings;
+using LandingStats.Core;
 
 namespace LandingStats.App.Models;
 
@@ -180,6 +181,9 @@ public sealed class LandingRecord
     [DataMember(Order = 56)]
     public bool ClosureReconstructionArmRecoveredFromTelemetry { get; set; }
 
+    [DataMember(Order = 57, EmitDefaultValue = false)]
+    public string ClosureReconstructionGeometrySource { get; set; } = string.Empty;
+
     [IgnoreDataMember]
     public bool IsSummaryOnly { get; set; }
 
@@ -227,9 +231,28 @@ public sealed class LandingRecord
                 return LocalizationManager.Text("Model.GeometryUnavailable");
             }
 
+            var sourceKey = ClosureReconstructionGeometrySource;
+            if (string.IsNullOrWhiteSpace(sourceKey) ||
+                string.Equals(
+                    sourceKey,
+                    nameof(TouchdownGeometrySource.Unavailable),
+                    StringComparison.Ordinal))
+            {
+                sourceKey = ClosureReconstructionArmRecoveredFromTelemetry
+                    ? nameof(TouchdownGeometrySource.Telemetry)
+                    : nameof(TouchdownGeometrySource.Provided);
+            }
+
             var source = LocalizationManager.Text(
-                ClosureReconstructionArmRecoveredFromTelemetry ? "Model.Telemetry" : "Model.Provided");
-            var quality = ClosureReconstructionArmRecoveredFromTelemetry &&
+                string.Equals(sourceKey, nameof(TouchdownGeometrySource.FlightModelConfig), StringComparison.Ordinal)
+                    ? "Model.FlightModelConfig"
+                    : string.Equals(sourceKey, nameof(TouchdownGeometrySource.Telemetry), StringComparison.Ordinal)
+                        ? "Model.Telemetry"
+                        : "Model.Provided");
+            var quality = string.Equals(
+                              sourceKey,
+                              nameof(TouchdownGeometrySource.Telemetry),
+                              StringComparison.Ordinal) &&
                           IsFinite(ClosureReconstructionGeometryQuality)
                 ? LocalizationManager.Format("Model.GeometryQualityFormat", ClosureReconstructionGeometryQuality)
                 : string.Empty;

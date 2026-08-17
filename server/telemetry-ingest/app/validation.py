@@ -22,6 +22,120 @@ class CaptureFacts:
     uncompressed_bytes: int
 
 
+@dataclass(frozen=True)
+class _ReplaySample:
+    time: float
+    on_ground: bool
+    latitude: float
+    longitude: float
+    altitude: float
+    ground_speed: float
+    airspeed: float
+    world_y: float
+
+
+def _median(values: list[float]) -> float:
+    ordered = sorted(values)
+    middle = len(ordered) // 2
+    return (
+        (ordered[middle - 1] + ordered[middle]) / 2.0
+        if len(ordered) % 2 == 0
+        else ordered[middle]
+    )
+
+
+def _great_circle_nautical_miles(first: _ReplaySample, second: _ReplaySample) -> float:
+    latitude_one = math.radians(first.latitude)
+    latitude_two = math.radians(second.latitude)
+    latitude_delta = latitude_two - latitude_one
+    longitude_delta = math.radians(second.longitude - first.longitude)
+    haversine = (
+        math.sin(latitude_delta / 2.0) ** 2
+        + math.cos(latitude_one)
+        * math.cos(latitude_two)
+        * math.sin(longitude_delta / 2.0) ** 2
+    )
+    clamped = max(0.0, min(1.0, haversine))
+    angle = 2.0 * math.atan2(math.sqrt(clamped), math.sqrt(1.0 - clamped))
+    return 3440.065 * angle
+
+
+def _is_replay_like(samples: list[_ReplaySample]) -> bool:
+    # Keep the last row for repeated simulator times, matching the desktop
+    # analyzer. The compound thresholds intentionally mirror ReplayTelemetryDetector.
+    unique = sorted({sample.time: sample for sample in samples}.values(), key=lambda sample: sample.time)
+    if len(unique) < 9:
+        return False
+
+    has_been_airborne = False
+    previous_on_ground = unique[0].on_ground
+    contact_index = -1
+    for position, sample in enumerate(unique):
+        if not sample.on_ground:
+            has_been_airborne = True
+        if has_been_airborne and sample.on_ground and not previous_on_ground:
+            contact_index = position
+            break
+        previous_on_ground = sample.on_ground
+    if contact_index <= 0:
+        return False
+
+    contact_time = unique[contact_index].time
+    window_start = contact_time - 15.0
+    window_end = contact_time - 0.5
+    derived_ground_speeds: list[float] = []
+    reported_ground_speeds: list[float] = []
+    reported_airspeeds: list[float] = []
+    altitude_rates: list[float] = []
+    vertical_rate_errors: list[float] = []
+    next_index = 0
+    for position in range(contact_index):
+        first = unique[position]
+        if first.on_ground or first.time < window_start or first.time > window_end:
+            continue
+        next_index = max(next_index, position + 1)
+        while next_index < contact_index and unique[next_index].time - first.time < 0.5:
+            next_index += 1
+        if next_index >= contact_index:
+            break
+
+        second = unique[next_index]
+        duration = second.time - first.time
+        if second.on_ground or second.time > window_end or duration <= 0.0 or duration > 1.5:
+            continue
+        if not (
+            -90.0 <= first.latitude <= 90.0
+            and -90.0 <= second.latitude <= 90.0
+            and -180.0 <= first.longitude <= 180.0
+            and -180.0 <= second.longitude <= 180.0
+        ):
+            continue
+
+        altitude_rate = (second.altitude - first.altitude) / duration
+        reported_vertical_rate = (first.world_y + second.world_y) / 2.0
+        derived_ground_speeds.append(
+            _great_circle_nautical_miles(first, second) * 3600.0 / duration
+        )
+        reported_ground_speeds.append((abs(first.ground_speed) + abs(second.ground_speed)) / 2.0)
+        reported_airspeeds.append((abs(first.airspeed) + abs(second.airspeed)) / 2.0)
+        altitude_rates.append(abs(altitude_rate))
+        vertical_rate_errors.append(abs(altitude_rate - reported_vertical_rate))
+
+    if len(derived_ground_speeds) < 8:
+        return False
+
+    derived_ground_speed = _median(derived_ground_speeds)
+    reported_ground_speed = _median(reported_ground_speeds)
+    return (
+        derived_ground_speed >= 30.0
+        and reported_ground_speed <= 5.0
+        and _median(reported_airspeeds) <= 30.0
+        and derived_ground_speed >= reported_ground_speed * 4.0
+        and _median(altitude_rates) >= 3.0
+        and _median(vertical_rate_errors) >= 5.0
+    )
+
+
 def _session_values(content: bytes) -> dict[str, str]:
     if len(content) > 8192:
         raise ValueError("session metadata is too large")
@@ -68,6 +182,7 @@ def validate_capture(path: Path, expected_header: str, maximum_uncompressed: int
         index = {name: position for position, name in enumerate(expected_columns)}
         sample_count = 0
         previous_sequence: int | None = None
+        replay_samples: list[_ReplaySample] = []
         with archive.open("telemetry.csv", "r") as raw:
             text = io.TextIOWrapper(raw, encoding="utf-8", errors="strict", newline="")
             reader = csv.reader(text)
@@ -106,6 +221,19 @@ def validate_capture(path: Path, expected_header: str, maximum_uncompressed: int
                     if not math.isfinite(numeric):
                         raise ValueError(f"{column} is not finite")
 
+                replay_samples.append(
+                    _ReplaySample(
+                        time=float(row[index["simulation_time_s"]]),
+                        on_ground=row[index["on_ground"]] == "1",
+                        latitude=float(row[index["latitude_deg"]]),
+                        longitude=float(row[index["longitude_deg"]]),
+                        altitude=float(row[index["plane_altitude_ft"]]),
+                        ground_speed=float(row[index["ground_speed_kt"]]),
+                        airspeed=float(row[index["airspeed_indicated_kt"]]),
+                        world_y=float(row[index["velocity_world_y_fps"]]),
+                    )
+                )
+
         if sample_count == 0:
             raise ValueError("capture contains no samples")
         try:
@@ -114,5 +242,7 @@ def validate_capture(path: Path, expected_header: str, maximum_uncompressed: int
             raise ValueError("session sample_count is missing or invalid") from exc
         if declared_count != sample_count:
             raise ValueError("session sample_count does not match telemetry.csv")
+        if _is_replay_like(replay_samples):
+            raise ValueError("replay-like telemetry is not accepted")
 
         return CaptureFacts(sample_count=sample_count, uncompressed_bytes=total_uncompressed)

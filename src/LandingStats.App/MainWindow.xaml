@@ -864,27 +864,8 @@
                     </StackPanel>
                     <TextBlock Grid.Column="2" x:Name="MainChartDescription" Text="{DynamicResource Chart.DescriptionVertical}"
                                Foreground="{StaticResource SubtleTextBrush}" FontSize="11" VerticalAlignment="Bottom" Margin="0,0,0,10" />
-                    <Border Grid.Column="3" Width="1" Height="12" Background="#262321" Margin="22,0,22,10" VerticalAlignment="Bottom" />
-                    <StackPanel Grid.Column="4" Orientation="Horizontal" VerticalAlignment="Bottom">
-                        <Button x:Name="LegendButton0" Tag="0" Style="{StaticResource ChartLegendButtonStyle}" Click="OnMainLegendClick">
-                            <StackPanel Orientation="Horizontal">
-                                <Line x:Name="LegendLine0" X1="0" X2="14" Y1="0" Y2="0" StrokeThickness="2" VerticalAlignment="Center" />
-                                <TextBlock x:Name="LegendLabel0" FontSize="11" Foreground="{StaticResource MutedTextBrush}" Margin="7,0,0,0" />
-                            </StackPanel>
-                        </Button>
-                        <Button x:Name="LegendButton1" Tag="1" Style="{StaticResource ChartLegendButtonStyle}" Click="OnMainLegendClick" Margin="22,0,0,0">
-                            <StackPanel Orientation="Horizontal">
-                                <Line x:Name="LegendLine1" X1="0" X2="14" Y1="0" Y2="0" StrokeThickness="2" VerticalAlignment="Center" />
-                                <TextBlock x:Name="LegendLabel1" FontSize="11" Foreground="{StaticResource MutedTextBrush}" Margin="7,0,0,0" />
-                            </StackPanel>
-                        </Button>
-                        <Button x:Name="LegendButton2" Tag="2" Style="{StaticResource ChartLegendButtonStyle}" Click="OnMainLegendClick" Margin="22,0,0,0">
-                            <StackPanel Orientation="Horizontal">
-                                <Line x:Name="LegendLine2" X1="0" X2="14" Y1="0" Y2="0" StrokeThickness="2" VerticalAlignment="Center" />
-                                <TextBlock x:Name="LegendLabel2" FontSize="11" Foreground="{StaticResource MutedTextBrush}" Margin="7,0,0,0" />
-                            </StackPanel>
-                        </Button>
-                    </StackPanel>
+                    <Border x:Name="MainLegendSeparator" Grid.Column="3" Width="1" Height="12" Background="#262321" Margin="22,0,22,10" VerticalAlignment="Bottom" />
+                    <StackPanel x:Name="MainLegendPanel" Grid.Column="4" Orientation="Horizontal" VerticalAlignment="Bottom" />
                     <Border Grid.ColumnSpan="5" Height="1" Background="{StaticResource BorderBrush}" VerticalAlignment="Bottom" Panel.ZIndex="-1" />
                 </Grid>
 
@@ -929,7 +910,6 @@
                         </StackPanel>
                         <Grid Grid.Column="1" Margin="0,8,0,8">
                             <controls:LandingChart x:Name="MiniGearChart" Mode="Gear" ShowLegend="False" ShowHoverTooltip="True" ShowXAxisLabels="False" CompactLane="True" />
-                            <TextBlock Text="0 – 70%" HorizontalAlignment="Right" VerticalAlignment="Top" Foreground="{StaticResource LabelTextBrush}" FontFamily="Cascadia Mono, Consolas" FontSize="9" />
                         </Grid>
                     </Grid>
                 </Border>
@@ -985,6 +965,46 @@
                            TextTrimming="CharacterEllipsis" MaxWidth="310" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />
             </Grid>
         </Border>
+
+        <Grid x:Name="ReplayUnsupportedOverlay"
+              Grid.RowSpan="3" Grid.ColumnSpan="2"
+              Panel.ZIndex="120"
+              Background="#B8000000"
+              Visibility="Collapsed"
+              Focusable="True"
+              KeyboardNavigation.TabNavigation="Cycle"
+              MouseLeftButtonDown="OnReplayOverlayBackgroundClick"
+              PreviewKeyDown="OnReplayOverlayKeyDown">
+            <Border Width="430"
+                    MaxWidth="430"
+                    Padding="24"
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Center"
+                    Background="{StaticResource SurfaceRaisedBrush}"
+                    BorderBrush="#3A3531"
+                    BorderThickness="1"
+                    CornerRadius="10"
+                    MouseLeftButtonDown="OnReplayDialogClick">
+                <StackPanel>
+                    <Border Width="38" Height="38" HorizontalAlignment="Left"
+                            Background="{StaticResource DangerSoftBrush}" CornerRadius="19">
+                        <TextBlock Text="&#xE7C4;" FontFamily="Segoe MDL2 Assets" FontSize="17"
+                                   Foreground="{StaticResource DangerBrush}"
+                                   HorizontalAlignment="Center" VerticalAlignment="Center" />
+                    </Border>
+                    <TextBlock Text="{DynamicResource Replay.Title}"
+                               FontSize="18" FontWeight="SemiBold" Margin="0,17,0,0" />
+                    <TextBlock Text="{DynamicResource Replay.Body}"
+                               Foreground="{StaticResource MutedTextBrush}"
+                               FontSize="12" TextWrapping="Wrap" LineHeight="19" Margin="0,9,0,0" />
+                    <Button x:Name="CloseReplayUnsupportedButton"
+                            Content="{DynamicResource Common.Close}"
+                            Height="34" HorizontalAlignment="Right" Margin="0,22,0,0"
+                            Style="{StaticResource OutlineButtonStyle}"
+                            Click="OnCloseReplayUnsupportedClick" />
+                </StackPanel>
+            </Border>
+        </Grid>
 
         <Grid x:Name="SettingsOverlay"
               Grid.RowSpan="3" Grid.ColumnSpan="2"

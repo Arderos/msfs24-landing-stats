@@ -58,9 +58,9 @@
     <system:String x:Key="Recon.Components">MODELED COMPONENTS</system:String>
     <system:String x:Key="Recon.ComponentsHelp">The three parts that add up to Modeled Closure. Inertial is the aircraft moving down, terrain is the runway rising or falling, and pitch is the main gear moving vertically as the aircraft rotates. Inertial can differ from Aircraft Vertical Rate because the MSFS touchdown value appears to describe a slightly earlier moment.</system:String>
     <system:String x:Key="Recon.Uncertainty">UNCERTAINTY</system:String>
-    <system:String x:Key="Recon.UncertaintyHelp">The expected tolerance of the reconstruction based on recorded test landings. It is normally ±10 fpm, or ±15 fpm for harder cases such as a bounce, less precise contact timing or three main gear groups. This tolerance belongs to the model, not to the MSFS value.</system:String>
+    <system:String x:Key="Recon.UncertaintyHelp">The expected tolerance of the reconstruction based on recorded test landings. It is normally ±10 fpm, or ±15 fpm for harder cases such as a bounce, less precise contact timing, three main gear groups or configured multi-bogie gear. A multi-bogie aircraft using telemetry-derived geometry retains a conservative ±50 fpm band. This tolerance belongs to the model, not to the MSFS value.</system:String>
     <system:String x:Key="Recon.Geometry">GEOMETRY SOURCE</system:String>
-    <system:String x:Key="Recon.GeometryHelp">How the app learned the distance between the main gear and the point whose motion MSFS reports. 'Telemetry' means it was recovered from the landing and rollout itself, without reading the aircraft's configuration files. Quality shows how clearly this landing exposed that geometry; it is not a probability.</system:String>
+    <system:String x:Key="Recon.GeometryHelp">How the app learned the distance between the main gear and the point whose motion MSFS reports. A readable flight model is preferred; telemetry is the fallback for encrypted or unavailable configurations. Quality shows how clearly telemetry exposed that geometry; it is not a probability.</system:String>
     <system:String x:Key="Recon.UnavailableTitle">RECONSTRUCTION UNAVAILABLE FOR THIS RECORD</system:String>
     <system:String x:Key="Recon.UnavailableBody">The app does not have enough recorded data to make this reconstruction honestly. The landing may be an older record, the gear sequence may be unclear, or there may be too few useful samples. The measured values above remain available and are not changed.</system:String>
 
@@ -92,6 +92,12 @@
     <system:String x:Key="Chart.EngineFormat">ENG {0}</system:String>
     <system:String x:Key="Chart.PowerStyle">solid N1/RPM · dashed throttle</system:String>
     <system:String x:Key="Chart.ContactPointFormat">CP {0}</system:String>
+    <system:String x:Key="Chart.ContactPointGroupFormat">CP {0}</system:String>
+    <system:String x:Key="Chart.GearStrutFormat">Gear {0}</system:String>
+    <system:String x:Key="Chart.GearNose">Nose</system:String>
+    <system:String x:Key="Chart.GearMainOne">Main 1</system:String>
+    <system:String x:Key="Chart.GearMainTwo">Main 2</system:String>
+    <system:String x:Key="Chart.GearMainThree">Main 3</system:String>
     <system:String x:Key="Chart.Touchdown">TOUCHDOWN</system:String>
     <system:String x:Key="Chart.TouchdownShort">TD</system:String>
     <system:String x:Key="Chart.Flare">FLARE</system:String>
@@ -124,6 +130,9 @@
     <system:String x:Key="Common.Cancel">CANCEL</system:String>
     <system:String x:Key="Common.Delete">DELETE</system:String>
     <system:String x:Key="Common.Done">DONE</system:String>
+    <system:String x:Key="Common.Close">CLOSE</system:String>
+    <system:String x:Key="Replay.Title">Replays are not supported</system:String>
+    <system:String x:Key="Replay.Body">MSFS replay does not provide physically valid flight telemetry, so this landing cannot be analyzed or saved. Live capture resumes automatically when the aircraft is airborne.</system:String>
 
     <system:String x:Key="Settings.Title">SETTINGS</system:String>
     <system:String x:Key="Settings.Language">LANGUAGE</system:String>
@@ -142,6 +151,7 @@
     <system:String x:Key="Model.GeometryUnavailable">geometry unavailable</system:String>
     <system:String x:Key="Model.Telemetry">telemetry</system:String>
     <system:String x:Key="Model.Provided">provided</system:String>
+    <system:String x:Key="Model.FlightModelConfig">flight model</system:String>
     <system:String x:Key="Model.GeometryQualityFormat" xml:space="preserve"> · {0:P0} quality</system:String>
     <system:String x:Key="Model.GeometryFormat">{0:+0.0;-0.0;0.0} ft arm · {1}{2}</system:String>
     <system:String x:Key="Model.SurfaceDeltaNa">surface delta n/a</system:String>
@@ -184,6 +194,8 @@
     <system:String x:Key="Recorder.SetupFailedFormat">Telemetry setup failed: {0}</system:String>
     <system:String x:Key="Recorder.SimConnectErrorFormat">SimConnect error {0} · send {1} · index {2}{3}</system:String>
     <system:String x:Key="Recorder.GoAround">Go-around — waiting for 500 ft AGL</system:String>
+    <system:String x:Key="Recorder.ReplayActive">Replay active — landing capture disabled</system:String>
+    <system:String x:Key="Recorder.ReplayIgnored">Replay telemetry detected — landing not saved</system:String>
     <system:String x:Key="Recorder.LateStart">Late start — contact capture in progress</system:String>
     <system:String x:Key="Recorder.ModeChangeFailedFormat">Telemetry mode change failed: {0}</system:String>
     <system:String x:Key="Recorder.NoTouchdown">Capture ended, but no touchdown was detected</system:String>
@@ -225,6 +237,7 @@
     <system:String x:Key="Telemetry.DeferredFormat">Telemetry upload deferred: {0}</system:String>
     <system:String x:Key="Telemetry.EnrollAgain">Telemetry installation must be enrolled again; queued capture was kept</system:String>
     <system:String x:Key="Telemetry.ReceiverDeferredFormat">Telemetry receiver deferred the upload ({0}); capture was kept</system:String>
+    <system:String x:Key="Telemetry.RejectedFormat">Telemetry receiver rejected {0} ({1}); local data was kept as {2} and will not be retried</system:String>
     <system:String x:Key="Update.Current">The installed version is current</system:String>
     <system:String x:Key="Update.StartedFormat">Verified updater started for v{0}</system:String>
     <system:String x:Key="Update.Cancelled">Update check was cancelled</system:String>

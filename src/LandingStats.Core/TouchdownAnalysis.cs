@@ -5,17 +5,6 @@ namespace LandingStats.Core;
 
 public static class TouchdownAnalysis
 {
-    private sealed class ContactCandidate
-    {
-        public int ContactIndex { get; set; }
-
-        public int PreviousAirborneIndex { get; set; }
-
-        public int EpisodeNumber { get; set; }
-
-        public int ContactNumber { get; set; }
-    }
-
     private const double EpisodeGapSeconds = 10.0;
     private const double GWindowAfterSeconds = 2.0;
     private const double LatchUpdateWindowSeconds = 2.0;
@@ -31,65 +20,61 @@ public static class TouchdownAnalysis
         IReadOnlyList<TelemetrySample> samples,
         TouchdownAnalysisOptions? options)
     {
-        var candidates = new List<ContactCandidate>();
-        var hasBeenAirborne = false;
-        var previousOnGround = samples.Count > 0 && samples[0].OnGround;
-        var previousAirborneIndex = -1;
-        var previousContactTime = double.NegativeInfinity;
-        var episodeNumber = 0;
-        var contactNumber = 0;
-
-        for (var index = 0; index < samples.Count; index++)
-        {
-            var current = samples[index];
-            if (!current.OnGround)
-            {
-                hasBeenAirborne = true;
-                previousAirborneIndex = index;
-            }
-
-            var isContact = hasBeenAirborne && current.OnGround && !previousOnGround && previousAirborneIndex >= 0;
-            if (isContact)
-            {
-                var contactTime = TimeOf(current);
-                if (contactTime - previousContactTime > EpisodeGapSeconds)
-                {
-                    episodeNumber++;
-                    contactNumber = 1;
-                }
-                else
-                {
-                    contactNumber++;
-                }
-
-                candidates.Add(new ContactCandidate
-                {
-                    ContactIndex = index,
-                    PreviousAirborneIndex = previousAirborneIndex,
-                    EpisodeNumber = episodeNumber,
-                    ContactNumber = contactNumber,
-                });
-                previousContactTime = contactTime;
-            }
-
-            previousOnGround = current.OnGround;
-        }
+        var candidates = TelemetryContactDetector.Find(samples, EpisodeGapSeconds);
 
         var longitudinalArmFeet = double.NaN;
         var geometryQuality = double.NaN;
         var armRecoveredFromTelemetry = false;
+        var geometrySource = TouchdownGeometrySource.Unavailable;
         TelemetryGearTopology? gearTopology = null;
-        if (candidates.Count > 0 &&
+        IReadOnlyList<TouchdownMainGearContactPoint>? configuredMainPoints = null;
+        if (candidates.Count > 0 && options != null &&
+            TelemetryGeometryCalibration.TryCreateConfiguredTopology(
+                options.MainGearContactPoints,
+                options.NoseGearContactPointIndices,
+                out var configuredTopology))
+        {
+            // Most aircraft expose CONTACT POINT compression with the final
+            // flight_model.cfg indices. Some complex add-ons, however, publish
+            // extra visual-bogie channels whose numbering no longer maps one to
+            // one to the readable wheel definitions. Trust configured roles only
+            // when they actually explain a sustained touchdown transition; the
+            // configured median arm remains useful with telemetry-inferred roles.
+            for (var index = 0; index < candidates.Count; index++)
+            {
+                var candidate = candidates[index];
+                if (!TelemetryGeometryCalibration.IsSustainedMainContact(
+                        samples,
+                        candidate.ContactIndex,
+                        candidate.PreviousAirborneIndex,
+                        configuredTopology))
+                {
+                    continue;
+                }
+
+                gearTopology = configuredTopology;
+                configuredMainPoints = options.MainGearContactPoints;
+                break;
+            }
+        }
+
+        if (gearTopology == null && candidates.Count > 0 &&
             TelemetryGeometryCalibration.TryDetectConventionalTopology(samples, out var detectedTopology))
         {
             gearTopology = detectedTopology;
         }
 
         if (gearTopology != null &&
-            options?.LongitudinalMainGearArmFeet is double passportArm &&
-            IsFinite(passportArm))
+            options?.LongitudinalMainGearArmFeet is double suppliedArm &&
+            IsFinite(suppliedArm))
         {
-            longitudinalArmFeet = passportArm;
+            longitudinalArmFeet = suppliedArm;
+            geometrySource = options.LongitudinalMainGearArmSource;
+            if (options.LongitudinalMainGearArmQuality is double suppliedQuality &&
+                IsFinite(suppliedQuality))
+            {
+                geometryQuality = suppliedQuality;
+            }
         }
         else if (gearTopology != null &&
                  (options == null || options.RecoverLongitudinalMainGearArmFromTelemetry) &&
@@ -98,6 +83,7 @@ public static class TouchdownAnalysis
             longitudinalArmFeet = calibration.LongitudinalArmFeet;
             geometryQuality = calibration.Quality;
             armRecoveredFromTelemetry = true;
+            geometrySource = TouchdownGeometrySource.Telemetry;
         }
 
         var results = new List<TouchdownResult>(candidates.Count);
@@ -120,7 +106,9 @@ public static class TouchdownAnalysis
                 longitudinalArmFeet,
                 geometryQuality,
                 armRecoveredFromTelemetry,
-                gearTopology));
+                geometrySource,
+                gearTopology,
+                configuredMainPoints));
         }
 
         return results;
@@ -136,11 +124,18 @@ public static class TouchdownAnalysis
         double longitudinalArmFeet,
         double geometryQuality,
         bool armRecoveredFromTelemetry,
-        TelemetryGearTopology? gearTopology)
+        TouchdownGeometrySource geometrySource,
+        TelemetryGearTopology? gearTopology,
+        IReadOnlyList<TouchdownMainGearContactPoint>? configuredMainPoints)
     {
         var contact = samples[contactIndex];
         var lastAirborne = samples[previousAirborneIndex];
         var contactTime = TimeOf(contact);
+        var contactArmFeet = SelectContactArm(
+            lastAirborne,
+            contact,
+            configuredMainPoints,
+            longitudinalArmFeet);
         var estimatedContactTime = EstimateContactTime(
             samples,
             contactIndex,
@@ -175,12 +170,12 @@ public static class TouchdownAnalysis
                                 contactIndex,
                                 previousAirborneIndex,
                                 gearTopology) &&
-                            IsFinite(longitudinalArmFeet) &&
+                            IsFinite(contactArmFeet) &&
                             TouchdownClosureReconstruction.TryEstimate(
                                 samples,
                                 previousAirborneIndex,
                                 estimatedContactTime,
-                                longitudinalArmFeet,
+                                contactArmFeet,
                                 out reconstruction);
 
         return new TouchdownResult
@@ -215,17 +210,24 @@ public static class TouchdownAnalysis
                 ? latchedNormalFpm - reconstruction.ClosureFpm
                 : double.NaN,
             ClosureReconstructionUncertaintyFpm = reconstructed
-                ? contactTimeEstimatedFromCompression &&
-                  contactNumber == 1 &&
-                  double.IsPositiveInfinity(exclusiveEndTime) &&
-                  gearTopology!.MainContactPointCount == 2
-                    ? TouchdownClosureReconstruction.PrimaryUncertaintyFpm
-                    : TouchdownClosureReconstruction.FallbackUncertaintyFpm
+                ? gearTopology!.MainContactPointCount > 4
+                    ? geometrySource == TouchdownGeometrySource.Telemetry
+                        ? TouchdownClosureReconstruction.MultiBogieTelemetryUncertaintyFpm
+                        : TouchdownClosureReconstruction.FallbackUncertaintyFpm
+                    : contactTimeEstimatedFromCompression &&
+                      contactNumber == 1 &&
+                      double.IsPositiveInfinity(exclusiveEndTime) &&
+                      gearTopology.MainContactPointCount == 2
+                        ? TouchdownClosureReconstruction.PrimaryUncertaintyFpm
+                        : TouchdownClosureReconstruction.FallbackUncertaintyFpm
                 : double.NaN,
             ClosureReconstructionFitPointCount = reconstructed ? reconstruction.FitPointCount : 0,
-            ClosureReconstructionLongitudinalArmFeet = reconstructed ? longitudinalArmFeet : double.NaN,
+            ClosureReconstructionLongitudinalArmFeet = reconstructed ? contactArmFeet : double.NaN,
             ClosureReconstructionGeometryQuality = reconstructed ? geometryQuality : double.NaN,
             ClosureReconstructionArmRecoveredFromTelemetry = reconstructed && armRecoveredFromTelemetry,
+            ClosureReconstructionGeometrySource = reconstructed
+                ? geometrySource
+                : TouchdownGeometrySource.Unavailable,
             LastAirToFirstGroundSeconds = contactTime - TimeOf(lastAirborne),
             FirstGroundToNextFrameSeconds = FindNextFrameDuration(samples, contactIndex),
             LastAirborneIndicatedFpm = ToDescentFpm(lastAirborne.VerticalSpeedFps),
@@ -639,6 +641,55 @@ public static class TouchdownAnalysis
         return double.IsNaN(sample.SimulationTimeSeconds) || double.IsInfinity(sample.SimulationTimeSeconds)
             ? sample.HostElapsedSeconds
             : sample.SimulationTimeSeconds;
+    }
+
+    private static double SelectContactArm(
+        TelemetrySample previous,
+        TelemetrySample contact,
+        IReadOnlyList<TouchdownMainGearContactPoint>? configuredMainPoints,
+        double fallbackArmFeet)
+    {
+        if (configuredMainPoints is null || configuredMainPoints.Count == 0)
+        {
+            return fallbackArmFeet;
+        }
+
+        var arms = new List<double>(configuredMainPoints.Count);
+        foreach (var point in configuredMainPoints)
+        {
+            if (point != null &&
+                IsFinite(point.LongitudinalArmFeet) &&
+                TelemetryGeometryCalibration.HasContactTransition(
+                    previous,
+                    contact,
+                    point.ContactPointIndex))
+            {
+                arms.Add(point.LongitudinalArmFeet);
+            }
+        }
+
+        if (arms.Count == 0)
+        {
+            foreach (var point in configuredMainPoints)
+            {
+                if (point != null &&
+                    IsFinite(point.LongitudinalArmFeet) &&
+                    TelemetryGeometryCalibration.HasContactEvidence(contact, point.ContactPointIndex))
+                {
+                    arms.Add(point.LongitudinalArmFeet);
+                }
+            }
+        }
+
+        if (arms.Count == 0)
+        {
+            return fallbackArmFeet;
+        }
+
+        arms.Sort();
+        return arms.Count % 2 == 1
+            ? arms[arms.Count / 2]
+            : 0.5 * (arms[arms.Count / 2 - 1] + arms[arms.Count / 2]);
     }
 
     private static bool IsFinite(double value) => !double.IsNaN(value) && !double.IsInfinity(value);

@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request, Response, status
+from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 
 from .security import (
@@ -193,11 +194,11 @@ async def upload_capture(request: Request) -> dict[str, object]:
         raise HTTPException(status_code=400, detail="invalid numeric upload header") from exc
 
     source_hash = address_key(SERVER_PEPPER, _source_address(request))
-    if not STORE.rate_limit("capture-ip-minute", source_hash, 60, 6):
+    if not await run_in_threadpool(STORE.rate_limit, "capture-ip-minute", source_hash, 60, 6):
         raise HTTPException(status_code=429, detail="source rate limit exceeded")
     if not INSTALL_ID_RE.fullmatch(install_id):
         raise HTTPException(status_code=400, detail="invalid install_id")
-    if not STORE.rate_limit("capture-install-minute", install_id, 60, 3):
+    if not await run_in_threadpool(STORE.rate_limit, "capture-install-minute", install_id, 60, 3):
         raise HTTPException(status_code=429, detail="installation rate limit exceeded")
     if not NONCE_RE.fullmatch(nonce):
         raise HTTPException(status_code=400, detail="invalid nonce")
@@ -215,7 +216,7 @@ async def upload_capture(request: Request) -> dict[str, object]:
     if actual_content_length is None or actual_content_length != expected_size:
         raise HTTPException(status_code=411, detail="Content-Length must match signed size")
 
-    installation = STORE.installation(install_id)
+    installation = await run_in_threadpool(STORE.installation, install_id)
     if installation is None or installation["status"] != "active":
         raise HTTPException(status_code=403, detail="installation is not enrolled")
     try:
@@ -229,25 +230,28 @@ async def upload_capture(request: Request) -> dict[str, object]:
         )
     except ValueError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
-    if not STORE.use_nonce(install_id, nonce):
+    if not await run_in_threadpool(STORE.use_nonce, install_id, nonce):
         raise HTTPException(status_code=409, detail="replayed nonce")
 
-    accepted_today = STORE.accepted_bytes_since(install_id, int(time.time()) - 86400)
+    accepted_today = await run_in_threadpool(
+        STORE.accepted_bytes_since, install_id, int(time.time()) - 86400
+    )
     if accepted_today + expected_size > DAILY_INSTALL_QUOTA_BYTES:
         raise HTTPException(status_code=429, detail="installation daily byte quota exceeded")
-    free_bytes = shutil.disk_usage(DATA_ROOT).free
+    free_bytes = (await run_in_threadpool(shutil.disk_usage, DATA_ROOT)).free
     if free_bytes - expected_size < MINIMUM_FREE_BYTES:
         raise HTTPException(status_code=507, detail="telemetry storage reserve is active")
-    if not STORE.reserve_byte_budgets(
+    if not await run_in_threadpool(
+        STORE.reserve_byte_budgets,
         [
             ("capture-install-day", install_id, 86400, expected_size, DAILY_INSTALL_QUOTA_BYTES),
             ("capture-source-day", source_hash, 86400, expected_size, DAILY_SOURCE_ATTEMPT_QUOTA_BYTES),
             ("capture-global-day", "global", 86400, expected_size, DAILY_GLOBAL_ATTEMPT_QUOTA_BYTES),
-        ]
+        ],
     ):
         raise HTTPException(status_code=429, detail="signed upload byte budget exceeded")
 
-    existing = STORE.capture_by_hash(expected_sha)
+    existing = await run_in_threadpool(STORE.capture_by_hash, expected_sha)
     if existing is not None:
         return {"status": "already_received", "capture_id": existing["capture_id"]}
 
@@ -256,29 +260,35 @@ async def upload_capture(request: Request) -> dict[str, object]:
     digest = hashlib.sha256()
     received = 0
     try:
-        with incoming.open("xb") as output:
+        output = await run_in_threadpool(incoming.open, "xb")
+        try:
             async for chunk in request.stream():
                 received += len(chunk)
                 if received > MAX_UPLOAD_BYTES or received > expected_size:
                     raise HTTPException(status_code=413, detail="upload exceeded signed size")
                 digest.update(chunk)
-                output.write(chunk)
-            output.flush()
-            os.fsync(output.fileno())
+                await run_in_threadpool(output.write, chunk)
+            await run_in_threadpool(output.flush)
+            await run_in_threadpool(os.fsync, output.fileno())
+        finally:
+            await run_in_threadpool(output.close)
         if received != expected_size or digest.hexdigest() != expected_sha:
             raise HTTPException(status_code=400, detail="upload hash or size mismatch")
         try:
-            facts = validate_capture(incoming, EXPECTED_HEADER, MAX_UNCOMPRESSED_BYTES)
+            facts = await run_in_threadpool(
+                validate_capture, incoming, EXPECTED_HEADER, MAX_UNCOMPRESSED_BYTES
+            )
         except (ValueError, OSError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
         now = datetime.now(timezone.utc)
         relative = Path("accepted") / now.strftime("%Y") / now.strftime("%m") / now.strftime("%d") / f"{capture_id}.zip"
         destination = DATA_ROOT / relative
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        os.replace(incoming, destination)
+        await run_in_threadpool(destination.parent.mkdir, parents=True, exist_ok=True)
+        await run_in_threadpool(os.replace, incoming, destination)
         try:
-            STORE.add_capture(
+            await run_in_threadpool(
+                STORE.add_capture,
                 (
                     capture_id,
                     install_id,
@@ -291,12 +301,12 @@ async def upload_capture(request: Request) -> dict[str, object]:
                     schema,
                     app_version,
                     source_hash,
-                )
+                ),
             )
         except Exception:
-            destination.unlink(missing_ok=True)
+            await run_in_threadpool(destination.unlink, missing_ok=True)
             raise
-        STORE.prune(RETENTION_DAYS, STORAGE_QUOTA_BYTES)
+        await run_in_threadpool(STORE.prune, RETENTION_DAYS, STORAGE_QUOTA_BYTES)
         return {"status": "accepted", "capture_id": capture_id, "sample_count": facts.sample_count}
     finally:
-        incoming.unlink(missing_ok=True)
+        await run_in_threadpool(incoming.unlink, missing_ok=True)

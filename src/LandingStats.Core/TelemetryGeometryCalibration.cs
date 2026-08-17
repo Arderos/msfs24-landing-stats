@@ -66,6 +66,40 @@ public sealed class TelemetryGeometryCalibrationResult
     public double Quality { get; }
 }
 
+/// <summary>
+/// Offset between the simulator altitude datum and the reference point whose
+/// velocity is exposed as VELOCITY WORLD Y.
+/// </summary>
+public sealed class TelemetryDatumOffsetCalibrationResult
+{
+    internal TelemetryDatumOffsetCalibrationResult(
+        double datumOffsetFeet,
+        double standardDeviationFeet,
+        int phaseCount,
+        int windowCount,
+        double quality)
+    {
+        DatumOffsetFeet = datumOffsetFeet;
+        StandardDeviationFeet = standardDeviationFeet;
+        PhaseCount = phaseCount;
+        WindowCount = windowCount;
+        Quality = quality;
+    }
+
+    public double DatumOffsetFeet { get; }
+
+    public double StandardDeviationFeet { get; }
+
+    public int PhaseCount { get; }
+
+    public int WindowCount { get; }
+
+    /// <summary>
+    /// A 0..1 agreement score based on phase coverage and interleaved estimates.
+    /// </summary>
+    public double Quality { get; }
+}
+
 internal sealed class TelemetryGearTopology
 {
     public TelemetryGearTopology(int[] mainContactPointIndices, int[] noseContactPointIndices)
@@ -89,6 +123,9 @@ public static class TelemetryGeometryCalibration
     private const double MinimumMainOnlyDurationSeconds = 0.20;
     private const double MinimumSustainedContactDurationSeconds = 0.04;
     private const double MinimumDerotationPitchIncreaseDegrees = 0.50;
+    private const double MinimumClusterDerotationPitchIncreaseDegrees = 0.40;
+    private const double MinimumClusterGapDominanceRatio = 1.50;
+    private const double MaximumAuxiliaryNoseOnsetDelaySeconds = 0.50;
     private const double MinimumCompressionEvidence = 0.001;
     private const double IntegrationTargetSeconds = 1.0;
     private const double MinimumIntegrationDurationSeconds = 0.70;
@@ -101,6 +138,8 @@ public static class TelemetryGeometryCalibration
     private const int MinimumPitchRegressionRows = 6;
     private const int MinimumDatumPhases = 3;
     private const int MinimumSustainedContactSamples = 2;
+    private const int MinimumClusteredSettledPointCount = 6;
+    private const int MinimumPointsPerCluster = 2;
 
     private sealed class ContactRun
     {
@@ -165,7 +204,7 @@ public static class TelemetryGeometryCalibration
             return false;
         }
 
-        if (!TryRecoverDatumOffset(
+        if (!TryRecoverDatumOffsetCore(
                 ordered,
                 times,
                 planeAltitude,
@@ -207,6 +246,82 @@ public static class TelemetryGeometryCalibration
         return true;
     }
 
+    /// <summary>
+    /// Recovers only the altitude-datum to WORLD Y reference offset from
+    /// airborne kinematics. Unlike <see cref="TryCalibrate"/>, this does not
+    /// infer landing-gear geometry and therefore can be combined with a
+    /// readable flight_model.cfg main-gear coordinate.
+    /// </summary>
+    public static bool TryRecoverDatumOffset(
+        IReadOnlyList<TelemetrySample> samples,
+        out TelemetryDatumOffsetCalibrationResult result)
+    {
+        result = null!;
+        if (samples is null || samples.Count < MinimumPitchRegressionRows)
+        {
+            return false;
+        }
+
+        var ordered = Normalize(samples);
+        if (ordered.Count < MinimumPitchRegressionRows)
+        {
+            return false;
+        }
+
+        var times = new double[ordered.Count];
+        var planeAltitude = new double[ordered.Count];
+        for (var index = 0; index < ordered.Count; index++)
+        {
+            times[index] = ordered[index].SimulationTimeSeconds;
+            planeAltitude[index] = ordered[index].PlaneAltitudeFeet;
+        }
+
+        SanitizeIsolatedSpikes(planeAltitude);
+        if (!TryRecoverDatumOffsetCore(
+                ordered,
+                times,
+                planeAltitude,
+                out var datumOffset,
+                out var standardDeviation,
+                out var phaseCount,
+                out var windowCount))
+        {
+            return false;
+        }
+
+        if (!TryScoreDatumCalibration(phaseCount, standardDeviation, out var quality))
+        {
+            return false;
+        }
+
+        result = new TelemetryDatumOffsetCalibrationResult(
+            datumOffset,
+            standardDeviation,
+            phaseCount,
+            windowCount,
+            quality);
+        return true;
+    }
+
+    internal static bool TryScoreDatumCalibration(
+        int phaseCount,
+        double standardDeviation,
+        out double quality)
+    {
+        quality = 0.0;
+        if (phaseCount < MinimumDatumPhases || phaseCount > 4 ||
+            !IsFinite(standardDeviation) || standardDeviation < 0.0)
+        {
+            return false;
+        }
+
+        var phaseCoverage = phaseCount / 4.0;
+        var interleavedPhaseAgreement = 1.0 /
+            (1.0 + Square(standardDeviation / 0.5));
+        quality = Clamp01(phaseCoverage * interleavedPhaseAgreement);
+        return quality >= MinimumAcceptedQuality;
+    }
+
     internal static bool TryDetectConventionalTopology(
         IReadOnlyList<TelemetrySample> samples,
         out TelemetryGearTopology topology)
@@ -218,6 +333,53 @@ public static class TelemetryGeometryCalibration
         }
 
         return TryDetectConventionalTopology(Normalize(samples), out topology);
+    }
+
+    internal static bool TryCreateConfiguredTopology(
+        IReadOnlyList<TouchdownMainGearContactPoint>? mainPoints,
+        IReadOnlyList<int>? nosePoints,
+        out TelemetryGearTopology topology)
+    {
+        topology = null!;
+        if (mainPoints is null || nosePoints is null ||
+            mainPoints.Count < 2 || nosePoints.Count < 1)
+        {
+            return false;
+        }
+
+        var occupied = new bool[TelemetrySample.CapturedContactPointCount];
+        var mains = new int[mainPoints.Count];
+        for (var index = 0; index < mainPoints.Count; index++)
+        {
+            var point = mainPoints[index];
+            if (point is null ||
+                point.ContactPointIndex < 0 ||
+                point.ContactPointIndex >= occupied.Length ||
+                !IsFinite(point.LongitudinalArmFeet) ||
+                occupied[point.ContactPointIndex])
+            {
+                return false;
+            }
+
+            occupied[point.ContactPointIndex] = true;
+            mains[index] = point.ContactPointIndex;
+        }
+
+        var noses = new int[nosePoints.Count];
+        for (var index = 0; index < nosePoints.Count; index++)
+        {
+            var point = nosePoints[index];
+            if (point < 0 || point >= occupied.Length || occupied[point])
+            {
+                return false;
+            }
+
+            occupied[point] = true;
+            noses[index] = point;
+        }
+
+        topology = new TelemetryGearTopology(mains, noses);
+        return true;
     }
 
     internal static bool IsSustainedMainContact(
@@ -307,15 +469,30 @@ public static class TelemetryGeometryCalibration
             settledRuns.Add(pointRuns[pointRuns.Count - 1]);
         }
 
-        if (settledRuns.Count < 3 || settledRuns.Count > 4)
+        if (settledRuns.Count < 3)
         {
             return false;
         }
 
         settledRuns.Sort((left, right) => left.StartTime.CompareTo(right.StartTime));
+        if (settledRuns.Count <= 5)
+        {
+            return TryCreateSinglePointNoseTopology(samples, runsByPoint, settledRuns, out topology);
+        }
+
+        return settledRuns.Count >= MinimumClusteredSettledPointCount &&
+               TryCreateClusteredWheelTopology(samples, runsByPoint, settledRuns, out topology);
+    }
+
+    private static bool TryCreateSinglePointNoseTopology(
+        IReadOnlyList<TelemetrySample> samples,
+        List<ContactRun>[] runsByPoint,
+        List<ContactRun> settledRuns,
+        out TelemetryGearTopology topology)
+    {
+        topology = null!;
         var mains = settledRuns.GetRange(0, settledRuns.Count - 1);
         var nose = new List<ContactRun> { settledRuns[settledRuns.Count - 1] };
-        // v1 supports conventional three-point gear and the A340-style center main.
         // A hard or bounced landing may separate the final main contacts by seconds,
         // so the independent evidence for the last point being the nose is derotation.
         var latestMainStart = mains[mains.Count - 1].StartTime;
@@ -352,10 +529,139 @@ public static class TelemetryGeometryCalibration
         return true;
     }
 
+    private static bool TryCreateClusteredWheelTopology(
+        IReadOnlyList<TelemetrySample> samples,
+        List<ContactRun>[] runsByPoint,
+        List<ContactRun> settledRuns,
+        out TelemetryGearTopology topology)
+    {
+        topology = null!;
+        // Try gaps from largest to smallest, but keep only the contiguous cluster
+        // immediately following a candidate split. A short automatic capture can
+        // stop while a rollout-only helper point is active; that truncated run then
+        // looks settled, but remains an isolated late point rather than a wheel in
+        // the main/nose contact sequence.
+        var candidateSplits = Enumerable.Range(1, settledRuns.Count - 1)
+            .Where(index => index >= MinimumPointsPerCluster)
+            .OrderByDescending(index => settledRuns[index].StartTime - settledRuns[index - 1].StartTime);
+        foreach (var splitIndex in candidateSplits)
+        {
+            var clusterGap = settledRuns[splitIndex].StartTime - settledRuns[splitIndex - 1].StartTime;
+            if (clusterGap < MinimumMainOnlyDurationSeconds)
+            {
+                break;
+            }
+
+            var noseEndExclusive = splitIndex + 1;
+            while (noseEndExclusive < settledRuns.Count &&
+                   settledRuns[noseEndExclusive].StartTime - settledRuns[noseEndExclusive - 1].StartTime <=
+                   MaximumAuxiliaryNoseOnsetDelaySeconds)
+            {
+                noseEndExclusive++;
+            }
+
+            if (noseEndExclusive - splitIndex < MinimumPointsPerCluster)
+            {
+                continue;
+            }
+
+            var secondLargestGap = double.NegativeInfinity;
+            for (var index = 1; index < noseEndExclusive; index++)
+            {
+                if (index == splitIndex)
+                {
+                    continue;
+                }
+
+                secondLargestGap = Math.Max(
+                    secondLargestGap,
+                    settledRuns[index].StartTime - settledRuns[index - 1].StartTime);
+            }
+
+            if (secondLargestGap > 0.0 &&
+                clusterGap < secondLargestGap * MinimumClusterGapDominanceRatio)
+            {
+                continue;
+            }
+
+            var mains = settledRuns.GetRange(0, splitIndex);
+            var nose = settledRuns.GetRange(splitIndex, noseEndExclusive - splitIndex);
+            var latestMainStart = mains[mains.Count - 1].StartTime;
+            var earliestNoseStart = nose[0].StartTime;
+            var latestNoseStart = nose[nose.Count - 1].StartTime;
+            if (!HasPositiveDerotation(
+                    samples,
+                    latestMainStart,
+                    earliestNoseStart,
+                    MinimumClusterDerotationPitchIncreaseDegrees))
+            {
+                continue;
+            }
+
+            var acceptedPoint = new bool[TelemetrySample.CapturedContactPointCount];
+            foreach (var run in mains)
+            {
+                acceptedPoint[run.ContactPointIndex] = true;
+            }
+
+            foreach (var run in nose)
+            {
+                acceptedPoint[run.ContactPointIndex] = true;
+            }
+
+            // Some aircraft expose each wheel and temporary bogie/fuselage helpers as
+            // separate contact points. A helper is compatible only when it spans the
+            // main-gear phase, accompanies nose settling, or first appears after the
+            // landing gear is already fully down. Any other early contact remains an
+            // unsupported scrape/exotic sequence rather than being guessed into a gear.
+            var compatible = true;
+            for (var point = 0; point < runsByPoint.Length && compatible; point++)
+            {
+                if (acceptedPoint[point])
+                {
+                    continue;
+                }
+
+                foreach (var run in runsByPoint[point])
+                {
+                    if (run.StartTime > latestNoseStart + MaximumAuxiliaryNoseOnsetDelaySeconds)
+                    {
+                        continue;
+                    }
+
+                    var bridgesGearTransition =
+                        run.StartTime <= earliestNoseStart - MinimumSustainedContactDurationSeconds &&
+                        run.EndTime >= earliestNoseStart - MinimumSustainedContactDurationSeconds;
+                    var accompaniesNose = run.StartTime >= earliestNoseStart - MinimumSustainedContactDurationSeconds &&
+                                          run.StartTime <= latestNoseStart + MaximumAuxiliaryNoseOnsetDelaySeconds &&
+                                          run.EndTime >= latestNoseStart - MinimumSustainedContactDurationSeconds;
+                    if (!bridgesGearTransition && !accompaniesNose)
+                    {
+                        compatible = false;
+                        break;
+                    }
+                }
+            }
+
+            if (!compatible)
+            {
+                continue;
+            }
+
+            topology = new TelemetryGearTopology(
+                ContactPointIndices(mains),
+                ContactPointIndices(nose));
+            return true;
+        }
+
+        return false;
+    }
+
     private static bool HasPositiveDerotation(
         IReadOnlyList<TelemetrySample> samples,
         double startTime,
-        double endTime)
+        double endTime,
+        double minimumPitchIncreaseDegrees = MinimumDerotationPitchIncreaseDegrees)
     {
         var count = 0;
         var firstTime = double.NaN;
@@ -394,7 +700,7 @@ public static class TelemetryGeometryCalibration
         var denominator = count * sumXX - sumX * sumX;
         if (count < 3 || !IsFinite(firstTime) || !IsFinite(lastTime) ||
             lastTime <= firstTime ||
-            lastPitch - firstPitch < MinimumDerotationPitchIncreaseDegrees ||
+            lastPitch - firstPitch < minimumPitchIncreaseDegrees ||
             !IsFinite(denominator) || denominator <= 0.0)
         {
             return false;
@@ -578,7 +884,7 @@ public static class TelemetryGeometryCalibration
             designIndependence >= MinimumDesignIndependence;
     }
 
-    private static bool TryRecoverDatumOffset(
+    private static bool TryRecoverDatumOffsetCore(
         IReadOnlyList<TelemetrySample> samples,
         IReadOnlyList<double> times,
         IReadOnlyList<double> planeAltitude,
@@ -853,12 +1159,12 @@ public static class TelemetryGeometryCalibration
         return sum / points.Count;
     }
 
-    private static bool HasContactEvidence(TelemetrySample sample, int point)
+    internal static bool HasContactEvidence(TelemetrySample sample, int point)
     {
         return HasOnGroundEvidence(sample, point) || HasCompressionEvidence(sample, point);
     }
 
-    private static bool HasContactTransition(
+    internal static bool HasContactTransition(
         TelemetrySample previous,
         TelemetrySample current,
         int point)

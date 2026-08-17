@@ -44,8 +44,11 @@ for the formulas, timing rules, validation traces, and known limitations.
 - Inertial vertical speed at contact and the raw MSFS surface-normal touchdown
   velocity remain separate headline measurements.
 - Experimental detail reconstructs the raw latch from effective timing, local
-  terrain motion, and pitch rotation around a telemetry-recovered gear arm; it
-  reports the remaining residual and a conservative uncertainty band.
+  terrain motion, and pitch rotation around a gear arm read from the installed
+  flight model when available. Readable wheel indices and per-wheel positions
+  are used when they agree with live contact channels; complex or encrypted
+  aircraft fall back safely to telemetry-derived gear roles or geometry. The
+  result includes the remaining residual and a conservative uncertainty band.
 - Vertical, longitudinal, and lateral load-factor graphs.
 - Synchronized hover and zoom across flight-path, controls, attitude, engine,
   and landing-gear charts.
@@ -152,7 +155,10 @@ to 1 GiB/day, and all ingress to 4 GiB/day. The retained corpus is capped at
 20 GiB while preserving a 2 GiB disk reserve. Automatic enrollment is limited
 to 10/source/hour and 1,000 globally/hour; the durable registry is atomically
 capped at 100,000 identities and removes stale unreferenced identities after
-30 days. Invalid or incomplete files are never added to the corpus.
+30 days. Invalid, incomplete, and replay-like files are never added to the
+corpus. The receiver checks replay kinematics independently of the client by
+requiring recorded position and altitude motion to agree with the reported
+flight velocities.
 New captures use telemetry schema v5 with the documented 20 numeric contact
 points; the parser remains compatible with earlier schema v4 captures. Landing
 details use the documented [columnar v7 format](docs/format-v7.md), while v1-v6

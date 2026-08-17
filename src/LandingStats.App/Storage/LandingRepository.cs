@@ -403,6 +403,7 @@ public sealed class LandingRepository
             ClosureReconstructionLongitudinalArmFeet = source.ClosureReconstructionLongitudinalArmFeet,
             ClosureReconstructionGeometryQuality = source.ClosureReconstructionGeometryQuality,
             ClosureReconstructionArmRecoveredFromTelemetry = source.ClosureReconstructionArmRecoveredFromTelemetry,
+            ClosureReconstructionGeometrySource = source.ClosureReconstructionGeometrySource,
             IsSummaryOnly = true,
         };
 

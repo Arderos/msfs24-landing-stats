@@ -71,6 +71,10 @@ class Store:
                     bytes INTEGER NOT NULL,
                     PRIMARY KEY (scope, subject, window_start)
                 );
+                CREATE INDEX IF NOT EXISTS idx_nonces_seen_at ON nonces(seen_at);
+                CREATE INDEX IF NOT EXISTS idx_rate_limits_window_start ON rate_limits(window_start);
+                CREATE INDEX IF NOT EXISTS idx_byte_budgets_window_start ON byte_budgets(window_start);
+                CREATE INDEX IF NOT EXISTS idx_captures_received_at ON captures(received_at);
                 """
             )
 

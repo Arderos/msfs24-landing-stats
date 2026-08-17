@@ -248,46 +248,42 @@ the frozen full reconstruction. Likewise, a lateral roll/half-track term and a
 global multiplicative correction were tested and rejected. Their apparent gains
 were not stable across the corpus.
 
-### 7.3 Recovering the signed gear arm from telemetry
+### 7.3 Establishing the signed gear arm
 
-The default calculation does not read `flight_model.cfg`, so encrypted add-on
-aircraft are supported. Geometry is recovered in two target-independent stages
-from the same capture, and neither stage reads
-`PLANE TOUCHDOWN NORMAL VELOCITY`.
+The application prefers an installed, readable `flight_model.cfg`. It resolves
+the active aircraft by its exact SimConnect `TITLE`, follows ordinary
+`base_container` references, and merges the MSFS 2024 modular common,
+attachment, and preset configuration layers that can contribute flight-model
+data. Indexed `point.N` values from auto-merge layers are appended and reindexed
+in child-attachment, parent-attachment, then preset order; they are not treated
+as overrides merely because two source files reuse the same index. Manual merge
+rules or unresolved dynamic contact-point parameters are not guessed: that
+configuration path fails closed and the telemetry geometry fallback is used.
+Cross-package airplane attachments are resolved by their full VFS-relative path;
+an absent or ambiguous layer also fails closed. Non-airplane cabin and passenger
+attachments are excluded from flight-model geometry. These rules follow the
+[MSFS 2024 modular SimObject merge order](https://docs.flightsimulator.com/msfs2024/html/5_Content_Configuration/Modular_SimObjects/Modular_SimObject_Merging.htm).
+Microsoft Store/Xbox and Steam installations are both discovered through
+their `UserCfg.opt` `InstalledPackagesPath`; packages may live on any drive.
 
-Contact-point numbers are not assigned semantic roles. The analyzer first finds
-the final sustained contact run of every active gear point and orders those runs
-by start time. Three active points are interpreted as two mains followed by one
-nose point; four active points are interpreted as three mains, including a
-center main gear, followed by one nose point. More than four active points, a
-mixed main/nose transition, or an unresolvable sequence makes reconstruction
-unavailable rather than triggering an index-based guess.
+From `[CONTACT_POINTS]` the parser uses only wheel (`type 1`) points. The
+forward one- or two-point cluster is separated from the laterally spaced main
+gear. Scrape, helper, and non-wheel points are ignored. The parser retains each
+wheel's final auto-merged index and longitudinal coordinate as well as the
+median main-gear coordinate. When those indices explain an observed sustained
+touchdown, they provide the main/nose roles directly and the arm is selected
+from the main wheel or wheels that actually made that contact. This matters on
+aircraft such as the A380, whose four main contact points have two distinct
+longitudinal coordinates.
 
-The last point is accepted as the nose only when it arrives at least 0.20 seconds
-after the latest main and raw simulator pitch moves at least 0.5 degrees in the
-normal nose-lowering direction over that interval. Sustained contact needs at
-least two timestamps, 40 ms of duration, positive contact evidence, and a local
-confirmation segment whose frame gaps do not exceed 150 ms. A missing frame by
-itself is not treated as a gear release. Earlier runs of an inferred main are
-allowed, so a main-gear bounce does not poison the final topology. A nose-only
-bounce is excluded from the new reconstruction on that contact.
+Complex add-ons can expose extra visual-bogie compression channels that do not
+map one-to-one to the readable `point.N` list. The configured indices are
+therefore evidence, not an unconditional assertion: if they do not explain any
+sustained touchdown transition, the analyzer retains the configured median arm
+but infers contact roles from telemetry. This is the observed ToLiss A340 path.
 
-The analyzer then finds continuous rollout intervals of at least 0.20 seconds
-where every inferred main is compressed and the inferred nose is not. With
-`H = PLANE ALTITUDE - GROUND ALTITUDE`, pitch `theta` in radians, and mean main-
-gear compression `c_bar`, it solves the simultaneous regression:
-
-```text
-H(t) = b0 + A_theta theta(t) + A_c c_bar(t) + error(t)
-```
-
-Fitting pitch and compression together separates rigid-body derotation from
-strut motion. `A_theta` is the datum-relative longitudinal response of the main-
-gear axis. The regression is rejected when the two predictors are too collinear,
-there are too few points, or the recovered magnitude is physically implausible.
-
-Second, the altitude datum and `VELOCITY WORLD Y` reference need not be the same
-point. On many approximately one-second airborne windows, the analyzer integrates
+The altitude datum and `VELOCITY WORLD Y` reference need not be the same point.
+On many approximately one-second airborne windows, the analyzer integrates
 world-vertical velocity and the vertical velocity produced by one foot of body-
 axis offset. For the recorded attitude and body rates:
 
@@ -302,19 +298,45 @@ Delta(PLANE ALTITUDE) - integral(VY dt)
 The slope `D` is the signed longitudinal offset between the altitude datum and
 the velocity reference. Overlapping windows are interleaved across four start
 phases; at least three phase estimates must agree. They are not statistically
-independent samples. The arm used by the touchdown reconstruction is then:
+independent samples. With readable configuration geometry, each configured
+main-wheel arm and the median fallback are corrected as:
 
 ```text
+L = A_cfg + D
+```
+
+If the flight model is encrypted, missing, ambiguous, or cannot be matched
+safely, the application falls back to target-independent telemetry geometry.
+Neither path reads `PLANE TOUCHDOWN NORMAL VELOCITY`.
+
+Contact-point numbers are not assigned semantic roles in that fallback. The
+analyzer finds the final sustained contact run of every active point and orders
+the runs by start time. With three through five settled wheel points, every
+point before the final delayed point is treated as main gear and the final point
+as nose gear, subject to the independent derotation checks below. This covers
+ordinary tricycle layouts, a center main gear, and four-main-plus-nose layouts;
+there is no special rejection at five points. Aircraft with six or more settled
+wheel points may use a clustered path where a dominant derotation gap separates
+an early main cluster from a later nose/helper cluster. Weak or mixed evidence
+makes reconstruction unavailable rather than triggering an index-based guess.
+
+The last point is accepted as the nose only when it arrives at least 0.20 seconds
+after the latest main and pitch moves at least 0.5 degrees in the normal nose-
+lowering direction. The analyzer then finds rollout intervals where all inferred
+mains are compressed and the nose is not. With `H = PLANE ALTITUDE -
+GROUND ALTITUDE`, pitch `theta`, and mean main compression `c_bar`, it solves:
+
+```text
+H(t) = b0 + A_theta theta(t) + A_c c_bar(t) + error(t)
 L = A_theta + D
 ```
 
-The resulting 0-to-1 geometry quality value summarizes pitch/compression
-separation, phase coverage, and agreement across the interleaved phase
-estimates. It is a heuristic identifiability score, not a probability or a
-confidence interval. Low-quality calibration is rejected.
-An explicitly supplied aircraft arm can be used instead, but telemetry recovery
-is the default. Because the touchdown latch appears nowhere in either geometry
-equation, using rollout data cannot tune the reconstruction to its target.
+The fallback quality value summarizes pitch/compression separation, phase
+coverage, and agreement across interleaved estimates. It is an identifiability
+score, not a probability. Low-quality calibration is rejected. Because the
+touchdown latch appears nowhere in either geometry path, rollout data cannot
+tune the reconstruction to its target. Encrypted Marketplace aircraft remain
+supported; they simply take the telemetry fallback.
 
 ### 7.4 Worked example
 
@@ -362,10 +384,19 @@ a more honest expectation of roughly 4--5 fpm for an ordinary primary contact.
 The experimental detail therefore uses a conservative `+/-10 fpm` band only for
 a non-bouncing primary contact with compression-derived timing and the ordinary
 two-main topology. It uses `+/-15 fpm` for a bounce, last-airborne timing
-fallback, or three-main/center-gear topology. These are engineering reporting
-bands, not formal 95% confidence intervals. A350 coverage is still too small for
-a separate aircraft-type accuracy claim, and the A340 topology has not yet been
-validated as its own accuracy population.
+fallback, ordinary three-main topology, or a multi-bogie topology whose readable
+flight model supplied the arm. A clustered multi-bogie topology whose arm had to
+be recovered from telemetry retains `+/-50 fpm`: the rollout fit is sensitive to
+which truck settles during derotation.
+
+The configuration-first path was checked on four live ToLiss A340 captures. Its
+raw-latch-minus-model residuals were `-6.16`, `+2.41`, `+3.41`, and `+2.97 fpm`;
+the corresponding arms occupied `-4.79` to `-2.89 ft`, instead of the telemetry-
+only range `-10.30` to `-0.17 ft`. The worst telemetry-only residual in the same
+current pipeline was `+36.22 fpm`. This supports the narrower configured-geometry
+band, but remains a small same-aircraft development sample. These are engineering
+reporting bands, not formal 95% confidence intervals. A350 coverage is likewise
+too small for a separate aircraft-type accuracy claim.
 
 ## 8. VSI and sampling rate
 
@@ -452,10 +483,11 @@ tests verify decomposition, per-contact window boundaries, storage round trips,
 and compatibility with older capture schemas.
 
 The temporal reconstruction was also reimplemented independently from the raw
-CSV files. It reproduced the 20-contact result exactly. Replacing each capture's
-own recovered arm with the median arm from other captures of the same aircraft
-type changed primary-contact MAE from 2.86 to 3.25 fpm, which checks that
-post-touchdown geometry calibration is not supplying the target latch value.
+CSV files. It reproduced the 20-contact result exactly. In the telemetry fallback
+validation, replacing each capture's own recovered arm with the median arm from
+other captures of the same aircraft type changed primary-contact MAE from 2.86
+to 3.25 fpm, which checks that post-touchdown geometry calibration is not
+supplying the target latch value.
 
 ## 12. Known limitations
 
@@ -463,8 +495,10 @@ post-touchdown geometry calibration is not supplying the target latch value.
 - `GROUND ALTITUDE` and the collision surface under a wheel need not sample the
   same scenery triangle.
 - Contact-point numbering has no semantic meaning in the calculation. The
-  topology gate currently accepts two or three inferred main points followed by
-  one inferred nose point. More complex bogie layouts remain unavailable.
+  topology gate accepts two or three inferred main points followed by one nose,
+  plus a conservative clustered path for six-or-more settled wheel points when
+  a dominant derotation gap separates main and nose/helper clusters. Other
+  ambiguous layouts remain unavailable.
 - Nose-first and mixed main/nose contacts deliberately fall back to the legacy
   metrics; an explicitly supplied arm does not bypass the per-contact gate.
 - The surface latch is unavailable when no update can be attributed safely.
