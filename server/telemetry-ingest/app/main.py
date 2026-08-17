@@ -59,7 +59,11 @@ if not 1000 <= MAX_INSTALLATIONS <= 1_000_000:
 if not 1 <= UNREFERENCED_INSTALLATION_RETENTION_DAYS <= 365:
     raise RuntimeError("UNREFERENCED_INSTALLATION_RETENTION_DAYS is outside policy")
 
-SERVER_PEPPER = PEPPER_PATH.read_bytes().strip()
+pepper_bytes = PEPPER_PATH.read_bytes()
+# Preserve exact 32-byte binary secrets. For longer text-form secrets, retain
+# the historical newline/whitespace normalization so existing deployments do
+# not change their derived address keys after an update.
+SERVER_PEPPER = pepper_bytes if len(pepper_bytes) == 32 else pepper_bytes.strip()
 if len(SERVER_PEPPER) < 32:
     raise RuntimeError("server pepper is missing or too short")
 

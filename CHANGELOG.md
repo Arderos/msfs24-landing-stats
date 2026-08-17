@@ -58,6 +58,8 @@ All notable changes to MSFS Landing Stats are documented in this file.
   on charts.
 - Quarantined permanently rejected telemetry archives instead of retrying them
   forever, while retaining the local data and correct queue accounting.
+- Preserved exact 32-byte binary telemetry-server peppers instead of trimming
+  random boundary bytes that happen to match whitespace characters.
 - Made optional CFG discovery, modular parsing, and catalog refresh failures
   fail closed to telemetry analysis instead of losing the landing.
 

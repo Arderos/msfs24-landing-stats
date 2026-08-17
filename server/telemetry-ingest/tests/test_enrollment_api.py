@@ -16,7 +16,9 @@ from fastapi.testclient import TestClient
 MODULE_ROOT = tempfile.TemporaryDirectory()
 DATA_ROOT = Path(MODULE_ROOT.name) / "data"
 PEPPER_PATH = Path(MODULE_ROOT.name) / "server-pepper"
-PEPPER_PATH.write_bytes(secrets.token_bytes(32))
+# Binary secrets may legitimately begin or end with bytes classified as
+# whitespace. The service must consume all 32 bytes without text trimming.
+PEPPER_PATH.write_bytes(b" " + (b"x" * 30) + b"\n")
 os.environ["DATA_ROOT"] = str(DATA_ROOT)
 os.environ["SERVER_PEPPER_FILE"] = str(PEPPER_PATH)
 
