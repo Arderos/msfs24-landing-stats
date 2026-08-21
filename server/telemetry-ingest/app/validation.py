@@ -1,12 +1,14 @@
 import csv
 import io
+import json
 import math
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 
 
-EXPECTED_ENTRIES = {"telemetry.csv", "session.txt"}
+EXPECTED_RAW_ENTRIES = {"telemetry.csv", "session.txt"}
+EXPECTED_BUG_REPORT_ENTRIES = {"telemetry.csv", "session.txt", "landing-results.json"}
 BOOLEAN_COLUMNS = {
     "on_ground",
     "motion_simulation",
@@ -20,6 +22,7 @@ BOOLEAN_COLUMNS = {
 class CaptureFacts:
     sample_count: int
     uncompressed_bytes: int
+    capture_kind: str
 
 
 @dataclass(frozen=True)
@@ -154,11 +157,21 @@ def _session_values(content: bytes) -> dict[str, str]:
 
 
 def validate_capture(path: Path, expected_header: str, maximum_uncompressed: int) -> CaptureFacts:
+    try:
+        return _validate_capture_archive(path, expected_header, maximum_uncompressed)
+    except (zipfile.BadZipFile, csv.Error) as exc:
+        raise ValueError("capture archive or telemetry CSV is malformed") from exc
+
+
+def _validate_capture_archive(path: Path, expected_header: str, maximum_uncompressed: int) -> CaptureFacts:
     with zipfile.ZipFile(path, "r") as archive:
         infos = archive.infolist()
         names = [info.filename for info in infos]
-        if len(infos) != 2 or set(names) != EXPECTED_ENTRIES or len(set(names)) != 2:
-            raise ValueError("archive must contain exactly telemetry.csv and session.txt")
+        allowed_entries = EXPECTED_RAW_ENTRIES | EXPECTED_BUG_REPORT_ENTRIES
+        if len(infos) not in {2, 3} or len(set(names)) != len(names) or not set(names) <= allowed_entries:
+            raise ValueError("archive contains unexpected or duplicate entries")
+        if "session.txt" not in names:
+            raise ValueError("archive is missing session metadata")
 
         total_uncompressed = 0
         for info in infos:
@@ -169,14 +182,46 @@ def validate_capture(path: Path, expected_header: str, maximum_uncompressed: int
             total_uncompressed += info.file_size
             if total_uncompressed > maximum_uncompressed:
                 raise ValueError("archive expands beyond the configured limit")
-            if info.compress_size == 0 or info.file_size / info.compress_size > 25:
+            maximum_ratio = 100 if info.filename == "landing-results.json" else 25
+            if info.compress_size == 0 or info.file_size / info.compress_size > maximum_ratio:
                 raise ValueError("archive compression ratio exceeds policy")
 
         session = _session_values(archive.read("session.txt"))
+        capture_kind = session.get("capture_kind", "raw_debug")
+        expected_entries = (
+            EXPECTED_BUG_REPORT_ENTRIES
+            if capture_kind == "bug_report"
+            else EXPECTED_RAW_ENTRIES
+        )
+        if set(names) != expected_entries or len(names) != len(expected_entries):
+            raise ValueError(f"archive entries do not match capture kind {capture_kind}")
+        if capture_kind not in {"raw_debug", "bug_report"}:
+            raise ValueError("unsupported capture kind")
         if session.get("telemetry_schema") != "5":
             raise ValueError("unsupported telemetry schema")
         if session.get("source_period") != "SIM_FRAME":
             raise ValueError("telemetry is not a SIM_FRAME capture")
+
+        if capture_kind == "bug_report":
+            try:
+                declared_landing_count = int(session["landing_count"])
+                declared_episode_id = int(session["episode_id"])
+                report_format = int(session["bug_report_format"])
+                results = json.loads(archive.read("landing-results.json").decode("utf-8"))
+            except (KeyError, ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise ValueError("bug report result metadata is invalid") from exc
+            result_format = results.get("format_version") if isinstance(results, dict) else None
+            records = results.get("records") if isinstance(results, dict) else None
+            if (
+                report_format != 1
+                or result_format != 1
+                or results.get("episode_id") != declared_episode_id
+                or not isinstance(records, list)
+                or not records
+                or declared_landing_count != len(records)
+                or any(not isinstance(record, dict) for record in records)
+            ):
+                raise ValueError("bug report results are malformed")
 
         expected_columns = expected_header.split(",")
         index = {name: position for position, name in enumerate(expected_columns)}
@@ -195,8 +240,9 @@ def validate_capture(path: Path, expected_header: str, maximum_uncompressed: int
 
             for row in reader:
                 sample_count += 1
-                if sample_count > 30000:
-                    raise ValueError("capture contains more than 30000 samples")
+                maximum_samples = 65536 if capture_kind == "bug_report" else 30000
+                if sample_count > maximum_samples:
+                    raise ValueError(f"capture contains more than {maximum_samples} samples")
                 if len(row) != len(expected_columns):
                     raise ValueError("telemetry row width does not match schema")
                 if sum(len(value) for value in row) > 8192:
@@ -245,4 +291,8 @@ def validate_capture(path: Path, expected_header: str, maximum_uncompressed: int
         if _is_replay_like(replay_samples):
             raise ValueError("replay-like telemetry is not accepted")
 
-        return CaptureFacts(sample_count=sample_count, uncompressed_bytes=total_uncompressed)
+        return CaptureFacts(
+            sample_count=sample_count,
+            uncompressed_bytes=total_uncompressed,
+            capture_kind=capture_kind,
+        )

@@ -54,6 +54,7 @@ class Store:
                     sample_count INTEGER NOT NULL,
                     schema_version INTEGER NOT NULL,
                     app_version TEXT NOT NULL,
+                    capture_kind TEXT NOT NULL DEFAULT 'raw_debug',
                     source_address_hash TEXT NOT NULL,
                     FOREIGN KEY (install_id) REFERENCES installations(install_id)
                 );
@@ -77,6 +78,13 @@ class Store:
                 CREATE INDEX IF NOT EXISTS idx_captures_received_at ON captures(received_at);
                 """
             )
+            capture_columns = {
+                row["name"] for row in connection.execute("PRAGMA table_info(captures)").fetchall()
+            }
+            if "capture_kind" not in capture_columns:
+                connection.execute(
+                    "ALTER TABLE captures ADD COLUMN capture_kind TEXT NOT NULL DEFAULT 'raw_debug'"
+                )
 
     @contextmanager
     def connect(self, *, immediate: bool = False):
@@ -250,8 +258,8 @@ class Store:
                 INSERT INTO captures(
                     capture_id, install_id, sha256, relative_path, received_at,
                     compressed_bytes, uncompressed_bytes, sample_count,
-                    schema_version, app_version, source_address_hash)
-                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    schema_version, app_version, capture_kind, source_address_hash)
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 values,
             )

@@ -45,10 +45,24 @@ internal static class Program
         Run("pre-roll uses monotonic receipt time and remains bounded", PreRollUsesReceiptTimeAndRemainsBounded);
         Run("full telemetry gate has AGL hysteresis and RAW override", FullTelemetryGateHasHysteresis);
         Run("raw debug streams into a temporary queue zip", RawDebugStreamsIntoZip);
+        Run("full telemetry toggle is absent from the main window", FullTelemetryToggleIsAbsent);
+        Run("landing episode ids pair retention start and completion", LandingEpisodeIdsPairStartAndCompletion);
+        Run("bug report retention expires on the next landing sequence", BugReportRetentionExpiresOnNextSequence);
+        Run("bug report archive contains telemetry and calculated results", BugReportArchiveContainsTelemetryAndResults);
+        Run("bug report is persisted before network preparation", BugReportPersistsBeforeNetworkPreparation);
+        Run("window shutdown drains local bug report persistence", WindowShutdownDrainsBugReportPersistence);
         Run("raw capture startup removes only abandoned temp chunks", RawCaptureCleansAbandonedTempChunks);
         Run("raw telemetry queue never blocks its producer", RawTelemetryQueueNeverBlocksProducer);
         Run("telemetry identity is stable, protected, and signs", TelemetryIdentityIsStableAndSigns);
         Run("telemetry registration is automatic and hardware anonymous", TelemetryRegistrationIsAutomaticAndAnonymous);
+        Run("existing telemetry waits for enrollment and preserves prior consent", ExistingTelemetryWaitsForEnrollmentAndConsent);
+        Run("legacy RAW startup retry requires persisted consent", LegacyRawStartupRetryRequiresPersistedConsent);
+        Run("telemetry byte limit rejects before scheduling", TelemetryByteLimitRejectsBeforeScheduling);
+        Run("durable telemetry backlog drains after queue saturation", TelemetryBacklogDrainsAfterSaturation);
+        Run("pending bug report recovers after enrollment failure", PendingBugReportRecoversAfterEnrollmentFailure);
+        Run("oversized backlog entry does not starve a valid report", OversizedBacklogEntryDoesNotStarveValidReport);
+        Run("upload re-enrolls after server invalidates enrollment", UploadReenrollsAfterForbiddenResponse);
+        Run("upload worker survives a read-only queue file", UploadWorkerSurvivesReadOnlyQueueFile);
         Run("corrupt telemetry identity does not fault the upload worker", CorruptTelemetryIdentityDoesNotFaultWorker);
         Run("telemetry enqueue is safe during disposal", TelemetryEnqueueIsSafeDuringDisposal);
         Run("permanently rejected telemetry is quarantined once", PermanentlyRejectedTelemetryIsQuarantined);
@@ -220,8 +234,7 @@ internal static class Program
         Equal(true, LocalizationManager.Text("Update.StatusUpdatingFormat").StartsWith(" · ", StringComparison.Ordinal), "updating suffix leading space");
         Equal(true, LocalizationManager.Text("Update.StatusRejected").StartsWith(" · ", StringComparison.Ordinal), "rejected suffix leading space");
         Equal(true, LocalizationManager.Text("Model.GeometryQualityFormat").StartsWith(" · ", StringComparison.Ordinal), "geometry suffix leading space");
-        Equal(true, LocalizationManager.Text("Raw.ConsentBody").IndexOf("\n\n", StringComparison.Ordinal) >= 0, "consent paragraph break");
-        Equal(true, LocalizationManager.Text("Footer.DebugHelp").StartsWith("Not intended for long flights.", StringComparison.Ordinal), "full telemetry warning remains explicit");
+        Equal(true, LocalizationManager.Text("Footer.ReportBugHelp").StartsWith("Securely uploads", StringComparison.Ordinal), "bug-report scope remains explicit");
     }
 
     private static void TelemetryReceiverHeaderMatchesClient()
@@ -345,6 +358,154 @@ internal static class Program
         }
     }
 
+    private static void FullTelemetryToggleIsAbsent()
+    {
+        var field = typeof(MainWindow).GetField(
+            "RawDebugToggle",
+            BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+        Equal<object?>(null, field, "main-window RAW toggle field");
+    }
+
+    private static void LandingEpisodeIdsPairStartAndCompletion()
+    {
+        using var disposable = NewRecorder();
+        var recorder = (SimConnectLandingRecorder)disposable;
+        long startedId = 0;
+        long completedId = 0;
+        recorder.EpisodeStarted += (_, args) => startedId = args.EpisodeId;
+        recorder.EpisodeCompleted += (_, args) => completedId = args.EpisodeId;
+        Invoke(recorder, "ProcessSample", ApproachSample(1));
+        Invoke(recorder, "CompleteEpisode", false);
+        Equal(true, startedId > 0, "positive episode id");
+        Equal(startedId, completedId, "completed episode id");
+    }
+
+    private static void BugReportRetentionExpiresOnNextSequence()
+    {
+        var buffer = new LastLandingBugReportBuffer();
+        var first = BugReportFixture(1, "first");
+        buffer.BeginEpisode(1);
+        Equal(true, buffer.TryRetain(first), "first report retained");
+        NotNull(buffer.Available(), "first report available");
+
+        buffer.BeginEpisode(2);
+        Null(buffer.Available(), "previous report removed at next episode start");
+        Equal(false, buffer.TryRetain(first), "late completion from previous episode rejected");
+
+        var second = BugReportFixture(2, "second");
+        Equal(true, buffer.TryRetain(second), "second report retained");
+        buffer.MarkSubmitted(2);
+        Null(buffer.Available(), "submitted report is no longer offered");
+    }
+
+    private static void BugReportArchiveContainsTelemetryAndResults()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "landing-stats-bug-report-test-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var candidate = BugReportFixture(17, "calculated-landing");
+            var path = new BugReportRepository(root).Create(candidate, new DateTime(2026, 8, 18, 12, 0, 0, DateTimeKind.Utc));
+            Equal(true, path.EndsWith("_bug_raw.zip", StringComparison.Ordinal), "bug report queue suffix");
+            using var archive = ZipFile.OpenRead(path);
+            var names = archive.Entries.Select(entry => entry.FullName).OrderBy(value => value).ToArray();
+            Equal("landing-results.json,session.txt,telemetry.csv", string.Join(",", names), "bug report entries");
+            using (var telemetry = new StreamReader(archive.GetEntry("telemetry.csv")!.Open()))
+            {
+                var rows = telemetry.ReadToEnd().Split(new[] { '\n' }, StringSplitOptions.RemoveEmptyEntries);
+                Equal(2, rows.Length, "telemetry header plus retained frame");
+            }
+            using (var session = new StreamReader(archive.GetEntry("session.txt")!.Open()))
+            {
+                var text = session.ReadToEnd();
+                Equal(true, text.Contains("capture_kind=bug_report"), "bug report capture kind");
+                Equal(true, text.Contains("landing_count=1"), "bug report landing count");
+            }
+            using (var results = new StreamReader(archive.GetEntry("landing-results.json")!.Open()))
+            {
+                var text = results.ReadToEnd();
+                Equal(true, text.Contains("calculated-landing"), "calculated landing payload");
+            }
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
+    private static void BugReportPersistsBeforeNetworkPreparation()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "landing-stats-offline-bug-report-test-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var candidate = BugReportFixture(23, "offline-landing");
+            var buffer = new LastLandingBugReportBuffer();
+            buffer.BeginEpisode(candidate.EpisodeId);
+            Equal(true, buffer.TryRetain(candidate), "offline report retained before persistence");
+
+            var path = MainWindow.PersistBugReport(
+                new BugReportRepository(root),
+                buffer,
+                candidate,
+                new DateTime(2026, 8, 21, 8, 0, 0, DateTimeKind.Utc));
+
+            Equal(true, File.Exists(path), "offline report durable before any network operation");
+            Null(buffer.Available(), "persisted offline report is single-use in the UI");
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
+    private static void WindowShutdownDrainsBugReportPersistence()
+    {
+        using var releaseWrite = new ManualResetEventSlim(false);
+        var persistence = Task.Run(() => releaseWrite.Wait());
+        var drainReturned = false;
+        var drain = Task.Run(() =>
+        {
+            MainWindow.DrainBugReportPersistence(persistence);
+            drainReturned = true;
+        });
+
+        Thread.Sleep(50);
+        Equal(false, drainReturned, "shutdown waits while local report write is incomplete");
+        releaseWrite.Set();
+        Equal(true, drain.Wait(TimeSpan.FromSeconds(5)), "shutdown drain completes after local write");
+        Equal(true, drainReturned, "shutdown resumes only after report durability boundary");
+    }
+
+    private static BugReportCandidate BugReportFixture(long episodeId, string landingId)
+    {
+        return new BugReportCandidate(
+            episodeId,
+            new[]
+            {
+                new TelemetrySample
+                {
+                    Sequence = episodeId,
+                    SimulationTimeSeconds = episodeId,
+                    MotionSimulation = true,
+                },
+            },
+            "MSFS 2024",
+            "Test aircraft",
+            "TEST",
+            "TEST",
+            Array.Empty<string>(),
+            new[]
+            {
+                new LandingRecord
+                {
+                    Id = landingId,
+                    TimestampUtc = DateTime.UtcNow,
+                    InertialFpm = -123,
+                    SurfaceFpm = -120,
+                    PeakG150Milliseconds = 1.2,
+                },
+            });
+    }
+
     private static void RawCaptureCleansAbandonedTempChunks()
     {
         var root = Path.Combine(Path.GetTempPath(), "landing-stats-raw-cleanup-" + Guid.NewGuid().ToString("N"));
@@ -453,7 +614,7 @@ internal static class Program
             Equal(TelemetryPreparationState.Ready, result.State, "automatic telemetry enrollment state");
             var refresh = client.PrepareAsync(CancellationToken.None).GetAwaiter().GetResult();
             Equal(TelemetryPreparationState.Ready, refresh.State, "idempotent telemetry enrollment refresh");
-            Equal(2, handler.EnrollmentCount, "server enrollment is refreshed whenever DEBUG RAW is enabled");
+            Equal(2, handler.EnrollmentCount, "server enrollment is refreshed for each report submission");
             var payload = handler.EnrollmentPayload ?? throw new InvalidOperationException("enrollment payload was not sent");
             Equal(true, payload.IndexOf("\"install_id\"", StringComparison.Ordinal) >= 0, "anonymous installation id field");
             Equal(true, payload.IndexOf("\"public_modulus\"", StringComparison.Ordinal) >= 0, "public key field");
@@ -465,6 +626,343 @@ internal static class Program
         {
             Environment.SetEnvironmentVariable("MSFS_LANDING_STATS_TELEMETRY_URL", previousEndpoint);
             if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
+    private static void ExistingTelemetryWaitsForEnrollmentAndConsent()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "landing-stats-existing-upload-test-" + Guid.NewGuid().ToString("N"));
+        var previousEndpoint = Environment.GetEnvironmentVariable("MSFS_LANDING_STATS_TELEMETRY_URL");
+        try
+        {
+            var queue = Path.Combine(root, "queue");
+            Directory.CreateDirectory(queue);
+            var legacy = Path.Combine(queue, "20260820_legacy_raw.zip");
+            var report = Path.Combine(queue, "20260821_latest_bug_raw.zip");
+            File.WriteAllBytes(legacy, new byte[] { 1, 2, 3 });
+            File.WriteAllBytes(report, new byte[] { 4, 5, 6 });
+            Environment.SetEnvironmentVariable("MSFS_LANDING_STATS_TELEMETRY_URL", "https://telemetry.example.test/");
+
+            var handler = new TelemetryEnrollmentFixtureHandler();
+            using var client = new TelemetryUploadClient(queue, handler, Path.Combine(root, "identity"));
+            Thread.Sleep(100);
+            Equal(0, handler.CaptureCount, "existing files are not touched before enrollment");
+
+            var preparation = client.PrepareAsync(CancellationToken.None).GetAwaiter().GetResult();
+            Equal(TelemetryPreparationState.Ready, preparation.State, "existing queue enrollment");
+            client.EnqueueExisting();
+            Equal(
+                true,
+                SpinWait.SpinUntil(() => !File.Exists(report), TimeSpan.FromSeconds(5)),
+                "user-initiated bug report uploaded without legacy RAW consent");
+            Equal(true, File.Exists(legacy), "prior RAW refusal remains authoritative");
+            Equal(1, handler.CaptureCount, "only bug report uploaded without legacy consent");
+
+            client.AcceptConsent();
+            client.EnqueueExisting();
+            Equal(
+                true,
+                SpinWait.SpinUntil(() => !File.Exists(legacy), TimeSpan.FromSeconds(5)),
+                "consented legacy RAW is retried");
+            Equal(2, handler.CaptureCount, "legacy RAW uploaded after explicit consent");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("MSFS_LANDING_STATS_TELEMETRY_URL", previousEndpoint);
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
+    private static void LegacyRawStartupRetryRequiresPersistedConsent()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "landing-stats-legacy-startup-test-" + Guid.NewGuid().ToString("N"));
+        var previousEndpoint = Environment.GetEnvironmentVariable("MSFS_LANDING_STATS_TELEMETRY_URL");
+        try
+        {
+            Environment.SetEnvironmentVariable("MSFS_LANDING_STATS_TELEMETRY_URL", "https://telemetry.example.test/");
+
+            var acceptedQueue = Path.Combine(root, "accepted-queue");
+            var acceptedIdentity = Path.Combine(root, "accepted-identity");
+            Directory.CreateDirectory(acceptedQueue);
+            var acceptedRaw = Path.Combine(acceptedQueue, "legacy_raw.zip");
+            File.WriteAllBytes(acceptedRaw, new byte[] { 1, 2, 3 });
+            new TelemetryUploadIdentityStore(acceptedIdentity).AcceptConsent();
+            var acceptedHandler = new TelemetryEnrollmentFixtureHandler();
+            using (var client = new TelemetryUploadClient(acceptedQueue, acceptedHandler, acceptedIdentity))
+            {
+                Equal(true, client.HasEligiblePendingReports(), "consented legacy RAW is startup-eligible");
+                client.PreparePendingReportsUntilReadyAsync(CancellationToken.None).GetAwaiter().GetResult();
+                Equal(
+                    true,
+                    SpinWait.SpinUntil(() => !File.Exists(acceptedRaw), TimeSpan.FromSeconds(5)),
+                    "consented legacy RAW uploads after restart");
+                Equal(1, acceptedHandler.EnrollmentCount, "consented startup performs enrollment");
+            }
+
+            var refusedQueue = Path.Combine(root, "refused-queue");
+            var refusedIdentity = Path.Combine(root, "refused-identity");
+            Directory.CreateDirectory(refusedQueue);
+            var refusedRaw = Path.Combine(refusedQueue, "legacy_raw.zip");
+            File.WriteAllBytes(refusedRaw, new byte[] { 4, 5, 6 });
+            var refusedHandler = new TelemetryEnrollmentFixtureHandler();
+            using (var client = new TelemetryUploadClient(refusedQueue, refusedHandler, refusedIdentity))
+            {
+                Equal(false, client.HasEligiblePendingReports(), "legacy RAW refusal remains startup-ineligible");
+                client.PreparePendingReportsUntilReadyAsync(CancellationToken.None).GetAwaiter().GetResult();
+                Thread.Sleep(50);
+                Equal(0, refusedHandler.EnrollmentCount, "refused startup performs no network enrollment");
+                Equal(true, File.Exists(refusedRaw), "refused legacy RAW remains local");
+            }
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("MSFS_LANDING_STATS_TELEMETRY_URL", previousEndpoint);
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
+    private static void TelemetryByteLimitRejectsBeforeScheduling()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "landing-stats-upload-limit-test-" + Guid.NewGuid().ToString("N"));
+        var previousEndpoint = Environment.GetEnvironmentVariable("MSFS_LANDING_STATS_TELEMETRY_URL");
+        try
+        {
+            var queue = Path.Combine(root, "queue");
+            Directory.CreateDirectory(queue);
+            var report = Path.Combine(queue, "oversized_bug_raw.zip");
+            File.WriteAllBytes(report, new byte[] { 1, 2, 3, 4, 5 });
+            Environment.SetEnvironmentVariable("MSFS_LANDING_STATS_TELEMETRY_URL", "https://telemetry.example.test/");
+
+            var handler = new TelemetryEnrollmentFixtureHandler();
+            using var client = new TelemetryUploadClient(
+                queue,
+                handler,
+                Path.Combine(root, "identity"),
+                maximumQueueBytes: 4);
+            var preparation = client.PrepareAsync(CancellationToken.None).GetAwaiter().GetResult();
+            Equal(TelemetryPreparationState.Ready, preparation.State, "queue-limit enrollment");
+            Equal(false, client.Enqueue(report), "oversized capture rejected before enqueue");
+            Thread.Sleep(100);
+            Equal(0, handler.CaptureCount, "oversized capture never reaches upload worker");
+            Equal(0L, (long)Field(client, "_queueBytes")!, "rejected capture reserves no queue bytes");
+            Equal(true, File.Exists(report), "rejected capture remains durable on disk");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("MSFS_LANDING_STATS_TELEMETRY_URL", previousEndpoint);
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
+    private static void TelemetryBacklogDrainsAfterSaturation()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "landing-stats-upload-drain-test-" + Guid.NewGuid().ToString("N"));
+        var previousEndpoint = Environment.GetEnvironmentVariable("MSFS_LANDING_STATS_TELEMETRY_URL");
+        try
+        {
+            var queue = Path.Combine(root, "queue");
+            Directory.CreateDirectory(queue);
+            var reports = Enumerable.Range(1, 3)
+                .Select(index => Path.Combine(queue, $"20260821_00000{index}_bug_raw.zip"))
+                .ToArray();
+            foreach (var report in reports)
+            {
+                File.WriteAllBytes(report, new byte[] { 1, 2, 3 });
+            }
+            Environment.SetEnvironmentVariable("MSFS_LANDING_STATS_TELEMETRY_URL", "https://telemetry.example.test/");
+
+            var handler = new TelemetryEnrollmentFixtureHandler();
+            using var client = new TelemetryUploadClient(
+                queue,
+                handler,
+                Path.Combine(root, "identity"),
+                maximumQueueBytes: 4,
+                maximumQueuedFiles: 1);
+            var preparation = client.PrepareAsync(CancellationToken.None).GetAwaiter().GetResult();
+            Equal(TelemetryPreparationState.Ready, preparation.State, "saturated backlog enrollment");
+            client.EnqueueExisting();
+
+            Equal(
+                true,
+                SpinWait.SpinUntil(
+                    () => reports.All(report => !File.Exists(report)),
+                    TimeSpan.FromSeconds(5)),
+                "all durable reports drain as byte and file capacity becomes free");
+            Equal(3, handler.CaptureCount, "each saturated report uploaded exactly once");
+            Equal(0L, (long)Field(client, "_queueBytes")!, "drained backlog releases queue bytes");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("MSFS_LANDING_STATS_TELEMETRY_URL", previousEndpoint);
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
+    private static void PendingBugReportRecoversAfterEnrollmentFailure()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "landing-stats-enrollment-recovery-test-" + Guid.NewGuid().ToString("N"));
+        var previousEndpoint = Environment.GetEnvironmentVariable("MSFS_LANDING_STATS_TELEMETRY_URL");
+        try
+        {
+            var queue = Path.Combine(root, "queue");
+            Directory.CreateDirectory(queue);
+            var report = Path.Combine(queue, "offline_bug_raw.zip");
+            File.WriteAllBytes(report, new byte[] { 1, 2, 3 });
+            Environment.SetEnvironmentVariable("MSFS_LANDING_STATS_TELEMETRY_URL", "https://telemetry.example.test/");
+
+            var handler = new TelemetryRecoveringFixtureHandler(enrollmentFailures: 1);
+            using var client = new TelemetryUploadClient(
+                queue,
+                handler,
+                Path.Combine(root, "identity"),
+                retryDelay: TimeSpan.FromMilliseconds(1));
+            Equal(true, TelemetryUploadClient.HasPendingBugReports(queue), "restart detects durable bug report");
+            client.PreparePendingReportsUntilReadyAsync(
+                    CancellationToken.None,
+                    TimeSpan.FromMilliseconds(1))
+                .GetAwaiter().GetResult();
+
+            Equal(
+                true,
+                SpinWait.SpinUntil(() => !File.Exists(report), TimeSpan.FromSeconds(5)),
+                "pending report uploaded after enrollment recovers");
+            Equal(2, handler.EnrollmentCount, "failed enrollment is retried");
+            Equal(1, handler.CaptureCount, "recovered report uploaded once");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("MSFS_LANDING_STATS_TELEMETRY_URL", previousEndpoint);
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
+    private static void OversizedBacklogEntryDoesNotStarveValidReport()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "landing-stats-oversized-backlog-test-" + Guid.NewGuid().ToString("N"));
+        var previousEndpoint = Environment.GetEnvironmentVariable("MSFS_LANDING_STATS_TELEMETRY_URL");
+        try
+        {
+            var queue = Path.Combine(root, "queue");
+            Directory.CreateDirectory(queue);
+            var oversized = Path.Combine(queue, "20260820_old_bug_raw.zip");
+            var valid = Path.Combine(queue, "20260821_new_bug_raw.zip");
+            File.WriteAllBytes(oversized, new byte[] { 1, 2, 3, 4, 5 });
+            File.WriteAllBytes(valid, new byte[] { 6, 7, 8 });
+            Environment.SetEnvironmentVariable("MSFS_LANDING_STATS_TELEMETRY_URL", "https://telemetry.example.test/");
+
+            var handler = new TelemetryEnrollmentFixtureHandler();
+            using var client = new TelemetryUploadClient(
+                queue,
+                handler,
+                Path.Combine(root, "identity"),
+                maximumQueueBytes: 4);
+            Equal(
+                TelemetryPreparationState.Ready,
+                client.PrepareAsync(CancellationToken.None).GetAwaiter().GetResult().State,
+                "oversized backlog enrollment");
+            client.EnqueueExisting();
+
+            Equal(
+                true,
+                SpinWait.SpinUntil(() => !File.Exists(valid), TimeSpan.FromSeconds(5)),
+                "valid report behind oversized item is uploaded");
+            Equal(true, File.Exists(oversized), "oversized report remains on disk for inspection");
+            Equal(1, handler.CaptureCount, "only valid report reaches uploader");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("MSFS_LANDING_STATS_TELEMETRY_URL", previousEndpoint);
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
+    private static void UploadReenrollsAfterForbiddenResponse()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "landing-stats-reenroll-test-" + Guid.NewGuid().ToString("N"));
+        var previousEndpoint = Environment.GetEnvironmentVariable("MSFS_LANDING_STATS_TELEMETRY_URL");
+        try
+        {
+            var queue = Path.Combine(root, "queue");
+            Directory.CreateDirectory(queue);
+            var report = Path.Combine(queue, "reenroll_bug_raw.zip");
+            File.WriteAllBytes(report, new byte[] { 1, 2, 3 });
+            Environment.SetEnvironmentVariable("MSFS_LANDING_STATS_TELEMETRY_URL", "https://telemetry.example.test/");
+
+            var handler = new TelemetryRecoveringFixtureHandler(forbidFirstCapture: true);
+            using var client = new TelemetryUploadClient(
+                queue,
+                handler,
+                Path.Combine(root, "identity"),
+                retryDelay: TimeSpan.FromMilliseconds(1));
+            Equal(
+                TelemetryPreparationState.Ready,
+                client.PrepareAsync(CancellationToken.None).GetAwaiter().GetResult().State,
+                "initial enrollment before forbidden response");
+            Equal(true, client.Enqueue(report), "report queued before enrollment invalidation");
+
+            Equal(
+                true,
+                SpinWait.SpinUntil(() => !File.Exists(report), TimeSpan.FromSeconds(5)),
+                "report uploaded after automatic re-enrollment");
+            Equal(2, handler.EnrollmentCount, "403 triggers a fresh enrollment");
+            Equal(2, handler.CaptureCount, "capture retried once after 403");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("MSFS_LANDING_STATS_TELEMETRY_URL", previousEndpoint);
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
+    private static void UploadWorkerSurvivesReadOnlyQueueFile()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "landing-stats-readonly-upload-test-" + Guid.NewGuid().ToString("N"));
+        var previousEndpoint = Environment.GetEnvironmentVariable("MSFS_LANDING_STATS_TELEMETRY_URL");
+        try
+        {
+            var queue = Path.Combine(root, "queue");
+            Directory.CreateDirectory(queue);
+            var report = Path.Combine(queue, "readonly_bug_raw.zip");
+            File.WriteAllBytes(report, new byte[] { 1, 2, 3 });
+            File.SetAttributes(report, FileAttributes.ReadOnly);
+            Environment.SetEnvironmentVariable("MSFS_LANDING_STATS_TELEMETRY_URL", "https://telemetry.example.test/");
+
+            var handler = new TelemetryEnrollmentFixtureHandler();
+            using var client = new TelemetryUploadClient(
+                queue,
+                handler,
+                Path.Combine(root, "identity"),
+                retryDelay: TimeSpan.FromMilliseconds(5));
+            Equal(
+                TelemetryPreparationState.Ready,
+                client.PrepareAsync(CancellationToken.None).GetAwaiter().GetResult().State,
+                "read-only queue enrollment");
+            Equal(true, client.Enqueue(report), "read-only report queued");
+            Equal(
+                true,
+                SpinWait.SpinUntil(() => handler.CaptureCount > 0, TimeSpan.FromSeconds(5)),
+                "read-only report reaches receiver");
+            var worker = (Task)Field(client, "_worker")!;
+            Equal(false, worker.IsFaulted, "delete ACL error does not fault worker");
+
+            File.SetAttributes(report, FileAttributes.Normal);
+            Equal(
+                true,
+                SpinWait.SpinUntil(() => !File.Exists(report), TimeSpan.FromSeconds(5)),
+                "read-only report retries after filesystem access recovers");
+            Equal(false, worker.IsFaulted, "worker remains live after retry");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("MSFS_LANDING_STATS_TELEMETRY_URL", previousEndpoint);
+            if (Directory.Exists(root))
+            {
+                foreach (var path in Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories))
+                {
+                    File.SetAttributes(path, FileAttributes.Normal);
+                }
+                Directory.Delete(root, true);
+            }
         }
     }
 
@@ -3188,8 +3686,10 @@ internal static class Program
 
     private sealed class TelemetryEnrollmentFixtureHandler : HttpMessageHandler
     {
+        private int _captureCount;
         public string? EnrollmentPayload { get; private set; }
         public int EnrollmentCount { get; private set; }
+        public int CaptureCount => Volatile.Read(ref _captureCount);
 
         protected override System.Threading.Tasks.Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
@@ -3218,7 +3718,99 @@ internal static class Program
                 });
             }
 
+            if (request.Method == HttpMethod.Post && request.RequestUri!.AbsolutePath.EndsWith("/v1/captures", StringComparison.Ordinal))
+            {
+                _ = request.Content!.ReadAsByteArrayAsync().GetAwaiter().GetResult();
+                Interlocked.Increment(ref _captureCount);
+                return System.Threading.Tasks.Task.FromResult(new HttpResponseMessage(HttpStatusCode.Created)
+                {
+                    RequestMessage = request,
+                    Content = new StringContent("{\"status\":\"accepted\"}", Encoding.UTF8, "application/json"),
+                });
+            }
+
             return System.Threading.Tasks.Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound)
+            {
+                RequestMessage = request,
+            });
+        }
+    }
+
+    private sealed class TelemetryRecoveringFixtureHandler : HttpMessageHandler
+    {
+        private int _remainingEnrollmentFailures;
+        private int _forbidFirstCapture;
+        private int _enrollmentCount;
+        private int _captureCount;
+
+        public TelemetryRecoveringFixtureHandler(
+            int enrollmentFailures = 0,
+            bool forbidFirstCapture = false)
+        {
+            _remainingEnrollmentFailures = enrollmentFailures;
+            _forbidFirstCapture = forbidFirstCapture ? 1 : 0;
+        }
+
+        public int EnrollmentCount => Volatile.Read(ref _enrollmentCount);
+        public int CaptureCount => Volatile.Read(ref _captureCount);
+
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            if (request.Method == HttpMethod.Get &&
+                request.RequestUri!.AbsolutePath.EndsWith("/v1/config", StringComparison.Ordinal))
+            {
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    RequestMessage = request,
+                    Content = new StringContent(
+                        "{\"protocol\":1,\"registration_mode\":\"open\",\"telemetry_schema\":5,\"max_upload_bytes\":16777216}",
+                        Encoding.UTF8,
+                        "application/json"),
+                });
+            }
+
+            if (request.Method == HttpMethod.Post &&
+                request.RequestUri!.AbsolutePath.EndsWith("/v1/enroll", StringComparison.Ordinal))
+            {
+                Interlocked.Increment(ref _enrollmentCount);
+                if (Interlocked.Decrement(ref _remainingEnrollmentFailures) >= 0)
+                {
+                    return Task.FromResult(new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)
+                    {
+                        RequestMessage = request,
+                    });
+                }
+
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.Created)
+                {
+                    RequestMessage = request,
+                    Content = new StringContent("{\"status\":\"enrolled\"}", Encoding.UTF8, "application/json"),
+                });
+            }
+
+            if (request.Method == HttpMethod.Post &&
+                request.RequestUri!.AbsolutePath.EndsWith("/v1/captures", StringComparison.Ordinal))
+            {
+                _ = request.Content!.ReadAsByteArrayAsync().GetAwaiter().GetResult();
+                Interlocked.Increment(ref _captureCount);
+                if (Interlocked.Exchange(ref _forbidFirstCapture, 0) == 1)
+                {
+                    return Task.FromResult(new HttpResponseMessage(HttpStatusCode.Forbidden)
+                    {
+                        RequestMessage = request,
+                    });
+                }
+
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.Created)
+                {
+                    RequestMessage = request,
+                    Content = new StringContent("{\"status\":\"accepted\"}", Encoding.UTF8, "application/json"),
+                });
+            }
+
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound)
             {
                 RequestMessage = request,
             });

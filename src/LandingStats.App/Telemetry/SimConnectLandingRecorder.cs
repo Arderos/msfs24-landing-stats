@@ -39,6 +39,7 @@ internal sealed class RecorderStatusEventArgs : EventArgs
 internal sealed class LandingEpisodeEventArgs : EventArgs
 {
     public LandingEpisodeEventArgs(
+        long episodeId,
         IReadOnlyList<TelemetrySample> samples,
         string simulator,
         string aircraftTitle,
@@ -47,6 +48,7 @@ internal sealed class LandingEpisodeEventArgs : EventArgs
         IReadOnlyList<AirportFacility> airportFacilities,
         IReadOnlyList<string> controlInputSources)
     {
+        EpisodeId = episodeId;
         Samples = samples;
         Simulator = simulator;
         AircraftTitle = aircraftTitle;
@@ -55,6 +57,8 @@ internal sealed class LandingEpisodeEventArgs : EventArgs
         AirportFacilities = airportFacilities;
         ControlInputSources = controlInputSources;
     }
+
+    public long EpisodeId { get; }
 
     public IReadOnlyList<TelemetrySample> Samples { get; }
 
@@ -69,6 +73,16 @@ internal sealed class LandingEpisodeEventArgs : EventArgs
     public IReadOnlyList<AirportFacility> AirportFacilities { get; }
 
     public IReadOnlyList<string> ControlInputSources { get; }
+}
+
+internal sealed class LandingEpisodeStartedEventArgs : EventArgs
+{
+    public LandingEpisodeStartedEventArgs(long episodeId)
+    {
+        EpisodeId = episodeId;
+    }
+
+    public long EpisodeId { get; }
 }
 
 internal sealed class AirportFacilitiesEventArgs : EventArgs
@@ -169,6 +183,8 @@ internal sealed class SimConnectLandingRecorder : IDisposable
     private DateTime _lastConnectAttemptUtc = DateTime.MinValue;
     private DateTime _nextJoystickRefreshUtc = DateTime.MinValue;
     private long _sequence;
+    private long _nextEpisodeId;
+    private long _activeEpisodeId;
     private double _lastSimulationTime = double.NaN;
     private double _lastGuardAglFeet = double.NaN;
     private double _episodeStartTime;
@@ -198,6 +214,8 @@ internal sealed class SimConnectLandingRecorder : IDisposable
     public event EventHandler<RecorderStatusEventArgs>? StatusChanged;
 
     public event EventHandler<LandingEpisodeEventArgs>? EpisodeCompleted;
+
+    public event EventHandler<LandingEpisodeStartedEventArgs>? EpisodeStarted;
 
     public event EventHandler<AirportFacilitiesEventArgs>? AirportFacilitiesUpdated;
 
@@ -686,6 +704,8 @@ internal sealed class SimConnectLandingRecorder : IDisposable
 
     private void StartEpisode(TelemetrySample trigger, bool contactTriggered)
     {
+        _activeEpisodeId = checked(_nextEpisodeId + 1);
+        _nextEpisodeId = _activeEpisodeId;
         _episodeSamples = new List<TelemetrySample>(_preRoll.Count + 4096);
         foreach (var sample in _preRoll)
         {
@@ -695,6 +715,7 @@ internal sealed class SimConnectLandingRecorder : IDisposable
         _episodeStartTime = TimeOf(trigger);
         _lastContactTime = null;
         _armed = false;
+        EpisodeStarted?.Invoke(this, new LandingEpisodeStartedEventArgs(_activeEpisodeId));
         if (_simConnect != null)
         {
             RequestAircraftMetadata(_simConnect);
@@ -728,7 +749,9 @@ internal sealed class SimConnectLandingRecorder : IDisposable
     private void CompleteEpisode(bool refreshAirportFacilities = true)
     {
         var samples = _episodeSamples;
+        var episodeId = _activeEpisodeId;
         _episodeSamples = null;
+        _activeEpisodeId = 0;
         _lastContactTime = null;
         _armed = true;
         _preRoll.Clear();
@@ -740,6 +763,7 @@ internal sealed class SimConnectLandingRecorder : IDisposable
         EpisodeCompleted?.Invoke(
             this,
             new LandingEpisodeEventArgs(
+                episodeId,
                 samples.ToArray(),
                 _simulator,
                 _aircraftTitle,
@@ -757,6 +781,7 @@ internal sealed class SimConnectLandingRecorder : IDisposable
     private void DiscardEpisode()
     {
         _episodeSamples = null;
+        _activeEpisodeId = 0;
         _lastContactTime = null;
     }
 

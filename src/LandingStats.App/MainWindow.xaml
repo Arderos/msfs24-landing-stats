@@ -954,12 +954,21 @@
                         <Run x:Name="VersionAuthorRun" />
                     </Hyperlink>
                 </TextBlock>
-                <TextBlock Grid.Column="3" x:Name="RawDebugStatusText" Text="{DynamicResource Footer.UploadDisabled}" Foreground="{StaticResource SubtleTextBrush}" FontSize="10" VerticalAlignment="Center" Margin="0,0,10,0" />
-                <StackPanel Grid.Column="4" Orientation="Horizontal" VerticalAlignment="Center">
-                    <ToggleButton x:Name="RawDebugToggle" Content="{DynamicResource Footer.DebugOff}" Style="{StaticResource RawDebugToggleStyle}" FontSize="10"
-                                  Checked="OnRawDebugModeChanged" Unchecked="OnRawDebugModeChanged"
-                                  ToolTip="{DynamicResource Footer.DebugHelp}" />
-                </StackPanel>
+                <TextBlock Grid.Column="3" x:Name="UploadStatusText" Text="{DynamicResource Footer.ReportWaiting}"
+                           Foreground="{StaticResource SubtleTextBrush}" FontSize="10" VerticalAlignment="Center"
+                           Margin="0,0,10,0" MaxWidth="330" TextTrimming="CharacterEllipsis"
+                           ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />
+                <Button Grid.Column="4"
+                        x:Name="ReportBugButton"
+                        Content="{DynamicResource Footer.ReportBug}"
+                        Style="{StaticResource OutlineButtonStyle}"
+                        FontSize="10"
+                        Height="26"
+                        Visibility="Collapsed"
+                        IsEnabled="False"
+                        Opacity="0.42"
+                        Click="OnReportBugClick"
+                        ToolTip="{DynamicResource Footer.ReportBugHelp}" />
                 <TextBlock Grid.Column="5" x:Name="StoragePathText" Foreground="{StaticResource LabelTextBrush}"
                            FontFamily="Cascadia Mono, Consolas" FontSize="10" VerticalAlignment="Center" Margin="16,0,0,0"
                            TextTrimming="CharacterEllipsis" MaxWidth="310" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />

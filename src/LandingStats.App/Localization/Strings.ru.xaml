@@ -120,10 +120,10 @@
     <system:String x:Key="Unit.KilogramsFormat">{0:N0} кг</system:String>
 
     <system:String x:Key="Footer.Window">Окно: порог 500 фт → t+15 с</system:String>
-    <system:String x:Key="Footer.UploadDisabled">Отправка телеметрии отключена</system:String>
-    <system:String x:Key="Footer.DebugOff">ПОЛНАЯ ТЕЛЕМЕТРИЯ · ВЫКЛ</system:String>
-    <system:String x:Key="Footer.DebugOn">ПОЛНАЯ ТЕЛЕМЕТРИЯ · ВКЛ</system:String>
-    <system:String x:Key="Footer.DebugHelp">Не предназначена для длительных полётов. Полная телеметрия сохраняется локально и при наличии связи отправляется разработчику. Ошибки отправки не прерывают локальную запись, поэтому без отправки локальные файлы продолжат расти.</system:String>
+    <system:String x:Key="Footer.ReportWaiting">Отчёт об ошибке станет доступен после записанной посадки</system:String>
+    <system:String x:Key="Footer.ReportReady">Последняя посадка готова к отправке</system:String>
+    <system:String x:Key="Footer.ReportBug">СООБЩИТЬ ОБ ОШИБКЕ</system:String>
+    <system:String x:Key="Footer.ReportBugHelp">Безопасно отправляет сохранённую телеметрию и результат расчёта последней посадки. В отчёт входят состояние самолёта, координаты и каналы управления.</system:String>
 
     <system:String x:Key="Delete.Title">УДАЛИТЬ ПОСАДКУ?</system:String>
     <system:String x:Key="Delete.Body">Сохранённая посадка и её профиль будут удалены без возможности восстановления.</system:String>
@@ -205,31 +205,19 @@
     <system:String x:Key="Delete.ContactSuffixFormat" xml:space="preserve"> · касание {0}/{1}</system:String>
     <system:String x:Key="Delete.ErrorFormat">Не удалось удалить посадку. {0}</system:String>
 
-    <system:String x:Key="Raw.Disabled">Полная телеметрия отключена</system:String>
-    <system:String x:Key="Raw.Armed">Локальная полная запись готова · запуск после инициализации SimConnect</system:String>
-    <system:String x:Key="Raw.Live">ЗАПИСЬ · сохранение локально · каждый SIM_FRAME · предзапись 15 с</system:String>
-    <system:String x:Key="Raw.UploadUnavailableFormat">Локальная полная телеметрия включена · отправка недоступна: {0}</system:String>
-    <system:String x:Key="Raw.IdentityUnavailableFormat">ЗАПИСЬ · сохранение локально · идентификатор отправки недоступен: {0}</system:String>
-    <system:String x:Key="Raw.UploadDisabled">ЗАПИСЬ · сохранение локально · отправка телеметрии отключена</system:String>
-    <system:String x:Key="Raw.ConsentSaveFailedFormat">ЗАПИСЬ · сохранение локально · не удалось сохранить согласие на отправку: {0}</system:String>
-    <system:String x:Key="Raw.ConsentTitle">Разрешить отправку телеметрии</system:String>
-    <system:String x:Key="Raw.ConsentBody" xml:space="preserve">Полная телеметрия уже сохраняется локально. Она также может отправлять разработчику состояние самолёта, координаты и каналы управления. Локальная копия очереди удаляется только после подтверждения сервера.&#x0A;&#x0A;«Да» — разрешить отправку. «Нет» — продолжить только локальную запись.</system:String>
-    <system:String x:Key="Raw.Preparing">ЗАПИСЬ · сохранение локально · подготовка защищённой отправки…</system:String>
-    <system:String x:Key="Raw.LiveUploadUnavailableFormat">ЗАПИСЬ · сохранение локально · отправка недоступна: {0}</system:String>
-    <system:String x:Key="Raw.Ready">ЗАПИСЬ · сохранение локально · защищённая отправка готова</system:String>
-    <system:String x:Key="Raw.CaptureFailedFormat">Ошибка полной записи: {0}</system:String>
-    <system:String x:Key="Raw.SavedDisabledFormat">Локально сохранено кадров: {0:N0} · отправка телеметрии отключена</system:String>
-    <system:String x:Key="Raw.SavedQueuedFormat">Локально сохранено кадров: {0:N0} · поставлено в очередь на защищённую отправку</system:String>
-    <system:String x:Key="Raw.SavedUnavailableFormat">Локально сохранено кадров: {0:N0} · отправка недоступна · {1}</system:String>
+    <system:String x:Key="BugReport.Preparing">Подготовка отчёта по последней посадке…</system:String>
+    <system:String x:Key="BugReport.Queued">Отчёт об ошибке поставлен в очередь на защищённую отправку</system:String>
+    <system:String x:Key="BugReport.SavedForRetryFormat">Отчёт сохранён для автоматической повторной отправки · {0}</system:String>
+    <system:String x:Key="BugReport.FailedFormat">Не удалось подготовить отчёт об ошибке: {0}</system:String>
 
-    <system:String x:Key="Telemetry.NotConfigured">ЗАПИСЬ · сохранение локально · сервер телеметрии не настроен в этой сборке</system:String>
-    <system:String x:Key="Telemetry.RegistrationClosed">ЗАПИСЬ · сохранение локально · сервер телеметрии не принимает автоматическую регистрацию</system:String>
-    <system:String x:Key="Telemetry.RegistrationRejected">ЗАПИСЬ · сохранение локально · регистрация телеметрии отклонена или эта установка отозвана</system:String>
-    <system:String x:Key="Telemetry.EnrollmentFailedFormat">ЗАПИСЬ · сохранение локально · ошибка регистрации телеметрии ({0})</system:String>
-    <system:String x:Key="Telemetry.Ready">Защищённая отправка телеметрии готова</system:String>
-    <system:String x:Key="Telemetry.Cancelled">ЗАПИСЬ · сохранение локально · настройка телеметрии отменена</system:String>
-    <system:String x:Key="Telemetry.ReceiverUnavailableFormat">ЗАПИСЬ · сохранение локально · сервер телеметрии недоступен: {0}</system:String>
-    <system:String x:Key="Telemetry.QueueLimit">Очередь отправки достигла 256 МБ; локальная полная телеметрия продолжает записываться, файлы остаются на диске</system:String>
+    <system:String x:Key="Telemetry.NotConfigured">Сервер отчётов об ошибках не настроен в этой сборке</system:String>
+    <system:String x:Key="Telemetry.RegistrationClosed">Сервер отчётов об ошибках не принимает автоматическую регистрацию</system:String>
+    <system:String x:Key="Telemetry.RegistrationRejected">Регистрация отчётов отклонена или эта установка отозвана</system:String>
+    <system:String x:Key="Telemetry.EnrollmentFailedFormat">Ошибка регистрации отчётов ({0})</system:String>
+    <system:String x:Key="Telemetry.Ready">Защищённая отправка отчёта готова</system:String>
+    <system:String x:Key="Telemetry.Cancelled">Подготовка отчёта отменена</system:String>
+    <system:String x:Key="Telemetry.ReceiverUnavailableFormat">Сервер отчётов об ошибках недоступен: {0}</system:String>
+    <system:String x:Key="Telemetry.QueueLimit">Очередь отправки достигла 256 МБ; неотправленные файлы остаются на диске</system:String>
     <system:String x:Key="Telemetry.QueueBusy">Очередь занята; запись останется на диске до следующего запуска</system:String>
     <system:String x:Key="Telemetry.QueuedFormat">Файл {0} поставлен в очередь на защищённую отправку</system:String>
     <system:String x:Key="Telemetry.WaitingEnrollment">Запись ожидает регистрации установки</system:String>

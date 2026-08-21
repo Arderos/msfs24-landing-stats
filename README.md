@@ -29,7 +29,7 @@ behind them:
 | G-load | One value with an unspecified sampling window | Peaks are calculated in declared 150 ms and 2 s windows, bounded by the next contact |
 | Evidence | Summary values only | Synchronized black-box traces for motion, loads, controls, power, attitude, and gear |
 | Data quality | A number is shown even when its source is ambiguous | Extrapolation, fallback, latch verification, and unavailable data are identified explicitly |
-| Ownership | Often cloud-backed | Local, portable landing records; diagnostic telemetry is sent only after explicitly enabling `DEBUG RAW` |
+| Ownership | Often cloud-backed | Local, portable landing records; new diagnostic reports are created only after an explicit **Report bug** action |
 
 The result is not a landing score or a structural inspection verdict. It is an
 engineering view of what the simulator published, how the result was derived,
@@ -56,8 +56,8 @@ for the formulas, timing rules, validation traces, and known limitations.
   attitude, wind, gear compression, and rollout data.
 - Hardware pitch-input capture with automatic source matching when SimConnect
   exposes an aircraft-processed command instead of the pilot's controller axis.
-- Optional, explicitly consented full-rate diagnostic contribution with a
-  15-second pre-roll and authenticated upload.
+- One-click bug reports that securely bundle the last landing telemetry with
+  its calculated results; no full-flight recording mode is exposed in the UI.
 - Compact local landing history containing only the data used by the dashboard.
 - One-file distribution with signed automatic updates and restart.
 
@@ -124,31 +124,35 @@ Landing records are stored under:
 %LOCALAPPDATA%\MSFS Landing Stats\Landings
 ```
 
-Ordinary landing records are never uploaded. Removing a landing from the local
-history removes its compact stored record.
+Ordinary landing records are never uploaded automatically. Removing a landing
+from the local history removes its compact stored record.
 
-`DEBUG RAW` is a separate full-rate local recording mode. On first use, the
-application explains that telemetry includes aircraft state, coordinates, and
-controller/input channels and separately asks whether those captures may be
-uploaded. Saying no keeps local recording active. Saying yes registers an
-anonymous random installation ID and Windows-protected public key
-automatically. No hardware UUID is collected. Closed diagnostic chunks are
-written under:
+After a landing is analyzed, the app retains that one episode's telemetry in
+memory until the next landing sequence starts. A **Report bug** button appears
+only while that telemetry and its calculated landing result are available.
+Pressing it explicitly creates and securely queues a ZIP containing both; no
+background bug report is created, and beginning the next approach discards the
+unsubmitted in-memory telemetry.
+
+Bug reporting registers an anonymous random installation ID and
+Windows-protected public key automatically. No hardware UUID is collected.
+Queued reports are written under:
 
 ```text
 %LOCALAPPDATA%\MSFS Landing Stats\Telemetry Queue
 ```
 
-`DEBUG RAW` streams every received `SIM_FRAME` sample directly into a ZIP and
-rotates every 30,000 frames. Local capture never depends on registration or
-network success. When upload is allowed, the app signs with a per-installation
-private key protected by Windows and deletes a queue copy only after the server
-accepts it. The uploader schedules at most 256 MiB at once; excess or failed
-captures remain local and full-rate capture continues. If `DEBUG RAW` is never
-enabled, the telemetry uploader is not initialized and sends no requests.
+The app signs reports with a per-installation private key protected by Windows
+and deletes a queue copy only after the server accepts it. Failed reports remain
+local for automatic retry. Existing RAW diagnostic captures left by older builds
+use the same retry queue only when that user had previously consented to
+diagnostic uploads, and may resume automatically at startup. A previous refusal
+remains in force and causes no network request. On a new installation, the
+uploader stays inactive until **Report bug** is pressed.
 
 The receiver accepts signed, automatically enrolled installations and exact
-schema-v5 archives.
+schema-v5 archives, including user-initiated bug-report bundles with calculated
+landing results.
 It limits one upload to 16 MiB compressed and 64 MiB expanded, one installation
 to 512 MiB per day (counting rejected signed attempts too), one source address
 to 1 GiB/day, and all ingress to 4 GiB/day. The retained corpus is capped at

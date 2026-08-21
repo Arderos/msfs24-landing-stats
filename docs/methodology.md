@@ -49,9 +49,9 @@ and disabled above 3,500 ft AGL. This hysteresis avoids repeatedly switching at
 one threshold and removes the full telemetry cost during cruise.
 
 A landing episode begins at the descending 500 ft AGL gate and ends after 15
-seconds of rollout. A bounded pre-roll is retained so enabling diagnostic capture
-shortly before an event does not lose the immediately preceding samples. Pre-roll
-age uses the recorder's monotonic receipt clock, not simulation time, because the
+seconds of rollout. A bounded pre-roll ensures the episode includes the samples
+immediately preceding the gate crossing. Pre-roll age uses the recorder's
+monotonic receipt clock, not simulation time, because the
 simulation clock can freeze in a pause or jump during loading. A separate 4,096-
 sample ceiling bounds memory even if the incoming clock or frame rate is malformed.
 

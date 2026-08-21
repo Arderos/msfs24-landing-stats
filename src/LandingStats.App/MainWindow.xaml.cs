@@ -29,6 +29,8 @@ public partial class MainWindow : Window
     private readonly ApplicationSettings _settings;
     private readonly LandingRepository _repository = new LandingRepository();
     private readonly RawCaptureRepository _rawCaptureRepository = new RawCaptureRepository();
+    private readonly BugReportRepository _bugReportRepository;
+    private readonly LastLandingBugReportBuffer _lastLandingBugReport = new LastLandingBugReportBuffer();
     private readonly AirportFacilityRepository _airportFacilityRepository = new AirportFacilityRepository();
     private readonly FlightModelGeometryResolver _flightModelGeometryResolver = new FlightModelGeometryResolver();
     private readonly ReleaseUpdater _releaseUpdater = new ReleaseUpdater();
@@ -37,21 +39,23 @@ public partial class MainWindow : Window
     private readonly object _landingRepositoryGate = new object();
     private readonly object _airportFacilityRepositoryGate = new object();
     private readonly object _telemetryUploadClientGate = new object();
+    private readonly object _bugReportRetryGate = new object();
+    private readonly object _bugReportPersistenceGate = new object();
     private Task _episodePersistenceTask = Task.CompletedTask;
+    private Task _bugReportRetryTask = Task.CompletedTask;
+    private Task _bugReportPersistenceTask = Task.CompletedTask;
     private TelemetryUploadClient? _telemetryUploadClient;
     private IReadOnlyList<LandingRecord> _landings = Array.Empty<LandingRecord>();
     private IReadOnlyList<AirportFacility> _airportFacilities = Array.Empty<AirportFacility>();
     private readonly Dictionary<string, LandingRecord> _loadedDetails = new Dictionary<string, LandingRecord>(StringComparer.Ordinal);
     private HwndSource? _messageSource;
     private SimConnectLandingRecorder? _recorder;
-    private RawCaptureSession? _rawCaptureSession;
     private LandingChart[] _charts = Array.Empty<LandingChart>();
     private bool _showFullApproach;
     private int _primaryGearSeriesIndex;
     private int? _mainIsolatedSeriesIndex;
-    private bool _changingRawDebugToggle;
     private bool _changingLanguageSelection;
-    private bool _telemetryUploadAllowed;
+    private bool _bugReportSubmitting;
     private LandingRecord? _pendingDeleteRecord;
     private double? _zoomStartSeconds;
     private double? _zoomEndSeconds;
@@ -59,13 +63,14 @@ public partial class MainWindow : Window
     private string _connectionStatusKey = "Top.Waiting";
     private object[] _connectionStatusArguments = Array.Empty<object>();
     private bool _connectionStatusIsWarning;
-    private string _rawStatusKey = "Footer.UploadDisabled";
-    private object[] _rawStatusArguments = Array.Empty<object>();
-    private bool _rawStatusIsError;
+    private string _uploadStatusKey = "Footer.ReportWaiting";
+    private object[] _uploadStatusArguments = Array.Empty<object>();
+    private bool _uploadStatusIsError;
     private bool _isClosed;
 
     public MainWindow()
     {
+        _bugReportRepository = new BugReportRepository(_rawCaptureRepository.RootPath);
         _settingsRepository = new ApplicationSettingsRepository();
         _settings = _settingsRepository.Load();
         LocalizationManager.Apply(_settings.Language);
@@ -108,6 +113,10 @@ public partial class MainWindow : Window
     private async void OnWindowLoaded(object sender, RoutedEventArgs eventArgs)
     {
         ReleaseUpdater.BeginCompletedUpdateCleanup(Environment.GetCommandLineArgs());
+        if (TelemetryUploadClient.HasPendingUploadFiles(_rawCaptureRepository.RootPath))
+        {
+            StartPendingBugReportRetry();
+        }
         var version = typeof(MainWindow).Assembly.GetName().Version ?? new Version(0, 0, 0);
         var result = await _releaseUpdater.CheckAndInstallAsync(version, _lifetimeCancellation.Token);
         VersionAuthorText.ToolTip = result.Path == null ? result.Message : result.Message + "\n" + result.Path;
@@ -580,9 +589,7 @@ public partial class MainWindow : Window
             _connectionStatusKey,
             _connectionStatusArguments,
             _connectionStatusIsWarning);
-        RawDebugToggle.Content = LocalizationManager.Text(
-            RawDebugToggle.IsChecked == true ? "Footer.DebugOn" : "Footer.DebugOff");
-        SetRawStatusCore(_rawStatusKey, _rawStatusArguments, _rawStatusIsError);
+        SetUploadStatusCore(_uploadStatusKey, _uploadStatusArguments, _uploadStatusIsError);
 
         if (_pendingDeleteRecord != null)
         {
@@ -787,18 +794,19 @@ public partial class MainWindow : Window
         _messageSource?.AddHook(WindowProcedure);
         _recorder = new SimConnectLandingRecorder(handle);
         _recorder.StatusChanged += OnRecorderStatusChanged;
+        _recorder.EpisodeStarted += OnEpisodeStarted;
         _recorder.EpisodeCompleted += OnEpisodeCompleted;
         _recorder.AirportFacilitiesUpdated += OnAirportFacilitiesUpdated;
-        _recorder.RawDebugCaptureStarted += OnRawDebugCaptureStarted;
-        _recorder.RawDebugSampleReceived += OnRawDebugSampleReceived;
-        _recorder.RawDebugCaptureStopped += OnRawDebugCaptureStopped;
         _recorder.AircraftGroundStateChanged += OnAircraftGroundStateChanged;
         _recorder.SeedAirportFacilities(_airportFacilities);
         _recorder.Start();
-        if (RawDebugToggle.IsChecked == true)
-        {
-            _recorder.SetRawDebugEnabled(true);
-        }
+    }
+
+    private void OnEpisodeStarted(object? sender, LandingEpisodeStartedEventArgs eventArgs)
+    {
+        _lastLandingBugReport.BeginEpisode(eventArgs.EpisodeId);
+        SetUploadStatus("Footer.ReportWaiting");
+        RefreshBugReportButton();
     }
 
     private IntPtr WindowProcedure(IntPtr windowHandle, int message, IntPtr wordParameter, IntPtr longParameter, ref bool handled)
@@ -953,6 +961,20 @@ public partial class MainWindow : Window
                 SetConnectionWarning("Recorder.NoTouchdown");
                 return;
             }
+
+            if (_lastLandingBugReport.TryRetain(new BugReportCandidate(
+                eventArgs.EpisodeId,
+                eventArgs.Samples,
+                eventArgs.Simulator,
+                eventArgs.AircraftTitle,
+                eventArgs.AircraftType,
+                eventArgs.AircraftModel,
+                eventArgs.ControlInputSources,
+                processed.Records)))
+            {
+                SetUploadStatus("Footer.ReportReady");
+            }
+            RefreshBugReportButton();
 
             foreach (var record in processed.Records)
             {
@@ -1179,197 +1201,139 @@ public partial class MainWindow : Window
             .ToArray();
     }
 
-    private async void OnRawDebugModeChanged(object sender, RoutedEventArgs eventArgs)
+    private async void OnReportBugClick(object sender, RoutedEventArgs eventArgs)
     {
-        if (_changingRawDebugToggle)
+        var candidate = _lastLandingBugReport.Available();
+        if (candidate == null || _bugReportSubmitting)
         {
             return;
         }
-        var enabled = RawDebugToggle.IsChecked == true;
-        RawDebugToggle.Content = LocalizationManager.Text(enabled ? "Footer.DebugOn" : "Footer.DebugOff");
-        if (!enabled)
+
+        _bugReportSubmitting = true;
+        RefreshBugReportButton();
+        SetUploadStatus("BugReport.Preparing");
+        string? path = null;
+        try
         {
-            var wasEnabled = _recorder?.RawDebugEnabled == true;
-            _recorder?.SetRawDebugEnabled(false);
-            if (!wasEnabled)
+            // Persist first. Network preparation must never be able to destroy
+            // the only copy of a user-initiated report when the app closes or
+            // the next landing sequence replaces the in-memory candidate.
+            Task<string> persistenceTask;
+            lock (_bugReportPersistenceGate)
             {
-                SetRawStatus("Raw.Disabled");
+                persistenceTask = Task.Run(() => PersistBugReport(
+                    _bugReportRepository,
+                    _lastLandingBugReport,
+                    candidate,
+                    DateTime.UtcNow));
+                _bugReportPersistenceTask = persistenceTask;
             }
-            return;
-        }
-
-        _recorder?.SetRawDebugEnabled(true);
-        SetRawStatus(_recorder == null ? "Raw.Armed" : "Raw.Live");
-
-        TelemetryUploadClient uploadClient;
-        try
-        {
-            uploadClient = await Task.Run(EnsureTelemetryUploadClient);
-        }
-        catch (Exception exception)
-        {
-            SetRawError("Raw.UploadUnavailableFormat", exception.Message);
-            return;
-        }
-
-        bool consentAccepted;
-        try
-        {
-            consentAccepted = await Task.Run(() => uploadClient.ConsentAccepted);
-        }
-        catch (Exception exception)
-        {
-            _telemetryUploadAllowed = false;
-            SetRawError("Raw.IdentityUnavailableFormat", exception.Message);
-            return;
-        }
-
-        if (!consentAccepted)
-        {
-            var consent = MessageBox.Show(
-                this,
-                LocalizationManager.Text("Raw.ConsentBody"),
-                LocalizationManager.Text("Raw.ConsentTitle"),
-                MessageBoxButton.YesNo,
-                MessageBoxImage.Warning);
-            if (consent != MessageBoxResult.Yes)
+            path = await persistenceTask;
+            if (_lifetimeCancellation.IsCancellationRequested)
             {
-                _telemetryUploadAllowed = false;
-                SetRawStatus("Raw.UploadDisabled");
                 return;
             }
+
+            TelemetryUploadClient uploadClient;
             try
             {
-                await Task.Run(uploadClient.AcceptConsent);
+                uploadClient = await Task.Run(EnsureTelemetryUploadClient);
             }
-            catch (Exception exception)
+            catch (Exception)
             {
-                _telemetryUploadAllowed = false;
-                SetRawError("Raw.ConsentSaveFailedFormat", exception.Message);
+                SetUploadStatus("BugReport.SavedForRetryFormat", System.IO.Path.GetFileName(path));
                 return;
             }
-        }
-        _telemetryUploadAllowed = true;
 
-        SetRawStatus("Raw.Preparing");
-        TelemetryPreparationResult preparation;
-        try
-        {
-            preparation = await uploadClient.PrepareAsync(_lifetimeCancellation.Token);
-        }
-        catch (OperationCanceledException)
-        {
-            return;
-        }
-        catch (Exception exception)
-        {
-            if (RawDebugToggle.IsChecked == true)
+            var preparation = await uploadClient.PrepareAsync(_lifetimeCancellation.Token);
+            if (preparation.State != TelemetryPreparationState.Ready)
             {
-                SetRawError("Raw.LiveUploadUnavailableFormat", exception.Message);
+                SetUploadStatus("BugReport.SavedForRetryFormat", System.IO.Path.GetFileName(path));
+                StartPendingBugReportRetry(uploadClient);
+                return;
             }
-            return;
-        }
-        if (RawDebugToggle.IsChecked != true)
-        {
-            return;
-        }
-        if (preparation.State == TelemetryPreparationState.Ready)
-        {
-            SetRawStatus("Raw.Ready");
-        }
-        else
-        {
-            SetRawError(preparation.MessageKey, preparation.MessageArguments);
-        }
-    }
 
-    private void OnRawDebugCaptureStarted(object? sender, RawDebugCaptureStartedEventArgs eventArgs)
-    {
-        try
-        {
-            StopRawCaptureSession();
-            _rawCaptureSession = _rawCaptureRepository.StartCapture(
-                eventArgs.InitialSamples,
-                eventArgs.Simulator,
-                eventArgs.AircraftTitle,
-                eventArgs.AircraftType,
-                eventArgs.AircraftModel,
-                eventArgs.ControlInputSources,
-                eventArgs.StartedUtc);
-            _rawCaptureSession.ChunkCompleted += OnRawCaptureChunkCompleted;
-            _rawCaptureSession.Failed += OnRawCaptureFailed;
-            if (_rawCaptureSession.Failure != null)
+            // Queue the newly submitted report before scanning any older
+            // backlog. This keeps user-initiated reports ahead of legacy RAW.
+            var queued = uploadClient.Enqueue(path);
+            uploadClient.EnqueueExisting();
+            if (queued)
             {
-                OnRawCaptureFailed(_rawCaptureSession.Failure);
-            }
-            SetRawStatus("Raw.Live");
-        }
-        catch (Exception exception)
-        {
-            SetRawError("Raw.CaptureFailedFormat", exception.Message);
-        }
-    }
-
-    private void OnRawDebugSampleReceived(object? sender, RawDebugSampleEventArgs eventArgs)
-    {
-        _rawCaptureSession?.Write(eventArgs.Sample);
-    }
-
-    private void OnRawDebugCaptureStopped(object? sender, EventArgs eventArgs)
-    {
-        StopRawCaptureSession();
-        SetRawStatus("Raw.Disabled");
-    }
-
-    private void StopRawCaptureSession()
-    {
-        var session = _rawCaptureSession;
-        _rawCaptureSession = null;
-        if (session == null)
-        {
-            return;
-        }
-
-        try
-        {
-            session.Dispose();
-        }
-        catch (Exception exception)
-        {
-            SetRawError("Raw.CaptureFailedFormat", exception.Message);
-        }
-        finally
-        {
-            session.ChunkCompleted -= OnRawCaptureChunkCompleted;
-            session.Failed -= OnRawCaptureFailed;
-        }
-    }
-
-    private void OnRawCaptureChunkCompleted(object? sender, RawCaptureChunkEventArgs eventArgs)
-    {
-        var uploadAllowed = _telemetryUploadAllowed;
-        var queued = uploadAllowed && _telemetryUploadClient?.Enqueue(eventArgs.Path) == true;
-        Dispatcher.BeginInvoke(new Action(() =>
-        {
-            if (!uploadAllowed)
-            {
-                SetRawStatus("Raw.SavedDisabledFormat", eventArgs.SampleCount);
-            }
-            else if (queued)
-            {
-                SetRawStatus("Raw.SavedQueuedFormat", eventArgs.SampleCount);
+                SetUploadStatus("BugReport.Queued");
             }
             else
             {
-                SetRawError("Raw.SavedUnavailableFormat", eventArgs.SampleCount, eventArgs.Path);
+                SetUploadStatus("BugReport.SavedForRetryFormat", System.IO.Path.GetFileName(path));
             }
-        }));
+        }
+        catch (OperationCanceledException) when (_lifetimeCancellation.IsCancellationRequested)
+        {
+            // Application shutdown owns cancellation and presentation teardown.
+        }
+        catch (Exception exception)
+        {
+            if (path != null && System.IO.File.Exists(path))
+            {
+                _lastLandingBugReport.MarkSubmitted(candidate.EpisodeId);
+                SetUploadStatus("BugReport.SavedForRetryFormat", System.IO.Path.GetFileName(path));
+            }
+            else
+            {
+                SetUploadError("BugReport.FailedFormat", exception.Message);
+            }
+        }
+        finally
+        {
+            _bugReportSubmitting = false;
+            if (!_lastLandingBugReport.IsActiveEpisode(candidate.EpisodeId))
+            {
+                SetUploadStatus(
+                    _lastLandingBugReport.Available() == null
+                        ? "Footer.ReportWaiting"
+                        : "Footer.ReportReady");
+            }
+            RefreshBugReportButton();
+        }
+    }
+
+    internal static string PersistBugReport(
+        BugReportRepository repository,
+        LastLandingBugReportBuffer buffer,
+        BugReportCandidate candidate,
+        DateTime createdUtc)
+    {
+        var path = repository.Create(candidate, createdUtc);
+        buffer.MarkSubmitted(candidate.EpisodeId);
+        return path;
+    }
+
+    internal static void DrainBugReportPersistence(Task persistenceTask)
+    {
+        persistenceTask.GetAwaiter().GetResult();
+    }
+
+    private void RefreshBugReportButton()
+    {
+        if (ReportBugButton == null)
+        {
+            return;
+        }
+
+        var available = _lastLandingBugReport.Available() != null;
+        ReportBugButton.Visibility = available ? Visibility.Visible : Visibility.Collapsed;
+        var enabled = !_bugReportSubmitting && available;
+        ReportBugButton.IsEnabled = enabled;
+        ReportBugButton.Opacity = enabled ? 1.0 : 0.42;
     }
 
     private TelemetryUploadClient EnsureTelemetryUploadClient()
     {
         lock (_telemetryUploadClientGate)
         {
+            if (_isClosed || _lifetimeCancellation.IsCancellationRequested)
+            {
+                throw new OperationCanceledException("The application is closing.");
+            }
             if (_telemetryUploadClient != null)
             {
                 return _telemetryUploadClient;
@@ -1382,61 +1346,64 @@ public partial class MainWindow : Window
         }
     }
 
+    private void StartPendingBugReportRetry(TelemetryUploadClient? existingClient = null)
+    {
+        var cancellationToken = _lifetimeCancellation.Token;
+        lock (_bugReportRetryGate)
+        {
+            if (!_bugReportRetryTask.IsCompleted || cancellationToken.IsCancellationRequested)
+            {
+                return;
+            }
+
+            _bugReportRetryTask = Task.Run(async () =>
+            {
+                try
+                {
+                    var client = existingClient ?? EnsureTelemetryUploadClient();
+                    await client.PreparePendingReportsUntilReadyAsync(cancellationToken)
+                        .ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    // Normal application shutdown.
+                }
+            }, cancellationToken);
+        }
+    }
+
     private void OnTelemetryUploadStatusChanged(object? sender, TelemetryUploadStatusEventArgs eventArgs)
     {
         Dispatcher.BeginInvoke(new Action(() =>
         {
-            SetRawStatusCore(eventArgs.MessageKey, eventArgs.MessageArguments, eventArgs.IsError);
+            if (_lastLandingBugReport.Available() != null)
+            {
+                SetUploadStatus("Footer.ReportReady");
+            }
+            else
+            {
+                SetUploadStatusCore(eventArgs.MessageKey, eventArgs.MessageArguments, eventArgs.IsError);
+            }
         }));
     }
 
-    private void SetRawDebugToggle(bool enabled)
+    private void SetUploadStatus(string key, params object[] arguments)
     {
-        _changingRawDebugToggle = true;
-        try
-        {
-            RawDebugToggle.IsChecked = enabled;
-            RawDebugToggle.Content = LocalizationManager.Text(enabled ? "Footer.DebugOn" : "Footer.DebugOff");
-            if (!enabled)
-            {
-                _recorder?.SetRawDebugEnabled(false);
-            }
-        }
-        finally
-        {
-            _changingRawDebugToggle = false;
-        }
+        SetUploadStatusCore(key, arguments, false);
     }
 
-    private void OnRawCaptureFailed(Exception exception)
+    private void SetUploadError(string key, params object[] arguments)
     {
-        Dispatcher.BeginInvoke(new Action(() =>
-        {
-            if (RawDebugToggle.IsChecked == true)
-            {
-                RawDebugToggle.IsChecked = false;
-            }
-            SetRawError("Raw.CaptureFailedFormat", exception.Message);
-        }));
+        SetUploadStatusCore(key, arguments, true);
     }
 
-    private void SetRawStatus(string key, params object[] arguments)
+    private void SetUploadStatusCore(string key, object[]? arguments, bool isError)
     {
-        SetRawStatusCore(key, arguments, false);
-    }
-
-    private void SetRawError(string key, params object[] arguments)
-    {
-        SetRawStatusCore(key, arguments, true);
-    }
-
-    private void SetRawStatusCore(string key, object[]? arguments, bool isError)
-    {
-        _rawStatusKey = key;
-        _rawStatusArguments = arguments ?? Array.Empty<object>();
-        _rawStatusIsError = isError;
-        RawDebugStatusText.Text = LocalizationManager.Format(key, _rawStatusArguments);
-        RawDebugStatusText.Foreground = isError ? Brush("#FF8A6A") : Brush("#AEB8C2");
+        _uploadStatusKey = key;
+        _uploadStatusArguments = arguments ?? Array.Empty<object>();
+        _uploadStatusIsError = isError;
+        UploadStatusText.Text = LocalizationManager.Format(key, _uploadStatusArguments);
+        UploadStatusText.Foreground = isError ? Brush("#FF8A6A") : Brush("#AEB8C2");
     }
 
     private static int PrimaryGearSeriesIndex(LandingRecord record)
@@ -1525,11 +1492,9 @@ public partial class MainWindow : Window
         {
             _recorder.Dispose();
             _recorder.StatusChanged -= OnRecorderStatusChanged;
+            _recorder.EpisodeStarted -= OnEpisodeStarted;
             _recorder.EpisodeCompleted -= OnEpisodeCompleted;
             _recorder.AirportFacilitiesUpdated -= OnAirportFacilitiesUpdated;
-            _recorder.RawDebugCaptureStarted -= OnRawDebugCaptureStarted;
-            _recorder.RawDebugSampleReceived -= OnRawDebugSampleReceived;
-            _recorder.RawDebugCaptureStopped -= OnRawDebugCaptureStopped;
             _recorder = null;
         }
 
@@ -1552,12 +1517,34 @@ public partial class MainWindow : Window
             // must continue even if disk I/O or analysis failed.
         }
 
-        StopRawCaptureSession();
-        if (_telemetryUploadClient != null)
+        Task pendingBugReportPersistence;
+        lock (_bugReportPersistenceGate)
         {
-            _telemetryUploadClient.StatusChanged -= OnTelemetryUploadStatusChanged;
-            _telemetryUploadClient.Dispose();
+            pendingBugReportPersistence = _bugReportPersistenceTask;
+        }
+        try
+        {
+            // The ZIP write is the durability boundary for a user-initiated
+            // report. Network retry stays asynchronous, but closing the app
+            // cannot terminate the atomic local write halfway through.
+            DrainBugReportPersistence(pendingBugReportPersistence);
+        }
+        catch
+        {
+            // The click handler owns user-facing diagnostics. Shutdown must
+            // continue after a genuine storage failure.
+        }
+
+        TelemetryUploadClient? telemetryUploadClient;
+        lock (_telemetryUploadClientGate)
+        {
+            telemetryUploadClient = _telemetryUploadClient;
             _telemetryUploadClient = null;
+        }
+        if (telemetryUploadClient != null)
+        {
+            telemetryUploadClient.StatusChanged -= OnTelemetryUploadStatusChanged;
+            telemetryUploadClient.Dispose();
         }
 
         if (_messageSource != null)

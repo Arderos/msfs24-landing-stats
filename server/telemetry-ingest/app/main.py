@@ -304,6 +304,7 @@ async def upload_capture(request: Request) -> dict[str, object]:
                     facts.sample_count,
                     schema,
                     app_version,
+                    facts.capture_kind,
                     source_hash,
                 ),
             )

@@ -2,6 +2,38 @@
 
 All notable changes to MSFS Landing Stats are documented in this file.
 
+## [0.8.1] - 2026-08-21
+
+### Added
+
+- Added a user-initiated **Report bug** workflow. The button appears only while
+  the latest analyzed landing still has reportable telemetry and securely
+  bundles that telemetry with the exact calculated landing result.
+- Added backwards-compatible server ingestion for the new three-member bug
+  report archive while retaining support for older RAW diagnostic captures.
+
+### Changed
+
+- Removed the full-flight RAW telemetry toggle from the interface. Bug reports
+  now retain only the latest landing episode until the next sequence begins.
+- Prioritized newly submitted bug reports ahead of consented legacy RAW files
+  and made the upload queue drain its durable backlog as capacity becomes free.
+
+### Fixed
+
+- Persisted bug reports before any network or enrollment attempt, so an offline
+  submission remains on disk and retries automatically after recovery or an app
+  restart; expired enrollment is renewed with rate-compatible backoff.
+- Waited for the local report ZIP to finish during application shutdown, so an
+  immediate close cannot leave the only copy half-written.
+- Enforced the upload queue's file-count and 256 MiB limits before scheduling,
+  and removed an enrollment race that could strand an existing capture.
+- Preserved an older user's explicit refusal to upload full-flight RAW data when
+  submitting a new last-landing bug report.
+- Rejected malformed archives without `session.txt` as validation errors instead
+  of allowing an internal server error.
+- Prevented long upload status paths from crowding the application footer.
+
 ## [0.8.0] - 2026-08-17
 
 ### Added

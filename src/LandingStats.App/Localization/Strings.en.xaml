@@ -120,10 +120,10 @@
     <system:String x:Key="Unit.KilogramsFormat">{0:N0} kg</system:String>
 
     <system:String x:Key="Footer.Window">Window: 500 ft gate → t+15 s</system:String>
-    <system:String x:Key="Footer.UploadDisabled">Telemetry upload disabled</system:String>
-    <system:String x:Key="Footer.DebugOff">FULL TELEMETRY · OFF</system:String>
-    <system:String x:Key="Footer.DebugOn">FULL TELEMETRY · ON</system:String>
-    <system:String x:Key="Footer.DebugHelp">Not intended for long flights. Records full-rate telemetry locally and, when available, uploads it to the maintainer. Upload failures never stop the local recording, so local files can continue growing when upload is unavailable.</system:String>
+    <system:String x:Key="Footer.ReportWaiting">Bug reporting becomes available after a recorded landing</system:String>
+    <system:String x:Key="Footer.ReportReady">Latest landing is ready to report</system:String>
+    <system:String x:Key="Footer.ReportBug">REPORT BUG</system:String>
+    <system:String x:Key="Footer.ReportBugHelp">Securely uploads the retained telemetry and calculated result for the latest landing. The report includes aircraft state, position and controller/input channels.</system:String>
 
     <system:String x:Key="Delete.Title">DELETE LANDING?</system:String>
     <system:String x:Key="Delete.Body">This removes the saved landing and its recorded profile. This cannot be undone.</system:String>
@@ -205,31 +205,19 @@
     <system:String x:Key="Delete.ContactSuffixFormat" xml:space="preserve"> · contact {0}/{1}</system:String>
     <system:String x:Key="Delete.ErrorFormat">Could not delete this landing. {0}</system:String>
 
-    <system:String x:Key="Raw.Disabled">Full-rate capture is disabled</system:String>
-    <system:String x:Key="Raw.Armed">Local full-rate capture armed · starts after SimConnect initializes</system:String>
-    <system:String x:Key="Raw.Live">LIVE · saved locally · every SIM_FRAME sample · 15 s pre-roll</system:String>
-    <system:String x:Key="Raw.UploadUnavailableFormat">Local full telemetry is active · upload unavailable: {0}</system:String>
-    <system:String x:Key="Raw.IdentityUnavailableFormat">LIVE · saved locally · upload identity unavailable: {0}</system:String>
-    <system:String x:Key="Raw.UploadDisabled">LIVE · saved locally · telemetry upload is disabled</system:String>
-    <system:String x:Key="Raw.ConsentSaveFailedFormat">LIVE · saved locally · upload consent could not be saved: {0}</system:String>
-    <system:String x:Key="Raw.ConsentTitle">Enable telemetry upload</system:String>
-    <system:String x:Key="Raw.ConsentBody" xml:space="preserve">Full telemetry is already recording locally. It can also send full-rate flight telemetry to the MSFS Landing Stats maintainer, including aircraft state, coordinates and controller/input channels. A local queue copy is removed only after the server accepts it.&#x0A;&#x0A;Yes: allow upload. No: keep recording locally only.</system:String>
-    <system:String x:Key="Raw.Preparing">LIVE · saved locally · preparing secure upload…</system:String>
-    <system:String x:Key="Raw.LiveUploadUnavailableFormat">LIVE · saved locally · upload unavailable: {0}</system:String>
-    <system:String x:Key="Raw.Ready">LIVE · saved locally · secure upload ready</system:String>
-    <system:String x:Key="Raw.CaptureFailedFormat">Raw capture failed: {0}</system:String>
-    <system:String x:Key="Raw.SavedDisabledFormat">Saved {0:N0} frames locally · telemetry upload is disabled</system:String>
-    <system:String x:Key="Raw.SavedQueuedFormat">Saved {0:N0} frames locally · queued for secure upload</system:String>
-    <system:String x:Key="Raw.SavedUnavailableFormat">Saved {0:N0} frames locally · upload unavailable · {1}</system:String>
+    <system:String x:Key="BugReport.Preparing">Preparing the latest landing bug report…</system:String>
+    <system:String x:Key="BugReport.Queued">Bug report queued for secure upload</system:String>
+    <system:String x:Key="BugReport.SavedForRetryFormat">Bug report saved for automatic retry · {0}</system:String>
+    <system:String x:Key="BugReport.FailedFormat">Could not prepare the bug report: {0}</system:String>
 
-    <system:String x:Key="Telemetry.NotConfigured">LIVE · saved locally · telemetry receiver is not configured in this build</system:String>
-    <system:String x:Key="Telemetry.RegistrationClosed">LIVE · saved locally · telemetry receiver is not accepting automatic registration</system:String>
-    <system:String x:Key="Telemetry.RegistrationRejected">LIVE · saved locally · telemetry registration was rejected or this installation was revoked</system:String>
-    <system:String x:Key="Telemetry.EnrollmentFailedFormat">LIVE · saved locally · telemetry enrollment failed ({0})</system:String>
-    <system:String x:Key="Telemetry.Ready">Secure telemetry upload is ready</system:String>
-    <system:String x:Key="Telemetry.Cancelled">LIVE · saved locally · telemetry setup was cancelled</system:String>
-    <system:String x:Key="Telemetry.ReceiverUnavailableFormat">LIVE · saved locally · telemetry receiver is unavailable: {0}</system:String>
-    <system:String x:Key="Telemetry.QueueLimit">Telemetry upload queue reached 256 MB; local full telemetry continues and queued captures stay on disk</system:String>
+    <system:String x:Key="Telemetry.NotConfigured">Bug-report receiver is not configured in this build</system:String>
+    <system:String x:Key="Telemetry.RegistrationClosed">Bug-report receiver is not accepting automatic registration</system:String>
+    <system:String x:Key="Telemetry.RegistrationRejected">Bug-report registration was rejected or this installation was revoked</system:String>
+    <system:String x:Key="Telemetry.EnrollmentFailedFormat">Bug-report registration failed ({0})</system:String>
+    <system:String x:Key="Telemetry.Ready">Secure bug-report upload is ready</system:String>
+    <system:String x:Key="Telemetry.Cancelled">Bug-report setup was cancelled</system:String>
+    <system:String x:Key="Telemetry.ReceiverUnavailableFormat">Bug-report receiver is unavailable: {0}</system:String>
+    <system:String x:Key="Telemetry.QueueLimit">The upload queue has reached 256 MB; unsent files remain on disk</system:String>
     <system:String x:Key="Telemetry.QueueBusy">Telemetry queue is busy; capture remains on disk for the next start</system:String>
     <system:String x:Key="Telemetry.QueuedFormat">Queued {0} for secure upload</system:String>
     <system:String x:Key="Telemetry.WaitingEnrollment">Telemetry capture is waiting for enrollment</system:String>
