@@ -8,11 +8,32 @@ namespace LandingStats.App;
 
 public partial class App : Application
 {
+    private ApplicationInstanceGuard? _instanceGuard;
+
     protected override void OnStartup(StartupEventArgs e)
     {
+        if (!ApplicationInstanceGuard.TryAcquire(out _instanceGuard))
+        {
+            ShutdownMode = ShutdownMode.OnExplicitShutdown;
+            Shutdown(0);
+            return;
+        }
+
         DispatcherUnhandledException += OnDispatcherUnhandledException;
         AppDomain.CurrentDomain.UnhandledException += OnDomainUnhandledException;
         base.OnStartup(e);
+
+        MainWindow = new MainWindow();
+        MainWindow.Show();
+    }
+
+    protected override void OnExit(ExitEventArgs e)
+    {
+        DispatcherUnhandledException -= OnDispatcherUnhandledException;
+        AppDomain.CurrentDomain.UnhandledException -= OnDomainUnhandledException;
+        _instanceGuard?.Dispose();
+        _instanceGuard = null;
+        base.OnExit(e);
     }
 
     private static void OnDispatcherUnhandledException(object sender, DispatcherUnhandledExceptionEventArgs eventArgs)

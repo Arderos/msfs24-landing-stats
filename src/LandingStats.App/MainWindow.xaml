@@ -164,6 +164,78 @@
                 </Setter.Value>
             </Setter>
         </Style>
+        <Style x:Key="AccentButtonStyle" TargetType="{x:Type Button}">
+            <Setter Property="Foreground" Value="#160C08" />
+            <Setter Property="Background" Value="{StaticResource AccentBrush}" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Padding" Value="18,8" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="FontSize" Value="11" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type Button}">
+                        <Border x:Name="Chrome" Background="{TemplateBinding Background}"
+                                CornerRadius="7" Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Chrome" Property="Background" Value="#FF9368" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="Chrome" Property="Background" Value="#E96836" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Opacity" Value="0.5" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <Style x:Key="SettingsToggleStyle" TargetType="{x:Type CheckBox}">
+            <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type CheckBox}">
+                        <Grid Background="Transparent">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="38" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <Border x:Name="Track" Width="34" Height="19"
+                                    HorizontalAlignment="Left" VerticalAlignment="Center"
+                                    Background="#2B2926" BorderBrush="#4A4540"
+                                    BorderThickness="1" CornerRadius="10">
+                                <Ellipse x:Name="Thumb" Width="13" Height="13" Margin="2"
+                                         HorizontalAlignment="Left" Fill="{StaticResource MutedTextBrush}" />
+                            </Border>
+                            <ContentPresenter Grid.Column="1" Margin="10,0,0,0"
+                                              VerticalAlignment="Center" />
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="Track" Property="Background" Value="{StaticResource AccentSoftBrush}" />
+                                <Setter TargetName="Track" Property="BorderBrush" Value="{StaticResource AccentBrush}" />
+                                <Setter TargetName="Thumb" Property="Fill" Value="{StaticResource AccentBrush}" />
+                                <Setter TargetName="Thumb" Property="HorizontalAlignment" Value="Right" />
+                            </Trigger>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Track" Property="BorderBrush" Value="{StaticResource TextBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Opacity" Value="0.5" />
+                                <Setter Property="Cursor" Value="Arrow" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
         <Style x:Key="HistoryScrollBarStyle" TargetType="{x:Type ScrollBar}">
             <Setter Property="Width" Value="11" />
             <Setter Property="MinWidth" Value="11" />
@@ -1015,6 +1087,54 @@
             </Border>
         </Grid>
 
+        <Grid x:Name="AutoStartPromptOverlay"
+              Grid.RowSpan="3" Grid.ColumnSpan="2"
+              Panel.ZIndex="120"
+              Background="#B8000000"
+              Visibility="Collapsed"
+              Focusable="True"
+              KeyboardNavigation.TabNavigation="Cycle">
+            <Border Width="470"
+                    MaxWidth="470"
+                    Padding="24"
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Center"
+                    Background="{StaticResource SurfaceRaisedBrush}"
+                    BorderBrush="#3A3531"
+                    BorderThickness="1"
+                    CornerRadius="10">
+                <StackPanel>
+                    <Border Width="38" Height="38" HorizontalAlignment="Left"
+                            Background="{StaticResource AccentSoftBrush}" CornerRadius="19">
+                        <TextBlock Text="&#xE7E8;" FontFamily="Segoe MDL2 Assets" FontSize="17"
+                                   Foreground="{StaticResource AccentBrush}"
+                                   HorizontalAlignment="Center" VerticalAlignment="Center" />
+                    </Border>
+                    <TextBlock Text="{DynamicResource AutoStart.Title}"
+                               FontSize="18" FontWeight="SemiBold" Margin="0,17,0,0" />
+                    <TextBlock Text="{DynamicResource AutoStart.Body}"
+                               Foreground="{StaticResource MutedTextBrush}"
+                               FontSize="12" TextWrapping="Wrap" LineHeight="19" Margin="0,9,0,0" />
+                    <TextBlock x:Name="AutoStartPromptErrorText"
+                               Visibility="Collapsed"
+                               Foreground="{StaticResource DangerBrush}"
+                               FontSize="11" TextWrapping="Wrap" Margin="0,14,0,0" />
+                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,22,0,0">
+                        <Button x:Name="DeclineAutoStartButton"
+                                Content="{DynamicResource AutoStart.NotNow}"
+                                Height="34" Margin="0,0,9,0"
+                                Style="{StaticResource OutlineButtonStyle}"
+                                Click="OnDeclineAutoStartClick" />
+                        <Button x:Name="EnableAutoStartButton"
+                                Content="{DynamicResource AutoStart.Enable}"
+                                Height="34"
+                                Style="{StaticResource AccentButtonStyle}"
+                                Click="OnEnableAutoStartClick" />
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+        </Grid>
+
         <Grid x:Name="SettingsOverlay"
               Grid.RowSpan="3" Grid.ColumnSpan="2"
               Panel.ZIndex="110"
@@ -1083,6 +1203,29 @@
                             <TextBlock x:Name="SettingsAutomaticLanguageText"
                                        Foreground="{StaticResource SubtleTextBrush}"
                                        FontSize="10" Margin="0,11,0,0" />
+                        </StackPanel>
+                    </Border>
+
+                    <Border Background="{StaticResource SurfaceBrush}" CornerRadius="8"
+                            BorderBrush="{StaticResource BorderBrush}" BorderThickness="1"
+                            Padding="16" Margin="0,12,0,0">
+                        <StackPanel>
+                            <TextBlock Text="{DynamicResource Settings.AutoStart}"
+                                       Style="{StaticResource SectionLabelStyle}"
+                                       Foreground="{StaticResource LabelTextBrush}" />
+                            <TextBlock Text="{DynamicResource Settings.AutoStartBody}"
+                                       Foreground="{StaticResource MutedTextBrush}"
+                                       FontSize="11" LineHeight="17" TextWrapping="Wrap" Margin="0,7,0,0" />
+                            <CheckBox x:Name="SettingsAutoStartCheckBox"
+                                      Content="{DynamicResource Settings.AutoStartToggle}"
+                                      Style="{StaticResource SettingsToggleStyle}"
+                                      Margin="0,15,0,0"
+                                      Checked="OnAutoStartSelectionChanged"
+                                      Unchecked="OnAutoStartSelectionChanged" />
+                            <TextBlock x:Name="SettingsAutoStartStateText"
+                                       Foreground="{StaticResource SubtleTextBrush}"
+                                       FontFamily="Cascadia Mono, Consolas"
+                                       FontSize="9" TextWrapping="Wrap" Margin="0,11,0,0" />
                         </StackPanel>
                     </Border>
 

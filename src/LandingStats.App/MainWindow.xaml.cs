@@ -27,6 +27,7 @@ public partial class MainWindow : Window
 {
     private readonly ApplicationSettingsRepository _settingsRepository;
     private readonly ApplicationSettings _settings;
+    private readonly SimulatorAutoStartManager _autoStartManager = new SimulatorAutoStartManager();
     private readonly LandingRepository _repository = new LandingRepository();
     private readonly RawCaptureRepository _rawCaptureRepository = new RawCaptureRepository();
     private readonly BugReportRepository _bugReportRepository;
@@ -55,6 +56,7 @@ public partial class MainWindow : Window
     private int _primaryGearSeriesIndex;
     private int? _mainIsolatedSeriesIndex;
     private bool _changingLanguageSelection;
+    private bool _changingAutoStartSelection;
     private bool _bugReportSubmitting;
     private LandingRecord? _pendingDeleteRecord;
     private double? _zoomStartSeconds;
@@ -66,6 +68,8 @@ public partial class MainWindow : Window
     private string _uploadStatusKey = "Footer.ReportWaiting";
     private object[] _uploadStatusArguments = Array.Empty<object>();
     private bool _uploadStatusIsError;
+    private int _autoStartProfileCount;
+    private string? _autoStartErrorDetail;
     private bool _isClosed;
 
     public MainWindow()
@@ -125,12 +129,15 @@ public partial class MainWindow : Window
             VersionAuthorRun.Text += LocalizationManager.Format("Update.StatusUpdatingFormat", result.Version);
             VersionAuthorText.Foreground = Brush("#8FD6A8");
             Application.Current.Shutdown();
+            return;
         }
         else if (result.State == ReleaseUpdateState.Rejected)
         {
             VersionAuthorRun.Text += LocalizationManager.Text("Update.StatusRejected");
             VersionAuthorText.Foreground = Brush("#FF8A6A");
         }
+
+        InitializeAutoStartSetting();
     }
 
     private void LoadHistory()
@@ -468,8 +475,7 @@ public partial class MainWindow : Window
             HideDeleteLandingConfirmation();
         }
 
-        SettingsErrorText.Text = string.Empty;
-        SettingsErrorText.Visibility = Visibility.Collapsed;
+        RefreshAutoStartErrorPresentation();
         SetLanguageSelection(_settings.Language);
         RefreshSettingsPresentation();
         SettingsOverlay.Visibility = Visibility.Visible;
@@ -536,6 +542,155 @@ public partial class MainWindow : Window
         RefreshLocalizedPresentation();
     }
 
+    private void OnAutoStartSelectionChanged(object sender, RoutedEventArgs eventArgs)
+    {
+        if (_changingAutoStartSelection || !IsLoaded || sender is not CheckBox checkBox)
+        {
+            return;
+        }
+
+        var enabled = checkBox.IsChecked == true;
+        if (_settings.StartWithSimulator.HasValue && _settings.StartWithSimulator.Value == enabled)
+        {
+            return;
+        }
+
+        if (!ApplyAutoStartPreference(enabled))
+        {
+            SetAutoStartSelection(_settings.StartWithSimulator == true);
+        }
+    }
+
+    private void OnEnableAutoStartClick(object sender, RoutedEventArgs eventArgs)
+    {
+        SetAutoStartPromptBusy(true);
+        if (ApplyAutoStartPreference(true))
+        {
+            HideAutoStartPrompt();
+        }
+        else
+        {
+            SetAutoStartPromptBusy(false);
+        }
+    }
+
+    private void OnDeclineAutoStartClick(object sender, RoutedEventArgs eventArgs)
+    {
+        SetAutoStartPromptBusy(true);
+        if (ApplyAutoStartPreference(false))
+        {
+            HideAutoStartPrompt();
+        }
+        else
+        {
+            SetAutoStartPromptBusy(false);
+        }
+    }
+
+    private void InitializeAutoStartSetting()
+    {
+        if (!_settings.StartWithSimulator.HasValue)
+        {
+            ShowAutoStartPrompt();
+            return;
+        }
+
+        try
+        {
+            var result = _autoStartManager.SetEnabled(_settings.StartWithSimulator.Value);
+            _autoStartProfileCount = result.ConfigurationPaths.Count;
+            _autoStartErrorDetail = null;
+        }
+        catch (Exception exception)
+        {
+            _autoStartErrorDetail = exception.Message;
+        }
+
+        RefreshSettingsPresentation();
+    }
+
+    private bool ApplyAutoStartPreference(bool enabled)
+    {
+        var previous = _settings.StartWithSimulator;
+        AutoStartOperationResult result;
+        try
+        {
+            result = _autoStartManager.SetEnabled(enabled);
+        }
+        catch (Exception exception)
+        {
+            _autoStartErrorDetail = exception.Message;
+            RefreshAutoStartErrorPresentation();
+            return false;
+        }
+
+        _settings.StartWithSimulator = enabled;
+        try
+        {
+            _settingsRepository.Save(_settings);
+        }
+        catch (Exception saveException)
+        {
+            _settings.StartWithSimulator = previous;
+            try
+            {
+                _autoStartManager.SetEnabled(previous == true);
+            }
+            catch (Exception rollbackException)
+            {
+                _autoStartErrorDetail = saveException.Message + " " + rollbackException.Message;
+                RefreshAutoStartErrorPresentation();
+                return false;
+            }
+
+            _autoStartErrorDetail = saveException.Message;
+            RefreshAutoStartErrorPresentation();
+            return false;
+        }
+
+        _autoStartProfileCount = result.ConfigurationPaths.Count;
+        _autoStartErrorDetail = null;
+        RefreshAutoStartErrorPresentation();
+        RefreshSettingsPresentation();
+        return true;
+    }
+
+    private void ShowAutoStartPrompt()
+    {
+        AutoStartPromptErrorText.Text = string.Empty;
+        AutoStartPromptErrorText.Visibility = Visibility.Collapsed;
+        SetAutoStartPromptBusy(false);
+        AutoStartPromptOverlay.Visibility = Visibility.Visible;
+        AutoStartPromptOverlay.Focus();
+        Keyboard.Focus(DeclineAutoStartButton);
+    }
+
+    private void HideAutoStartPrompt()
+    {
+        AutoStartPromptOverlay.Visibility = Visibility.Collapsed;
+        SetAutoStartPromptBusy(false);
+        Keyboard.Focus(LandingHistoryList);
+    }
+
+    private void SetAutoStartPromptBusy(bool busy)
+    {
+        DeclineAutoStartButton.IsEnabled = !busy;
+        EnableAutoStartButton.IsEnabled = !busy;
+        SettingsAutoStartCheckBox.IsEnabled = !busy;
+    }
+
+    private void RefreshAutoStartErrorPresentation()
+    {
+        var hasError = !string.IsNullOrWhiteSpace(_autoStartErrorDetail);
+        var text = hasError
+            ? LocalizationManager.Format("AutoStart.ErrorFormat", _autoStartErrorDetail!)
+            : string.Empty;
+        SettingsErrorText.Text = text;
+        SettingsErrorText.Visibility = hasError ? Visibility.Visible : Visibility.Collapsed;
+        AutoStartPromptErrorText.Text = text;
+        AutoStartPromptErrorText.Visibility = hasError ? Visibility.Visible : Visibility.Collapsed;
+    }
+
     private void SetLanguageSelection(string preference)
     {
         _changingLanguageSelection = true;
@@ -552,6 +707,19 @@ public partial class MainWindow : Window
         }
     }
 
+    private void SetAutoStartSelection(bool enabled)
+    {
+        _changingAutoStartSelection = true;
+        try
+        {
+            SettingsAutoStartCheckBox.IsChecked = enabled;
+        }
+        finally
+        {
+            _changingAutoStartSelection = false;
+        }
+    }
+
     private void RefreshSettingsPresentation()
     {
         var effectiveName = LocalizationManager.Text(
@@ -565,6 +733,11 @@ public partial class MainWindow : Window
             "Settings.FileFormat",
             "%LOCALAPPDATA%\\MSFS Landing Stats\\settings.json");
         SettingsFileText.ToolTip = _settingsRepository.Path;
+        SetAutoStartSelection(_settings.StartWithSimulator == true);
+        SettingsAutoStartStateText.Text = _settings.StartWithSimulator == true
+            ? LocalizationManager.Format("Settings.AutoStartEnabledFormat", _autoStartProfileCount)
+            : LocalizationManager.Text("Settings.AutoStartDisabled");
+        RefreshAutoStartErrorPresentation();
     }
 
     private void RefreshLocalizedPresentation()
@@ -590,6 +763,7 @@ public partial class MainWindow : Window
             _connectionStatusArguments,
             _connectionStatusIsWarning);
         SetUploadStatusCore(_uploadStatusKey, _uploadStatusArguments, _uploadStatusIsError);
+        RefreshAutoStartErrorPresentation();
 
         if (_pendingDeleteRecord != null)
         {

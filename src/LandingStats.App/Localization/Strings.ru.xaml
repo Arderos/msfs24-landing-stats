@@ -143,6 +143,17 @@
     <system:String x:Key="Settings.AutomaticResolvedFormat">Сейчас автоматический режим выбирает: {0}.</system:String>
     <system:String x:Key="Settings.SaveErrorFormat">Не удалось сохранить настройки. {0}</system:String>
     <system:String x:Key="Settings.FileFormat">Файл настроек: {0}</system:String>
+    <system:String x:Key="Settings.AutoStart">АВТОЗАПУСК С СИМУЛЯТОРОМ</system:String>
+    <system:String x:Key="Settings.AutoStartBody">Запускает Landing Stats вместе с каждой обнаруженной установкой Microsoft Flight Simulator 2020 или 2024. Приложение безопасно управляет только собственной записью в файле exe.xml симулятора.</system:String>
+    <system:String x:Key="Settings.AutoStartToggle">Запускать Landing Stats вместе с MSFS</system:String>
+    <system:String x:Key="Settings.AutoStartEnabledFormat">Включено · профилей симулятора: {0}</system:String>
+    <system:String x:Key="Settings.AutoStartDisabled">Выключено</system:String>
+
+    <system:String x:Key="AutoStart.Title">Запускать Landing Stats вместе с MSFS?</system:String>
+    <system:String x:Key="AutoStart.Body">Landing Stats может открываться автоматически при каждом запуске Microsoft Flight Simulator. Приложение добавит отдельную запись в exe.xml, не изменяя записи других дополнений. Эту настройку всегда можно изменить позже.</system:String>
+    <system:String x:Key="AutoStart.Enable">ВКЛЮЧИТЬ АВТОЗАПУСК</system:String>
+    <system:String x:Key="AutoStart.NotNow">НЕ СЕЙЧАС</system:String>
+    <system:String x:Key="AutoStart.ErrorFormat">Не удалось изменить автозапуск симулятора. {0}</system:String>
 
     <system:String x:Key="Model.NotAvailable">н/д</system:String>
     <system:String x:Key="Model.LocationRunwayFormat">{0} · ВПП {1}</system:String>

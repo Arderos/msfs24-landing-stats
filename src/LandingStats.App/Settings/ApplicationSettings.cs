@@ -5,7 +5,7 @@ namespace LandingStats.App.Settings;
 [DataContract]
 internal sealed class ApplicationSettings : IExtensibleDataObject
 {
-    internal const int CurrentSchemaVersion = 1;
+    internal const int CurrentSchemaVersion = 2;
 
     [DataMember(Name = "schemaVersion", Order = 1)]
     public int SchemaVersion { get; set; } = CurrentSchemaVersion;
@@ -13,11 +13,14 @@ internal sealed class ApplicationSettings : IExtensibleDataObject
     [DataMember(Name = "language", Order = 2)]
     public string Language { get; set; } = LocalizationManager.AutomaticLanguage;
 
+    [DataMember(Name = "startWithSimulator", Order = 3, EmitDefaultValue = false)]
+    public bool? StartWithSimulator { get; set; }
+
     public ExtensionDataObject? ExtensionData { get; set; }
 
     public void Normalize()
     {
-        if (SchemaVersion <= 0)
+        if (SchemaVersion < CurrentSchemaVersion)
         {
             SchemaVersion = CurrentSchemaVersion;
         }

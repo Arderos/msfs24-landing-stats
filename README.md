@@ -59,6 +59,8 @@ for the formulas, timing rules, validation traces, and known limitations.
 - One-click bug reports that securely bundle the last landing telemetry with
   its calculated results; no full-flight recording mode is exposed in the UI.
 - Compact local landing history containing only the data used by the dashboard.
+- Optional simulator auto-start for detected MSFS 2024 and MSFS 2020 Steam or
+  Microsoft Store installations.
 - One-file distribution with signed automatic updates and restart.
 
 The application keeps inertial and surface-relative landing rates separate.
@@ -96,6 +98,14 @@ Download and run `MSFS-Landing-Stats.exe`. Nothing needs to be extracted or
 kept beside it. The executable prepares its private runtime under LocalAppData;
 the SDK is not required at runtime. The updater executable is downloaded only
 when a newer signed version exists.
+
+On the first v0.8.2 launch, the app asks whether it should start together with
+Microsoft Flight Simulator. The choice can be changed later in Settings. When
+enabled, Landing Stats adds one clearly marked entry to each detected Steam or
+Microsoft Store `exe.xml` for MSFS 2024 or MSFS 2020. It preserves all other
+entries, writes through an atomic replacement, and keeps the original once as
+`exe.xml.msfs-landing-stats.bak`. Turning the setting off removes only the
+entry owned by Landing Stats.
 
 ## Automated builds
 

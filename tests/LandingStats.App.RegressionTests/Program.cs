@@ -15,6 +15,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Xml.Linq;
 using LandingStats.App;
 using LandingStats.App.Controls;
 using LandingStats.App.Models;
@@ -130,6 +131,16 @@ internal static class Program
         Run("language auto-detection is Russian-only with an English fallback", LanguageAutoDetectionIsRussianOnly);
         Run("English landing dates use an English month and 24-hour time", EnglishLandingDateFormatIsStable);
         Run("settings preserve unknown future options", SettingsPreserveUnknownFutureOptions);
+        Run("legacy settings leave simulator auto-start undecided", LegacySettingsLeaveAutoStartUndecided);
+        Run("application lifetime rejects a second instance", ApplicationLifetimeRejectsSecondInstance);
+        Run("simulator auto-start preserves every foreign byte", SimulatorAutoStartPreservesForeignBytes);
+        Run("simulator auto-start creates a valid missing exe.xml", SimulatorAutoStartCreatesMissingConfiguration);
+        Run("simulator auto-start supports Windows-1252 and Unicode paths", SimulatorAutoStartSupportsLegacyEncoding);
+        Run("simulator auto-start preserves an UTF-8 BOM", SimulatorAutoStartPreservesUtf8Bom);
+        Run("simulator auto-start refuses malformed XML without partial writes", SimulatorAutoStartRefusesMalformedConfiguration);
+        Run("simulator auto-start leaves unmanaged matching entries alone", SimulatorAutoStartLeavesUnmanagedEntryAlone);
+        Run("simulator auto-start prepares all profiles before committing", SimulatorAutoStartIsTransactionalAcrossProfiles);
+        Run("simulator auto-start discovers Store and Steam profiles", SimulatorAutoStartDiscoversKnownProfiles);
         Run("WPF resources switch completely between English and Russian", WpfResourcesSwitchCompletely);
         Run("localized whitespace survives WPF resource loading", LocalizedWhitespaceSurvivesWpfLoading);
         Run("landing feel severity is independent of translated text", LandingFeelSeverityIsLanguageIndependent);
@@ -191,6 +202,300 @@ internal static class Program
                 Directory.Delete(root, true);
             }
         }
+    }
+
+    private static void LegacySettingsLeaveAutoStartUndecided()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "landing-stats-legacy-settings-test-" + Guid.NewGuid().ToString("N"));
+        var path = Path.Combine(root, "settings.json");
+        try
+        {
+            Directory.CreateDirectory(root);
+            File.WriteAllText(path, "{\"schemaVersion\":1,\"language\":\"en\"}", new UTF8Encoding(false));
+            var repository = new ApplicationSettingsRepository(path);
+            var settings = repository.Load();
+            Null(settings.StartWithSimulator, "legacy setting remains undecided");
+            Equal(ApplicationSettings.CurrentSchemaVersion, settings.SchemaVersion, "legacy schema upgrades in memory");
+
+            settings.StartWithSimulator = false;
+            repository.Save(settings);
+            Equal(false, repository.Load().StartWithSimulator, "explicit refusal persists");
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, true);
+            }
+        }
+    }
+
+    private static void ApplicationLifetimeRejectsSecondInstance()
+    {
+        var mutexName = "Local\\MSFSLandingStats.Application.Test." + Guid.NewGuid().ToString("N");
+        Equal(true, ApplicationInstanceGuard.TryAcquire(mutexName, out var first), "first instance acquires lifetime guard");
+        try
+        {
+            Equal(false, ApplicationInstanceGuard.TryAcquire(mutexName, out var second), "second instance is rejected");
+            Null(second, "rejected instance does not retain a guard");
+        }
+        finally
+        {
+            first?.Dispose();
+        }
+
+        Equal(true, ApplicationInstanceGuard.TryAcquire(mutexName, out var replacement), "guard is released after exit");
+        replacement?.Dispose();
+    }
+
+    private static void SimulatorAutoStartPreservesForeignBytes()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "landing-stats-autostart-preserve-" + Guid.NewGuid().ToString("N"));
+        var path = Path.Combine(root, "exe.xml");
+        const string original = "<?xml version=\"1.0\" encoding=\"utf-8\"?>" +
+                                "<SimBase.Document Type=\"Launch\" version=\"1,0\">  " +
+                                "<Descr>Launch</Descr><!-- foreign comment -->" +
+                                "<Filename>EXE.xml</Filename><Disabled>False</Disabled>" +
+                                "<Launch.ManualLoad>False</Launch.ManualLoad>  " +
+                                "<Launch.Addon><Name>FenixA320</Name><Disabled>false</Disabled>" +
+                                "<Path>C:\\Program Files\\Fenix &amp; Friends\\Fenix.exe</Path></Launch.Addon>" +
+                                "</SimBase.Document>";
+        try
+        {
+            Directory.CreateDirectory(root);
+            var originalBytes = new UTF8Encoding(false).GetBytes(original);
+            File.WriteAllBytes(path, originalBytes);
+            var manager = TestAutoStartManager(root, typeof(MainWindow).Assembly.Location);
+
+            var enabled = manager.SetEnabled(true);
+            Equal(1, enabled.ChangedPaths.Count, "first enable changes one profile");
+            Equal(true, File.ReadAllText(path).Contains("MSFS Landing Stats: managed autostart begin"), "managed marker added");
+            Equal(true, File.ReadAllText(path).Contains(typeof(MainWindow).Assembly.Location), "portable path added");
+            Equal(true, File.ReadAllBytes(path + ".msfs-landing-stats.bak").SequenceEqual(originalBytes), "first backup is byte exact");
+
+            var enabledBytes = File.ReadAllBytes(path);
+            var secondEnable = manager.SetEnabled(true);
+            Equal(0, secondEnable.ChangedPaths.Count, "second enable is a no-op");
+            Equal(true, File.ReadAllBytes(path).SequenceEqual(enabledBytes), "no-op does not rewrite XML");
+
+            var disabled = manager.SetEnabled(false);
+            Equal(1, disabled.ChangedPaths.Count, "disable removes one managed entry");
+            Equal(true, File.ReadAllBytes(path).SequenceEqual(originalBytes), "disable restores every original byte");
+            Equal(false, Directory.EnumerateFiles(root, "*.tmp").Any(), "no temporary file remains");
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, true);
+            }
+        }
+    }
+
+    private static void SimulatorAutoStartCreatesMissingConfiguration()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "landing-stats-autostart-create-" + Guid.NewGuid().ToString("N"));
+        var path = Path.Combine(root, "exe.xml");
+        try
+        {
+            Directory.CreateDirectory(root);
+            File.WriteAllText(Path.Combine(root, "UserCfg.opt"), "InstalledPackagesPath x", new UTF8Encoding(false));
+            var manager = TestAutoStartManager(root, typeof(MainWindow).Assembly.Location);
+            manager.SetEnabled(true);
+            var enabled = XDocument.Load(path);
+            Equal("SimBase.Document", enabled.Root?.Name.LocalName, "created root");
+            Equal(1, enabled.Root?.Elements("Launch.Addon").Count(), "created managed entry");
+
+            manager.SetEnabled(false);
+            var disabled = XDocument.Load(path);
+            Equal(0, disabled.Root?.Elements("Launch.Addon").Count(), "managed entry removed from created file");
+            Equal("Launch", disabled.Root?.Element("Descr")?.Value, "created base document remains valid");
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, true);
+            }
+        }
+    }
+
+    private static void SimulatorAutoStartSupportsLegacyEncoding()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "landing-stats-autostart-encoding-" + Guid.NewGuid().ToString("N"));
+        var profile = Path.Combine(root, "profile");
+        var applicationDirectory = Path.Combine(root, "приложение & тест");
+        var applicationPath = Path.Combine(applicationDirectory, "Landing Stats.exe");
+        var path = Path.Combine(profile, "exe.xml");
+        try
+        {
+            Directory.CreateDirectory(profile);
+            Directory.CreateDirectory(applicationDirectory);
+            File.Copy(typeof(MainWindow).Assembly.Location, applicationPath);
+            var windows1252 = Encoding.GetEncoding(1252);
+            var original = "<?xml version=\"1.0\" encoding=\"Windows-1252\"?>" +
+                           "<SimBase.Document Type=\"Launch\" version=\"1,0\"><Descr>Launch</Descr>" +
+                           "<Filename>EXE.xml</Filename><Disabled>False</Disabled></SimBase.Document>";
+            File.WriteAllBytes(path, windows1252.GetBytes(original));
+            var manager = TestAutoStartManager(profile, applicationPath);
+
+            manager.SetEnabled(true);
+            var encodedText = windows1252.GetString(File.ReadAllBytes(path));
+            Equal(true, encodedText.Contains("&#x"), "unrepresentable path characters use XML entities");
+            var document = XDocument.Parse(encodedText);
+            Equal(
+                applicationPath,
+                document.Root?.Elements("Launch.Addon").Single().Element("Path")?.Value,
+                "Unicode path round-trips through Windows-1252 XML");
+
+            manager.SetEnabled(false);
+            Equal(original, windows1252.GetString(File.ReadAllBytes(path)), "legacy encoding restores exactly");
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, true);
+            }
+        }
+    }
+
+    private static void SimulatorAutoStartPreservesUtf8Bom()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "landing-stats-autostart-bom-" + Guid.NewGuid().ToString("N"));
+        var path = Path.Combine(root, "exe.xml");
+        try
+        {
+            Directory.CreateDirectory(root);
+            var encoding = new UTF8Encoding(true);
+            var text = "<?xml version=\"1.0\" encoding=\"utf-8\"?><SimBase.Document Type=\"Launch\" version=\"1,0\"></SimBase.Document>";
+            var original = encoding.GetPreamble().Concat(encoding.GetBytes(text)).ToArray();
+            File.WriteAllBytes(path, original);
+            var manager = TestAutoStartManager(root, typeof(MainWindow).Assembly.Location);
+            manager.SetEnabled(true);
+            Equal(true, File.ReadAllBytes(path).Take(3).SequenceEqual(encoding.GetPreamble()), "UTF-8 BOM remains present");
+            manager.SetEnabled(false);
+            Equal(true, File.ReadAllBytes(path).SequenceEqual(original), "UTF-8 BOM file restores exactly");
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, true);
+            }
+        }
+    }
+
+    private static void SimulatorAutoStartRefusesMalformedConfiguration()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "landing-stats-autostart-malformed-" + Guid.NewGuid().ToString("N"));
+        var path = Path.Combine(root, "exe.xml");
+        try
+        {
+            Directory.CreateDirectory(root);
+            var original = new UTF8Encoding(false).GetBytes("<SimBase.Document><broken></SimBase.Document>");
+            File.WriteAllBytes(path, original);
+            var manager = TestAutoStartManager(root, typeof(MainWindow).Assembly.Location);
+            Throws<InvalidDataException>(() => manager.SetEnabled(true), "malformed XML is rejected");
+            Equal(true, File.ReadAllBytes(path).SequenceEqual(original), "malformed XML remains untouched");
+            Equal(false, File.Exists(path + ".msfs-landing-stats.bak"), "failure does not create a misleading backup");
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, true);
+            }
+        }
+    }
+
+    private static void SimulatorAutoStartLeavesUnmanagedEntryAlone()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "landing-stats-autostart-unmanaged-" + Guid.NewGuid().ToString("N"));
+        var path = Path.Combine(root, "exe.xml");
+        var original = "<?xml version=\"1.0\"?><SimBase.Document Type=\"Launch\" version=\"1,0\">" +
+                       "<Launch.Addon><Name>MSFS Landing Stats</Name><Disabled>False</Disabled>" +
+                       "<Path>C:\\manual\\landing.exe</Path></Launch.Addon></SimBase.Document>";
+        try
+        {
+            Directory.CreateDirectory(root);
+            File.WriteAllText(path, original, new UTF8Encoding(false));
+            var manager = TestAutoStartManager(root, typeof(MainWindow).Assembly.Location);
+            manager.SetEnabled(false);
+            Equal(original, File.ReadAllText(path), "disabling does not claim an unmanaged entry");
+            Throws<InvalidDataException>(() => manager.SetEnabled(true), "enabling refuses an unmanaged name collision");
+            Equal(original, File.ReadAllText(path), "name collision remains untouched");
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, true);
+            }
+        }
+    }
+
+    private static void SimulatorAutoStartIsTransactionalAcrossProfiles()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "landing-stats-autostart-transaction-" + Guid.NewGuid().ToString("N"));
+        var validRoot = Path.Combine(root, "valid");
+        var invalidRoot = Path.Combine(root, "invalid");
+        var validPath = Path.Combine(validRoot, "exe.xml");
+        var invalidPath = Path.Combine(invalidRoot, "exe.xml");
+        const string valid = "<?xml version=\"1.0\"?><SimBase.Document Type=\"Launch\" version=\"1,0\"></SimBase.Document>";
+        const string invalid = "<SimBase.Document>";
+        try
+        {
+            Directory.CreateDirectory(validRoot);
+            Directory.CreateDirectory(invalidRoot);
+            File.WriteAllText(validPath, valid, new UTF8Encoding(false));
+            File.WriteAllText(invalidPath, invalid, new UTF8Encoding(false));
+            var profiles = new[]
+            {
+                new SimulatorAutoStartManager.SimulatorProfile("valid", validRoot),
+                new SimulatorAutoStartManager.SimulatorProfile("invalid", invalidRoot),
+            };
+            var manager = new SimulatorAutoStartManager(profiles, () => typeof(MainWindow).Assembly.Location);
+            Throws<InvalidDataException>(() => manager.SetEnabled(true), "one malformed profile aborts the transaction");
+            Equal(valid, File.ReadAllText(validPath), "prepared valid profile was never committed");
+            Equal(invalid, File.ReadAllText(invalidPath), "invalid profile remains untouched");
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, true);
+            }
+        }
+    }
+
+    private static void SimulatorAutoStartDiscoversKnownProfiles()
+    {
+        var profiles = SimulatorAutoStartManager.DefaultProfiles("R:\\Roaming", "L:\\Local");
+        Equal(4, profiles.Count, "known profile count");
+        Equal(
+            Path.Combine("R:\\Roaming", "Microsoft Flight Simulator 2024", "exe.xml"),
+            profiles[0].ExeXmlPath,
+            "MSFS 2024 Steam path");
+        Equal(
+            Path.Combine("L:\\Local", "Packages", "Microsoft.Limitless_8wekyb3d8bbwe", "LocalCache", "exe.xml"),
+            profiles[1].ExeXmlPath,
+            "MSFS 2024 Store path");
+        Equal(
+            Path.Combine("R:\\Roaming", "Microsoft Flight Simulator", "exe.xml"),
+            profiles[2].ExeXmlPath,
+            "MSFS 2020 Steam path");
+        Equal(
+            Path.Combine("L:\\Local", "Packages", "Microsoft.FlightSimulator_8wekyb3d8bbwe", "LocalCache", "exe.xml"),
+            profiles[3].ExeXmlPath,
+            "MSFS 2020 Store path");
+    }
+
+    private static SimulatorAutoStartManager TestAutoStartManager(string profileRoot, string applicationPath)
+    {
+        return new SimulatorAutoStartManager(
+            new[] { new SimulatorAutoStartManager.SimulatorProfile("test", profileRoot) },
+            () => applicationPath);
     }
 
     private static void WpfResourcesSwitchCompletely()
@@ -3570,6 +3875,21 @@ internal static class Program
         {
             throw new InvalidOperationException($"{message}: expected {expected}, got {actual}");
         }
+    }
+
+    private static void Throws<TException>(Action action, string message)
+        where TException : Exception
+    {
+        try
+        {
+            action();
+        }
+        catch (TException)
+        {
+            return;
+        }
+
+        throw new InvalidOperationException($"{message}: expected {typeof(TException).Name}");
     }
 
     private static void Near(double expected, double actual, double tolerance, string message)
