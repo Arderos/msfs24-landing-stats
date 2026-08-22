@@ -22,18 +22,28 @@ internal sealed class SimulatorAutoStartManager
     private const int MaximumConfigurationBytes = 4 * 1024 * 1024;
 
     private readonly IReadOnlyList<SimulatorProfile> _profiles;
+    private readonly IReadOnlyList<SimulatorProfile> _legacyCleanupProfiles;
     private readonly Func<string?> _applicationPathProvider;
 
     public SimulatorAutoStartManager()
-        : this(DefaultProfiles(), ResolveApplicationPath)
+        : this(DefaultProfiles(), LegacyCleanupProfiles(), ResolveApplicationPath)
     {
     }
 
     internal SimulatorAutoStartManager(
         IReadOnlyList<SimulatorProfile> profiles,
         Func<string?> applicationPathProvider)
+        : this(profiles, Array.Empty<SimulatorProfile>(), applicationPathProvider)
+    {
+    }
+
+    internal SimulatorAutoStartManager(
+        IReadOnlyList<SimulatorProfile> profiles,
+        IReadOnlyList<SimulatorProfile> legacyCleanupProfiles,
+        Func<string?> applicationPathProvider)
     {
         _profiles = profiles ?? throw new ArgumentNullException(nameof(profiles));
+        _legacyCleanupProfiles = legacyCleanupProfiles ?? throw new ArgumentNullException(nameof(legacyCleanupProfiles));
         _applicationPathProvider = applicationPathProvider ?? throw new ArgumentNullException(nameof(applicationPathProvider));
     }
 
@@ -47,7 +57,7 @@ internal sealed class SimulatorAutoStartManager
         if (enabled && detected.Length == 0)
         {
             throw new InvalidOperationException(
-                "No Microsoft Flight Simulator 2020 or 2024 profile was found for this Windows user.");
+                "No Microsoft Flight Simulator 2024 profile was found for this Windows user.");
         }
 
         var applicationPath = enabled ? ValidateApplicationPath(_applicationPathProvider()) : null;
@@ -120,6 +130,14 @@ internal sealed class SimulatorAutoStartManager
         }
     }
 
+    public AutoStartOperationResult RemoveLegacyUnsupportedEntries()
+    {
+        var withManagedEntry = _legacyCleanupProfiles
+            .Where(profile => profile.IsDetected() && ContainsManagedMarker(profile.ExeXmlPath))
+            .ToArray();
+        return new SimulatorAutoStartManager(withManagedEntry, _applicationPathProvider).SetEnabled(false);
+    }
+
     internal static IReadOnlyList<SimulatorProfile> DefaultProfiles(
         string? roamingApplicationData = null,
         string? localApplicationData = null)
@@ -136,13 +154,75 @@ internal sealed class SimulatorAutoStartManager
                 "Packages",
                 "Microsoft.Limitless_8wekyb3d8bbwe",
                 "LocalCache")),
-            new SimulatorProfile("MSFS 2020 Steam", Path.Combine(roaming, "Microsoft Flight Simulator")),
-            new SimulatorProfile("MSFS 2020 Microsoft Store", Path.Combine(
+        };
+    }
+
+    internal static IReadOnlyList<SimulatorProfile> LegacyCleanupProfiles(
+        string? roamingApplicationData = null,
+        string? localApplicationData = null)
+    {
+        var roaming = roamingApplicationData ??
+                      Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+        var local = localApplicationData ??
+                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        return new[]
+        {
+            new SimulatorProfile("Unsupported MSFS 2020 Steam cleanup", Path.Combine(roaming, "Microsoft Flight Simulator")),
+            new SimulatorProfile("Unsupported MSFS 2020 Microsoft Store cleanup", Path.Combine(
                 local,
                 "Packages",
                 "Microsoft.FlightSimulator_8wekyb3d8bbwe",
                 "LocalCache")),
         };
+    }
+
+    private static bool ContainsManagedMarker(string path)
+    {
+        if (!File.Exists(path))
+        {
+            return false;
+        }
+
+        var file = new FileInfo(path);
+        if (file.Length <= 0 || file.Length > MaximumConfigurationBytes)
+        {
+            return false;
+        }
+
+        var bytes = File.ReadAllBytes(path);
+        return ContainsSequence(bytes, Encoding.ASCII.GetBytes(BeginMarker)) ||
+               ContainsSequence(bytes, Encoding.Unicode.GetBytes(BeginMarker)) ||
+               ContainsSequence(bytes, Encoding.BigEndianUnicode.GetBytes(BeginMarker));
+    }
+
+    private static bool ContainsSequence(byte[] value, byte[] sequence)
+    {
+        if (sequence.Length == 0 || value.Length < sequence.Length)
+        {
+            return false;
+        }
+
+        for (var start = 0; start <= value.Length - sequence.Length; start++)
+        {
+            var matches = true;
+            for (var offset = 0; offset < sequence.Length; offset++)
+            {
+                if (value[start + offset] == sequence[offset])
+                {
+                    continue;
+                }
+
+                matches = false;
+                break;
+            }
+
+            if (matches)
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     internal static string? ResolveApplicationPath()

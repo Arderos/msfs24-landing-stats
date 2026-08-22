@@ -69,6 +69,7 @@ public partial class MainWindow : Window
     private object[] _uploadStatusArguments = Array.Empty<object>();
     private bool _uploadStatusIsError;
     private int _autoStartProfileCount;
+    private string? _autoStartLegacyCleanupError;
     private string? _autoStartErrorDetail;
     private bool _isClosed;
 
@@ -589,9 +590,13 @@ public partial class MainWindow : Window
 
     private void InitializeAutoStartSetting()
     {
+        RefreshLegacyAutoStartCleanupState();
+
         if (!_settings.StartWithSimulator.HasValue)
         {
+            _autoStartErrorDetail = _autoStartLegacyCleanupError;
             ShowAutoStartPrompt();
+            RefreshAutoStartErrorPresentation();
             return;
         }
 
@@ -599,18 +604,44 @@ public partial class MainWindow : Window
         {
             var result = _autoStartManager.SetEnabled(_settings.StartWithSimulator.Value);
             _autoStartProfileCount = result.ConfigurationPaths.Count;
-            _autoStartErrorDetail = null;
+            _autoStartErrorDetail = CombineAutoStartErrors(_autoStartLegacyCleanupError, null);
         }
         catch (Exception exception)
         {
-            _autoStartErrorDetail = exception.Message;
+            _autoStartErrorDetail = CombineAutoStartErrors(_autoStartLegacyCleanupError, exception.Message);
         }
 
         RefreshSettingsPresentation();
     }
 
+    private void RefreshLegacyAutoStartCleanupState()
+    {
+        try
+        {
+            _autoStartManager.RemoveLegacyUnsupportedEntries();
+            _autoStartLegacyCleanupError = null;
+        }
+        catch (Exception exception)
+        {
+            _autoStartLegacyCleanupError = exception.Message;
+        }
+    }
+
+    internal static string? CombineAutoStartErrors(string? legacyCleanupError, string? currentError)
+    {
+        if (string.IsNullOrWhiteSpace(legacyCleanupError))
+        {
+            return string.IsNullOrWhiteSpace(currentError) ? null : currentError;
+        }
+
+        return string.IsNullOrWhiteSpace(currentError)
+            ? legacyCleanupError
+            : legacyCleanupError + " " + currentError;
+    }
+
     private bool ApplyAutoStartPreference(bool enabled)
     {
+        RefreshLegacyAutoStartCleanupState();
         var previous = _settings.StartWithSimulator;
         AutoStartOperationResult result;
         try
@@ -619,7 +650,7 @@ public partial class MainWindow : Window
         }
         catch (Exception exception)
         {
-            _autoStartErrorDetail = exception.Message;
+            _autoStartErrorDetail = CombineAutoStartErrors(_autoStartLegacyCleanupError, exception.Message);
             RefreshAutoStartErrorPresentation();
             return false;
         }
@@ -638,18 +669,20 @@ public partial class MainWindow : Window
             }
             catch (Exception rollbackException)
             {
-                _autoStartErrorDetail = saveException.Message + " " + rollbackException.Message;
+                _autoStartErrorDetail = CombineAutoStartErrors(
+                    _autoStartLegacyCleanupError,
+                    saveException.Message + " " + rollbackException.Message);
                 RefreshAutoStartErrorPresentation();
                 return false;
             }
 
-            _autoStartErrorDetail = saveException.Message;
+            _autoStartErrorDetail = CombineAutoStartErrors(_autoStartLegacyCleanupError, saveException.Message);
             RefreshAutoStartErrorPresentation();
             return false;
         }
 
         _autoStartProfileCount = result.ConfigurationPaths.Count;
-        _autoStartErrorDetail = null;
+        _autoStartErrorDetail = _autoStartLegacyCleanupError;
         RefreshAutoStartErrorPresentation();
         RefreshSettingsPresentation();
         return true;

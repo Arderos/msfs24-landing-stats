@@ -207,7 +207,7 @@ jobs:
             [Array]::Clear($privateKey, 0, $privateKey.Length)
           }
 
-          $previousClientVersion = '0.8.1'
+          $previousClientVersion = '0.8.2'
           $previousClientDirectory = Join-Path $env:RUNNER_TEMP "msfs-landing-stats-v$previousClientVersion-client"
           New-Item -ItemType Directory -Path $previousClientDirectory -Force | Out-Null
           $previousClientPath = Join-Path $previousClientDirectory 'MSFS-Landing-Stats.exe'

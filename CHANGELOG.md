@@ -2,22 +2,25 @@
 
 All notable changes to MSFS Landing Stats are documented in this file.
 
+## [0.8.3] - 2026-08-22
+
+### Fixed
+
+- Fixed wording and minor setup issues.
+
 ## [0.8.2] - 2026-08-22
 
 ### Added
 
-- Added an optional **Start with Microsoft Flight Simulator** setting for both
-  MSFS 2024 and MSFS 2020, including Steam and Microsoft Store installations.
+- Added an optional **Start with Microsoft Flight Simulator** setting for MSFS
+  2024 Steam and Microsoft Store installations.
 - Added a one-time choice after installing or updating. The same option remains
   available in Settings and can be turned off at any time.
 
 ### Fixed
 
-- Preserved every existing simulator auto-start entry byte-for-byte while
-  adding or removing the entry owned by MSFS Landing Stats. Changes use an
-  atomic replacement, keep a one-time backup of the original `exe.xml`, and
-  fail without overwriting unsupported, malformed, or concurrently changed
-  files.
+- Prevented a second Landing Stats instance from opening when the app was
+  already running before MSFS started.
 
 ## [0.8.1] - 2026-08-21
 

@@ -141,6 +141,8 @@ internal static class Program
         Run("simulator auto-start leaves unmanaged matching entries alone", SimulatorAutoStartLeavesUnmanagedEntryAlone);
         Run("simulator auto-start prepares all profiles before committing", SimulatorAutoStartIsTransactionalAcrossProfiles);
         Run("simulator auto-start discovers Store and Steam profiles", SimulatorAutoStartDiscoversKnownProfiles);
+        Run("simulator auto-start never enables MSFS 2020 and removes the v0.8.2 entry", SimulatorAutoStartCleansUnsupported2020Entry);
+        Run("simulator auto-start retains a legacy cleanup error", SimulatorAutoStartRetainsLegacyCleanupError);
         Run("WPF resources switch completely between English and Russian", WpfResourcesSwitchCompletely);
         Run("localized whitespace survives WPF resource loading", LocalizedWhitespaceSurvivesWpfLoading);
         Run("landing feel severity is independent of translated text", LandingFeelSeverityIsLanguageIndependent);
@@ -472,7 +474,7 @@ internal static class Program
     private static void SimulatorAutoStartDiscoversKnownProfiles()
     {
         var profiles = SimulatorAutoStartManager.DefaultProfiles("R:\\Roaming", "L:\\Local");
-        Equal(4, profiles.Count, "known profile count");
+        Equal(2, profiles.Count, "supported profile count");
         Equal(
             Path.Combine("R:\\Roaming", "Microsoft Flight Simulator 2024", "exe.xml"),
             profiles[0].ExeXmlPath,
@@ -481,14 +483,67 @@ internal static class Program
             Path.Combine("L:\\Local", "Packages", "Microsoft.Limitless_8wekyb3d8bbwe", "LocalCache", "exe.xml"),
             profiles[1].ExeXmlPath,
             "MSFS 2024 Store path");
+        Equal(false, profiles.Any(profile => profile.Name.Contains("2020")), "MSFS 2020 is not a supported profile");
+    }
+
+    private static void SimulatorAutoStartCleansUnsupported2020Entry()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "landing-stats-autostart-msfs2020-cleanup-" + Guid.NewGuid().ToString("N"));
+        var supportedRoot = Path.Combine(root, "supported-2024");
+        var legacyRoot = Path.Combine(root, "unsupported-2020");
+        var supportedPath = Path.Combine(supportedRoot, "exe.xml");
+        var legacyPath = Path.Combine(legacyRoot, "exe.xml");
+        const string original = "<?xml version=\"1.0\"?><SimBase.Document Type=\"Launch\" version=\"1,0\">" +
+                                "<Launch.Addon><Name>Foreign add-on</Name><Path>C:\\foreign.exe</Path></Launch.Addon>" +
+                                "</SimBase.Document>";
+        try
+        {
+            Directory.CreateDirectory(supportedRoot);
+            Directory.CreateDirectory(legacyRoot);
+            File.WriteAllText(supportedPath, original, new UTF8Encoding(false));
+            File.WriteAllText(legacyPath, original, new UTF8Encoding(false));
+            var supported = new SimulatorAutoStartManager.SimulatorProfile("MSFS 2024", supportedRoot);
+            var legacy = new SimulatorAutoStartManager.SimulatorProfile("Unsupported MSFS 2020 cleanup", legacyRoot);
+            var manager = new SimulatorAutoStartManager(
+                new[] { supported },
+                new[] { legacy },
+                () => typeof(MainWindow).Assembly.Location);
+
+            manager.SetEnabled(true);
+            Equal(true, File.ReadAllText(supportedPath).Contains(SimulatorAutoStartManager.EntryName), "MSFS 2024 entry is enabled");
+            Equal(original, File.ReadAllText(legacyPath), "MSFS 2020 is not modified while enabling");
+
+            var v082Manager = new SimulatorAutoStartManager(new[] { legacy }, () => typeof(MainWindow).Assembly.Location);
+            v082Manager.SetEnabled(true);
+            Equal(true, File.ReadAllText(legacyPath).Contains("managed autostart begin"), "v0.8.2 legacy entry is simulated");
+
+            var cleanup = manager.RemoveLegacyUnsupportedEntries();
+            Equal(1, cleanup.ChangedPaths.Count, "legacy managed entry is removed");
+            Equal(original, File.ReadAllText(legacyPath), "legacy file is restored byte for byte");
+
+            manager.SetEnabled(false);
+            Equal(original, File.ReadAllText(supportedPath), "supported file is restored byte for byte");
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, true);
+            }
+        }
+    }
+
+    private static void SimulatorAutoStartRetainsLegacyCleanupError()
+    {
         Equal(
-            Path.Combine("R:\\Roaming", "Microsoft Flight Simulator", "exe.xml"),
-            profiles[2].ExeXmlPath,
-            "MSFS 2020 Steam path");
+            "legacy cleanup failed",
+            MainWindow.CombineAutoStartErrors("legacy cleanup failed", null),
+            "successful MSFS 2024 reconciliation does not hide cleanup failure");
         Equal(
-            Path.Combine("L:\\Local", "Packages", "Microsoft.FlightSimulator_8wekyb3d8bbwe", "LocalCache", "exe.xml"),
-            profiles[3].ExeXmlPath,
-            "MSFS 2020 Store path");
+            "legacy cleanup failed current update failed",
+            MainWindow.CombineAutoStartErrors("legacy cleanup failed", "current update failed"),
+            "cleanup and current errors are both retained");
+        Null(MainWindow.CombineAutoStartErrors(null, null), "no failure remains empty");
     }
 
     private static SimulatorAutoStartManager TestAutoStartManager(string profileRoot, string applicationPath)

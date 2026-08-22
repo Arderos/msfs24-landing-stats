@@ -144,13 +144,13 @@
     <system:String x:Key="Settings.SaveErrorFormat">Could not save settings. {0}</system:String>
     <system:String x:Key="Settings.FileFormat">Stored in {0}</system:String>
     <system:String x:Key="Settings.AutoStart">SIMULATOR AUTO-START</system:String>
-    <system:String x:Key="Settings.AutoStartBody">Starts Landing Stats together with every detected Microsoft Flight Simulator 2020 or 2024 installation. The application safely manages only its own entry in the simulator's exe.xml file.</system:String>
-    <system:String x:Key="Settings.AutoStartToggle">Start Landing Stats with MSFS</system:String>
-    <system:String x:Key="Settings.AutoStartEnabledFormat">Enabled · {0} simulator profile(s)</system:String>
+    <system:String x:Key="Settings.AutoStartBody">Opens Landing Stats automatically when Microsoft Flight Simulator 2024 starts. Steam and Microsoft Store installations are supported.</system:String>
+    <system:String x:Key="Settings.AutoStartToggle">Start Landing Stats with MSFS 2024</system:String>
+    <system:String x:Key="Settings.AutoStartEnabledFormat">Enabled · {0} MSFS 2024 installation(s)</system:String>
     <system:String x:Key="Settings.AutoStartDisabled">Disabled</system:String>
 
-    <system:String x:Key="AutoStart.Title">Start Landing Stats with MSFS?</system:String>
-    <system:String x:Key="AutoStart.Body">Landing Stats can open automatically whenever Microsoft Flight Simulator starts. It adds a dedicated entry to the simulator's exe.xml file without changing entries owned by other add-ons. You can change this later in Settings.</system:String>
+    <system:String x:Key="AutoStart.Title">Start Landing Stats with MSFS 2024?</system:String>
+    <system:String x:Key="AutoStart.Body">Landing Stats can open automatically whenever Microsoft Flight Simulator 2024 starts. You can change this later in Settings.</system:String>
     <system:String x:Key="AutoStart.Enable">ENABLE AUTO-START</system:String>
     <system:String x:Key="AutoStart.NotNow">NOT NOW</system:String>
     <system:String x:Key="AutoStart.ErrorFormat">Could not update simulator auto-start. {0}</system:String>
