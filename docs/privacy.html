@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Privacy policy for MSFS Landing Stats.">
+  <title>Privacy policy · MSFS Landing Stats</title>
+  <link rel="stylesheet" href="site.css">
+</head>
+<body>
+  <header>
+    <nav class="page">
+      <a class="brand" href="./">MSFS Landing Stats</a>
+      <div class="links"><a href="terms.html">Terms</a><a href="https://github.com/Arderos/msfs24-landing-stats">Source</a></div>
+    </nav>
+  </header>
+  <main class="page document">
+    <h1>Privacy policy</h1>
+    <p>Last updated: August 29, 2026</p>
+    <p>MSFS Landing Stats is a local Windows application. Landing analysis and storage happen on the user's computer.</p>
+
+    <h2>Google Drive backup</h2>
+    <p>Google Drive backup is optional and starts only after the user connects a Google account in Settings. The application requests the <code>https://www.googleapis.com/auth/drive.file</code> scope. This permits it to create, read, update, and delete only the Google Drive files that MSFS Landing Stats creates or that the user explicitly opens with the application. It does not request access to the rest of the user's Drive.</p>
+    <p>When backup is enabled, MSFS Landing Stats synchronizes saved landing records and the application language and simulator auto-start preferences.</p>
+    <p>OAuth credentials are protected for the current Windows user and remain on the local computer. They are not included in the backup. Raw telemetry, pending bug reports, and diagnostic upload identity are not synchronized to Google Drive. Google Drive data is transferred directly between the application and Google's APIs; the project author does not receive it.</p>
+    <p>Google Drive data is used only to provide the backup and synchronization features requested by the user. It is not sold, shared with advertisers, used for advertising, or used to train models. MSFS Landing Stats' use and transfer of information received from Google APIs adheres to the <a href="https://developers.google.com/terms/api-services-user-data-policy">Google API Services User Data Policy</a>, including the Limited Use requirements.</p>
+    <p>The user can disconnect Google Drive in Settings at any time. Access can also be revoked from the Google Account permissions page. Disconnecting removes the locally stored OAuth credential but does not delete existing backup files. Deleting a synchronized landing in MSFS Landing Stats moves its corresponding Drive backup file to the Drive trash during synchronization. The user can also remove the application folder or individual files directly in Google Drive.</p>
+
+    <h2>Bug reports</h2>
+    <p>The separate <strong>Report bug</strong> action is optional and requires an explicit click. It uploads the retained telemetry for the latest landing together with its calculated result and technical metadata needed to investigate the report. This data is not uploaded merely by enabling Google Drive backup.</p>
+
+    <h2>Other network access</h2>
+    <p>The application checks GitHub for software updates. Microsoft Flight Simulator telemetry is received locally through SimConnect.</p>
+
+    <h2>Contact</h2>
+    <p>Privacy questions can be submitted through the project's <a href="https://github.com/Arderos/msfs24-landing-stats/issues">GitHub issue tracker</a>. Changes to this policy are published in the project repository with their revision history.</p>
+  </main>
+  <footer><div class="page"><a href="./">Home</a> · <a href="terms.html">Terms</a></div></footer>
+</body>
+</html>
