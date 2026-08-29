@@ -34,7 +34,9 @@ behind them:
 The result is not a landing score or a structural inspection verdict. It is an
 engineering view of what the simulator published, how the result was derived,
 and where uncertainty remains. See the [measurement methodology](docs/methodology.md)
-for the formulas, timing rules, validation traces, and known limitations.
+for the formulas, timing rules, validation traces, and known limitations. See
+the [privacy policy](PRIVACY.md) for Google Drive backup and diagnostic-report
+data handling.
 
 ## Features
 
