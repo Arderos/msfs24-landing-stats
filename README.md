@@ -29,7 +29,7 @@ behind them:
 | G-load | One value with an unspecified sampling window | Peaks are calculated in declared 150 ms and 2 s windows, bounded by the next contact |
 | Evidence | Summary values only | Synchronized black-box traces for motion, loads, controls, power, attitude, and gear |
 | Data quality | A number is shown even when its source is ambiguous | Extrapolation, fallback, latch verification, and unavailable data are identified explicitly |
-| Ownership | Often cloud-backed | Local, portable landing records; new diagnostic reports are created only after an explicit **Report bug** action |
+| Ownership | Often cloud-backed | Local, portable landing records with optional backup to the user's own Google Drive; new diagnostic reports are created only after an explicit **Report bug** action |
 
 The result is not a landing score or a structural inspection verdict. It is an
 engineering view of what the simulator published, how the result was derived,
@@ -61,6 +61,8 @@ data handling.
 - One-click bug reports that securely bundle the last landing telemetry with
   its calculated results; no full-flight recording mode is exposed in the UI.
 - Compact local landing history containing only the data used by the dashboard.
+- Optional Google Drive backup for saved landings, language, and the MSFS 2024
+  auto-start preference. Raw telemetry and bug reports are not included.
 - Optional auto-start with detected Steam or Microsoft Store installations of
   MSFS 2024.
 - One-file distribution with signed automatic updates and restart.
@@ -88,6 +90,11 @@ To build locally:
 ```powershell
 .\build-app.ps1 -MsfsSdkRoot "D:\MSFS 2024 SDK"
 ```
+
+This contributor build leaves Google Drive sign-in unconfigured. Official builds
+inject `GOOGLE_OAUTH_CLIENT_ID` and `GOOGLE_OAUTH_CLIENT_SECRET` from GitHub
+Actions Secrets and use `-RequireGoogleOAuthCredentials` so a release cannot be
+published accidentally without Drive support. Do not commit either value.
 
 The resulting user download and standalone update helper are written to:
 

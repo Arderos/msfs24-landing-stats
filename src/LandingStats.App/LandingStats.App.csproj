@@ -6,18 +6,23 @@
     <PlatformTarget>x64</PlatformTarget>
     <Prefer32Bit>false</Prefer32Bit>
     <AssemblyName>MSFS-Landing-Stats</AssemblyName>
-    <InformationalVersion>0.8.3-live</InformationalVersion>
+    <InformationalVersion>0.8.4-live</InformationalVersion>
     <ApplicationIcon>Assets\AppIcon.ico</ApplicationIcon>
     <MsfsSdkRoot Condition="'$(MsfsSdkRoot)' == '' and '$(MSFS_SDK)' != ''">$(MSFS_SDK)</MsfsSdkRoot>
     <MsfsSdkRoot Condition="'$(MsfsSdkRoot)' == ''">D:\MSFS 2024 SDK</MsfsSdkRoot>
+    <GoogleOAuthClientId Condition="'$(GoogleOAuthClientId)' == ''">$(GOOGLE_OAUTH_CLIENT_ID)</GoogleOAuthClientId>
+    <GoogleOAuthClientSecret Condition="'$(GoogleOAuthClientSecret)' == ''">$(GOOGLE_OAUTH_CLIENT_SECRET)</GoogleOAuthClientSecret>
   </PropertyGroup>
 
   <ItemGroup>
+    <AssemblyMetadata Include="GoogleOAuthClientId" Value="$(GoogleOAuthClientId)" />
+    <AssemblyMetadata Include="GoogleOAuthClientSecret" Value="$(GoogleOAuthClientSecret)" />
     <InternalsVisibleTo Include="LandingStats.App.RegressionTests" />
     <Compile Include="..\LandingStats.UpdateProtocol\UpdateProtocol.cs" Link="Updates\UpdateProtocol.cs" />
     <None Remove="Assets\AppIcon.ico" />
     <Resource Include="Assets\AppIcon.ico" />
     <ProjectReference Include="..\LandingStats.Core\LandingStats.Core.csproj" />
+    <PackageReference Include="Google.Apis.Drive.v3" Version="1.75.0.4218" />
     <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies.net48" Version="1.0.3" PrivateAssets="all" />
     <Reference Include="Microsoft.FlightSimulator.SimConnect">
       <HintPath>$(MsfsSdkRoot)\SimConnect SDK\lib\managed\Microsoft.FlightSimulator.SimConnect.dll</HintPath>
@@ -38,5 +43,14 @@
     <Error
       Condition="!Exists('$(MsfsSdkRoot)\SimConnect SDK\lib\managed\Microsoft.FlightSimulator.SimConnect.dll')"
       Text="MSFS 2024 SimConnect SDK not found under '$(MsfsSdkRoot)'. Set /p:MsfsSdkRoot=&quot;path to MSFS 2024 SDK&quot;." />
+  </Target>
+
+  <Target Name="ValidateGoogleOAuthCredentials" BeforeTargets="CoreCompile" Condition="'$(RequireGoogleOAuthCredentials)' == 'true'">
+    <Error
+      Condition="'$(GoogleOAuthClientId)' == ''"
+      Text="Google OAuth client id is required for an official build. Set GOOGLE_OAUTH_CLIENT_ID." />
+    <Error
+      Condition="'$(GoogleOAuthClientSecret)' == ''"
+      Text="Google OAuth client secret is required for an official build. Set GOOGLE_OAUTH_CLIENT_SECRET." />
   </Target>
 </Project>

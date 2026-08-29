@@ -48,13 +48,13 @@ internal static class Program
         try
         {
             var payload = ReadPayload();
-            ValidateArchive(payload);
+            var bundledFiles = ValidateArchive(payload);
             if (args.Any(argument => string.Equals(argument, VerifyArgument, StringComparison.OrdinalIgnoreCase)))
             {
                 return 0;
             }
 
-            var runtimeDirectory = PrepareRuntime(payload);
+            var runtimeDirectory = PrepareRuntime(payload, bundledFiles);
             var childArguments = args
                 .Where(argument => !string.Equals(argument, VerifyArgument, StringComparison.OrdinalIgnoreCase))
                 .Select(QuoteArgument);
@@ -84,7 +84,7 @@ internal static class Program
         }
     }
 
-    private static string PrepareRuntime(byte[] payload)
+    private static string PrepareRuntime(byte[] payload, IReadOnlyCollection<string> bundledFiles)
     {
         var version = Assembly.GetExecutingAssembly().GetName().Version
                       ?? throw new InvalidDataException("Bootstrap version is unavailable.");
@@ -122,7 +122,7 @@ internal static class Program
                 // bootstrap has created it, never restore the embedded version over an update.
                 if (File.Exists(markerPath) &&
                     string.Equals(File.ReadAllText(markerPath).Trim(), payloadIdentity, StringComparison.Ordinal) &&
-                    RuntimeIsComplete(runtimeDirectory))
+                    RuntimeIsComplete(runtimeDirectory, bundledFiles))
                 {
                     CleanupOldRuntimeDirectories(runtimeRoot, runtimeDirectory);
                     CleanupLegacyRuntimeRoot(runtimeRoot);
@@ -134,7 +134,7 @@ internal static class Program
                 try
                 {
                     ExtractArchive(payload, stagingDirectory);
-                    if (!RuntimeIsComplete(stagingDirectory))
+                    if (!RuntimeIsComplete(stagingDirectory, bundledFiles))
                     {
                         throw new InvalidDataException("The application bundle is incomplete.");
                     }
@@ -208,34 +208,40 @@ internal static class Program
         }
     }
 
-    private static void ValidateArchive(byte[] payload)
+    private static IReadOnlyCollection<string> ValidateArchive(byte[] payload)
     {
         using var memory = new MemoryStream(payload, false);
         using var archive = new ZipArchive(memory, ZipArchiveMode.Read, false);
-        if (archive.Entries.Count != RequiredFiles.Length)
+        if (archive.Entries.Count < RequiredFiles.Length)
         {
-            throw new InvalidDataException("The application bundle contains an unexpected number of files.");
+            throw new InvalidDataException("The application bundle is incomplete.");
         }
 
-        var expected = new HashSet<string>(RequiredFiles, StringComparer.OrdinalIgnoreCase);
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var entry in archive.Entries)
         {
             if (string.IsNullOrEmpty(entry.Name) ||
                 !string.Equals(entry.FullName, entry.Name, StringComparison.Ordinal) ||
                 entry.Length <= 0 ||
-                !expected.Contains(entry.Name) ||
+                !IsAllowedBundleFile(entry.Name) ||
                 !seen.Add(entry.Name))
             {
                 throw new InvalidDataException("The application bundle contains an unexpected or unsafe entry.");
             }
         }
 
-        if (!expected.SetEquals(seen))
+        if (RequiredFiles.Any(file => !seen.Contains(file)))
         {
             throw new InvalidDataException("The application bundle is incomplete.");
         }
+
+        return seen.OrderBy(value => value, StringComparer.OrdinalIgnoreCase).ToArray();
     }
+
+    private static bool IsAllowedBundleFile(string name) =>
+        string.Equals(name, ChildExecutable, StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(name, "MSFS-Landing-Stats.exe.config", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(Path.GetExtension(name), ".dll", StringComparison.OrdinalIgnoreCase);
 
     private static void ExtractArchive(byte[] payload, string destinationDirectory)
     {
@@ -255,13 +261,23 @@ internal static class Program
         }
     }
 
-    private static bool RuntimeIsComplete(string runtimeDirectory)
+    private static bool RuntimeIsComplete(
+        string runtimeDirectory,
+        IReadOnlyCollection<string> bundledFiles)
     {
-        return RequiredFiles.All(file =>
+        if (!bundledFiles.All(file =>
         {
             var path = Path.Combine(runtimeDirectory, file);
             return File.Exists(path) && new FileInfo(path).Length > 0;
-        });
+        }))
+        {
+            return false;
+        }
+
+        // Runtime directories are user-visible and may legitimately contain
+        // desktop.ini, antivirus leftovers, or diagnostic files. Completeness
+        // depends only on every bundled file being present and non-empty.
+        return true;
     }
 
     private static string PayloadIdentity(byte[] payload)

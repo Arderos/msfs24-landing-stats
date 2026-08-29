@@ -20,26 +20,38 @@ internal sealed class ApplicationSettingsRepository
 
     public string Path { get; }
 
+    public string GoogleDriveRestoreMarkerPath => Path + ".google-drive-restore-pending";
+
+    public bool GoogleDriveRestorePending => File.Exists(GoogleDriveRestoreMarkerPath);
+
     public ApplicationSettings Load()
+    {
+        TryLoad(out var settings);
+        return settings;
+    }
+
+    public bool TryLoad(out ApplicationSettings settings)
     {
         if (!File.Exists(Path))
         {
-            return new ApplicationSettings();
+            settings = new ApplicationSettings();
+            return false;
         }
 
         try
         {
             using var input = new FileStream(Path, FileMode.Open, FileAccess.Read, FileShare.Read);
-            var settings = _serializer.ReadObject(input) as ApplicationSettings ?? new ApplicationSettings();
+            settings = _serializer.ReadObject(input) as ApplicationSettings ?? new ApplicationSettings();
             settings.Normalize();
-            return settings;
+            return true;
         }
         catch (Exception exception) when (
             exception is IOException ||
             exception is UnauthorizedAccessException ||
             exception is SerializationException)
         {
-            return new ApplicationSettings();
+            settings = new ApplicationSettings();
+            return false;
         }
     }
 
@@ -82,5 +94,53 @@ internal sealed class ApplicationSettingsRepository
                 File.Delete(temporaryPath);
             }
         }
+    }
+
+    public void MarkGoogleDriveRestorePending()
+    {
+        var directory = System.IO.Path.GetDirectoryName(GoogleDriveRestoreMarkerPath);
+        if (!string.IsNullOrWhiteSpace(directory))
+        {
+            Directory.CreateDirectory(directory);
+        }
+
+        using var output = new FileStream(
+            GoogleDriveRestoreMarkerPath,
+            FileMode.OpenOrCreate,
+            FileAccess.Write,
+            FileShare.Read);
+        output.SetLength(0);
+        output.WriteByte(1);
+        output.Flush(true);
+    }
+
+    public bool TryMarkGoogleDriveRestorePending()
+    {
+        try
+        {
+            MarkGoogleDriveRestorePending();
+            return true;
+        }
+        catch (Exception exception) when (
+            exception is IOException || exception is UnauthorizedAccessException)
+        {
+            // An existing marker may be temporarily locked by antivirus or a
+            // second reader. Its presence is enough to preserve recovery state.
+            return File.Exists(GoogleDriveRestoreMarkerPath);
+        }
+    }
+
+    public void ClearGoogleDriveRestorePending()
+    {
+        if (File.Exists(GoogleDriveRestoreMarkerPath))
+        {
+            File.Delete(GoogleDriveRestoreMarkerPath);
+        }
+    }
+
+    public void CompleteGoogleDriveRestore(ApplicationSettings settings)
+    {
+        Save(settings);
+        ClearGoogleDriveRestorePending();
     }
 }

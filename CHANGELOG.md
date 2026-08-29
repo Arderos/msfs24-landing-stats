@@ -2,6 +2,30 @@
 
 All notable changes to MSFS Landing Stats are documented in this file.
 
+## [0.8.4] - 2026-08-29
+
+### Added
+
+- Added optional Google Drive backup and synchronization for saved landings,
+  language, and the MSFS 2024 auto-start preference.
+- Added a one-time backup setup prompt after the simulator auto-start question.
+  Google Drive can also be connected, synchronized, or disconnected in Settings.
+
+### Changed
+
+- Synchronization downloads missing records and uploads missing local records on
+  startup. A landing deleted in the application is also moved to the Drive trash;
+  removing cloud files directly does not erase the local history.
+- Raw telemetry, bug reports, OAuth credentials, and diagnostic identity remain
+  outside the Google Drive backup.
+
+### Fixed
+
+- Protected synchronization against account changes, duplicate cloud files,
+  concurrent edits and deletions, interrupted settings updates, and stale UI data.
+- Included the official Google Drive client dependencies in the single-file
+  application bundle.
+
 ## [0.8.3] - 2026-08-22
 
 ### Fixed

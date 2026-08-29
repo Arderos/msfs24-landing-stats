@@ -13,6 +13,7 @@ using System.Windows.Media;
 using System.Windows.Navigation;
 using System.Windows.Shapes;
 using LandingStats.App.Controls;
+using LandingStats.App.GoogleDrive;
 using LandingStats.App.Models;
 using LandingStats.App.Settings;
 using LandingStats.App.Storage;
@@ -35,7 +36,12 @@ public partial class MainWindow : Window
     private readonly AirportFacilityRepository _airportFacilityRepository = new AirportFacilityRepository();
     private readonly FlightModelGeometryResolver _flightModelGeometryResolver = new FlightModelGeometryResolver();
     private readonly ReleaseUpdater _releaseUpdater = new ReleaseUpdater();
+    private readonly GoogleOAuthTokenStore _googleDriveTokenStore = new GoogleOAuthTokenStore();
+    private readonly GoogleOAuthClient _googleOAuthClient;
+    private readonly GoogleDriveApiClient _googleDriveApiClient;
+    private readonly GoogleDriveBackupService _googleDriveBackupService;
     private readonly CancellationTokenSource _lifetimeCancellation = new CancellationTokenSource();
+    private CancellationTokenSource? _googleDriveAuthorizationCancellation;
     private readonly object _episodeProcessingGate = new object();
     private readonly object _landingRepositoryGate = new object();
     private readonly object _airportFacilityRepositoryGate = new object();
@@ -45,6 +51,8 @@ public partial class MainWindow : Window
     private Task _episodePersistenceTask = Task.CompletedTask;
     private Task _bugReportRetryTask = Task.CompletedTask;
     private Task _bugReportPersistenceTask = Task.CompletedTask;
+    private Task _googleDriveSyncTask = Task.CompletedTask;
+    private Task _googleDriveDeleteTask = Task.CompletedTask;
     private TelemetryUploadClient? _telemetryUploadClient;
     private IReadOnlyList<LandingRecord> _landings = Array.Empty<LandingRecord>();
     private IReadOnlyList<AirportFacility> _airportFacilities = Array.Empty<AirportFacility>();
@@ -57,7 +65,14 @@ public partial class MainWindow : Window
     private int? _mainIsolatedSeriesIndex;
     private bool _changingLanguageSelection;
     private bool _changingAutoStartSelection;
+    private bool _applyingCloudSettings;
+    private bool _settingsPersistedAndReadable;
+    private bool _autoStartInitialized;
+    private bool _googleDriveAuthorizing;
+    private bool _googleDriveAuthorizationCanceledByUser;
+    private int _googleDrivePendingOperations;
     private bool _bugReportSubmitting;
+    private bool _deleteLandingInProgress;
     private LandingRecord? _pendingDeleteRecord;
     private double? _zoomStartSeconds;
     private double? _zoomEndSeconds;
@@ -71,13 +86,37 @@ public partial class MainWindow : Window
     private int _autoStartProfileCount;
     private string? _autoStartLegacyCleanupError;
     private string? _autoStartErrorDetail;
+    private DateTime? _lastGoogleDriveSyncUtc;
+    private string? _googleDriveErrorDetail;
+    private string? _googleDriveWarningDetail;
     private bool _isClosed;
+
+    private bool GoogleDriveBusy => _googleDriveAuthorizing || _googleDrivePendingOperations > 0;
 
     public MainWindow()
     {
         _bugReportRepository = new BugReportRepository(_rawCaptureRepository.RootPath);
         _settingsRepository = new ApplicationSettingsRepository();
-        _settings = _settingsRepository.Load();
+        var settingsLoaded = _settingsRepository.TryLoad(out var settings);
+        if (!settingsLoaded)
+        {
+            // Recovery metadata is best-effort at startup: a transient file lock
+            // must not prevent the application from opening. The in-memory false
+            // state still prevents fallback settings from being treated as valid.
+            _settingsRepository.TryMarkGoogleDriveRestorePending();
+        }
+        _settingsPersistedAndReadable =
+            settingsLoaded && !_settingsRepository.GoogleDriveRestorePending;
+        _settings = settings;
+        _googleOAuthClient = new GoogleOAuthClient(_googleDriveTokenStore);
+        _googleDriveApiClient = new GoogleDriveApiClient(_googleOAuthClient);
+        _googleDriveBackupService = new GoogleDriveBackupService(
+            _googleDriveApiClient,
+            _repository,
+            _landingRepositoryGate,
+            new GoogleDriveSyncStateRepository(),
+            ReadCloudSettingsAsync,
+            ApplyCloudSettingsAsync);
         LocalizationManager.Apply(_settings.Language);
         InitializeComponent();
         var assembly = typeof(MainWindow).Assembly;
@@ -138,10 +177,29 @@ public partial class MainWindow : Window
             VersionAuthorText.Foreground = Brush("#FF8A6A");
         }
 
+        Task googleDriveStartupSync = Task.CompletedTask;
+        if (_googleOAuthClient.IsSignedIn)
+        {
+            googleDriveStartupSync = RunGoogleDriveSyncAsync(false);
+            _googleDriveSyncTask = googleDriveStartupSync;
+        }
+
+        // If settings were deleted or unreadable, let an existing Drive backup
+        // restore them before onboarding can persist fallback defaults.
+        if (ShouldRestoreSettingsBeforeOnboarding(
+                _googleOAuthClient.IsSignedIn,
+                _settingsPersistedAndReadable))
+        {
+            await googleDriveStartupSync;
+        }
+
         InitializeAutoStartSetting();
+        _autoStartInitialized = true;
+        ShowGoogleDrivePromptIfNeeded();
+        await googleDriveStartupSync;
     }
 
-    private void LoadHistory()
+    private void LoadHistory(string? preferredSelectionId = null)
     {
         List<LandingRecord> stored;
         lock (_landingRepositoryGate)
@@ -164,7 +222,7 @@ public partial class MainWindow : Window
         }
 
         _landings = stored;
-        ApplySessionFilter();
+        ApplySessionFilter(preferredSelectionId);
         StoragePathText.Text = "%LOCALAPPDATA%\\MSFS Landing Stats\\Landings";
         StoragePathText.ToolTip = _repository.RootPath;
     }
@@ -394,12 +452,16 @@ public partial class MainWindow : Window
 
     private void OnCancelDeleteLandingClick(object sender, RoutedEventArgs eventArgs)
     {
+        if (_deleteLandingInProgress)
+        {
+            return;
+        }
         HideDeleteLandingConfirmation();
     }
 
     private void OnDeleteLandingOverlayKeyDown(object sender, KeyEventArgs eventArgs)
     {
-        if (eventArgs.Key != Key.Escape)
+        if (eventArgs.Key != Key.Escape || _deleteLandingInProgress)
         {
             return;
         }
@@ -408,7 +470,7 @@ public partial class MainWindow : Window
         HideDeleteLandingConfirmation();
     }
 
-    private void OnConfirmDeleteLandingClick(object sender, RoutedEventArgs eventArgs)
+    private async void OnConfirmDeleteLandingClick(object sender, RoutedEventArgs eventArgs)
     {
         var record = _pendingDeleteRecord;
         if (record == null)
@@ -437,34 +499,66 @@ public partial class MainWindow : Window
             preferredSelectionId = nextIndex >= 0 ? remainingVisible[nextIndex].Id : null;
         }
 
+        var signedIn = _googleOAuthClient.IsSignedIn;
         try
         {
+            _deleteLandingInProgress = true;
             ConfirmDeleteLandingButton.IsEnabled = false;
-            lock (_landingRepositoryGate)
-            {
-                _repository.Delete(record.Id);
-            }
+            CancelDeleteLandingButton.IsEnabled = false;
+            _googleDriveBackupService.DeleteLandingLocally(record.Id);
             _loadedDetails.Remove(record.Id);
             _landings = _landings
                 .Where(candidate => !string.Equals(candidate.Id, record.Id, StringComparison.Ordinal))
                 .ToArray();
-            HideDeleteLandingConfirmation();
+            HideDeleteLandingConfirmation(true);
             ApplySessionFilter(preferredSelectionId);
         }
         catch (Exception exception)
         {
+            _deleteLandingInProgress = false;
             ConfirmDeleteLandingButton.IsEnabled = true;
+            CancelDeleteLandingButton.IsEnabled = true;
             DeleteLandingErrorText.Text = LocalizationManager.Format("Delete.ErrorFormat", exception.Message);
             DeleteLandingErrorText.Visibility = Visibility.Visible;
             Keyboard.Focus(CancelDeleteLandingButton);
+            return;
+        }
+
+        try
+        {
+            _googleDriveDeleteTask = _googleDriveBackupService.QueueLandingDeletionAsync(
+                record.Id,
+                _lifetimeCancellation.Token);
+            await _googleDriveDeleteTask;
+            if (signedIn)
+            {
+                QueueGoogleDriveSync();
+            }
+        }
+        catch (OperationCanceledException) when (_lifetimeCancellation.IsCancellationRequested)
+        {
+        }
+        catch (Exception exception)
+        {
+            _googleDriveErrorDetail = exception.Message;
+            RefreshGoogleDrivePresentation();
+        }
+        finally
+        {
+            _deleteLandingInProgress = false;
         }
     }
 
-    private void HideDeleteLandingConfirmation()
+    private void HideDeleteLandingConfirmation(bool force = false)
     {
+        if (_deleteLandingInProgress && !force)
+        {
+            return;
+        }
         _pendingDeleteRecord = null;
         DeleteLandingOverlay.Visibility = Visibility.Collapsed;
         ConfirmDeleteLandingButton.IsEnabled = true;
+        CancelDeleteLandingButton.IsEnabled = true;
         Keyboard.Focus(LandingHistoryList);
     }
 
@@ -541,6 +635,10 @@ public partial class MainWindow : Window
         SettingsErrorText.Text = string.Empty;
         SettingsErrorText.Visibility = Visibility.Collapsed;
         RefreshLocalizedPresentation();
+        if (!_applyingCloudSettings)
+        {
+            QueueGoogleDriveSync();
+        }
     }
 
     private void OnAutoStartSelectionChanged(object sender, RoutedEventArgs eventArgs)
@@ -685,6 +783,10 @@ public partial class MainWindow : Window
         _autoStartErrorDetail = _autoStartLegacyCleanupError;
         RefreshAutoStartErrorPresentation();
         RefreshSettingsPresentation();
+        if (!_applyingCloudSettings)
+        {
+            QueueGoogleDriveSync();
+        }
         return true;
     }
 
@@ -703,6 +805,7 @@ public partial class MainWindow : Window
         AutoStartPromptOverlay.Visibility = Visibility.Collapsed;
         SetAutoStartPromptBusy(false);
         Keyboard.Focus(LandingHistoryList);
+        ShowGoogleDrivePromptIfNeeded();
     }
 
     private void SetAutoStartPromptBusy(bool busy)
@@ -770,7 +873,440 @@ public partial class MainWindow : Window
         SettingsAutoStartStateText.Text = _settings.StartWithSimulator == true
             ? LocalizationManager.Format("Settings.AutoStartEnabledFormat", _autoStartProfileCount)
             : LocalizationManager.Text("Settings.AutoStartDisabled");
+        RefreshGoogleDrivePresentation();
         RefreshAutoStartErrorPresentation();
+    }
+
+    private async void OnGoogleDrivePrimaryClick(object sender, RoutedEventArgs eventArgs)
+    {
+        await ConnectOrSyncGoogleDriveAsync();
+    }
+
+    private async Task ConnectOrSyncGoogleDriveAsync()
+    {
+        if (GoogleDriveBusy)
+        {
+            return;
+        }
+
+        if (!_googleOAuthClient.IsSignedIn)
+        {
+            _googleDriveAuthorizing = true;
+            _googleDriveErrorDetail = null;
+            _googleDriveWarningDetail = null;
+            RefreshGoogleDrivePresentation();
+            using var authorizationCancellation = CancellationTokenSource.CreateLinkedTokenSource(
+                _lifetimeCancellation.Token);
+            _googleDriveAuthorizationCancellation = authorizationCancellation;
+            _googleDriveAuthorizationCanceledByUser = false;
+            authorizationCancellation.CancelAfter(TimeSpan.FromMinutes(3));
+            try
+            {
+                await _googleOAuthClient.SignInAsync(authorizationCancellation.Token);
+            }
+            catch (OperationCanceledException) when (_lifetimeCancellation.IsCancellationRequested)
+            {
+                return;
+            }
+            catch (OperationCanceledException)
+            {
+                if (!_googleDriveAuthorizationCanceledByUser)
+                {
+                    _googleDriveErrorDetail = LocalizationManager.Text("Settings.DriveAuthorizationTimeout");
+                }
+                return;
+            }
+            catch (Exception exception)
+            {
+                _googleDriveErrorDetail = exception.Message;
+                return;
+            }
+            finally
+            {
+                _googleDriveAuthorizationCancellation = null;
+                _googleDriveAuthorizationCanceledByUser = false;
+                _googleDriveAuthorizing = false;
+                RefreshGoogleDrivePresentation();
+            }
+        }
+
+        _googleDriveSyncTask = RunGoogleDriveSyncAsync(true);
+        await _googleDriveSyncTask;
+        if (_googleOAuthClient.IsSignedIn)
+        {
+            TrySaveGoogleDrivePromptAnswered(false);
+        }
+    }
+
+    private async void OnEnableGoogleDriveClick(object sender, RoutedEventArgs eventArgs)
+    {
+        SetGoogleDrivePromptBusy(true);
+        if (!TrySaveGoogleDrivePromptAnswered(true))
+        {
+            SetGoogleDrivePromptBusy(false);
+            return;
+        }
+
+        HideGoogleDrivePrompt();
+        await ConnectOrSyncGoogleDriveAsync();
+    }
+
+    private void OnDeclineGoogleDriveClick(object sender, RoutedEventArgs eventArgs)
+    {
+        SetGoogleDrivePromptBusy(true);
+        if (TrySaveGoogleDrivePromptAnswered(true))
+        {
+            HideGoogleDrivePrompt();
+        }
+        else
+        {
+            SetGoogleDrivePromptBusy(false);
+        }
+    }
+
+    private void ShowGoogleDrivePromptIfNeeded()
+    {
+        var signedIn = _googleOAuthClient.IsSignedIn;
+        if (signedIn && !_settings.GoogleDrivePromptAnswered)
+        {
+            TrySaveGoogleDrivePromptAnswered(false);
+        }
+        if (!ShouldShowGoogleDrivePrompt(
+                _settings,
+                signedIn,
+                AutoStartPromptOverlay.Visibility == Visibility.Visible))
+        {
+            return;
+        }
+
+        GoogleDrivePromptErrorText.Text = string.Empty;
+        GoogleDrivePromptErrorText.Visibility = Visibility.Collapsed;
+        SetGoogleDrivePromptBusy(false);
+        GoogleDrivePromptOverlay.Visibility = Visibility.Visible;
+        GoogleDrivePromptOverlay.Focus();
+        Keyboard.Focus(DeclineGoogleDriveButton);
+    }
+
+    internal static bool ShouldShowGoogleDrivePrompt(
+        ApplicationSettings settings,
+        bool signedIn,
+        bool autoStartPromptVisible)
+    {
+        if (settings == null)
+        {
+            throw new ArgumentNullException(nameof(settings));
+        }
+        return !settings.GoogleDrivePromptAnswered && !signedIn && !autoStartPromptVisible;
+    }
+
+    internal static bool ShouldRestoreSettingsBeforeOnboarding(
+        bool signedIn,
+        bool settingsPersistedAndReadable) =>
+        signedIn && !settingsPersistedAndReadable;
+
+    private bool TrySaveGoogleDrivePromptAnswered(bool showPromptError)
+    {
+        if (_settings.GoogleDrivePromptAnswered)
+        {
+            return true;
+        }
+
+        _settings.GoogleDrivePromptAnswered = true;
+        try
+        {
+            _settingsRepository.Save(_settings);
+            return true;
+        }
+        catch (Exception exception)
+        {
+            _settings.GoogleDrivePromptAnswered = false;
+            if (showPromptError)
+            {
+                GoogleDrivePromptErrorText.Text = LocalizationManager.Format(
+                    "GoogleDrivePrompt.SaveErrorFormat",
+                    exception.Message);
+                GoogleDrivePromptErrorText.Visibility = Visibility.Visible;
+            }
+            return false;
+        }
+    }
+
+    private void HideGoogleDrivePrompt()
+    {
+        GoogleDrivePromptOverlay.Visibility = Visibility.Collapsed;
+        SetGoogleDrivePromptBusy(false);
+        Keyboard.Focus(LandingHistoryList);
+    }
+
+    private void SetGoogleDrivePromptBusy(bool busy)
+    {
+        DeclineGoogleDriveButton.IsEnabled = !busy;
+        EnableGoogleDriveButton.IsEnabled = !busy;
+    }
+
+    private void OnGoogleDriveSignOutClick(object sender, RoutedEventArgs eventArgs)
+    {
+        if (_googleDriveAuthorizing)
+        {
+            _googleDriveAuthorizationCanceledByUser = true;
+            _googleDriveAuthorizationCancellation?.Cancel();
+            return;
+        }
+        if (GoogleDriveBusy)
+        {
+            return;
+        }
+        _googleOAuthClient.SignOut();
+        _lastGoogleDriveSyncUtc = null;
+        _googleDriveErrorDetail = null;
+        _googleDriveWarningDetail = null;
+        RefreshGoogleDrivePresentation();
+    }
+
+    private void QueueGoogleDriveSync()
+    {
+        if (!_googleOAuthClient.IsSignedIn || _isClosed || _lifetimeCancellation.IsCancellationRequested)
+        {
+            return;
+        }
+        _googleDriveSyncTask = RunGoogleDriveSyncAsync(false);
+    }
+
+    private async Task RunGoogleDriveSyncAsync(bool userInitiated)
+    {
+        if (!_googleOAuthClient.IsSignedIn || _isClosed)
+        {
+            return;
+        }
+
+        _googleDrivePendingOperations++;
+        if (_googleDrivePendingOperations == 1)
+        {
+            _googleDriveErrorDetail = null;
+            _googleDriveWarningDetail = null;
+            RefreshGoogleDrivePresentation();
+        }
+        try
+        {
+            var selectedId = (LandingHistoryList.SelectedItem as LandingRecord)?.Id;
+            var result = await _googleDriveBackupService.SyncAsync(_lifetimeCancellation.Token);
+            if (_isClosed)
+            {
+                return;
+            }
+            if (result.DownloadedSettings || result.UploadedSettings)
+            {
+                // A successful sync either restored cloud settings or established
+                // the current local snapshot as the first cloud revision.
+                if (_settingsRepository.GoogleDriveRestorePending)
+                {
+                    _settingsRepository.CompleteGoogleDriveRestore(_settings);
+                }
+                _settingsPersistedAndReadable = true;
+            }
+            _lastGoogleDriveSyncUtc = DateTime.UtcNow;
+            _googleDriveErrorDetail = null;
+            var warnings = new List<string>();
+            if (result.ConflictedLandingIds.Count > 0)
+            {
+                warnings.Add(LocalizationManager.Format(
+                    "Settings.DriveLandingConflictFormat",
+                    result.ConflictedLandingIds.Count));
+            }
+            if (result.SettingsConflict)
+            {
+                warnings.Add(LocalizationManager.Text("Settings.DriveSettingsConflict"));
+            }
+            if (result.SettingsChangedDuringSync)
+            {
+                warnings.Add(LocalizationManager.Text("Settings.DriveSettingsChangedDuringSync"));
+            }
+            if (result.UnsupportedSettingsFormatVersion.HasValue)
+            {
+                warnings.Add(LocalizationManager.Format(
+                    "Settings.DriveUnsupportedSettingsFormat",
+                    result.UnsupportedSettingsFormatVersion.Value));
+            }
+            _googleDriveWarningDetail = warnings.Count == 0 ? null : string.Join(" ", warnings);
+            if (result.HistoryChanged)
+            {
+                _loadedDetails.Clear();
+                LoadHistory(selectedId);
+            }
+        }
+        catch (OperationCanceledException) when (_lifetimeCancellation.IsCancellationRequested)
+        {
+        }
+        catch (GoogleDriveNotSignedInException)
+        {
+            _googleDriveErrorDetail = LocalizationManager.Text("Settings.DriveSignInAgain");
+        }
+        catch (Exception exception)
+        {
+            _googleDriveErrorDetail = exception.Message;
+        }
+        finally
+        {
+            _googleDrivePendingOperations--;
+            if (_googleDrivePendingOperations == 0 && !_isClosed)
+            {
+                RefreshGoogleDrivePresentation();
+            }
+        }
+    }
+
+    private Task<GoogleDriveLocalSettings> ReadCloudSettingsAsync()
+    {
+        if (Dispatcher.CheckAccess())
+        {
+            return Task.FromResult(CreateLocalCloudSettingsSnapshot());
+        }
+        return Dispatcher.InvokeAsync(CreateLocalCloudSettingsSnapshot).Task;
+    }
+
+    private GoogleDriveLocalSettings CreateLocalCloudSettingsSnapshot() =>
+        new GoogleDriveLocalSettings(CreateCloudSettingsSnapshot(), _settingsPersistedAndReadable);
+
+    private GoogleDriveCloudSettings CreateCloudSettingsSnapshot() => new GoogleDriveCloudSettings
+    {
+        Language = _settings.Language,
+        StartWithSimulator = _settings.StartWithSimulator,
+    };
+
+    private Task<bool> ApplyCloudSettingsAsync(
+        GoogleDriveCloudSettings cloudSettings,
+        string expectedLocalHash)
+    {
+        if (Dispatcher.CheckAccess())
+        {
+            return Task.FromResult(ApplyCloudSettingsIfUnchangedCore(cloudSettings, expectedLocalHash));
+        }
+        return Dispatcher.InvokeAsync(() =>
+            ApplyCloudSettingsIfUnchangedCore(cloudSettings, expectedLocalHash)).Task;
+    }
+
+    private bool ApplyCloudSettingsIfUnchangedCore(
+        GoogleDriveCloudSettings cloudSettings,
+        string expectedLocalHash)
+    {
+        var currentHash = GoogleDriveBackupService.Hash(
+            GoogleDriveCloudSettings.Serialize(CreateCloudSettingsSnapshot()));
+        if (!string.Equals(currentHash, expectedLocalHash, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        ApplyCloudSettingsCore(cloudSettings);
+        return true;
+    }
+
+    private void ApplyCloudSettingsCore(GoogleDriveCloudSettings cloudSettings)
+    {
+        cloudSettings.Normalize();
+        var previousLanguage = _settings.Language;
+        var previousAutoStart = _settings.StartWithSimulator;
+        var targetAutoStart = cloudSettings.StartWithSimulator ?? previousAutoStart;
+        AutoStartOperationResult? autoStartResult = null;
+
+        _applyingCloudSettings = true;
+        try
+        {
+            if (_autoStartInitialized && targetAutoStart.HasValue && targetAutoStart != previousAutoStart)
+            {
+                autoStartResult = _autoStartManager.SetEnabled(targetAutoStart.Value);
+            }
+            _settings.Language = cloudSettings.Language;
+            _settings.StartWithSimulator = targetAutoStart;
+            _settingsRepository.Save(_settings);
+        }
+        catch
+        {
+            _settings.Language = previousLanguage;
+            _settings.StartWithSimulator = previousAutoStart;
+            if (autoStartResult != null)
+            {
+                _autoStartManager.SetEnabled(previousAutoStart == true);
+            }
+            throw;
+        }
+        finally
+        {
+            _applyingCloudSettings = false;
+        }
+
+        if (autoStartResult != null)
+        {
+            _autoStartProfileCount = autoStartResult.ConfigurationPaths.Count;
+        }
+        if (targetAutoStart.HasValue && AutoStartPromptOverlay.Visibility == Visibility.Visible)
+        {
+            HideAutoStartPrompt();
+        }
+        if (!string.Equals(previousLanguage, _settings.Language, StringComparison.Ordinal))
+        {
+            LocalizationManager.Apply(_settings.Language);
+            RefreshLocalizedPresentation();
+        }
+        else
+        {
+            RefreshSettingsPresentation();
+        }
+    }
+
+    private void RefreshGoogleDrivePresentation()
+    {
+        if (GoogleDrivePrimaryButton == null)
+        {
+            return;
+        }
+        var signedIn = _googleOAuthClient.IsSignedIn;
+        GoogleDrivePrimaryButton.Content = LocalizationManager.Text(
+            signedIn ? "Settings.DriveSyncNow" : "Settings.DriveConnect");
+        GoogleDrivePrimaryButton.IsEnabled = !GoogleDriveBusy;
+        GoogleDriveSignOutButton.Content = LocalizationManager.Text(
+            _googleDriveAuthorizing ? "Common.Cancel" : "Settings.DriveDisconnect");
+        GoogleDriveSignOutButton.Visibility = signedIn || _googleDriveAuthorizing
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+        GoogleDriveSignOutButton.IsEnabled = _googleDriveAuthorizing || !GoogleDriveBusy;
+
+        if (!string.IsNullOrWhiteSpace(_googleDriveErrorDetail))
+        {
+            GoogleDriveStateText.Text = LocalizationManager.Format(
+                "Settings.DriveErrorFormat",
+                _googleDriveErrorDetail!);
+            GoogleDriveStateText.Foreground = Brush("#FF8A6A");
+        }
+        else if (!string.IsNullOrWhiteSpace(_googleDriveWarningDetail))
+        {
+            GoogleDriveStateText.Text = LocalizationManager.Format(
+                "Settings.DriveWarningFormat",
+                _googleDriveWarningDetail!);
+            GoogleDriveStateText.Foreground = Brush("#D9C46A");
+        }
+        else if (GoogleDriveBusy)
+        {
+            GoogleDriveStateText.Text = LocalizationManager.Text(
+                _googleDriveAuthorizing ? "Settings.DriveAuthorizing" : "Settings.DriveSyncing");
+            GoogleDriveStateText.Foreground = Brush("#D9C46A");
+        }
+        else if (!signedIn)
+        {
+            GoogleDriveStateText.Text = LocalizationManager.Text("Settings.DriveDisconnected");
+            GoogleDriveStateText.Foreground = Brush("#7E878F");
+        }
+        else if (_lastGoogleDriveSyncUtc.HasValue)
+        {
+            GoogleDriveStateText.Text = LocalizationManager.Format(
+                "Settings.DriveLastSyncFormat",
+                _lastGoogleDriveSyncUtc.Value.ToLocalTime());
+            GoogleDriveStateText.Foreground = Brush("#8FD6A8");
+        }
+        else
+        {
+            GoogleDriveStateText.Text = LocalizationManager.Text("Settings.DriveConnected");
+            GoogleDriveStateText.Foreground = Brush("#8FD6A8");
+        }
     }
 
     private void RefreshLocalizedPresentation()
@@ -1189,6 +1725,7 @@ public partial class MainWindow : Window
             }
 
             AddLandingRecords(processed.Records);
+            QueueGoogleDriveSync();
             if (processed.Records.Count == 1)
             {
                 SetConnectionStatus("Recorder.LandingSaved");
@@ -1758,6 +2295,13 @@ public partial class MainWindow : Window
         {
             _messageSource.RemoveHook(WindowProcedure);
             _messageSource = null;
+        }
+
+        if (!GoogleDriveBusy && _googleDriveSyncTask.IsCompleted && _googleDriveDeleteTask.IsCompleted)
+        {
+            _googleDriveBackupService.Dispose();
+            _googleDriveApiClient.Dispose();
+            _googleOAuthClient.Dispose();
         }
 
         _lifetimeCancellation.Dispose();

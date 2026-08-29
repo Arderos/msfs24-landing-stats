@@ -1135,6 +1135,54 @@
             </Border>
         </Grid>
 
+        <Grid x:Name="GoogleDrivePromptOverlay"
+              Grid.RowSpan="3" Grid.ColumnSpan="2"
+              Panel.ZIndex="120"
+              Background="#B8000000"
+              Visibility="Collapsed"
+              Focusable="True"
+              KeyboardNavigation.TabNavigation="Cycle">
+            <Border Width="470"
+                    MaxWidth="470"
+                    Padding="24"
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Center"
+                    Background="{StaticResource SurfaceRaisedBrush}"
+                    BorderBrush="#3A3531"
+                    BorderThickness="1"
+                    CornerRadius="10">
+                <StackPanel>
+                    <Border Width="38" Height="38" HorizontalAlignment="Left"
+                            Background="{StaticResource AccentSoftBrush}" CornerRadius="19">
+                        <TextBlock Text="&#xE753;" FontFamily="Segoe MDL2 Assets" FontSize="17"
+                                   Foreground="{StaticResource AccentBrush}"
+                                   HorizontalAlignment="Center" VerticalAlignment="Center" />
+                    </Border>
+                    <TextBlock Text="{DynamicResource GoogleDrivePrompt.Title}"
+                               FontSize="18" FontWeight="SemiBold" Margin="0,17,0,0" />
+                    <TextBlock Text="{DynamicResource GoogleDrivePrompt.Body}"
+                               Foreground="{StaticResource MutedTextBrush}"
+                               FontSize="12" TextWrapping="Wrap" LineHeight="19" Margin="0,9,0,0" />
+                    <TextBlock x:Name="GoogleDrivePromptErrorText"
+                               Visibility="Collapsed"
+                               Foreground="{StaticResource DangerBrush}"
+                               FontSize="11" TextWrapping="Wrap" Margin="0,14,0,0" />
+                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,22,0,0">
+                        <Button x:Name="DeclineGoogleDriveButton"
+                                Content="{DynamicResource AutoStart.NotNow}"
+                                Height="34" Margin="0,0,9,0"
+                                Style="{StaticResource OutlineButtonStyle}"
+                                Click="OnDeclineGoogleDriveClick" />
+                        <Button x:Name="EnableGoogleDriveButton"
+                                Content="{DynamicResource Settings.DriveConnect}"
+                                Height="34"
+                                Style="{StaticResource AccentButtonStyle}"
+                                Click="OnEnableGoogleDriveClick" />
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+        </Grid>
+
         <Grid x:Name="SettingsOverlay"
               Grid.RowSpan="3" Grid.ColumnSpan="2"
               Panel.ZIndex="110"
@@ -1145,6 +1193,7 @@
               PreviewKeyDown="OnSettingsOverlayKeyDown">
             <Border Width="520"
                     MaxWidth="520"
+                    MaxHeight="760"
                     Padding="24"
                     HorizontalAlignment="Center"
                     VerticalAlignment="Center"
@@ -1152,7 +1201,9 @@
                     BorderBrush="#3A3531"
                     BorderThickness="1"
                     CornerRadius="10">
-                <StackPanel>
+                <ScrollViewer VerticalScrollBarVisibility="Auto"
+                              HorizontalScrollBarVisibility="Disabled">
+                <StackPanel Margin="0,0,8,0">
                     <Grid>
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="Auto" />
@@ -1229,6 +1280,36 @@
                         </StackPanel>
                     </Border>
 
+                    <Border Background="{StaticResource SurfaceBrush}" CornerRadius="8"
+                            BorderBrush="{StaticResource BorderBrush}" BorderThickness="1"
+                            Padding="16" Margin="0,12,0,0">
+                        <StackPanel>
+                            <TextBlock Text="{DynamicResource Settings.DriveTitle}"
+                                       Style="{StaticResource SectionLabelStyle}"
+                                       Foreground="{StaticResource LabelTextBrush}" />
+                            <TextBlock Text="{DynamicResource Settings.DriveBody}"
+                                       Foreground="{StaticResource MutedTextBrush}"
+                                       FontSize="11" LineHeight="17" TextWrapping="Wrap" Margin="0,7,0,0" />
+                            <StackPanel Orientation="Horizontal" Margin="0,15,0,0">
+                                <Button x:Name="GoogleDrivePrimaryButton"
+                                        Content="{DynamicResource Settings.DriveConnect}"
+                                        Height="34"
+                                        Style="{StaticResource AccentButtonStyle}"
+                                        Click="OnGoogleDrivePrimaryClick" />
+                                <Button x:Name="GoogleDriveSignOutButton"
+                                        Content="{DynamicResource Settings.DriveDisconnect}"
+                                        Height="34" Margin="8,0,0,0"
+                                        Visibility="Collapsed"
+                                        Style="{StaticResource OutlineButtonStyle}"
+                                        Click="OnGoogleDriveSignOutClick" />
+                            </StackPanel>
+                            <TextBlock x:Name="GoogleDriveStateText"
+                                       Foreground="{StaticResource SubtleTextBrush}"
+                                       FontFamily="Cascadia Mono, Consolas"
+                                       FontSize="9" TextWrapping="Wrap" Margin="0,11,0,0" />
+                        </StackPanel>
+                    </Border>
+
                     <TextBlock x:Name="SettingsErrorText"
                                Visibility="Collapsed"
                                Foreground="{StaticResource DangerBrush}"
@@ -1243,6 +1324,7 @@
                             Style="{StaticResource OutlineButtonStyle}"
                             Click="OnCloseSettingsClick" />
                 </StackPanel>
+                </ScrollViewer>
             </Border>
         </Grid>
 

@@ -5,7 +5,7 @@ namespace LandingStats.App.Settings;
 [DataContract]
 internal sealed class ApplicationSettings : IExtensibleDataObject
 {
-    internal const int CurrentSchemaVersion = 2;
+    internal const int CurrentSchemaVersion = 3;
 
     [DataMember(Name = "schemaVersion", Order = 1)]
     public int SchemaVersion { get; set; } = CurrentSchemaVersion;
@@ -15,6 +15,9 @@ internal sealed class ApplicationSettings : IExtensibleDataObject
 
     [DataMember(Name = "startWithSimulator", Order = 3, EmitDefaultValue = false)]
     public bool? StartWithSimulator { get; set; }
+
+    [DataMember(Name = "googleDrivePromptAnswered", Order = 4, EmitDefaultValue = false)]
+    public bool GoogleDrivePromptAnswered { get; set; }
 
     public ExtensionDataObject? ExtensionData { get; set; }
 

@@ -93,19 +93,36 @@ try {
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     $runtimeRoot = Join-Path $testRoot "runtime"
     New-Item -ItemType Directory -Path $runtimeRoot | Out-Null
-    $expectedEntries = @(
+    $requiredEntries = @(
         "LandingStats.Core.dll",
         "Microsoft.FlightSimulator.SimConnect.dll",
         "MSFS-Landing-Stats.exe",
         "MSFS-Landing-Stats.exe.config",
         "SimConnect.dll"
-    ) | Sort-Object
+    )
     $archive = [IO.Compression.ZipFile]::OpenRead($payloadPath)
     try {
-        $entries = @($archive.Entries | ForEach-Object FullName | Sort-Object)
-        if ($entries.Count -ne $expectedEntries.Count -or
-            [string]::Join("`n", $entries) -cne [string]::Join("`n", $expectedEntries)) {
-            throw "Previous package runtime topology is unexpected."
+        $seen = [Collections.Generic.HashSet[string]]::new(
+            [StringComparer]::OrdinalIgnoreCase)
+        foreach ($entry in $archive.Entries) {
+            $name = $entry.Name
+            $allowed =
+                $name -ieq "MSFS-Landing-Stats.exe" -or
+                $name -ieq "MSFS-Landing-Stats.exe.config" -or
+                [IO.Path]::GetExtension($name) -ieq ".dll"
+            if ([string]::IsNullOrEmpty($name) -or
+                $entry.FullName -cne $name -or
+                $entry.Length -le 0 -or
+                -not $allowed -or
+                -not $seen.Add($name)) {
+                throw "Previous package runtime topology is unexpected or unsafe."
+            }
+        }
+
+        foreach ($required in $requiredEntries) {
+            if (-not $seen.Contains($required)) {
+                throw "Previous package runtime is missing required entry: $required"
+            }
         }
 
         foreach ($entry in $archive.Entries) {

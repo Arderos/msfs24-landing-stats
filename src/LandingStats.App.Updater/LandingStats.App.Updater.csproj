@@ -7,7 +7,7 @@
     <Prefer32Bit>false</Prefer32Bit>
     <AssemblyName>MSFS-Landing-Stats.Updater</AssemblyName>
     <RootNamespace>LandingStats.App.Updater</RootNamespace>
-    <InformationalVersion>0.8.3-secure-updater</InformationalVersion>
+    <InformationalVersion>0.8.4-secure-updater</InformationalVersion>
     <ApplicationIcon>..\LandingStats.App\Assets\AppIcon.ico</ApplicationIcon>
   </PropertyGroup>
 

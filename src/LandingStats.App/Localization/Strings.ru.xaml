@@ -148,6 +148,27 @@
     <system:String x:Key="Settings.AutoStartToggle">Запускать Landing Stats вместе с MSFS 2024</system:String>
     <system:String x:Key="Settings.AutoStartEnabledFormat">Включено · установок MSFS 2024: {0}</system:String>
     <system:String x:Key="Settings.AutoStartDisabled">Выключено</system:String>
+    <system:String x:Key="Settings.DriveTitle">РЕЗЕРВНАЯ КОПИЯ В GOOGLE DRIVE</system:String>
+    <system:String x:Key="Settings.DriveBody">Сохраняет посадки и настройки в Google Drive и синхронизирует их между устройствами. Сырая телеметрия и баг-репорты не отправляются.</system:String>
+    <system:String x:Key="Settings.DriveConnect">ПОДКЛЮЧИТЬ GOOGLE DRIVE</system:String>
+    <system:String x:Key="Settings.DriveSyncNow">СИНХРОНИЗИРОВАТЬ</system:String>
+    <system:String x:Key="Settings.DriveDisconnect">ОТКЛЮЧИТЬ</system:String>
+    <system:String x:Key="Settings.DriveDisconnected">Не подключено</system:String>
+    <system:String x:Key="Settings.DriveConnected">Подключено · ожидание первой синхронизации</system:String>
+    <system:String x:Key="Settings.DriveSyncing">Синхронизация посадок и настроек…</system:String>
+    <system:String x:Key="Settings.DriveAuthorizing">Ожидание авторизации в браузере…</system:String>
+    <system:String x:Key="Settings.DriveAuthorizationTimeout">Время авторизации Google истекло. Попробуйте подключиться снова.</system:String>
+    <system:String x:Key="Settings.DriveLandingConflictFormat">Конфликтующих посадок: {0}. Они оставлены без изменений; остальные данные синхронизированы.</system:String>
+    <system:String x:Key="Settings.DriveSettingsConflict">Конфликтующие версии настроек оставлены без изменений; посадки синхронизированы.</system:String>
+    <system:String x:Key="Settings.DriveSettingsChangedDuringSync">Более новое локальное изменение настроек сохранено и будет синхронизировано следующим.</system:String>
+    <system:String x:Key="Settings.DriveUnsupportedSettingsFormat">Облачные настройки используют более новый формат {0}; эта версия оставила их без изменений.</system:String>
+    <system:String x:Key="Settings.DriveWarningFormat">Предупреждение синхронизации · {0}</system:String>
+    <system:String x:Key="Settings.DriveLastSyncFormat">Последняя синхронизация: {0:g}</system:String>
+    <system:String x:Key="Settings.DriveErrorFormat">Ошибка синхронизации · {0}</system:String>
+    <system:String x:Key="Settings.DriveSignInAgain">Доступ к Google Drive истёк. Подключитесь снова.</system:String>
+    <system:String x:Key="GoogleDrivePrompt.Title">Настроить резервное копирование?</system:String>
+    <system:String x:Key="GoogleDrivePrompt.Body">Подключите Google Drive, чтобы сохранять посадки и настройки в облаке и синхронизировать их между устройствами. Сырая телеметрия и баг-репорты не отправляются.</system:String>
+    <system:String x:Key="GoogleDrivePrompt.SaveErrorFormat">Не удалось сохранить выбор · {0}</system:String>
 
     <system:String x:Key="AutoStart.Title">Запускать Landing Stats вместе с MSFS 2024?</system:String>
     <system:String x:Key="AutoStart.Body">Landing Stats может автоматически открываться при запуске Microsoft Flight Simulator 2024. Эту настройку можно изменить позже в Настройках.</system:String>

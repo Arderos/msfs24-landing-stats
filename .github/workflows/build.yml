@@ -94,8 +94,17 @@ jobs:
 
       - name: Build single executable and updater
         shell: pwsh
+        env:
+          GOOGLE_OAUTH_CLIENT_ID: ${{ github.event_name != 'pull_request' && secrets.GOOGLE_OAUTH_CLIENT_ID || '' }}
+          GOOGLE_OAUTH_CLIENT_SECRET: ${{ github.event_name != 'pull_request' && secrets.GOOGLE_OAUTH_CLIENT_SECRET || '' }}
         run: |
-          .\build-app.ps1 -MsfsSdkRoot (Join-Path $env:RUNNER_TEMP 'msfs-simconnect-sdk')
+          $arguments = @{
+            MsfsSdkRoot = Join-Path $env:RUNNER_TEMP 'msfs-simconnect-sdk'
+          }
+          if ('${{ github.event_name }}' -ne 'pull_request') {
+            $arguments.RequireGoogleOAuthCredentials = $true
+          }
+          .\build-app.ps1 @arguments
 
       - name: Run regression tests
         shell: pwsh
@@ -207,7 +216,7 @@ jobs:
             [Array]::Clear($privateKey, 0, $privateKey.Length)
           }
 
-          $previousClientVersion = '0.8.2'
+          $previousClientVersion = '0.8.3'
           $previousClientDirectory = Join-Path $env:RUNNER_TEMP "msfs-landing-stats-v$previousClientVersion-client"
           New-Item -ItemType Directory -Path $previousClientDirectory -Force | Out-Null
           $previousClientPath = Join-Path $previousClientDirectory 'MSFS-Landing-Stats.exe'

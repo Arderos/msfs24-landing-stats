@@ -18,6 +18,7 @@ using System.Threading.Tasks;
 using System.Xml.Linq;
 using LandingStats.App;
 using LandingStats.App.Controls;
+using LandingStats.App.GoogleDrive;
 using LandingStats.App.Models;
 using LandingStats.App.Settings;
 using LandingStats.App.Storage;
@@ -132,6 +133,36 @@ internal static class Program
         Run("English landing dates use an English month and 24-hour time", EnglishLandingDateFormatIsStable);
         Run("settings preserve unknown future options", SettingsPreserveUnknownFutureOptions);
         Run("legacy settings leave simulator auto-start undecided", LegacySettingsLeaveAutoStartUndecided);
+        Run("Google Drive onboarding follows simulator auto-start", GoogleDriveOnboardingFollowsAutoStart);
+        Run("settings repository reports missing and corrupt files", SettingsRepositoryReportsUnreadableFiles);
+        Run("settings recovery marker cannot crash startup when locked", SettingsRecoveryMarkerIsBestEffort);
+        Run("Google OAuth uses PKCE and the per-file Drive scope", GoogleDriveBackupRegressionTests.OAuthUsesPkceAndDriveFileScope);
+        Run("Google OAuth refresh tokens are protected for the Windows user", GoogleDriveBackupRegressionTests.TokenStoreProtectsRefreshToken);
+        Run("Google Drive backup synchronizes and only propagates in-app deletes", GoogleDriveBackupRegressionTests.BackupSynchronizesAndPropagatesDeletes);
+        Run("Google Drive account switches start with a non-destructive union", GoogleDriveBackupRegressionTests.AccountSwitchStartsWithSafeUnion);
+        Run("Google Drive deletion survives an in-flight account switch", GoogleDriveBackupRegressionTests.DeleteDuringAccountSwitchReturnsToOriginalAccount);
+        Run("Google Drive delete intent is durable during an active sync", GoogleDriveBackupRegressionTests.DeleteWaitsForActiveSyncAndIsNotLost);
+        Run("Google Drive v3 state migration preserves a late delete", GoogleDriveBackupRegressionTests.LegacyStateMigrationPreservesLateDelete);
+        Run("Google Drive offline delete intent survives restart", GoogleDriveBackupRegressionTests.OfflineDeleteSurvivesRestart);
+        Run("Google Drive late delete cannot be resurrected by an active download", GoogleDriveBackupRegressionTests.LateDeleteCannotBeResurrected);
+        Run("Google Drive in-app deletion propagates across devices", GoogleDriveBackupRegressionTests.InAppDeletePropagatesAcrossDevices);
+        Run("Google Drive in-app deletion claims an existing manual trash entry", GoogleDriveBackupRegressionTests.InAppDeleteClaimsManuallyTrashedLanding);
+        Run("Google Drive pending deletion survives an account round trip", GoogleDriveBackupRegressionTests.PendingDeleteSurvivesAccountRoundTrip);
+        Run("Google Drive unscoped deletion never applies to a first account", GoogleDriveBackupRegressionTests.UnscopedDeleteNeverAppliesToFirstAccount);
+        Run("local landing deletion does not require Google Drive state storage", GoogleDriveBackupRegressionTests.LocalDeleteDoesNotRequireDriveStateStorage);
+        Run("Google Drive identical first-sync duplicates converge", GoogleDriveBackupRegressionTests.IdenticalFirstSyncDuplicatesConverge);
+        Run("Google Drive simultaneous first sign-in keeps one logical backup", GoogleDriveBackupRegressionTests.SimultaneousFirstSignInConvergesToOneRoot);
+        Run("Google Drive canonical root changes preserve delete intent", GoogleDriveBackupRegressionTests.CanonicalRootChangePreservesDeleteIntent);
+        Run("Google Drive trashed canonical roots preserve delete intent", GoogleDriveBackupRegressionTests.TrashedCanonicalRootPreservesDeleteIntent);
+        Run("Google Drive landing conflicts do not block unrelated synchronization", GoogleDriveBackupRegressionTests.ConcurrentLandingEditsAreRejectedWithoutLoss);
+        Run("Google Drive sibling revisions are isolated from unrelated synchronization", GoogleDriveBackupRegressionTests.SiblingRevisionConflictsAreIsolated);
+        Run("Google Drive merges independent landing metadata resolution", GoogleDriveBackupRegressionTests.MetadataOnlyLandingConflictMergesResolvedValues);
+        Run("Google Drive restores unreadable local settings from cloud", GoogleDriveBackupRegressionTests.MissingLocalSettingsRestoreFromCloud);
+        Run("Google Drive settings recovery survives an offline restart", GoogleDriveBackupRegressionTests.SettingsRecoverySurvivesOfflineRestart);
+        Run("Google Drive concurrent settings edits converge", GoogleDriveBackupRegressionTests.ConcurrentSettingsEditsAreRejectedWithoutLoss);
+        Run("Google Drive settings changed during download are preserved", GoogleDriveBackupRegressionTests.SettingsChangedDuringDownloadArePreserved);
+        Run("Google Drive future settings remain untouched", GoogleDriveBackupRegressionTests.FutureSettingsRemainUntouched);
+        Run("Google Drive unchanged landings use a lightweight fingerprint", GoogleDriveBackupRegressionTests.UnchangedLandingSyncUsesLightweightFingerprint);
         Run("application lifetime rejects a second instance", ApplicationLifetimeRejectsSecondInstance);
         Run("simulator auto-start preserves every foreign byte", SimulatorAutoStartPreservesForeignBytes);
         Run("simulator auto-start creates a valid missing exe.xml", SimulatorAutoStartCreatesMissingConfiguration);
@@ -217,11 +248,126 @@ internal static class Program
             var repository = new ApplicationSettingsRepository(path);
             var settings = repository.Load();
             Null(settings.StartWithSimulator, "legacy setting remains undecided");
+            Equal(false, settings.GoogleDrivePromptAnswered, "legacy Google Drive prompt remains unanswered");
             Equal(ApplicationSettings.CurrentSchemaVersion, settings.SchemaVersion, "legacy schema upgrades in memory");
 
             settings.StartWithSimulator = false;
+            settings.GoogleDrivePromptAnswered = true;
             repository.Save(settings);
             Equal(false, repository.Load().StartWithSimulator, "explicit refusal persists");
+            Equal(true, repository.Load().GoogleDrivePromptAnswered, "Google Drive prompt answer persists");
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, true);
+            }
+        }
+    }
+
+    private static void GoogleDriveOnboardingFollowsAutoStart()
+    {
+        var freshInstall = new ApplicationSettings();
+        Equal(
+            false,
+            MainWindow.ShouldShowGoogleDrivePrompt(freshInstall, signedIn: false, autoStartPromptVisible: true),
+            "fresh install waits for the simulator auto-start question");
+        Equal(
+            true,
+            MainWindow.ShouldShowGoogleDrivePrompt(freshInstall, signedIn: false, autoStartPromptVisible: false),
+            "fresh install asks about Google Drive after simulator auto-start");
+
+        var updatedInstall = new ApplicationSettings { StartWithSimulator = false };
+        Equal(
+            true,
+            MainWindow.ShouldShowGoogleDrivePrompt(updatedInstall, signedIn: false, autoStartPromptVisible: false),
+            "updated install asks only the new Google Drive question");
+
+        updatedInstall.GoogleDrivePromptAnswered = true;
+        Equal(
+            false,
+            MainWindow.ShouldShowGoogleDrivePrompt(updatedInstall, signedIn: false, autoStartPromptVisible: false),
+            "answered Google Drive question does not return");
+
+        freshInstall.GoogleDrivePromptAnswered = false;
+        Equal(
+            false,
+            MainWindow.ShouldShowGoogleDrivePrompt(freshInstall, signedIn: true, autoStartPromptVisible: false),
+            "an existing Google Drive sign-in suppresses onboarding");
+
+        Equal(
+            true,
+            MainWindow.ShouldRestoreSettingsBeforeOnboarding(
+                signedIn: true,
+                settingsPersistedAndReadable: false),
+            "signed-in startup restores missing settings before either onboarding prompt");
+        Equal(
+            false,
+            MainWindow.ShouldRestoreSettingsBeforeOnboarding(
+                signedIn: false,
+                settingsPersistedAndReadable: false),
+            "signed-out fresh install does not wait for unavailable cloud settings");
+        Equal(
+            false,
+            MainWindow.ShouldRestoreSettingsBeforeOnboarding(
+                signedIn: true,
+                settingsPersistedAndReadable: true),
+            "readable local settings do not delay onboarding");
+    }
+
+    private static void SettingsRepositoryReportsUnreadableFiles()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "landing-stats-unreadable-settings-test-" + Guid.NewGuid().ToString("N"));
+        var path = Path.Combine(root, "settings.json");
+        try
+        {
+            Directory.CreateDirectory(root);
+            var repository = new ApplicationSettingsRepository(path);
+            Equal(false, repository.TryLoad(out var missing), "missing settings read status");
+            Equal("auto", missing.Language, "missing settings fallback");
+
+            File.WriteAllText(path, "{not-json", new UTF8Encoding(false));
+            Equal(false, repository.TryLoad(out var corrupt), "corrupt settings read status");
+            Equal("auto", corrupt.Language, "corrupt settings fallback");
+
+            repository.Save(new ApplicationSettings { Language = "ru" });
+            Equal(true, repository.TryLoad(out var valid), "valid settings read status");
+            Equal("ru", valid.Language, "valid settings value");
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, true);
+            }
+        }
+    }
+
+    private static void SettingsRecoveryMarkerIsBestEffort()
+    {
+        var root = Path.Combine(
+            Path.GetTempPath(),
+            "landing-stats-marker-lock-test-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            Directory.CreateDirectory(root);
+            var repository = new ApplicationSettingsRepository(Path.Combine(root, "settings.json"));
+            repository.MarkGoogleDriveRestorePending();
+            using (new FileStream(
+                       repository.GoogleDriveRestoreMarkerPath,
+                       FileMode.Open,
+                       FileAccess.ReadWrite,
+                       FileShare.None))
+            {
+                Equal(true, repository.TryMarkGoogleDriveRestorePending(), "locked existing marker remains valid");
+            }
+
+            var invalidDirectory = Path.Combine(root, "not-a-directory");
+            File.WriteAllText(invalidDirectory, "occupied", new UTF8Encoding(false));
+            var unavailable = new ApplicationSettingsRepository(
+                Path.Combine(invalidDirectory, "settings.json"));
+            Equal(false, unavailable.TryMarkGoogleDriveRestorePending(), "unwritable marker is best-effort");
         }
         finally
         {
@@ -1145,9 +1291,10 @@ internal static class Program
             Equal(
                 true,
                 SpinWait.SpinUntil(
-                    () => reports.All(report => !File.Exists(report)),
+                    () => reports.All(report => !File.Exists(report)) &&
+                          (long)Field(client, "_queueBytes")! == 0,
                     TimeSpan.FromSeconds(5)),
-                "all durable reports drain as byte and file capacity becomes free");
+                "all durable reports drain and release byte and file capacity");
             Equal(3, handler.CaptureCount, "each saturated report uploaded exactly once");
             Equal(0L, (long)Field(client, "_queueBytes")!, "drained backlog releases queue bytes");
         }

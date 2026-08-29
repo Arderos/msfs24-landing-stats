@@ -148,6 +148,27 @@
     <system:String x:Key="Settings.AutoStartToggle">Start Landing Stats with MSFS 2024</system:String>
     <system:String x:Key="Settings.AutoStartEnabledFormat">Enabled · {0} MSFS 2024 installation(s)</system:String>
     <system:String x:Key="Settings.AutoStartDisabled">Disabled</system:String>
+    <system:String x:Key="Settings.DriveTitle">GOOGLE DRIVE BACKUP</system:String>
+    <system:String x:Key="Settings.DriveBody">Keeps saved landings and preferences in Google Drive and synchronizes them across devices. Raw telemetry and bug reports are not included.</system:String>
+    <system:String x:Key="Settings.DriveConnect">CONNECT GOOGLE DRIVE</system:String>
+    <system:String x:Key="Settings.DriveSyncNow">SYNC NOW</system:String>
+    <system:String x:Key="Settings.DriveDisconnect">DISCONNECT</system:String>
+    <system:String x:Key="Settings.DriveDisconnected">Not connected</system:String>
+    <system:String x:Key="Settings.DriveConnected">Connected · waiting for first sync</system:String>
+    <system:String x:Key="Settings.DriveSyncing">Synchronizing landings and settings…</system:String>
+    <system:String x:Key="Settings.DriveAuthorizing">Waiting for browser authorization…</system:String>
+    <system:String x:Key="Settings.DriveAuthorizationTimeout">Google authorization timed out. Try connecting again.</system:String>
+    <system:String x:Key="Settings.DriveLandingConflictFormat">{0} landing conflict(s) were left unchanged; all other data synchronized.</system:String>
+    <system:String x:Key="Settings.DriveSettingsConflict">Conflicting settings revisions were left unchanged; landing backup continued.</system:String>
+    <system:String x:Key="Settings.DriveSettingsChangedDuringSync">A newer local settings change was kept and will be synchronized next.</system:String>
+    <system:String x:Key="Settings.DriveUnsupportedSettingsFormat">Cloud settings use newer format {0}; this version left them unchanged.</system:String>
+    <system:String x:Key="Settings.DriveWarningFormat">Sync warning · {0}</system:String>
+    <system:String x:Key="Settings.DriveLastSyncFormat">Last synchronized {0:g}</system:String>
+    <system:String x:Key="Settings.DriveErrorFormat">Sync failed · {0}</system:String>
+    <system:String x:Key="Settings.DriveSignInAgain">Google Drive access expired. Connect again.</system:String>
+    <system:String x:Key="GoogleDrivePrompt.Title">Back up your landings?</system:String>
+    <system:String x:Key="GoogleDrivePrompt.Body">Connect Google Drive to keep saved landings and preferences backed up and synchronized across your devices. Raw telemetry and bug reports are not included.</system:String>
+    <system:String x:Key="GoogleDrivePrompt.SaveErrorFormat">Could not save your choice · {0}</system:String>
 
     <system:String x:Key="AutoStart.Title">Start Landing Stats with MSFS 2024?</system:String>
     <system:String x:Key="AutoStart.Body">Landing Stats can open automatically whenever Microsoft Flight Simulator 2024 starts. You can change this later in Settings.</system:String>

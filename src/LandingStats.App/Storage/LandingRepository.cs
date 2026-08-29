@@ -77,8 +77,7 @@ public sealed class LandingRepository
         }
 
         Directory.CreateDirectory(RootPath);
-        var safeTimestamp = record.TimestampUtc.ToString("yyyyMMdd-HHmmss'Z'", CultureInfo.InvariantCulture);
-        var path = Path.Combine(RootPath, $"{safeTimestamp}-{record.Id}.landing.json.gz");
+        var path = RecordPath(record);
         if (record.FormatVersion >= 7)
         {
             WriteAtomic(path, _columnarSerializer, LandingRecordFile.FromRecord(record));
@@ -89,6 +88,202 @@ public sealed class LandingRepository
         }
         UpdateSummary(record);
         return path;
+    }
+
+    public bool Contains(string id) => FindRecordPath(id) != null;
+
+    public byte[] Export(string id)
+    {
+        var path = FindRecordPath(id);
+        if (path == null)
+        {
+            throw new FileNotFoundException("The landing record was not found.", id);
+        }
+        return File.ReadAllBytes(path);
+    }
+
+    public byte[] ExportForBackup(string id)
+    {
+        EnsureIndexLoaded();
+        var summary = _summaries!.FirstOrDefault(record =>
+            string.Equals(record.Id, id, StringComparison.Ordinal));
+        if (summary == null)
+        {
+            throw new FileNotFoundException("The landing record was not found.", id);
+        }
+
+        var record = LoadDetail(summary) ??
+                     throw new InvalidDataException("The landing record could not be read.");
+        return SerializeForBackup(record);
+    }
+
+    internal byte[] SerializeForBackup(LandingRecord record)
+    {
+        if (record == null)
+        {
+            throw new ArgumentNullException(nameof(record));
+        }
+
+        using var output = new MemoryStream();
+        using (var gzip = new GZipStream(output, CompressionLevel.Optimal, true))
+        {
+            if (record.FormatVersion >= 7)
+            {
+                _columnarSerializer.WriteObject(gzip, LandingRecordFile.FromRecord(record));
+            }
+            else
+            {
+                _recordSerializer.WriteObject(gzip, record);
+            }
+        }
+        return output.ToArray();
+    }
+
+    internal LandingRecord DeserializeBackup(byte[] compressedRecord)
+    {
+        if (compressedRecord == null || compressedRecord.Length == 0)
+        {
+            throw new ArgumentException("A compressed landing record is required.", nameof(compressedRecord));
+        }
+
+        Directory.CreateDirectory(RootPath);
+        var temporaryPath = Path.Combine(
+            RootPath,
+            ".google-drive-read-" + Guid.NewGuid().ToString("N") + ".landing.json.gz.tmp");
+        try
+        {
+            File.WriteAllBytes(temporaryPath, compressedRecord);
+            return ReadRecord(temporaryPath) ??
+                   throw new InvalidDataException("The landing backup is invalid or unsupported.");
+        }
+        finally
+        {
+            if (File.Exists(temporaryPath))
+            {
+                File.Delete(temporaryPath);
+            }
+        }
+    }
+
+    public string GetBackupFingerprint(LandingRecord summary)
+    {
+        if (summary == null)
+        {
+            throw new ArgumentNullException(nameof(summary));
+        }
+        var path = FindRecordPath(summary.Id);
+        if (path == null)
+        {
+            throw new FileNotFoundException("The landing record was not found.", summary.Id);
+        }
+
+        return GetBackupFingerprint(summary, path);
+    }
+
+    public IReadOnlyDictionary<string, string> GetBackupFingerprints(
+        IReadOnlyCollection<LandingRecord> summaries)
+    {
+        if (summaries == null)
+        {
+            throw new ArgumentNullException(nameof(summaries));
+        }
+
+        var paths = Directory.Exists(RootPath)
+            ? Directory.EnumerateFiles(RootPath, "*.landing.json.gz").ToArray()
+            : Array.Empty<string>();
+        var pathSet = new HashSet<string>(paths, StringComparer.OrdinalIgnoreCase);
+        var result = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var summary in summaries)
+        {
+            if (summary == null)
+            {
+                throw new ArgumentException("A landing summary cannot be null.", nameof(summaries));
+            }
+
+            var path = RecordPath(summary);
+            if (!pathSet.Contains(path))
+            {
+                path = paths.FirstOrDefault(candidate => PathMatchesRecord(candidate, summary.Id));
+            }
+            if (path == null)
+            {
+                throw new FileNotFoundException("The landing record was not found.", summary.Id);
+            }
+            result[summary.Id] = GetBackupFingerprint(summary, path);
+        }
+        return result;
+    }
+
+    private static string GetBackupFingerprint(LandingRecord summary, string path)
+    {
+        var info = new FileInfo(path);
+        var airport = summary.Airport ?? string.Empty;
+        var runway = summary.Runway ?? string.Empty;
+        var distance = summary.AirportDistanceNauticalMiles?.ToString("R", CultureInfo.InvariantCulture) ?? string.Empty;
+        return info.Length.ToString(CultureInfo.InvariantCulture) + ":" +
+               info.LastWriteTimeUtc.Ticks.ToString(CultureInfo.InvariantCulture) + ":" +
+               airport.Length.ToString(CultureInfo.InvariantCulture) + ":" + airport + ":" +
+               runway.Length.ToString(CultureInfo.InvariantCulture) + ":" + runway + ":" + distance;
+    }
+
+    public LandingRecord Import(
+        byte[] compressedRecord,
+        string? expectedId = null,
+        bool replaceExisting = false)
+    {
+        if (compressedRecord == null || compressedRecord.Length == 0)
+        {
+            throw new ArgumentException("A compressed landing record is required.", nameof(compressedRecord));
+        }
+
+        Directory.CreateDirectory(RootPath);
+        var temporaryPath = Path.Combine(
+            RootPath,
+            ".google-drive-import-" + Guid.NewGuid().ToString("N") + ".landing.json.gz.tmp");
+        try
+        {
+            File.WriteAllBytes(temporaryPath, compressedRecord);
+            var record = ReadRecord(temporaryPath) ??
+                         throw new InvalidDataException("The downloaded landing record is invalid or unsupported.");
+            if (string.IsNullOrWhiteSpace(record.Id) ||
+                (!string.IsNullOrWhiteSpace(expectedId) &&
+                 !string.Equals(record.Id, expectedId, StringComparison.Ordinal)))
+            {
+                throw new InvalidDataException("The downloaded landing record id does not match its cloud metadata.");
+            }
+
+            var existing = FindRecordPath(record.Id);
+            if (existing != null)
+            {
+                var existingBytes = File.ReadAllBytes(existing);
+                if (existingBytes.SequenceEqual(compressedRecord))
+                {
+                    return record;
+                }
+
+                if (!replaceExisting)
+                {
+                    throw new InvalidDataException(
+                        "A different local landing already uses id " + record.Id + ".");
+                }
+
+                File.Replace(temporaryPath, existing, null);
+                UpdateSummary(record);
+                return record;
+            }
+
+            var destination = RecordPath(record);
+            File.Move(temporaryPath, destination);
+            UpdateSummary(record);
+            return record;
+        }
+        finally
+        {
+            if (File.Exists(temporaryPath))
+            {
+                File.Delete(temporaryPath);
+            }
+        }
     }
 
     public void UpdateSummary(LandingRecord record)
@@ -333,6 +528,12 @@ public sealed class LandingRepository
         }
 
         return Directory.EnumerateFiles(RootPath, $"*-{id}.landing.json.gz").FirstOrDefault();
+    }
+
+    private string RecordPath(LandingRecord record)
+    {
+        var safeTimestamp = record.TimestampUtc.ToString("yyyyMMdd-HHmmss'Z'", CultureInfo.InvariantCulture);
+        return Path.Combine(RootPath, $"{safeTimestamp}-{record.Id}.landing.json.gz");
     }
 
     private void SaveIndex()

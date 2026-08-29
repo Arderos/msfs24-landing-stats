@@ -1,6 +1,7 @@
 param(
     [string]$Configuration = "Release",
-    [string]$MsfsSdkRoot = "D:\MSFS 2024 SDK"
+    [string]$MsfsSdkRoot = "D:\MSFS 2024 SDK",
+    [switch]$RequireGoogleOAuthCredentials
 )
 
 $ErrorActionPreference = "Stop"
@@ -23,9 +24,18 @@ if (-not $workDirectory.StartsWith($allowedPrefix, [StringComparison]::OrdinalIg
     throw "Refusing to use a package work directory outside artifacts."
 }
 
-dotnet build (Join-Path $repositoryRoot "MsfsLandingStats.App.sln") `
-    -c $Configuration `
+$buildArguments = @(
+    "build",
+    (Join-Path $repositoryRoot "MsfsLandingStats.App.sln"),
+    "-c",
+    $Configuration,
     "/p:MsfsSdkRoot=$MsfsSdkRoot"
+)
+if ($RequireGoogleOAuthCredentials) {
+    $buildArguments += "/p:RequireGoogleOAuthCredentials=true"
+}
+
+dotnet @buildArguments
 if ($LASTEXITCODE -ne 0) {
     throw "Solution build failed."
 }
@@ -60,7 +70,7 @@ foreach ($oldArtifact in @(
 }
 
 $applicationOutput = Join-Path $repositoryRoot "src\LandingStats.App\bin\$Configuration\net48"
-$packageFiles = @(
+$requiredPackageFiles = @(
     "MSFS-Landing-Stats.exe",
     "MSFS-Landing-Stats.exe.config",
     "LandingStats.Core.dll",
@@ -68,11 +78,25 @@ $packageFiles = @(
     "SimConnect.dll"
 )
 
-foreach ($file in $packageFiles) {
+foreach ($file in $requiredPackageFiles) {
     $source = Join-Path $applicationOutput $file
     if (-not (Test-Path -LiteralPath $source)) {
         throw "Required application file is missing: $source"
     }
+}
+
+$packageFiles = @(
+    Get-ChildItem -LiteralPath $applicationOutput -File |
+        Where-Object {
+            $_.Name -in @("MSFS-Landing-Stats.exe", "MSFS-Landing-Stats.exe.config") -or
+            $_.Extension -ieq ".dll"
+        } |
+        ForEach-Object Name |
+        Sort-Object -Unique
+)
+
+foreach ($file in $packageFiles) {
+    $source = Join-Path $applicationOutput $file
     Copy-Item -LiteralPath $source -Destination (Join-Path $packageDirectory $file)
 }
 

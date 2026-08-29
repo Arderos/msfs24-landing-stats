@@ -81,6 +81,36 @@ try {
     Assert-Rejected "format2" ($original.Replace("format=3", "format=2"))
     Assert-Rejected "wrong-version" ($original.Replace("version=$currentVersionText", "version=$wrongVersionText"))
     Assert-Rejected "wrong-package-hash" ($original -replace '(?m)^package-sha256=.*$', ('package-sha256=' + ('0' * 64)))
+
+    # The current package becomes the previous client on the next release. Its
+    # expanded runtime now includes official Google client DLLs, so the
+    # previous-client verifier must accept safe flat DLL additions before it
+    # reaches signature validation.
+    $previousVerifier = Join-Path $repositoryRoot "verify-previous-client-update.ps1"
+    $dummySignaturePath = Join-Path $testRoot "invalid-signature.txt"
+    [IO.File]::WriteAllText(
+        $dummySignaturePath,
+        [Convert]::ToBase64String([byte[]]::new(256)),
+        [Text.UTF8Encoding]::new($false))
+    $futureGateFailure = $null
+    try {
+        & $previousVerifier `
+            -PreviousPackagePath $packagePath `
+            -PreviousVersion $currentVersion `
+            -ManifestPath $manifestPath `
+            -SignaturePath $dummySignaturePath `
+            -ExpectedVersion $wrongVersion
+    }
+    catch {
+        $futureGateFailure = $_.Exception.Message
+    }
+    if ([string]::IsNullOrWhiteSpace($futureGateFailure)) {
+        throw "Future previous-client gate unexpectedly accepted an invalid signature."
+    }
+    if ($futureGateFailure -like "*runtime topology*" -or
+        $futureGateFailure -like "*missing required entry*") {
+        throw "Future previous-client gate rejected the current expanded bundle: $futureGateFailure"
+    }
 }
 finally {
     $resolvedTestRoot = [IO.Path]::GetFullPath($testRoot)
