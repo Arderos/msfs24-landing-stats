@@ -19,12 +19,6 @@ src/LandingStats.Probe.Launcher/
 docs/*
 !docs/format-v7.md
 !docs/methodology.md
-!docs/.nojekyll
-!docs/index.html
-!docs/privacy.html
-!docs/terms.html
-!docs/site.css
-!docs/application.png
 build-community.ps1
 MsfsLandingStats.sln
 src/LandingStats.Core/ContactPointAnalysis.cs
