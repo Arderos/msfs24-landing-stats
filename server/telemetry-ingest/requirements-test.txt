@@ -1,2 +1,2 @@
 -r requirements.txt
-httpx2==2.9.1
+httpx2==2.12.0
