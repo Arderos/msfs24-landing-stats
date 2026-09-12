@@ -78,6 +78,7 @@ internal static class Program
         Run("updater installs one valid executable transactionally", UpdaterInstallsSingleExecutable);
         Run("updater rolls back an invalid executable replacement", UpdaterRollsBackInvalidExecutableReplacement);
         Run("valid frame clears transient error state", ValidFrameClearsTransientErrorState);
+        Run("simulator exit completes the landing before notification and ignores connection loss", SimulatorExitCompletesLanding);
         Run("MSFS replay flow events disable and re-arm landing capture", ReplayFlowEventsDisableCapture);
         Run("recorder reports airborne state for replay overlay", RecorderReportsAirborneState);
         Run("replay frames do not alter live state or raw telemetry", ReplayFramesDoNotAlterLiveStateOrRawTelemetry);
@@ -425,6 +426,14 @@ internal static class Program
             var secondEnable = manager.SetEnabled(true);
             Equal(0, secondEnable.ChangedPaths.Count, "second enable is a no-op");
             Equal(true, File.ReadAllBytes(path).SequenceEqual(enabledBytes), "no-op does not rewrite XML");
+
+            const string launchCommand = "<CommandLine>--simulator-autostart</CommandLine>";
+            Equal(true, File.ReadAllText(path).Contains(launchCommand), "auto-start command included");
+            File.WriteAllText(path, File.ReadAllText(path).Replace(launchCommand, string.Empty), new UTF8Encoding(false));
+            var upgraded = manager.SetEnabled(true);
+            Equal(1, upgraded.ChangedPaths.Count, "legacy entry upgraded on startup");
+            Equal(true, File.ReadAllBytes(path).SequenceEqual(enabledBytes), "upgrade changes only the missing command");
+            Equal(0, manager.SetEnabled(true).ChangedPaths.Count, "upgraded entry remains idempotent");
 
             var disabled = manager.SetEnabled(false);
             Equal(1, disabled.ChangedPaths.Count, "disable removes one managed entry");
@@ -1833,6 +1842,27 @@ internal static class Program
         SetField(recorder, "_recoverStatusAfterFrame", true);
         Invoke(recorder, "RecoverStatusAfterFrame");
         Equal(false, Field(recorder, "_recoverStatusAfterFrame"), "transient error recovery flag");
+    }
+
+    private static void SimulatorExitCompletesLanding()
+    {
+        using var recorder = new SimConnectLandingRecorder(IntPtr.Zero);
+        var notifications = new List<string>();
+        recorder.EpisodeCompleted += (_, _) => notifications.Add("landing");
+        recorder.SimulatorExited += (_, _) => notifications.Add("exit");
+        Invoke(recorder, "Disconnect");
+        Equal(0, notifications.Count, "connection loss alone does not request application exit");
+
+        Invoke(recorder, "ProcessSample", ApproachSample(1));
+        var contact = ApproachSample(2);
+        contact.OnGround = true;
+        Invoke(recorder, "ProcessSample", contact);
+        NotNull(Field(recorder, "_lastContactTime"), "rollout still recording before quit");
+        Invoke(recorder, "OnRecvQuit", null!, null!);
+        Equal("landing,exit", string.Join(",", notifications), "landing queued before application exit");
+        Null(Field(recorder, "_episodeSamples"), "episode released before close");
+        recorder.Dispose();
+        Equal(2, notifications.Count, "window disposal does not duplicate landing or exit");
     }
 
     private static void ReplayFlowEventsDisableCapture()

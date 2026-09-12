@@ -1537,12 +1537,22 @@ public partial class MainWindow : Window
         _messageSource?.AddHook(WindowProcedure);
         _recorder = new SimConnectLandingRecorder(handle);
         _recorder.StatusChanged += OnRecorderStatusChanged;
+        if (Environment.GetEnvironmentVariable(App.SimulatorAutoStartEnvironmentVariable) == "1")
+        {
+            _recorder.SimulatorExited += OnSimulatorExited;
+        }
         _recorder.EpisodeStarted += OnEpisodeStarted;
         _recorder.EpisodeCompleted += OnEpisodeCompleted;
         _recorder.AirportFacilitiesUpdated += OnAirportFacilitiesUpdated;
         _recorder.AircraftGroundStateChanged += OnAircraftGroundStateChanged;
         _recorder.SeedAirportFacilities(_airportFacilities);
         _recorder.Start();
+    }
+
+    private void OnSimulatorExited(object? sender, EventArgs eventArgs)
+    {
+        // Leave the SimConnect callback before disposing the recorder and window.
+        Dispatcher.BeginInvoke(new Action(() => { if (!_isClosed) Close(); }));
     }
 
     private void OnEpisodeStarted(object? sender, LandingEpisodeStartedEventArgs eventArgs)
@@ -2234,6 +2244,7 @@ public partial class MainWindow : Window
 
         if (_recorder != null)
         {
+            _recorder.SimulatorExited -= OnSimulatorExited;
             _recorder.Dispose();
             _recorder.StatusChanged -= OnRecorderStatusChanged;
             _recorder.EpisodeStarted -= OnEpisodeStarted;

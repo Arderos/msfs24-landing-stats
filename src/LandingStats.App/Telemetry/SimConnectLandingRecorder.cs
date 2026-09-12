@@ -213,6 +213,8 @@ internal sealed class SimConnectLandingRecorder : IDisposable
 
     public event EventHandler<RecorderStatusEventArgs>? StatusChanged;
 
+    public event EventHandler? SimulatorExited;
+
     public event EventHandler<LandingEpisodeEventArgs>? EpisodeCompleted;
 
     public event EventHandler<LandingEpisodeStartedEventArgs>? EpisodeStarted;
@@ -443,6 +445,7 @@ internal sealed class SimConnectLandingRecorder : IDisposable
     private void OnRecvQuit(SimConnect sender, SIMCONNECT_RECV data)
     {
         Disconnect();
+        SimulatorExited?.Invoke(this, EventArgs.Empty);
     }
 
     private void OnRecvException(SimConnect sender, SIMCONNECT_RECV_EXCEPTION data)

@@ -3,11 +3,13 @@ using System.IO;
 using System.Text;
 using System.Windows;
 using System.Windows.Threading;
+using LandingStats.App.Settings;
 
 namespace LandingStats.App;
 
 public partial class App : Application
 {
+    internal const string SimulatorAutoStartEnvironmentVariable = "MSFS_LANDING_STATS_SIMULATOR_AUTOSTART";
     private ApplicationInstanceGuard? _instanceGuard;
 
     protected override void OnStartup(StartupEventArgs e)
@@ -17,6 +19,12 @@ public partial class App : Application
             ShutdownMode = ShutdownMode.OnExplicitShutdown;
             Shutdown(0);
             return;
+        }
+
+        // The updater and launcher inherit this process-only flag on restart.
+        if (Array.IndexOf(e.Args, SimulatorAutoStartManager.LaunchArgument) >= 0)
+        {
+            Environment.SetEnvironmentVariable(SimulatorAutoStartEnvironmentVariable, "1");
         }
 
         DispatcherUnhandledException += OnDispatcherUnhandledException;

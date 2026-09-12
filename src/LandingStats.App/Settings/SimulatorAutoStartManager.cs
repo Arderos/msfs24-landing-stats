@@ -14,6 +14,7 @@ namespace LandingStats.App.Settings;
 internal sealed class SimulatorAutoStartManager
 {
     internal const string EntryName = "MSFS Landing Stats";
+    internal const string LaunchArgument = "--simulator-autostart";
     internal const string LauncherPathEnvironmentVariable = "MSFS_LANDING_STATS_LAUNCHER_PATH";
 
     private const string BeginMarker = "<!-- MSFS Landing Stats: managed autostart begin -->";
@@ -347,6 +348,7 @@ internal sealed class SimulatorAutoStartManager
                "<Disabled>False</Disabled>" +
                "<ManualLoad>False</ManualLoad>" +
                "<Path>" + EscapeXmlText(applicationPath, encoding) + "</Path>" +
+               "<CommandLine>" + LaunchArgument + "</CommandLine>" +
                "</Launch.Addon>" +
                EndMarker;
     }
@@ -461,6 +463,7 @@ internal sealed class SimulatorAutoStartManager
 
         if (markers == null || entries.Length != 1 ||
             !string.Equals(ChildValue(entries[0], "Path"), applicationPath, StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(ChildValue(entries[0], "CommandLine"), LaunchArgument, StringComparison.Ordinal) ||
             !IsFalse(ChildValue(entries[0], "Disabled")) ||
             !IsFalse(ChildValue(entries[0], "ManualLoad")))
         {

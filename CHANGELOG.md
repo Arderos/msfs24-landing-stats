@@ -2,6 +2,15 @@
 
 All notable changes to MSFS Landing Stats are documented in this file.
 
+## [0.8.5] - 2026-09-12
+
+### Added
+
+- Landing Stats now closes when MSFS 2024 exits if it was started automatically
+  with the simulator. Manually launched sessions stay open.
+- Existing simulator auto-start entries are updated automatically when the app
+  runs, ready for the next simulator launch.
+
 ## [0.8.4] - 2026-08-29
 
 ### Added

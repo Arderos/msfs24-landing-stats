@@ -111,6 +111,9 @@ when a newer signed version exists.
 On the first launch after installing this feature, the app asks whether Landing
 Stats should open automatically with MSFS 2024. The choice can be changed later
 in Settings, and works with detected Steam and Microsoft Store installations.
+When started with the simulator, Landing Stats also closes when MSFS exits.
+Manually launched sessions stay open. Existing auto-start entries are updated
+when the app runs; the new behavior applies from the next simulator launch.
 
 ## Automated builds
 
