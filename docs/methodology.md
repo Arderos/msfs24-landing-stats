@@ -389,6 +389,13 @@ flight model supplied the arm. A clustered multi-bogie topology whose arm had to
 be recovered from telemetry retains `+/-50 fpm`: the rollout fit is sensitive to
 which truck settles during derotation.
 
+The clustered-wheel classification is retained independently of the size of its
+first contact group. The iniBuilds A380 capture has only two early channels,
+followed by four later channels and an isolated final channel. That sequence
+still uses the clustered fallback; two early channels must not select the
+ordinary two-main `+/-10 fpm` band. These inferred groups do not establish the
+physical role of every channel when readable configuration geometry is absent.
+
 The configuration-first path was checked on four live ToLiss A340 captures. Its
 raw-latch-minus-model residuals were `-6.16`, `+2.41`, `+3.41`, and `+2.97 fpm`;
 the corresponding arms occupied `-4.79` to `-2.89 ft`, instead of the telemetry-

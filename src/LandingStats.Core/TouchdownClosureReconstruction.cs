@@ -26,6 +26,8 @@ internal static class TouchdownClosureReconstruction
     // geometry exists, the telemetry fit may identify a different effective
     // arm on each rollout. Keep the wider empirical band for that fallback;
     // readable configuration geometry uses the ordinary conservative band.
+    // A clustered sequence can start on only two channels (e.g. iniBuilds A380);
+    // the inferred first cluster's size does not justify the ordinary-gear band.
     internal const double MultiBogieTelemetryUncertaintyFpm = 50.0;
 
     private const double FitWindowSeconds = 0.250;

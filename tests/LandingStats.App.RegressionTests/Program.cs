@@ -119,6 +119,7 @@ internal static class Program
         Run("closure reconstruction accepts permuted staggered mains", ClosureReconstructionAcceptsPermutedStaggeredMains);
         Run("closure reconstruction accepts A340 center main conservatively", ClosureReconstructionAcceptsCenterMainConservatively);
         Run("closure reconstruction accepts clustered A340 wheel contacts", ClosureReconstructionAcceptsClusteredA340Wheels);
+        Run("clustered gear keeps conservative uncertainty with two to four early contacts", ClosureReconstructionKeepsClusteredGearUncertainty);
         Run("closure reconstruction accepts irregular A340 wheel timing", ClosureReconstructionAcceptsIrregularA340WheelTiming);
         Run("closure reconstruction accepts four mains and one nose point", ClosureReconstructionAcceptsFivePointTopology);
         Run("configured gear topology ignores unrelated contact helpers", ConfiguredGearTopologyIgnoresHelpers);
@@ -2950,6 +2951,43 @@ internal static class Program
                 RecoverLongitudinalMainGearArmFromTelemetry = false,
             }).Single();
         Near(15.0, configured.ClosureReconstructionUncertaintyFpm, 1e-12, "configured multi-bogie uncertainty");
+    }
+
+    private static void ClosureReconstructionKeepsClusteredGearUncertainty()
+    {
+        for (var earlyContactCount = 2; earlyContactCount <= 4; earlyContactCount++)
+        {
+            // The iniBuilds A380 capture starts on points 1/2, gains four more
+            // contacts 1.7-2.5 s later, and gains point 0 at 4.6 s. The inferred
+            // first cluster's size does not make this an ordinary two-main gear.
+            var samples = ReconstructionSamples(
+                0.010, 195.0, noseContactTime: 4.60, sampleEndTime: 10.0);
+            AddSettledPoint(samples, 5, 1.725);
+            AddSettledPoint(samples, 6, 1.850);
+            AddSettledPoint(samples, 3, 2.200);
+            AddSettledPoint(samples, 4, 2.525);
+            for (var point = 2; point < earlyContactCount; point++)
+            {
+                AddSettledPoint(samples, point + 5, 0.050 * (point - 1));
+            }
+
+            var options = new TouchdownAnalysisOptions
+            {
+                LongitudinalMainGearArmFeet = -5.8,
+                LongitudinalMainGearArmSource = TouchdownGeometrySource.Telemetry,
+                RecoverLongitudinalMainGearArmFromTelemetry = false,
+            };
+            var telemetry = TouchdownAnalysis.Analyze(samples, options).Single();
+            Equal(true, telemetry.ClosureReconstructionAvailable, "clustered reconstruction available");
+            Near(50.0, telemetry.ClosureReconstructionUncertaintyFpm, 1e-12, "clustered telemetry uncertainty");
+
+            options.LongitudinalMainGearArmSource = TouchdownGeometrySource.FlightModelConfig;
+            var configured = TouchdownAnalysis.Analyze(samples, options).Single();
+            Near(15.0, configured.ClosureReconstructionUncertaintyFpm, 1e-12, "clustered configured-arm uncertainty");
+            Near(telemetry.InertialVerticalFpm, configured.InertialVerticalFpm, 1e-12, "inertial independent of reporting band");
+            Near(195.0, telemetry.LatchedNormalFpm, 1e-12, "clustered raw latch preserved");
+            Near(telemetry.ReconstructedClosureFpm, configured.ReconstructedClosureFpm, 1e-12, "reconstruction independent of reporting band");
+        }
     }
 
     private static void ClosureReconstructionAcceptsIrregularA340WheelTiming()

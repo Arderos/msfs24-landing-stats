@@ -2,6 +2,12 @@
 
 All notable changes to MSFS Landing Stats are documented in this file.
 
+## [0.8.6] - 2026-09-15
+
+### Added
+
+- Added iniBuilds A380 support.
+
 ## [0.8.5] - 2026-09-12
 
 ### Added

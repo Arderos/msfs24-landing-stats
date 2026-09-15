@@ -102,10 +102,14 @@ public sealed class TelemetryDatumOffsetCalibrationResult
 
 internal sealed class TelemetryGearTopology
 {
-    public TelemetryGearTopology(int[] mainContactPointIndices, int[] noseContactPointIndices)
+    public TelemetryGearTopology(
+        int[] mainContactPointIndices,
+        int[] noseContactPointIndices,
+        bool usesClusteredWheelInference = false)
     {
         MainContactPointIndices = mainContactPointIndices;
         NoseContactPointIndices = noseContactPointIndices;
+        UsesClusteredWheelInference = usesClusteredWheelInference;
     }
 
     public int[] MainContactPointIndices { get; }
@@ -113,6 +117,8 @@ internal sealed class TelemetryGearTopology
     public int MainContactPointCount => MainContactPointIndices.Length;
 
     public int[] NoseContactPointIndices { get; }
+
+    public bool UsesClusteredWheelInference { get; }
 }
 
 /// <summary>
@@ -650,7 +656,8 @@ public static class TelemetryGeometryCalibration
 
             topology = new TelemetryGearTopology(
                 ContactPointIndices(mains),
-                ContactPointIndices(nose));
+                ContactPointIndices(nose),
+                usesClusteredWheelInference: true);
             return true;
         }
 

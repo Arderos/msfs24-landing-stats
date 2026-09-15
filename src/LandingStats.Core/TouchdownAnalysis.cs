@@ -210,7 +210,7 @@ public static class TouchdownAnalysis
                 ? latchedNormalFpm - reconstruction.ClosureFpm
                 : double.NaN,
             ClosureReconstructionUncertaintyFpm = reconstructed
-                ? gearTopology!.MainContactPointCount > 4
+                ? gearTopology!.UsesClusteredWheelInference || gearTopology.MainContactPointCount > 4
                     ? geometrySource == TouchdownGeometrySource.Telemetry
                         ? TouchdownClosureReconstruction.MultiBogieTelemetryUncertaintyFpm
                         : TouchdownClosureReconstruction.FallbackUncertaintyFpm
