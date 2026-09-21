@@ -365,7 +365,10 @@ jobs:
 
           # Existing clients must never see a latest release with only some of
           # its assets uploaded. Publish atomically after checking the draft.
-          $release = gh api "repos/$env:GITHUB_REPOSITORY/releases/tags/$env:GITHUB_REF_NAME" | ConvertFrom-Json
+          # The REST by-tag endpoint excludes drafts; gh release view resolves them.
+          $releaseId = gh release view $env:GITHUB_REF_NAME --repo $env:GITHUB_REPOSITORY --json databaseId --jq .databaseId
+          if ($LASTEXITCODE -ne 0 -or -not $releaseId) { throw 'Release draft lookup failed.' }
+          $release = gh api "repos/$env:GITHUB_REPOSITORY/releases/$releaseId" | ConvertFrom-Json
           if ($LASTEXITCODE -ne 0 -or -not $release.draft) { throw 'Expected an unpublished release draft.' }
           foreach ($name in @('MSFS-Landing-Stats.exe','MSFS-Landing-Stats.Updater.exe',
               'update-manifest.txt','update-manifest.sig','update-channel.txt','update-channel.sig')) {
