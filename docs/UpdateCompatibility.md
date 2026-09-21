@@ -49,6 +49,10 @@ publishes the unchanged bootstrap manifest beside the newly signed channel
 manifest. A future release therefore cannot silently move or remove the bridge
 without failing before `gh release create` is reached.
 
+Releases are assembled as drafts. All six uploaded asset sizes and GitHub
+SHA-256 digests must match the tested local files before the draft becomes
+public/latest, so clients never observe a partially uploaded update.
+
 ## Authenticode and CI signing
 
 Starting with v0.8.7, the application, embedded Core DLL, outer single-file

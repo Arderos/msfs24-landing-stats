@@ -184,9 +184,9 @@ try {
         $replacement = Join-Path $testRoot 'replacement.exe'
         Copy-Item -LiteralPath $previousPackage -Destination $target
         Copy-Item -LiteralPath $CandidatePackagePath -Destination $replacement
-        $updaterType.GetMethod('VerifySingleFileBundle', $privateStatic).Invoke($null, @($target))
+        $updaterType.GetMethod('VerifySingleFileBundle', $privateStatic).Invoke($null, @([string]$target))
         $updaterType.GetMethod('InstallExecutableTransactionally', $privateStatic).Invoke(
-            $null, @($replacement, $target, $expected))
+            $null, @([string]$replacement, [string]$target, [Version]$expected))
         if ((Get-FileHash $target).Hash -ne (Get-FileHash $CandidatePackagePath).Hash) {
             throw 'Installed executable differs from the signed candidate.'
         }

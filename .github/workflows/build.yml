@@ -360,4 +360,21 @@ jobs:
             artifacts/update-manifest.sig `
             artifacts/update-channel.txt `
             artifacts/update-channel.sig `
-            --notes-file $notesPath
+            --notes-file $notesPath --draft --verify-tag
+          if ($LASTEXITCODE -ne 0) { throw 'Release asset upload failed; refusing publication.' }
+
+          # Existing clients must never see a latest release with only some of
+          # its assets uploaded. Publish atomically after checking the draft.
+          $release = gh api "repos/$env:GITHUB_REPOSITORY/releases/tags/$env:GITHUB_REF_NAME" | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or -not $release.draft) { throw 'Expected an unpublished release draft.' }
+          foreach ($name in @('MSFS-Landing-Stats.exe','MSFS-Landing-Stats.Updater.exe',
+              'update-manifest.txt','update-manifest.sig','update-channel.txt','update-channel.sig')) {
+            $asset = @($release.assets | Where-Object name -CEQ $name)
+            $local = Get-Item (Join-Path artifacts $name)
+            $digest = 'sha256:' + (Get-FileHash $local.FullName).Hash.ToLowerInvariant()
+            if ($asset.Count -ne 1 -or $asset[0].size -ne $local.Length -or $asset[0].digest -cne $digest) {
+              throw "Draft release asset verification failed: $name"
+            }
+          }
+          gh release edit $env:GITHUB_REF_NAME --draft=false --latest
+          if ($LASTEXITCODE -ne 0) { throw 'Release publication failed.' }
