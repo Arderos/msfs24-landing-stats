@@ -16,8 +16,6 @@ namespace LandingStats.App.Updater;
 
 internal static class Program
 {
-    private static readonly byte[] BundleMagic = Encoding.ASCII.GetBytes("MSFSLSABUNDLE1");
-
     [STAThread]
     private static int Main(string[] args)
     {
@@ -319,26 +317,7 @@ internal static class Program
     private static void VerifySingleFileBundle(string path)
     {
         using var input = File.OpenRead(path);
-        var trailerLength = sizeof(long) + BundleMagic.Length;
-        if (input.ReadByte() != 'M' || input.ReadByte() != 'Z' || input.Length <= trailerLength)
-        {
-            throw new InvalidDataException("Signed application is not a Windows executable");
-        }
-
-        input.Seek(-BundleMagic.Length, SeekOrigin.End);
-        var actual = new byte[BundleMagic.Length];
-        if (input.Read(actual, 0, actual.Length) != actual.Length || !actual.SequenceEqual(BundleMagic))
-        {
-            throw new InvalidDataException("Signed application bundle is incomplete");
-        }
-
-        input.Seek(-trailerLength, SeekOrigin.End);
-        using var reader = new BinaryReader(input, Encoding.UTF8, true);
-        var payloadLength = reader.ReadInt64();
-        if (payloadLength <= 0 || payloadLength > input.Length - trailerLength)
-        {
-            throw new InvalidDataException("Signed application bundle length is invalid");
-        }
+        LandingStats.Packaging.BundlePayload.Locate(input);
     }
 
     private static void VerifyAssemblyVersion(string executablePath, Version expected, string expectedName)

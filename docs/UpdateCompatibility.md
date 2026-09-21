@@ -11,7 +11,8 @@ The update path has two signed stages:
 This gives every issued client a durable route to the newest version:
 
 ```text
-v0.7.5 -> v0.7.6 bridge -> current release
+v0.7.3 / v0.7.4 / v0.7.5 -> v0.7.6 bridge -> current release
+v0.7.6 and newer -> current release
 ```
 
 v0.7.5 reads the bootstrap manifest. It downloads the signed v0.7.6 updater
@@ -47,3 +48,45 @@ its exact authorized files from the `v0.7.6` release, verifies them, and then
 publishes the unchanged bootstrap manifest beside the newly signed channel
 manifest. A future release therefore cannot silently move or remove the bridge
 without failing before `gh release create` is reached.
+
+## Authenticode and CI signing
+
+Starting with v0.8.7, the application, embedded Core DLL, outer single-file
+launcher, and standalone updater are signed with the developer's Certum
+certificate and an RFC3161 timestamp. The embedded files are signed before
+packaging; the outer EXE is signed after packaging. Update sizes and SHA-256
+hashes are calculated only after all Authenticode signatures are final.
+
+`BundlePayload` reads the PE security directory to locate the bundle before
+the certificate table, allowing only the documented zero alignment padding.
+It also accepts previous unsigned bundles. This is structural validation, not
+certificate verification: the existing signed update manifest still
+authenticates the complete download, including its certificate table.
+
+An old client downloads the updater from the *target* release. Consequently
+the fixed updater installs a signed EXE even when the old application itself
+does not understand Authenticode bundle layout. The unchanged v0.7.6 bridge
+remains unsigned so legacy updaters can still install it.
+
+`verify-published-client-updates.ps1` downloads every supported published
+baseline (v0.7.3 through v0.8.6), executes its embedded manifest verifier, checks
+the authorized bytes, and invokes the target updater's real replacement
+transaction on a disposable copy. It then runs the installed launcher's bundle
+verification. This is an offline installation/compatibility gate, not a claim
+that a not-yet-published URL was exercised end-to-end. The separate hosted-runner
+smoke test launches the signed candidate and requires a responsive main window.
+
+The `code-signing` GitHub environment holds `CERTUM_USERNAME`, `CERTUM_OTP_URI`
+and `CERTUM_KEY_ID`. Restrict it to `main` and version tags; an exact temporary
+test branch can be allowed during setup and removed afterwards. The OTP URI is
+a long-lived signing credential: never commit it, print it, or upload diagnostic
+screenshots of authentication. The existing `RELEASE_SIGNING_KEY_PKCS8_B64`
+continues to sign update metadata and must not be rotated without a separate
+compatibility plan.
+
+Normal pushes and pull requests build and test without code-signing access.
+Version tags require signing, startup, regression, and all previous-client
+gates before publication. A manual **Build** run with `sign=true` runs the same
+signing and compatibility checks, but does not create a GitHub release. The
+SimplySign setup action is pinned to a reviewed commit and its MSI is checked
+by SHA-256 and Authenticode before installation. Signing jobs are serialized.

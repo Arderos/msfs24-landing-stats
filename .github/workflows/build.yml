@@ -6,6 +6,11 @@ on:
     tags: ["v*"]
   pull_request:
   workflow_dispatch:
+    inputs:
+      sign:
+        description: 'Build and test with the real code-signing certificate (does not publish a release)'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -13,6 +18,11 @@ permissions:
 jobs:
   windows:
     runs-on: windows-latest
+    timeout-minutes: 30
+    environment: ${{ (startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.sign)) && 'code-signing' || 'build' }}
+    concurrency:
+      group: ${{ (startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.sign)) && 'certum-code-signing' || format('build-{0}', github.run_id) }}
+      cancel-in-progress: false
 
     steps:
       - name: Check out source
@@ -22,6 +32,38 @@ jobs:
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 10.0.x
+
+      - name: Check signing configuration and verify Certum installer
+        if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.sign)
+        shell: pwsh
+        env:
+          CERTUM_USERNAME: ${{ secrets.CERTUM_USERNAME }}
+          CERTUM_OTP_URI: ${{ secrets.CERTUM_OTP_URI }}
+          CERTUM_KEY_ID: ${{ secrets.CERTUM_KEY_ID }}
+        run: |
+          foreach ($name in @('CERTUM_USERNAME','CERTUM_OTP_URI','CERTUM_KEY_ID')) {
+            if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) {
+              throw "Required code-signing secret is missing: $name"
+            }
+          }
+          $url = 'https://files.certum.eu/software/SimplySignDesktop/Windows/9.4.3.90/SimplySignDesktop-9.4.3.90-64-bit-en.msi'
+          Invoke-WebRequest $url -OutFile SimplySignDesktop.msi
+          if ((Get-FileHash SimplySignDesktop.msi).Hash -ne 'CE2B38EF0124A574BC08E5558726099CAAC79A7C58B8D3D712F629371FE1BCB7') {
+            throw 'Certum installer checksum mismatch.'
+          }
+          if ((Get-AuthenticodeSignature SimplySignDesktop.msi).Status -ne 'Valid') {
+            throw 'Certum installer signature is invalid.'
+          }
+
+      - name: Connect Certum cloud certificate
+        if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.sign)
+        # Reviewed, pinned code. Never use a mutable branch for an action with signing credentials.
+        uses: dismine/windows-app-signing-setup-action@89ae3b032d4bc7a5b98d1a42a34e61ecb6faad64
+        with:
+          certum-username: ${{ secrets.CERTUM_USERNAME }}
+          certum-otp-uri: ${{ secrets.CERTUM_OTP_URI }}
+          certum-key-id: ${{ secrets.CERTUM_KEY_ID }}
+          capture-diagnostics: 'false'
 
       - name: Resolve current MSFS 2024 SDK
         id: sdk
@@ -97,6 +139,8 @@ jobs:
         env:
           GOOGLE_OAUTH_CLIENT_ID: ${{ github.event_name != 'pull_request' && secrets.GOOGLE_OAUTH_CLIENT_ID || '' }}
           GOOGLE_OAUTH_CLIENT_SECRET: ${{ github.event_name != 'pull_request' && secrets.GOOGLE_OAUTH_CLIENT_SECRET || '' }}
+          SIGN_BUILD: ${{ startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.sign) }}
+          CERTUM_KEY_ID: ${{ secrets.CERTUM_KEY_ID }}
         run: |
           $arguments = @{
             MsfsSdkRoot = Join-Path $env:RUNNER_TEMP 'msfs-simconnect-sdk'
@@ -104,17 +148,45 @@ jobs:
           if ('${{ github.event_name }}' -ne 'pull_request') {
             $arguments.RequireGoogleOAuthCredentials = $true
           }
+          if ($env:SIGN_BUILD -eq 'true') {
+            $tool = Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\bin\*\x64\signtool.exe' |
+              Sort-Object FullName -Descending | Select-Object -First 1
+            if ($null -eq $tool) { throw 'SignTool was not found.' }
+            $arguments.SignToolPath = $tool.FullName
+            $arguments.SigningCertificateThumbprint = $env:CERTUM_KEY_ID
+          }
           .\build-app.ps1 @arguments
 
       - name: Run regression tests
         shell: pwsh
         run: |
           & .\tests\LandingStats.App.RegressionTests\bin\Release\net48\LandingStats.App.RegressionTests.exe
+          if ($LASTEXITCODE -ne 0) { throw 'Application regressions failed.' }
+
+      - name: Test signed and unsigned bundle layouts
+        shell: pwsh
+        run: .\tests\BundlePayload.Tests.ps1
 
       - name: Run update compatibility gate tests
         shell: pwsh
         run: |
           & .\tests\UpdateCompatibility.Tests.ps1 -ArtifactsDirectory .\artifacts
+
+      - name: Verify signatures and launch the signed application
+        if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.sign)
+        shell: pwsh
+        env:
+          CERTUM_KEY_ID: ${{ secrets.CERTUM_KEY_ID }}
+        run: .\verify-authenticode-build.ps1 -CertificateThumbprint $env:CERTUM_KEY_ID -LaunchOnHostedRunner
+
+      - name: Sign update metadata and test every published client
+        if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.sign)
+        shell: pwsh
+        env:
+          RELEASE_SIGNING_KEY_PKCS8_B64: ${{ secrets.RELEASE_SIGNING_KEY_PKCS8_B64 }}
+        run: |
+          .\sign-update-manifest.ps1
+          .\verify-published-client-updates.ps1
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
@@ -124,6 +196,9 @@ jobs:
             artifacts/MSFS-Landing-Stats.exe
             artifacts/MSFS-Landing-Stats.Updater.exe
             artifacts/update-channel.txt
+            artifacts/update-channel.sig
+            artifacts/update-manifest.txt
+            artifacts/update-manifest.sig
           if-no-files-found: error
 
   server:
@@ -154,6 +229,7 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/')
     needs: [windows, server]
     runs-on: windows-latest
+    environment: code-signing
     permissions:
       contents: write
 
@@ -172,7 +248,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_SIGNING_KEY_PKCS8_B64: ${{ secrets.RELEASE_SIGNING_KEY_PKCS8_B64 }}
+          CERTUM_KEY_ID: ${{ secrets.CERTUM_KEY_ID }}
         run: |
+          .\verify-authenticode-build.ps1 -CertificateThumbprint $env:CERTUM_KEY_ID
           $version = $env:GITHUB_REF_NAME.TrimStart('v')
           if ([string]::IsNullOrWhiteSpace($env:RELEASE_SIGNING_KEY_PKCS8_B64)) {
             throw "RELEASE_SIGNING_KEY_PKCS8_B64 is not configured. Refusing to publish an unsigned update."

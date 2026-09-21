@@ -2,6 +2,14 @@
 
 All notable changes to MSFS Landing Stats are documented in this file.
 
+## [0.8.7] - Unreleased
+
+### Improved
+
+- Windows executables are now digitally signed by the developer.
+- Automatic updates remain compatible with previous releases, including the
+  transition from unsigned to signed executables.
+
 ## [0.8.6] - 2026-09-15
 
 ### Added

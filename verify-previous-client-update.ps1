@@ -3,7 +3,9 @@ param(
     [Parameter(Mandatory = $true)] [Version]$PreviousVersion,
     [Parameter(Mandatory = $true)] [string]$ManifestPath,
     [Parameter(Mandatory = $true)] [string]$SignaturePath,
-    [Parameter(Mandatory = $true)] [Version]$ExpectedVersion
+    [Parameter(Mandatory = $true)] [Version]$ExpectedVersion,
+    [string]$CandidatePackagePath,
+    [string]$CandidateUpdaterPath
 )
 
 $ErrorActionPreference = "Stop"
@@ -38,33 +40,14 @@ $testRoot = Join-Path ([IO.Path]::GetTempPath()) (
     "msfs-previous-client-update-" + [Guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Path $testRoot | Out-Null
 try {
-    $magic = [Text.Encoding]::ASCII.GetBytes("MSFSLSABUNDLE1")
+    if (-not ('LandingStats.Packaging.BundlePayload' -as [type])) {
+        Add-Type -Path (Join-Path $PSScriptRoot 'src\LandingStats.UpdateProtocol\BundlePayload.cs')
+    }
     $stream = [IO.File]::OpenRead($previousPackage)
     try {
-        if ($stream.Length -le $magic.Length + 8) {
-            throw "Previous package is not a complete single-file bundle."
-        }
-
-        $stream.Position = $stream.Length - $magic.Length
-        $actualMagic = [byte[]]::new($magic.Length)
-        if ($stream.Read($actualMagic, 0, $actualMagic.Length) -ne $actualMagic.Length -or
-            -not [Linq.Enumerable]::SequenceEqual($actualMagic, $magic)) {
-            throw "Previous package bundle marker is invalid."
-        }
-
-        $stream.Position = $stream.Length - $magic.Length - 8
-        $reader = [IO.BinaryReader]::new($stream, [Text.Encoding]::UTF8, $true)
-        try {
-            [long]$payloadLength = $reader.ReadInt64()
-        }
-        finally {
-            $reader.Dispose()
-        }
-
-        [long]$payloadOffset = $stream.Length - $magic.Length - 8 - $payloadLength
-        if ($payloadLength -le 0 -or $payloadOffset -le 0) {
-            throw "Previous package payload bounds are invalid."
-        }
+        $bounds = [LandingStats.Packaging.BundlePayload]::Locate($stream)
+        [long]$payloadLength = $bounds.Length
+        [long]$payloadOffset = $bounds.Offset
 
         $payloadPath = Join-Path $testRoot "payload.zip"
         $stream.Position = $payloadOffset
@@ -156,11 +139,10 @@ try {
         "LandingStats.UpdateProtocol.ReleaseUpdateProtocol",
         $true)
     $flags = [Reflection.BindingFlags]::Public -bor [Reflection.BindingFlags]::Static
-    $channelManifestName = $protocolType.GetField("ChannelManifestName", $flags).GetValue($null)
-    $channelSignatureName = $protocolType.GetField("ChannelSignatureName", $flags).GetValue($null)
-    if ($channelManifestName -cne "update-channel.txt" -or
-        $channelSignatureName -cne "update-channel.sig") {
-        throw "Published v$previous client does not use the expected moving channel."
+    $channelField = $protocolType.GetField('ChannelManifestName', $flags)
+    $channelName = if ($null -eq $channelField) { 'update-manifest.txt' } else { $channelField.GetValue($null) }
+    if ($channelName -cne [IO.Path]::GetFileName($ManifestPath)) {
+        throw "Published v$previous expects $channelName, not the supplied channel."
     }
 
     $manifestBytes = [IO.File]::ReadAllBytes((Resolve-Path -LiteralPath $ManifestPath))
@@ -179,6 +161,41 @@ try {
         $parsed.PackageAsset -cne "MSFS-Landing-Stats.exe" -or
         $parsed.UpdaterAsset -cne "MSFS-Landing-Stats.Updater.exe") {
         throw "Published v$previous client parsed an unexpected v$expected update contract."
+    }
+
+    if ($CandidatePackagePath -and $CandidateUpdaterPath) {
+        # Exercise the issued client's exact size/hash checks against the final
+        # Authenticode-signed bytes, not the pre-signing build output.
+        foreach ($pair in @(
+            @($CandidatePackagePath, $parsed.PackageSize, $parsed.PackageSha256),
+            @($CandidateUpdaterPath, $parsed.UpdaterSize, $parsed.UpdaterSha256)
+        )) {
+            $hash = $protocolType.GetMethod('HashFile', $flags).Invoke($null, @([IO.Path]::GetFullPath($pair[0])))
+            if ((Get-Item -LiteralPath $pair[0]).Length -ne $pair[1] -or $hash -cne $pair[2]) {
+                throw "Published v$previous rejected candidate file bytes."
+            }
+        }
+        # The previous client downloads the NEW updater. Exercise that updater's
+        # production transaction against a copy of the issued EXE (never the user's install).
+        $updaterAssembly = [Reflection.Assembly]::Load([IO.File]::ReadAllBytes((Resolve-Path $CandidateUpdaterPath)))
+        $updaterType = $updaterAssembly.GetType('LandingStats.App.Updater.Program', $true)
+        $privateStatic = [Reflection.BindingFlags]'NonPublic,Static'
+        $target = Join-Path $testRoot 'MSFS-Landing-Stats.exe'
+        $replacement = Join-Path $testRoot 'replacement.exe'
+        Copy-Item -LiteralPath $previousPackage -Destination $target
+        Copy-Item -LiteralPath $CandidatePackagePath -Destination $replacement
+        $updaterType.GetMethod('VerifySingleFileBundle', $privateStatic).Invoke($null, @($target))
+        $updaterType.GetMethod('InstallExecutableTransactionally', $privateStatic).Invoke(
+            $null, @($replacement, $target, $expected))
+        if ((Get-FileHash $target).Hash -ne (Get-FileHash $CandidatePackagePath).Hash) {
+            throw 'Installed executable differs from the signed candidate.'
+        }
+        $verifyProcess = Start-Process -FilePath $target -ArgumentList '--verify-bundle' -PassThru -WindowStyle Hidden
+        if (-not $verifyProcess.WaitForExit(30000)) {
+            $verifyProcess.Kill()
+            throw 'Updated launcher verification timed out.'
+        }
+        if ($verifyProcess.ExitCode -ne 0) { throw 'Updated launcher cannot read its bundle.' }
     }
 }
 finally {

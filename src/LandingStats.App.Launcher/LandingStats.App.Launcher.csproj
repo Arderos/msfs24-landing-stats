@@ -7,11 +7,12 @@
     <Prefer32Bit>false</Prefer32Bit>
     <AssemblyName>MSFS-Landing-Stats</AssemblyName>
     <RootNamespace>LandingStats.App.Launcher</RootNamespace>
-    <InformationalVersion>0.8.6-single-binary</InformationalVersion>
+    <InformationalVersion>0.8.7-single-binary</InformationalVersion>
     <ApplicationIcon>..\LandingStats.App\Assets\AppIcon.ico</ApplicationIcon>
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Include="..\LandingStats.UpdateProtocol\BundlePayload.cs" Link="BundlePayload.cs" />
     <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies.net48" Version="1.0.3" PrivateAssets="all" />
     <Reference Include="System.IO.Compression" />
   </ItemGroup>

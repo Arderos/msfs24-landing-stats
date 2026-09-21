@@ -18,8 +18,6 @@ internal static class Program
     private const string ChildExecutable = "MSFS-Landing-Stats.exe";
     private const string LauncherPathEnvironmentVariable = "MSFS_LANDING_STATS_LAUNCHER_PATH";
 
-    private static readonly byte[] BundleMagic = Encoding.ASCII.GetBytes("MSFSLSABUNDLE1");
-
     private static readonly string[] RequiredFiles =
     {
         ChildExecutable,
@@ -75,6 +73,11 @@ internal static class Program
         }
         catch (Exception exception)
         {
+            if (args.Any(argument => string.Equals(argument, VerifyArgument, StringComparison.OrdinalIgnoreCase)))
+            {
+                Console.Error.WriteLine(exception.Message);
+                return 1;
+            }
             MessageBox.Show(
                 "MSFS Landing Stats could not start.\r\n\r\n" + exception.Message,
                 "MSFS Landing Stats",
@@ -177,29 +180,10 @@ internal static class Program
         using (var executable = File.OpenRead(Application.ExecutablePath))
         using (var reader = new BinaryReader(executable, Encoding.UTF8, true))
         {
-            var trailerLength = sizeof(long) + BundleMagic.Length;
-            if (executable.Length <= trailerLength)
-            {
-                throw new InvalidDataException("This file does not contain an application bundle.");
-            }
-
-            executable.Seek(-BundleMagic.Length, SeekOrigin.End);
-            if (!reader.ReadBytes(BundleMagic.Length).SequenceEqual(BundleMagic))
-            {
-                throw new InvalidDataException("The application bundle signature is missing or damaged.");
-            }
-
-            executable.Seek(-trailerLength, SeekOrigin.End);
-            var payloadLength = reader.ReadInt64();
-            var payloadOffset = executable.Length - trailerLength - payloadLength;
-            if (payloadLength <= 0 || payloadLength > int.MaxValue || payloadOffset <= 0)
-            {
-                throw new InvalidDataException("The application bundle length is invalid.");
-            }
-
-            executable.Seek(payloadOffset, SeekOrigin.Begin);
-            var payload = reader.ReadBytes((int)payloadLength);
-            if (payload.LongLength != payloadLength)
+            var bounds = LandingStats.Packaging.BundlePayload.Locate(executable);
+            executable.Position = bounds.Offset;
+            var payload = reader.ReadBytes(bounds.Length);
+            if (payload.Length != bounds.Length)
             {
                 throw new EndOfStreamException("The application bundle is truncated.");
             }

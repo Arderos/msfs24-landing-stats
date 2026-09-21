@@ -1,10 +1,25 @@
 param(
     [string]$Configuration = "Release",
     [string]$MsfsSdkRoot = "D:\MSFS 2024 SDK",
-    [switch]$RequireGoogleOAuthCredentials
+    [switch]$RequireGoogleOAuthCredentials,
+    [string]$SigningCertificateThumbprint,
+    [string]$SignToolPath = "signtool.exe"
 )
 
 $ErrorActionPreference = "Stop"
+
+function Sign-ApplicationFile([string]$Path) {
+    if ([string]::IsNullOrWhiteSpace($SigningCertificateThumbprint)) { return }
+    & $SignToolPath sign /sha1 $SigningCertificateThumbprint /tr http://time.certum.pl /td SHA256 /fd SHA256 $Path
+    if ($LASTEXITCODE -ne 0) { throw "Code signing failed: $Path" }
+    & $SignToolPath verify /pa /all /tw $Path
+    if ($LASTEXITCODE -ne 0) { throw "Code signature verification failed: $Path" }
+    $signature = Get-AuthenticodeSignature -LiteralPath $Path
+    if ($signature.Status -ne 'Valid' -or $null -eq $signature.TimeStamperCertificate -or
+        $signature.SignerCertificate.Thumbprint -ne $SigningCertificateThumbprint) {
+        throw "The file must have a valid timestamped signature from the configured certificate: $Path"
+    }
+}
 
 $repositoryRoot = [IO.Path]::GetFullPath($PSScriptRoot)
 $artifactsDirectory = [IO.Path]::GetFullPath((Join-Path $repositoryRoot "artifacts"))
@@ -105,6 +120,9 @@ if (-not (Test-Path -LiteralPath $updaterBuildPath)) {
     throw "Updater executable is missing: $updaterBuildPath"
 }
 Copy-Item -LiteralPath $updaterBuildPath -Destination $updaterArtifactPath
+Sign-ApplicationFile $updaterArtifactPath
+Sign-ApplicationFile (Join-Path $packageDirectory "MSFS-Landing-Stats.exe")
+Sign-ApplicationFile (Join-Path $packageDirectory "LandingStats.Core.dll")
 
 $launcherBuildPath = Join-Path $repositoryRoot "src\LandingStats.App.Launcher\bin\$Configuration\net48\MSFS-Landing-Stats.exe"
 if (-not (Test-Path -LiteralPath $launcherBuildPath)) {
@@ -150,6 +168,8 @@ try {
 finally {
     $stream.Dispose()
 }
+
+Sign-ApplicationFile $singleFilePath
 
 $verification = Start-Process `
     -FilePath $singleFilePath `

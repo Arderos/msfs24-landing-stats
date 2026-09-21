@@ -107,9 +107,8 @@ try {
     if ([string]::IsNullOrWhiteSpace($futureGateFailure)) {
         throw "Future previous-client gate unexpectedly accepted an invalid signature."
     }
-    if ($futureGateFailure -like "*runtime topology*" -or
-        $futureGateFailure -like "*missing required entry*") {
-        throw "Future previous-client gate rejected the current expanded bundle: $futureGateFailure"
+    if ($futureGateFailure -notlike '*manifest signature is invalid*') {
+        throw "Future previous-client gate failed before signature validation: $futureGateFailure"
     }
 }
 finally {
