@@ -1,0 +1,301 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Windows;
+using System.Windows.Media;
+using System.Windows.Media.Media3D;
+using LandingStats.App.Models;
+
+namespace LandingStats.App.Controls;
+
+/// <summary>
+/// A neutral strip under the recorded track, with a separate runway footprint.
+/// Facility data gives the runway plan, not its elevation profile: pavement and
+/// markings share the ground elevations actually observed over that footprint.
+/// No lateral slope is inferred and the recorded aircraft positions are untouched.
+/// </summary>
+internal sealed class LandingReplaySurface
+{
+    internal const double MarkingLiftMeters = .035;
+    private const double HeightCellMeters = 20;
+    private readonly Dictionary<(int X, int Z), List<HeightTriangle>> _heightCells = new Dictionary<(int, int), List<HeightTriangle>>();
+    private readonly List<HeightTriangle> _largeHeightTriangles = new List<HeightTriangle>();
+    private RunwayProfile? _profile;
+    public MeshGeometry3D Terrain { get; } = new MeshGeometry3D();
+    public MeshGeometry3D Pavement { get; } = new MeshGeometry3D();
+    public MeshGeometry3D Markings { get; } = new MeshGeometry3D();
+    public List<GeometryModel3D> Designations { get; } = new List<GeometryModel3D>();
+
+    public static LandingReplaySurface Build(LandingReplayTrack track, RunwayFacility? runway)
+    {
+        var result = new LandingReplaySurface();
+        var profile = runway != null && runway.HasValidGeometry && !runway.IsWater
+            ? new RunwayProfile(track, runway) : null;
+        result._profile = profile;
+        var sides = new Vector3D[track.Frames.Count];
+        for (var i = 0; i < sides.Length; i++)
+        {
+            var frame = track.Frames[i];
+            var previous = i > 0 && frame.TimeSeconds - track.Frames[i - 1].TimeSeconds <= LandingReplayTrack.MaximumInterpolationGapSeconds ? track.Frames[i - 1] : frame;
+            var next = i + 1 < sides.Length && track.Frames[i + 1].TimeSeconds - frame.TimeSeconds <= LandingReplayTrack.MaximumInterpolationGapSeconds ? track.Frames[i + 1] : frame;
+            var side = Vector3D.CrossProduct(next.Ground - previous.Ground, new Vector3D(0, 1, 0));
+            if (side.LengthSquared < 1e-12)
+            {
+                var heading = frame.Sample.HeadingTrueDegrees!.Value * Math.PI / 180;
+                side = new Vector3D(Math.Cos(heading), 0, Math.Sin(heading));
+            }
+            side.Normalize(); sides[i] = side * 100;
+        }
+        for (var i = 1; i < sides.Length; i++)
+        {
+            var a = track.Frames[i - 1]; var b = track.Frames[i];
+            if (b.TimeSeconds - a.TimeSeconds > LandingReplayTrack.MaximumInterpolationGapSeconds) continue;
+            var leftA = a.Ground - sides[i - 1]; var rightA = a.Ground + sides[i - 1];
+            var leftB = b.Ground - sides[i]; var rightB = b.Ground + sides[i];
+            AddTerrain(result.Terrain, new[] { leftA, rightA, rightB }, profile);
+            AddTerrain(result.Terrain, new[] { leftA, rightB, leftB }, profile);
+        }
+        if (profile != null)
+        {
+            var stations = new[] { -profile.HalfLength, profile.HalfLength }.Concat(profile.Stations).Distinct().OrderBy(s => s).ToArray();
+            for (var i = 1; i < stations.Length; i++)
+                Strip(result.Pavement, profile, stations[i - 1], stations[i], profile.HalfWidth, 0);
+            foreach (var paint in RunwayMarkingLayout.Build(runway!).Shapes)
+            {
+                var start = paint.Points.Min(p => p.Y); var end = paint.Points.Max(p => p.Y);
+                var left = paint.Points.Min(p => p.X); var right = paint.Points.Max(p => p.X);
+                var designation = paint.Glyph != null;
+                var mesh = designation ? new MeshGeometry3D() : result.Markings;
+                // Paint uses the pavement's breakpoints. Flat quads would
+                // slice through a curved runway.
+                var cuts = new[] { start, end }.Concat(profile.Stations.Where(s => s > start && s < end)).OrderBy(s => s).ToArray();
+                for (var i = 1; i < cuts.Length; i++)
+                {
+                    var polygon = ClipStation(ClipStation(paint.Points.ToList(), cuts[i - 1], true), cuts[i], false);
+                    for (var j = 2; j < polygon.Count; j++)
+                    {
+                        var vertices = new[] { polygon[0], polygon[j - 1], polygon[j] };
+                        var previousCount = mesh.Positions.Count;
+                        Triangle(mesh, profile.At(vertices[0].Y, vertices[0].X, MarkingLiftMeters),
+                            profile.At(vertices[1].Y, vertices[1].X, MarkingLiftMeters), profile.At(vertices[2].Y, vertices[2].X, MarkingLiftMeters));
+                        if (designation && mesh.Positions.Count > previousCount)
+                            foreach (var vertex in vertices)
+                            {
+                                var u = (vertex.X - left) / (right - left);
+                                var v = (end - vertex.Y) / (end - start);
+                                mesh.TextureCoordinates.Add(paint.Secondary ? new Point(1 - u, 1 - v) : new Point(u, v));
+                            }
+                    }
+                }
+                if (designation && mesh.Positions.Count > 0)
+                    result.Designations.Add(Designation(mesh, paint.Glyph!));
+            }
+        }
+        result.IndexTerrainHeights();
+        return result;
+    }
+
+    private static GeometryModel3D Designation(MeshGeometry3D mesh, Geometry glyph)
+    {
+        DrawingBrush GlyphBrush(Brush fill) => new DrawingBrush(new GeometryDrawing(fill, null, glyph))
+        {
+            ViewboxUnits = BrushMappingMode.Absolute, Viewbox = glyph.Bounds,
+            Stretch = Stretch.Fill, TileMode = TileMode.None,
+        };
+        // Both passes use the glyph's alpha. An opaque diffuse base would
+        // leave a solid rectangle around the otherwise transparent letters.
+        var material = new MaterialGroup();
+        material.Children.Add(new DiffuseMaterial(GlyphBrush(Brushes.Black)));
+        material.Children.Add(new EmissiveMaterial(GlyphBrush(new SolidColorBrush(Color.FromRgb(194, 191, 181)))));
+        material.Freeze(); mesh.Freeze();
+        var model = new GeometryModel3D(mesh, material) { BackMaterial = material };
+        model.Freeze(); return model;
+    }
+
+    private static List<Point> ClipStation(List<Point> polygon, double station, bool after)
+    {
+        var output = new List<Point>();
+        for (var i = 0; i < polygon.Count; i++)
+        {
+            var a = polygon[i]; var b = polygon[(i + 1) % polygon.Count];
+            var da = after ? a.Y - station : station - a.Y;
+            var db = after ? b.Y - station : station - b.Y;
+            if (da >= 0) output.Add(a);
+            if ((da >= 0) != (db >= 0)) output.Add(a + (b - a) * (da / (da - db)));
+        }
+        return output;
+    }
+
+    /// <summary>The rendered pavement/terrain height, excluding decorative paint. Missing ground stays missing.</summary>
+    internal double? HeightAt(double x, double z)
+    {
+        if (!LandingReplayTrack.Finite(x) || !LandingReplayTrack.Finite(z) ||
+            Math.Abs(x / HeightCellMeters) >= int.MaxValue || Math.Abs(z / HeightCellMeters) >= int.MaxValue) return null;
+        var pavement = _profile?.HeightAt(x, z);
+        if (pavement.HasValue) return pavement;
+        double? height = null;
+        if (_heightCells.TryGetValue((Cell(x), Cell(z)), out var triangles))
+            foreach (var triangle in triangles) height = Higher(height, triangle.HeightAt(x, z));
+        foreach (var triangle in _largeHeightTriangles) height = Higher(height, triangle.HeightAt(x, z));
+        return height;
+    }
+
+    private static double? Higher(double? a, double? b) => !a.HasValue ? b : !b.HasValue ? a : Math.Max(a.Value, b.Value);
+    private static int Cell(double value) => (int)Math.Floor(value / HeightCellMeters);
+
+    private void IndexTerrainHeights()
+    {
+        // Build once, then tyre queries only examine local faces rather than
+        // scanning the full landing at every animation frame.
+        for (var i = 0; i < Terrain.TriangleIndices.Count; i += 3)
+        {
+            var triangle = new HeightTriangle(Terrain.Positions[Terrain.TriangleIndices[i]],
+                Terrain.Positions[Terrain.TriangleIndices[i + 1]], Terrain.Positions[Terrain.TriangleIndices[i + 2]]);
+            if (!triangle.HasArea) continue;
+            var minX = Cell(triangle.MinX); var maxX = Cell(triangle.MaxX);
+            var minZ = Cell(triangle.MinZ); var maxZ = Cell(triangle.MaxZ);
+            // A corrupt teleport must not allocate millions of grid cells.
+            if (((long)maxX - minX + 1) * ((long)maxZ - minZ + 1) > 256)
+            { _largeHeightTriangles.Add(triangle); continue; }
+            for (var x = minX; x <= maxX; x++) for (var z = minZ; z <= maxZ; z++)
+            {
+                if (!_heightCells.TryGetValue((x, z), out var cell)) _heightCells.Add((x, z), cell = new List<HeightTriangle>());
+                cell.Add(triangle);
+            }
+        }
+    }
+
+    private readonly struct HeightTriangle
+    {
+        private readonly Point3D _a, _b, _c;
+        private readonly double _determinant;
+        public HeightTriangle(Point3D a, Point3D b, Point3D c)
+        {
+            _a = a; _b = b; _c = c;
+            _determinant = (b.Z - c.Z) * (a.X - c.X) + (c.X - b.X) * (a.Z - c.Z);
+            MinX = Math.Min(a.X, Math.Min(b.X, c.X)); MaxX = Math.Max(a.X, Math.Max(b.X, c.X));
+            MinZ = Math.Min(a.Z, Math.Min(b.Z, c.Z)); MaxZ = Math.Max(a.Z, Math.Max(b.Z, c.Z));
+        }
+        public double MinX { get; }
+        public double MaxX { get; }
+        public double MinZ { get; }
+        public double MaxZ { get; }
+        public bool HasArea => Math.Abs(_determinant) > 1e-12;
+        public double? HeightAt(double x, double z)
+        {
+            if (x < MinX || x > MaxX || z < MinZ || z > MaxZ) return null;
+            var u = ((_b.Z - _c.Z) * (x - _c.X) + (_c.X - _b.X) * (z - _c.Z)) / _determinant;
+            var v = ((_c.Z - _a.Z) * (x - _c.X) + (_a.X - _c.X) * (z - _c.Z)) / _determinant;
+            if (u < -1e-8 || v < -1e-8 || u + v > 1 + 1e-8) return null;
+            return u * _a.Y + v * _b.Y + (1 - u - v) * _c.Y;
+        }
+    }
+
+    private static void Strip(MeshGeometry3D mesh, RunwayProfile p, double from, double to, double halfWidth, double lift)
+    {
+        var a = p.At(from, -halfWidth, lift); var b = p.At(from, halfWidth, lift);
+        var c = p.At(to, halfWidth, lift); var d = p.At(to, -halfWidth, lift);
+        Triangle(mesh, a, b, c); Triangle(mesh, a, c, d);
+    }
+
+    private static void AddTerrain(MeshGeometry3D mesh, Point3D[] triangle, RunwayProfile? profile)
+    {
+        if (profile == null) { Triangle(mesh, triangle[0], triangle[1], triangle[2]); return; }
+        // Partition each original ground triangle around the runway rectangle.
+        // Unlike lowering one of two overlapping surfaces, this cannot produce
+        // intersections when the observed terrain differs from facility altitude.
+        var remaining = triangle.ToList();
+        for (var plane = 0; plane < 4 && remaining.Count >= 3; plane++)
+        {
+            var outside = Clip(remaining, profile, plane, false);
+            for (var i = 2; i < outside.Count; i++) Triangle(mesh, outside[0], outside[i - 1], outside[i]);
+            remaining = Clip(remaining, profile, plane, true);
+        }
+    }
+
+    private static List<Point3D> Clip(List<Point3D> polygon, RunwayProfile profile, int plane, bool keepInside)
+    {
+        var result = new List<Point3D>();
+        var previous = polygon[polygon.Count - 1]; var previousDistance = profile.Distance(previous, plane);
+        foreach (var current in polygon)
+        {
+            var distance = profile.Distance(current, plane);
+            var previousKept = keepInside ? previousDistance >= 0 : previousDistance <= 0;
+            var kept = keepInside ? distance >= 0 : distance <= 0;
+            if (kept != previousKept)
+                result.Add(previous + (current - previous) * (previousDistance / (previousDistance - distance)));
+            if (kept) result.Add(current);
+            previous = current; previousDistance = distance;
+        }
+        return result;
+    }
+
+    private static void Triangle(MeshGeometry3D mesh, Point3D a, Point3D b, Point3D c)
+    {
+        if (Vector3D.CrossProduct(b - a, c - a).LengthSquared < 1e-16) return;
+        var i = mesh.Positions.Count; mesh.Positions.Add(a); mesh.Positions.Add(b); mesh.Positions.Add(c);
+        mesh.TriangleIndices.Add(i); mesh.TriangleIndices.Add(i + 1); mesh.TriangleIndices.Add(i + 2);
+    }
+
+    private sealed class RunwayProfile
+    {
+        private readonly Point3D _center;
+        private readonly Vector3D _forward;
+        private readonly Vector3D _right;
+        private readonly (double Station, double Height)[] _samples;
+        public double HalfLength { get; }
+        public double HalfWidth { get; }
+        public IEnumerable<double> Stations => _samples.Select(p => p.Station);
+
+        public RunwayProfile(LandingReplayTrack track, RunwayFacility runway)
+        {
+            _center = track.ProjectGeo(runway.LatitudeDegrees, runway.LongitudeDegrees, runway.AltitudeMeters / LandingReplayTrack.FeetToMeters);
+            var angle = runway.HeadingTrueDegrees * Math.PI / 180;
+            _forward = new Vector3D(Math.Sin(angle), 0, -Math.Cos(angle));
+            _right = new Vector3D(Math.Cos(angle), 0, Math.Sin(angle));
+            HalfLength = runway.LengthMeters / 2; HalfWidth = runway.WidthMeters / 2;
+            _samples = track.Frames.Where(f => Math.Abs(Vector3D.DotProduct(f.Ground - _center, _right)) <= HalfWidth)
+                .Select(f => (Station: Vector3D.DotProduct(f.Ground - _center, _forward), Height: f.Ground.Y))
+                .Where(p => Math.Abs(p.Station) <= HalfLength)
+                // A stationary/revisited point is one spatial observation, not
+                // a vertical face. Retain a robust height for coincident stations.
+                .GroupBy(p => Math.Round(p.Station, 3))
+                .Select(g => (Station: g.Average(p => p.Station), Height: g.Select(p => p.Height).OrderBy(h => h).ElementAt(g.Count() / 2)))
+                .OrderBy(p => p.Station).ToArray();
+        }
+
+        public Point3D At(double station, double lateral, double lift)
+        {
+            var point = _center + _forward * station + _right * lateral;
+            point.Y = Height(station) + lift; return point;
+        }
+
+        public double? HeightAt(double x, double z)
+        {
+            var delta = new Vector3D(x - _center.X, 0, z - _center.Z);
+            var along = Vector3D.DotProduct(delta, _forward);
+            var across = Vector3D.DotProduct(delta, _right);
+            return Math.Abs(along) <= HalfLength && Math.Abs(across) <= HalfWidth ? Height(along) : (double?)null;
+        }
+
+        private double Height(double station)
+        {
+            if (_samples.Length == 0) return _center.Y;
+            // Beyond observations use a constant endpoint, never extrapolate a
+            // measured approach slope through the rest of an unobserved runway.
+            if (station <= _samples[0].Station) return _samples[0].Height;
+            if (station >= _samples[_samples.Length - 1].Station) return _samples[_samples.Length - 1].Height;
+            var lo = 0; var hi = _samples.Length - 1;
+            while (hi - lo > 1) { var mid = (lo + hi) / 2; if (_samples[mid].Station < station) lo = mid; else hi = mid; }
+            var a = _samples[lo]; var b = _samples[hi];
+            return a.Height + (b.Height - a.Height) * ((station - a.Station) / (b.Station - a.Station));
+        }
+
+        public double Distance(Point3D point, int plane)
+        {
+            var delta = point - _center;
+            var along = Vector3D.DotProduct(delta, _forward); var across = Vector3D.DotProduct(delta, _right);
+            return plane == 0 ? along + HalfLength : plane == 1 ? HalfLength - along : plane == 2 ? across + HalfWidth : HalfWidth - across;
+        }
+    }
+}

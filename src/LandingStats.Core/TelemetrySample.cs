@@ -7,6 +7,8 @@ public sealed class TelemetrySample
     public const int CapturedEngineCount = 4;
 
     public const int CapturedControllerCount = 8;
+    // Device-major order: X, Y, Z, R, U, V. These are physical axes, not simulator bindings.
+    public const int CapturedControllerAxisCount = 6;
 
     public long Sequence { get; set; }
 
@@ -127,6 +129,12 @@ public sealed class TelemetrySample
     public bool[] RawControllerYAxisValid { get; } = new bool[CapturedControllerCount];
 
     public double[] RawControllerYAxisAgeSeconds { get; } = new double[CapturedControllerCount];
+
+    public double[] RawControllerAxesPercent { get; } = new double[CapturedControllerCount * CapturedControllerAxisCount];
+
+    public bool[] RawControllerAxesValid { get; } = new bool[CapturedControllerCount * CapturedControllerAxisCount];
+
+    public double[] RawControllerAxesAgeSeconds { get; } = new double[CapturedControllerCount * CapturedControllerAxisCount];
 
     public double[] ContactPointCompression { get; } = new double[CapturedContactPointCount];
 

@@ -1,8 +1,11 @@
 import base64
+import hashlib
+import io
 import os
 import secrets
 import tempfile
 import unittest
+import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -23,7 +26,7 @@ os.environ["DATA_ROOT"] = str(DATA_ROOT)
 os.environ["SERVER_PEPPER_FILE"] = str(PEPPER_PATH)
 
 from app import main as service  # noqa: E402
-from app.security import canonical_enrollment  # noqa: E402
+from app.security import canonical_capture, canonical_enrollment  # noqa: E402
 from app.store import Store  # noqa: E402
 
 
@@ -106,6 +109,61 @@ class EnrollmentApiTests(unittest.TestCase):
 
         self.assertEqual(507, response.status_code)
         self.assertIsNone(self.store.installation("a" * 32))
+
+    def _signed_capture(self, schema: int, session_schema: int | None = None):
+        private = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        numbers = private.public_key().public_numbers()
+        install_id = secrets.token_hex(16)
+        self.store.enroll(install_id, base64.b64encode(numbers.n.to_bytes(256, "big")).decode("ascii"),
+                          base64.b64encode(numbers.e.to_bytes(3, "big")).decode("ascii"))
+        header = service.EXPECTED_HEADERS[schema]
+        values = ["0"] * len(header.split(","))
+        values[0] = "1"
+        if schema == 6:
+            values[header.split(",").index("controller_7_raw_v_percent")] = "-63.5"
+            values[header.split(",").index("controller_7_raw_v_valid")] = "1"
+        content = io.BytesIO()
+        with zipfile.ZipFile(content, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr("telemetry.csv", header + "\n" + ",".join(values) + "\n")
+            archive.writestr("session.txt", f"telemetry_schema={schema if session_schema is None else session_schema}\n"
+                             "source_period=SIM_FRAME\nsample_count=1\n")
+        body = content.getvalue()
+        digest = hashlib.sha256(body).hexdigest()
+        sent = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        nonce = secrets.token_urlsafe(16)
+        version = "0.8.8"
+        signature = private.sign(canonical_capture(install_id, sent, nonce, digest, len(body), schema, version),
+                                 padding.PKCS1v15(), hashes.SHA256())
+        return body, {
+            "X-Install-Id": install_id, "X-Sent-At-Utc": sent, "X-Capture-Nonce": nonce,
+            "X-Capture-SHA256": digest, "X-Capture-Size": str(len(body)), "X-Telemetry-Schema": str(schema),
+            "X-App-Version": version, "X-Signature": base64.b64encode(signature).decode("ascii"),
+            "Content-Type": "application/zip",
+        }
+
+    def test_signed_upload_accepts_old_and_new_schema(self):
+        with TestClient(service.app) as client:
+            config = client.get("/v1/config").json()
+            self.assertEqual(5, config["telemetry_schema"])
+            self.assertEqual([5, 6], config["telemetry_schemas"])
+            for schema in (5, 6):
+                body, headers = self._signed_capture(schema)
+                response = client.post("/v1/captures", content=body, headers=headers)
+                self.assertEqual(201, response.status_code, response.text)
+                self.assertEqual("accepted", response.json()["status"])
+                with self.store.connect() as connection:
+                    capture = connection.execute("SELECT schema_version FROM captures WHERE sha256=?",
+                                                 (headers["X-Capture-SHA256"],)).fetchone()
+                self.assertEqual(schema, capture["schema_version"])
+
+    def test_signed_new_schema_cannot_relabel_old_session(self):
+        with TestClient(service.app) as client:
+            body, headers = self._signed_capture(6, session_schema=5)
+            response = client.post("/v1/captures", content=body, headers=headers)
+            self.assertEqual(422, response.status_code, response.text)
+            self.assertIn("unsupported telemetry schema", response.text)
+            self.assertIsNone(self.store.capture_by_hash(headers["X-Capture-SHA256"]))
+            self.assertEqual([], list((Path(self.root.name) / "incoming").iterdir()))
 
 
 if __name__ == "__main__":

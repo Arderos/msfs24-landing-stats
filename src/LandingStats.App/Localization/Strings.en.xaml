@@ -34,9 +34,14 @@
     <system:String x:Key="Help.Unresolved">What remains after the older, terrain-only comparison. It combines timing, flare, rotation and sampling effects; it is not the error of the Experimental Closure Reconstruction below.</system:String>
     <system:String x:Key="Metric.Unresolved">Unresolved component</system:String>
     <system:String x:Key="Metric.PeakG150">PEAK G · 150 MS</system:String>
+    <system:String x:Key="Metric.PeakGAdaptive">PEAK G</system:String>
+    <system:String x:Key="Help.PeakGAdaptive">The highest recorded vertical G-load for this contact. This is a peak value, not an average.</system:String>
     <system:String x:Key="Help.PeakG150">The highest vertical G-load during the first 150 milliseconds after contact. It captures the immediate impact and is a peak value, not an average.</system:String>
-    <system:String x:Key="Help.PeakG2">The highest vertical G-load during the first two seconds after contact. It can reveal a later gear reaction, bounce or second impact that the 150 ms value does not include.</system:String>
+    <system:String x:Key="Help.PeakG2">The highest vertical G-load during the first two seconds after contact, cut off before the next contact.</system:String>
     <system:String x:Key="Metric.PeakG2">Peak G over 2 seconds</system:String>
+    <system:String x:Key="Help.ImpactWindow">Duration of the adaptive G window, from contact until the response settles or the aircraft lifts off.</system:String>
+    <system:String x:Key="Model.ImpactWindowFormat">window {0:F2} s</system:String>
+    <system:String x:Key="Model.ImpactWindowIncomplete">incomplete window</system:String>
     <system:String x:Key="Metric.Ias">IAS AT CONTACT</system:String>
     <system:String x:Key="Metric.Indicated">indicated</system:String>
     <system:String x:Key="Help.Ias">Indicated airspeed at contact. This is the speed shown on the aircraft's airspeed indicator, not its speed over the ground.</system:String>
@@ -200,8 +205,9 @@
     <system:String x:Key="Model.ExtrapolatedFormat">EXTRAPOLATED · {0:F2} S FIT</system:String>
     <system:String x:Key="Model.LastAirborne">RAW LAST AIRBORNE FRAME</system:String>
     <system:String x:Key="Model.Smooth">SMOOTH</system:String>
+    <system:String x:Key="Model.Normal">NORMAL</system:String>
     <system:String x:Key="Model.Firm">FIRM</system:String>
-    <system:String x:Key="Model.FeelHelpFormat">App classification from aircraft vertical rate: {0}. SMOOTH is up to 240 fpm (4 ft/s); FIRM is above 240 fpm. Measurement: {1}.</system:String>
+    <system:String x:Key="Model.ImpactFeelHelpFormat">{0} · {1}. SMOOTH: below 1.20 G; NORMAL: 1.20 to below 1.50 G; FIRM: 1.50 G and above. These are app categories, not aircraft damage limits.</system:String>
     <system:String x:Key="Model.LegacyLatch">LEGACY · LATCH STATUS UNKNOWN</system:String>
     <system:String x:Key="Model.LatchNotVerified">LATCH NOT VERIFIED · MAY BE STALE</system:String>
     <system:String x:Key="Model.LatchSameFrame">LATCH VERIFIED · SAME FRAME</system:String>
@@ -267,4 +273,41 @@
     <system:String x:Key="Update.RejectedFormat">Update rejected: {0}</system:String>
     <system:String x:Key="Update.StatusUpdatingFormat" xml:space="preserve"> · updating to v{0}</system:String>
     <system:String x:Key="Update.StatusRejected" xml:space="preserve"> · update rejected</system:String>
+    <system:String x:Key="Chart.TabReconstruction">3D reconstruction</system:String>
+    <system:String x:Key="Replay.Unavailable">This landing has no recorded position and heading. 3D reconstruction is available for newly recorded landings.</system:String>
+    <system:String x:Key="Replay.Gap">No recorded samples at this time</system:String>
+    <system:String x:Key="Replay.Play">Play</system:String>
+    <system:String x:Key="Replay.Pause">Pause</system:String>
+    <system:String x:Key="Replay.ResetView">Reset view</system:String>
+    <system:String x:Key="Replay.Hint">Drag to orbit · scroll to zoom</system:String>
+    <system:String x:Key="Replay.NoRunway">Runway geometry unavailable</system:String>
+    <system:String x:Key="Replay.Pitch">PITCH</system:String>
+    <system:String x:Key="Replay.Bank">BANK</system:String>
+    <system:String x:Key="Replay.Yaw">YAW</system:String>
+    <system:String x:Key="Replay.VerticalSpeed">VS</system:String>
+    <system:String x:Key="Replay.Roll">ROLL</system:String>
+    <system:String x:Key="Replay.GroundSpeed">GS</system:String>
+    <system:String x:Key="Replay.VerticalG">VERTICAL G</system:String>
+    <system:String x:Key="Replay.Knots">kt</system:String>
+    <system:String x:Key="Replay.Stick">SIDESTICK</system:String>
+    <system:String x:Key="Replay.Push">↑ PUSH</system:String>
+    <system:String x:Key="Replay.Pull">↓ PULL</system:String>
+    <system:String x:Key="Replay.Pedals">PEDALS / YAW</system:String>
+    <system:String x:Key="Replay.LeftShort">L</system:String>
+    <system:String x:Key="Replay.RightShort">R</system:String>
+    <system:String x:Key="Replay.NoAxis">Axis not identified</system:String>
+    <system:String x:Key="Replay.NoAxes">No matched axes</system:String>
+    <system:String x:Key="Replay.PitchOnly">Roll not recorded</system:String>
+    <system:String x:Key="Replay.RollOnly">Pitch not recorded</system:String>
+    <system:String x:Key="Replay.ControlHint">Recorded physical input before simulator response curves. Centre = neutral; down = pull, up = push. Pedals/yaw is the centred rudder axis (pedals or stick twist), not toe brakes. With only one available stick axis, the dot moves along the centre guide and the missing axis is labelled below. Its centred display position does not mean a measured neutral input.</system:String>
+    <system:String x:Key="Replay.Centerline">CENTERLINE</system:String>
+    <system:String x:Key="Replay.CenterlineHint">Horizontal distance from the aircraft reference point to the actual runway centreline, extended through the approach. Left/right is relative to the landing direction, not the camera. Scale ends are runway edges.</system:String>
+    <system:String x:Key="Replay.RunwaySize">Simulator runway: {0:0} × {1:0.0} m.</system:String>
+    <system:String x:Key="Replay.MarkingsHint">Schematic {0} markings: ILS intersection with the runway reference plane, otherwise nominal PAPI (lights assumed on that plane). Threshold: 50 ft / 3° reference. No guidance: centreline and known runway numbers only. Geometric length, not declared LDA; not scenery textures.</system:String>
+    <system:String x:Key="Replay.NoOffset">Offset unavailable</system:String>
+    <system:String x:Key="Replay.OnCenterline">0.0 m</system:String>
+    <system:String x:Key="Replay.Meters">m</system:String>
+    <system:String x:Key="Replay.PhysicalInputs">PHYSICAL INPUTS</system:String>
+    <system:String x:Key="Replay.NoPhysicalInputs">Physical controls were not recorded</system:String>
+    <system:String x:Key="Replay.PhysicalInputHint">Recorded device axis; −100% to +100%. Axis names do not imply simulator bindings.</system:String>
 </ResourceDictionary>

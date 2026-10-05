@@ -146,6 +146,12 @@ public static class TelemetryGeometryCalibration
     private const int MinimumSustainedContactSamples = 2;
     private const int MinimumClusteredSettledPointCount = 6;
     private const int MinimumPointsPerCluster = 2;
+    // Conservative operating limits for the additional single-nose fallback,
+    // not a confidence interval or a physical bound on reconstruction error.
+    private const int MinimumStablePitchRegressionRows = 12;
+    private const int ArmStabilityBlockCount = 5;
+    private const double ArmStabilityTrimFraction = 0.30;
+    private const double MaximumPitchArmRefitDeviationFeet = 5.0;
 
     private sealed class ContactRun
     {
@@ -158,8 +164,9 @@ public static class TelemetryGeometryCalibration
 
     /// <summary>
     /// Attempts a target-independent calibration. Contact-point indices have no semantic
-    /// meaning here: three or four settled points, a distinct last point, and positive
-    /// pitch derotation before that last point are the evidence for supported topology.
+    /// meaning here: sustained contact timing and positive pitch derotation provide
+    /// topology evidence. The multi-main/single-nose fallback also requires stable
+    /// pitch-arm estimates across temporal subsets of the main-only observations.
     /// </summary>
     public static bool TryCalibrate(
         IReadOnlyList<TelemetrySample> samples,
@@ -486,8 +493,32 @@ public static class TelemetryGeometryCalibration
             return TryCreateSinglePointNoseTopology(samples, runsByPoint, settledRuns, out topology);
         }
 
-        return settledRuns.Count >= MinimumClusteredSettledPointCount &&
-               TryCreateClusteredWheelTopology(samples, runsByPoint, settledRuns, out topology);
+        if (settledRuns.Count >= MinimumClusteredSettledPointCount &&
+            TryCreateClusteredWheelTopology(samples, runsByPoint, settledRuns, out topology))
+        {
+            return true;
+        }
+
+        // Preserve the established clustered path. Only its refusal may enable
+        // a multi-main layout with one late point, never an aircraft-index guess.
+        if (!TryCreateSinglePointNoseTopology(samples, runsByPoint, settledRuns, out topology))
+        {
+            return false;
+        }
+
+        var times = samples.Select(sample => sample.SimulationTimeSeconds).ToArray();
+        var altitude = samples.Select(sample => sample.PlaneAltitudeFeet).ToArray();
+        var ground = samples.Select(sample => sample.GroundAltitudeFeet).ToArray();
+        SanitizeIsolatedSpikes(altitude);
+        SanitizeIsolatedSpikes(ground);
+        if (TryRecoverPitchArm(samples, times, altitude, ground, topology,
+                out _, out _, out _, requireStableArm: true))
+        {
+            return true;
+        }
+
+        topology = null!;
+        return false;
     }
 
     private static bool TryCreateSinglePointNoseTopology(
@@ -531,7 +562,8 @@ public static class TelemetryGeometryCalibration
 
         topology = new TelemetryGearTopology(
             ContactPointIndices(mains),
-            ContactPointIndices(nose));
+            ContactPointIndices(nose),
+            usesClusteredWheelInference: settledRuns.Count >= MinimumClusteredSettledPointCount);
         return true;
     }
 
@@ -824,7 +856,8 @@ public static class TelemetryGeometryCalibration
         TelemetryGearTopology topology,
         out double pitchArm,
         out int mainOnlySampleCount,
-        out double designIndependence)
+        out double designIndependence,
+        bool requireStableArm = false)
     {
         pitchArm = double.NaN;
         mainOnlySampleCount = 0;
@@ -832,6 +865,7 @@ public static class TelemetryGeometryCalibration
         var pitch = new List<double>();
         var compression = new List<double>();
         var height = new List<double>();
+        var observationTimes = requireStableArm ? new List<double>() : null;
 
         var segmentStart = -1;
         for (var index = 0; index <= samples.Count; index++)
@@ -867,6 +901,7 @@ public static class TelemetryGeometryCalibration
                     pitch.Add(pitchRadians);
                     compression.Add(meanCompression);
                     height.Add(datumHeight);
+                    observationTimes?.Add(times[take]);
                 }
             }
 
@@ -888,7 +923,62 @@ public static class TelemetryGeometryCalibration
 
         return IsFinite(pitchArm) &&
             Math.Abs(pitchArm) <= MaximumAbsoluteArmFeet &&
-            designIndependence >= MinimumDesignIndependence;
+            designIndependence >= MinimumDesignIndependence &&
+            (!requireStableArm || HasStablePitchArm(observationTimes!, pitch, compression, height, pitchArm));
+    }
+
+    private static bool HasStablePitchArm(
+        List<double> times,
+        List<double> pitch,
+        List<double> compression,
+        List<double> height,
+        double fullPitchArm)
+    {
+        if (times.Count < MinimumStablePitchRegressionRows)
+        {
+            return false;
+        }
+
+        var duration = times[times.Count - 1] - times[0];
+        if (!IsFinite(duration) || duration <= 0.0)
+        {
+            return false;
+        }
+
+        // First/last 70% of elapsed time, then leave each of five contiguous
+        // time blocks out. Random frame splits would hide slow geometry drift.
+        // Datum offset is unchanged, so pitch-arm differences equal final-arm
+        // differences. Neither the simulator latch nor its residual is used.
+        for (var subset = 0; subset < ArmStabilityBlockCount + 2; subset++)
+        {
+            var selectedPitch = new List<double>();
+            var selectedCompression = new List<double>();
+            var selectedHeight = new List<double>();
+            for (var index = 0; index < times.Count; index++)
+            {
+                var fraction = (times[index] - times[0]) / duration;
+                var block = Math.Min(ArmStabilityBlockCount - 1, (int)(fraction * ArmStabilityBlockCount));
+                var include = subset == 0 ? fraction <= 1.0 - ArmStabilityTrimFraction
+                    : subset == 1 ? fraction >= ArmStabilityTrimFraction
+                    : block != subset - 2;
+                if (!include) continue;
+                selectedPitch.Add(pitch[index]);
+                selectedCompression.Add(compression[index]);
+                selectedHeight.Add(height[index]);
+            }
+
+            if (selectedPitch.Count < MinimumPitchRegressionRows ||
+                selectedPitch.Count == times.Count ||
+                !TryFitTwoPredictors(selectedPitch, selectedCompression, selectedHeight,
+                    out var subsetArm, out _, out _) ||
+                Math.Abs(subsetArm) > MaximumAbsoluteArmFeet ||
+                Math.Abs(subsetArm - fullPitchArm) > MaximumPitchArmRefitDeviationFeet)
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private static bool TryRecoverDatumOffsetCore(

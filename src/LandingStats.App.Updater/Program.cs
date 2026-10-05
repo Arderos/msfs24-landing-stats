@@ -133,6 +133,7 @@ internal static class Program
     internal static void ExtractLegacySingleExecutable(string packagePath, string destinationPath)
     {
         destinationPath = Path.GetFullPath(destinationPath);
+        var createdDestination = false;
         try
         {
             using var input = File.OpenRead(packagePath);
@@ -153,6 +154,7 @@ internal static class Program
 
             using var entryStream = entry.Open();
             using var output = new FileStream(destinationPath, FileMode.CreateNew, FileAccess.Write, FileShare.None);
+            createdDestination = true;
             var buffer = new byte[65536];
             long total = 0;
             int read;
@@ -172,7 +174,7 @@ internal static class Program
         }
         catch
         {
-            if (File.Exists(destinationPath))
+            if (createdDestination && File.Exists(destinationPath))
             {
                 File.Delete(destinationPath);
             }

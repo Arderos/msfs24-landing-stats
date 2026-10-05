@@ -1,3 +1,4 @@
+using System;
 using System.Runtime.Serialization;
 using LandingStats.Core;
 
@@ -129,11 +130,34 @@ public sealed class LandingSeriesPoint
     [DataMember(Order = 41)]
     public double[] RawControllerYAxisAgeSeconds { get; set; } = new double[TelemetrySample.CapturedControllerCount];
 
+    // Absent in older landing files. Zero is a real coordinate, not a missing-value marker.
+    [DataMember(Order = 42, EmitDefaultValue = false)]
+    public double? LatitudeDegrees { get; set; }
+    [DataMember(Order = 43, EmitDefaultValue = false)]
+    public double? LongitudeDegrees { get; set; }
+    [DataMember(Order = 44, EmitDefaultValue = false)]
+    public double? PlaneAltitudeFeet { get; set; }
+    [DataMember(Order = 45, EmitDefaultValue = false)]
+    public double? GroundAltitudeFeet { get; set; }
+    [DataMember(Order = 46, EmitDefaultValue = false)]
+    public double? HeadingTrueDegrees { get; set; }
+
+    // Compact columns, mapped to device * 6 + axis by RawControllerAxesSourceIndices.
+    [DataMember(Order = 47, EmitDefaultValue = false)]
+    public double[] RawControllerAxesPercent { get; set; } = Array.Empty<double>();
+    [DataMember(Order = 48, EmitDefaultValue = false)]
+    public bool[] RawControllerAxesValid { get; set; } = Array.Empty<bool>();
+    [DataMember(Order = 49, EmitDefaultValue = false)]
+    public double[] RawControllerAxesAgeSeconds { get; set; } = Array.Empty<double>();
+
     [OnDeserialized]
     private void OnDeserialized(StreamingContext context)
     {
         RawControllerYAxisPercent ??= new double[TelemetrySample.CapturedControllerCount];
         RawControllerYAxisValid ??= new bool[TelemetrySample.CapturedControllerCount];
         RawControllerYAxisAgeSeconds ??= new double[TelemetrySample.CapturedControllerCount];
+        RawControllerAxesPercent ??= Array.Empty<double>();
+        RawControllerAxesValid ??= Array.Empty<bool>();
+        RawControllerAxesAgeSeconds ??= Array.Empty<double>();
     }
 }

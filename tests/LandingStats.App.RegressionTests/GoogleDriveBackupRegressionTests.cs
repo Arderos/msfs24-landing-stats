@@ -12,7 +12,7 @@ using LandingStats.App.Storage;
 
 namespace LandingStats.App.RegressionTests;
 
-internal static class GoogleDriveBackupRegressionTests
+internal static partial class GoogleDriveBackupRegressionTests
 {
     public static void OAuthUsesPkceAndDriveFileScope()
     {

@@ -14,7 +14,7 @@ BOOLEAN_COLUMNS = {
     "motion_simulation",
     "axis_elevator_set_valid",
     *(f"contact_{index}_on_ground" for index in range(20)),
-    *(f"controller_{index}_raw_y_valid" for index in range(8)),
+    *(f"controller_{index}_raw_{axis}_valid" for index in range(8) for axis in "xyzruv"),
 }
 
 
@@ -156,14 +156,14 @@ def _session_values(content: bytes) -> dict[str, str]:
     return result
 
 
-def validate_capture(path: Path, expected_header: str, maximum_uncompressed: int) -> CaptureFacts:
+def validate_capture(path: Path, expected_header: str, maximum_uncompressed: int, expected_schema: int = 5) -> CaptureFacts:
     try:
-        return _validate_capture_archive(path, expected_header, maximum_uncompressed)
+        return _validate_capture_archive(path, expected_header, maximum_uncompressed, expected_schema)
     except (zipfile.BadZipFile, csv.Error) as exc:
         raise ValueError("capture archive or telemetry CSV is malformed") from exc
 
 
-def _validate_capture_archive(path: Path, expected_header: str, maximum_uncompressed: int) -> CaptureFacts:
+def _validate_capture_archive(path: Path, expected_header: str, maximum_uncompressed: int, expected_schema: int) -> CaptureFacts:
     with zipfile.ZipFile(path, "r") as archive:
         infos = archive.infolist()
         names = [info.filename for info in infos]
@@ -197,7 +197,7 @@ def _validate_capture_archive(path: Path, expected_header: str, maximum_uncompre
             raise ValueError(f"archive entries do not match capture kind {capture_kind}")
         if capture_kind not in {"raw_debug", "bug_report"}:
             raise ValueError("unsupported capture kind")
-        if session.get("telemetry_schema") != "5":
+        if expected_schema not in {5, 6} or session.get("telemetry_schema") != str(expected_schema):
             raise ValueError("unsupported telemetry schema")
         if session.get("source_period") != "SIM_FRAME":
             raise ValueError("telemetry is not a SIM_FRAME capture")
@@ -236,7 +236,7 @@ def _validate_capture_archive(path: Path, expected_header: str, maximum_uncompre
             except StopIteration as exc:
                 raise ValueError("telemetry.csv is empty") from exc
             if header != expected_columns:
-                raise ValueError("telemetry.csv header is not schema v5")
+                raise ValueError(f"telemetry.csv header is not schema v{expected_schema}")
 
             for row in reader:
                 sample_count += 1

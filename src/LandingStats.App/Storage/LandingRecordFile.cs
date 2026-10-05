@@ -24,12 +24,20 @@ internal sealed class LandingRecordFile
     [DataMember(Name = "contacts", Order = 5)]
     public List<LandingContactColumns> Contacts { get; set; } = new List<LandingContactColumns>();
 
+    [DataMember(Name = "pose", Order = 6, EmitDefaultValue = false)]
+    public LandingPoseColumns? Pose { get; set; }
+
+    [DataMember(Name = "inputs", Order = 7, EmitDefaultValue = false)]
+    public LandingPhysicalInputColumns? Inputs { get; set; }
+
     public static LandingRecordFile FromRecord(LandingRecord record)
     {
         var file = new LandingRecordFile
         {
             Summary = SanitizedSummaryCopy(record),
             Series = LandingSeriesColumns.FromPoints(record.Series),
+            Pose = LandingPoseColumns.FromPoints(record.Series),
+            Inputs = LandingPhysicalInputColumns.FromRecord(record),
         };
         file.Summary.IsSummaryOnly = false;
         foreach (var engine in record.Engines)
@@ -58,6 +66,8 @@ internal sealed class LandingRecordFile
         RestoreSummary(record);
         record.IsSummaryOnly = false;
         record.Series = (Series ?? new LandingSeriesColumns()).ToPoints();
+        Pose?.ApplyTo(record.Series);
+        Inputs?.ApplyTo(record.Series);
         record.Engines = new List<LandingEngineSeries>();
         foreach (var engine in Engines ?? new List<LandingEngineColumns>())
         {
@@ -83,6 +93,10 @@ internal sealed class LandingRecordFile
         summary.UnresolvedFpm = Store(summary.UnresolvedFpm);
         summary.PeakG150Milliseconds = Store(summary.PeakG150Milliseconds);
         summary.PeakG2Seconds = Store(summary.PeakG2Seconds);
+        summary.ImpactPeakG = Store(summary.ImpactPeakG);
+        summary.ImpactPeakOffsetSeconds = Store(summary.ImpactPeakOffsetSeconds);
+        summary.ImpactEndOffsetSeconds = Store(summary.ImpactEndOffsetSeconds);
+        summary.ImpactWindowSeconds = Store(summary.ImpactWindowSeconds);
         summary.PitchDegrees = Store(summary.PitchDegrees);
         summary.BankDegrees = Store(summary.BankDegrees);
         summary.AirspeedKnots = Store(summary.AirspeedKnots);
@@ -121,6 +135,10 @@ internal sealed class LandingRecordFile
         summary.UnresolvedFpm = Restore(summary.UnresolvedFpm);
         summary.PeakG150Milliseconds = Restore(summary.PeakG150Milliseconds);
         summary.PeakG2Seconds = Restore(summary.PeakG2Seconds);
+        summary.ImpactPeakG = Restore(summary.ImpactPeakG);
+        summary.ImpactPeakOffsetSeconds = Restore(summary.ImpactPeakOffsetSeconds);
+        summary.ImpactEndOffsetSeconds = Restore(summary.ImpactEndOffsetSeconds);
+        summary.ImpactWindowSeconds = Restore(summary.ImpactWindowSeconds);
         summary.PitchDegrees = Restore(summary.PitchDegrees);
         summary.BankDegrees = Restore(summary.BankDegrees);
         summary.AirspeedKnots = Restore(summary.AirspeedKnots);
@@ -160,8 +178,15 @@ internal sealed class LandingRecordFile
         {
             throw new InvalidDataException("Landing detail summary is missing.");
         }
+        if (Summary.RunwayGeometry != null && !Summary.RunwayGeometry.HasValidGeometry)
+            throw new InvalidDataException("Landing runway snapshot has invalid geometry.");
 
-        Series?.Validate(Summary?.RawControllerSourceIndices?.Count ?? 0);
+        Series?.Validate(Summary.RawControllerSourceIndices.Count);
+        Pose?.Validate(Series?.Time?.Length ?? 0);
+        LandingPhysicalInputColumns.ValidateMapping(Summary.RawControllerAxesSourceIndices);
+        if (Inputs == null && Summary.RawControllerAxesSourceIndices.Count != 0)
+            throw new InvalidDataException("Physical input mapping has no corresponding columns.");
+        Inputs?.Validate(Series?.Time?.Length ?? 0, Summary.RawControllerAxesSourceIndices.Count);
         foreach (var engine in Engines ?? new List<LandingEngineColumns>()) engine.Validate();
         foreach (var contact in Contacts ?? new List<LandingContactColumns>()) contact.Validate();
     }

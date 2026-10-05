@@ -25,7 +25,8 @@ public static class LandingRecordFactory
         string airport = "Unknown airport",
         string runway = "—",
         int contactCount = 1,
-        DateTime? timestampUtc = null)
+        DateTime? timestampUtc = null,
+        double? episodeEndSimulationTimeSeconds = null)
     {
         var geometrySource = result.ClosureReconstructionGeometrySource;
         if (result.ClosureReconstructionAvailable && geometrySource == TouchdownGeometrySource.Unavailable)
@@ -78,13 +79,19 @@ public static class LandingRecordFactory
         var contactTime = result.EstimatedContactTimeSeconds;
         var windowStart = FindApproachGateRelativeTime(samples, contactTime);
         record.ApproachGateSeconds = Math.Round(windowStart, 4);
+        // A native episode is already bounded by the recorder. Keep its final rollout
+        // even for the first contact of a bounce sequence, so every 3D view has the whole landing.
+        var windowEnd = episodeEndSimulationTimeSeconds.HasValue &&
+                        !double.IsNaN(episodeEndSimulationTimeSeconds.Value) && !double.IsInfinity(episodeEndSimulationTimeSeconds.Value)
+            ? Math.Max(WindowAfterSeconds, episodeEndSimulationTimeSeconds.Value - result.EstimatedContactTimeSeconds)
+            : WindowAfterSeconds;
         var storedSamples = new List<StoredSample>();
         var nextStoredTime = windowStart;
         foreach (var sample in samples)
         {
             var sampleTime = TimeOf(sample);
             var relativeTime = sampleTime - contactTime;
-            if (relativeTime < windowStart || relativeTime > WindowAfterSeconds)
+            if (relativeTime < windowStart || relativeTime > windowEnd)
             {
                 continue;
             }
@@ -106,6 +113,18 @@ public static class LandingRecordFactory
                     stored.Sample.RawControllerYAxisValid[sourceIndex])
                 {
                     record.RawControllerSourceIndices.Add(sourceIndex);
+                    break;
+                }
+            }
+        }
+
+        for (var axis = 0; axis < TelemetrySample.CapturedControllerCount * TelemetrySample.CapturedControllerAxisCount; axis++)
+        {
+            foreach (var stored in storedSamples)
+            {
+                if (axis < stored.Sample.RawControllerAxesValid.Length && stored.Sample.RawControllerAxesValid[axis])
+                {
+                    record.RawControllerAxesSourceIndices.Add(axis);
                     break;
                 }
             }
@@ -157,6 +176,14 @@ public static class LandingRecordFactory
                 RawControllerYAxisPercent = RoundedSelectedCopy(sample.RawControllerYAxisPercent, record.RawControllerSourceIndices, 2),
                 RawControllerYAxisValid = SelectedCopy(sample.RawControllerYAxisValid, record.RawControllerSourceIndices),
                 RawControllerYAxisAgeSeconds = RoundedSelectedCopy(sample.RawControllerYAxisAgeSeconds, record.RawControllerSourceIndices, 4),
+                LatitudeDegrees = FiniteImpactValue(sample.LatitudeDegrees),
+                LongitudeDegrees = FiniteImpactValue(sample.LongitudeDegrees),
+                PlaneAltitudeFeet = FiniteImpactValue(sample.PlaneAltitudeFeet),
+                GroundAltitudeFeet = FiniteImpactValue(sample.GroundAltitudeFeet),
+                HeadingTrueDegrees = FiniteImpactValue(sample.HeadingTrueDegrees),
+                RawControllerAxesPercent = RoundedSelectedCopy(sample.RawControllerAxesPercent, record.RawControllerAxesSourceIndices, 2),
+                RawControllerAxesValid = SelectedCopy(sample.RawControllerAxesValid, record.RawControllerAxesSourceIndices),
+                RawControllerAxesAgeSeconds = RoundedSelectedCopy(sample.RawControllerAxesAgeSeconds, record.RawControllerAxesSourceIndices, 4),
             });
         }
 
@@ -175,9 +202,20 @@ public static class LandingRecordFactory
         AddEngineSeries(record, storedSamples);
         AddContactSeries(record, storedSamples);
         RefreshRawPitchInputSelection(record);
+        var impact = result.Impact;
+        var impactOffset = result.SimulationTimeSeconds - result.EstimatedContactTimeSeconds;
+        record.ImpactAnalysisVersion = TouchdownImpactAnalysis.CurrentVersion;
+        record.ImpactPeakG = FiniteImpactValue(impact.PeakG);
+        record.ImpactPeakOffsetSeconds = FiniteImpactValue(impact.PeakOffsetSeconds + impactOffset);
+        record.ImpactEndOffsetSeconds = FiniteImpactValue(impact.EndOffsetSeconds + impactOffset);
+        record.ImpactWindowSeconds = FiniteImpactValue(impact.EndOffsetSeconds);
+        record.ImpactStatus = impact.Status.ToString();
 
         return record;
     }
+
+    private static double? FiniteImpactValue(double value) =>
+        double.IsNaN(value) || double.IsInfinity(value) ? (double?)null : value;
 
     public static bool RefreshRawPitchInputSelection(LandingRecord record)
     {

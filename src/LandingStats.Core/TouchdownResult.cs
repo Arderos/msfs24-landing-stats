@@ -2,6 +2,8 @@ namespace LandingStats.Core;
 
 public sealed class TouchdownResult
 {
+    public TouchdownImpactResult Impact { get; set; } = new TouchdownImpactResult();
+
     /// <summary>
     /// Frozen reconstruction model used by the optional experimental detail.
     /// The raw simulator latch remains in <see cref="LatchedNormalFpm"/>.

@@ -14,6 +14,24 @@
         Background="{StaticResource AppBackgroundBrush}"
         UseLayoutRounding="True">
     <Window.Resources>
+        <Style x:Key="NonReplayPanelStyle" TargetType="Border">
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding IsChecked, ElementName=ReconstructionTab}" Value="True">
+                    <Setter Property="Visibility" Value="Collapsed" />
+                </DataTrigger>
+            </Style.Triggers>
+        </Style>
+        <Style x:Key="NonReplayLaneRowStyle" TargetType="RowDefinition">
+            <Setter Property="Height" Value="8*" />
+            <Setter Property="MinHeight" Value="62" />
+            <Setter Property="MaxHeight" Value="100" />
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding IsChecked, ElementName=ReconstructionTab}" Value="True">
+                    <Setter Property="Height" Value="0" />
+                    <Setter Property="MinHeight" Value="0" />
+                </DataTrigger>
+            </Style.Triggers>
+        </Style>
         <BooleanToVisibilityConverter x:Key="BooleanToVisibilityConverter" />
         <Style x:Key="InfoIconStyle" TargetType="{x:Type ContentControl}">
             <Setter Property="Width" Value="15" />
@@ -472,7 +490,7 @@
                                         </Style>
                                     </StackPanel.Style>
                                     <TextBlock Text="{Binding InertialDisplay}" FontFamily="Cascadia Mono, Consolas" FontSize="14" HorizontalAlignment="Right" />
-                                    <TextBlock Text="{Binding G150Display, StringFormat={}{0} G}" Foreground="{StaticResource SubtleTextBrush}"
+                                    <TextBlock Text="{Binding ImpactPeakDisplay, StringFormat={}{0} G}" Foreground="{StaticResource SubtleTextBrush}"
                                                FontFamily="Cascadia Mono, Consolas" FontSize="10" Margin="0,2,0,0" HorizontalAlignment="Right" />
                                 </StackPanel>
                                 <Button Grid.Column="1"
@@ -514,8 +532,8 @@
                     <RowDefinition Height="Auto" />
                     <RowDefinition Height="50*" MaxHeight="560" />
                     <RowDefinition Height="8*" MinHeight="62" MaxHeight="100" />
-                    <RowDefinition Height="8*" MinHeight="62" MaxHeight="100" />
-                    <RowDefinition Height="8*" MinHeight="62" MaxHeight="100" />
+                    <RowDefinition Style="{StaticResource NonReplayLaneRowStyle}" />
+                    <RowDefinition Style="{StaticResource NonReplayLaneRowStyle}" />
                     <RowDefinition Height="26" />
                 </Grid.RowDefinitions>
 
@@ -576,29 +594,6 @@
                     <StackPanel Grid.Column="0" Grid.Row="1" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,7,0,0">
                         <TextBlock Text="{Binding InertialDisplay}" FontSize="44" FontWeight="SemiBold" />
                         <TextBlock Text="fpm" Foreground="{StaticResource MutedTextBrush}" FontSize="14" VerticalAlignment="Bottom" Margin="8,0,0,8" />
-                        <TextBlock Text="{Binding LandingFeelDisplay}" FontSize="9" FontWeight="SemiBold"
-                                   VerticalAlignment="Bottom" Margin="8,0,0,9">
-                            <TextBlock.Style>
-                                <Style TargetType="TextBlock">
-                                    <Setter Property="Foreground" Value="{StaticResource SuccessBrush}" />
-                                    <Style.Triggers>
-                                        <DataTrigger Binding="{Binding IsFirmLanding}" Value="True">
-                                            <Setter Property="Foreground" Value="{StaticResource AccentBrush}" />
-                                        </DataTrigger>
-                                    </Style.Triggers>
-                                </Style>
-                            </TextBlock.Style>
-                        </TextBlock>
-                        <ContentControl Style="{StaticResource InfoIconStyle}"
-                                        Margin="4,0,0,8"
-                                        VerticalAlignment="Bottom"
-                                        AutomationProperties.Name="{DynamicResource Help.LandingFeelName}"
-                                        AutomationProperties.HelpText="{Binding LandingFeelTooltip}">
-                            <ContentControl.ToolTip>
-                                <TextBlock Style="{StaticResource InfoToolTipTextStyle}"
-                                           Text="{Binding LandingFeelTooltip}" />
-                            </ContentControl.ToolTip>
-                        </ContentControl>
                     </StackPanel>
                     <TextBlock Grid.Column="0" Grid.Row="2" Text="{DynamicResource Metric.AircraftRateSubline}" Style="{StaticResource MetricSublineStyle}" />
 
@@ -664,26 +659,47 @@
                     <Border Grid.Column="3" Grid.RowSpan="3" Width="1" HorizontalAlignment="Center" Background="{StaticResource BorderBrush}" />
 
                     <StackPanel Grid.Column="4" Orientation="Horizontal" VerticalAlignment="Center">
-                        <TextBlock Text="{DynamicResource Metric.PeakG150}" Style="{StaticResource SectionLabelStyle}" Foreground="{StaticResource LabelTextBrush}" />
+                        <TextBlock Text="{DynamicResource Metric.PeakGAdaptive}" Style="{StaticResource SectionLabelStyle}" Foreground="{StaticResource LabelTextBrush}" />
                         <ContentControl Style="{StaticResource InfoIconStyle}"
-                                        AutomationProperties.Name="{DynamicResource Metric.PeakG150}"
-                                        AutomationProperties.HelpText="{DynamicResource Help.PeakG150}">
+                                        AutomationProperties.Name="{DynamicResource Metric.PeakGAdaptive}"
+                                        AutomationProperties.HelpText="{DynamicResource Help.PeakGAdaptive}">
                             <ContentControl.ToolTip>
                                 <TextBlock Style="{StaticResource InfoToolTipTextStyle}"
-                                           Text="{DynamicResource Help.PeakG150}" />
+                                           Text="{DynamicResource Help.PeakGAdaptive}" />
                             </ContentControl.ToolTip>
                         </ContentControl>
                     </StackPanel>
-                    <TextBlock Grid.Column="4" Grid.Row="1" Text="{Binding G150Display}" FontSize="22" FontWeight="Medium" VerticalAlignment="Center" Margin="0,7,0,0" />
+                    <WrapPanel Grid.Column="4" Grid.Row="1" VerticalAlignment="Center" Margin="0,7,0,0">
+                        <TextBlock Text="{Binding ImpactPeakDisplay}" FontSize="22" FontWeight="Medium" />
+                        <TextBlock Text="{Binding LandingFeelDisplay}" FontSize="9" FontWeight="SemiBold"
+                                   VerticalAlignment="Center" Margin="8,0,0,0">
+                            <TextBlock.ToolTip>
+                                <TextBlock Style="{StaticResource InfoToolTipTextStyle}" Text="{Binding LandingFeelTooltip}" />
+                            </TextBlock.ToolTip>
+                            <TextBlock.Style>
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="Foreground" Value="{StaticResource MutedTextBrush}" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding IsSmoothLanding}" Value="True">
+                                            <Setter Property="Foreground" Value="{StaticResource SuccessBrush}" />
+                                        </DataTrigger>
+                                        <DataTrigger Binding="{Binding IsFirmLanding}" Value="True">
+                                            <Setter Property="Foreground" Value="{StaticResource AccentBrush}" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </TextBlock.Style>
+                        </TextBlock>
+                    </WrapPanel>
                     <StackPanel Grid.Column="4" Grid.Row="2" Orientation="Horizontal" VerticalAlignment="Center">
-                        <TextBlock Text="{Binding G2SecondsDisplay}" Style="{StaticResource MetricSublineStyle}" />
+                        <TextBlock Text="{Binding GDetailDisplay}" Style="{StaticResource MetricSublineStyle}" />
                         <ContentControl Style="{StaticResource InfoIconStyle}"
                                         Margin="4,0,0,0"
-                                        AutomationProperties.Name="{DynamicResource Metric.PeakG2}"
-                                        AutomationProperties.HelpText="{DynamicResource Help.PeakG2}">
+                                        AutomationProperties.Name="{Binding GDetailDisplay}"
+                                        AutomationProperties.HelpText="{Binding GDetailTooltip}">
                             <ContentControl.ToolTip>
                                 <TextBlock Style="{StaticResource InfoToolTipTextStyle}"
-                                           Text="{DynamicResource Help.PeakG2}" />
+                                           Text="{Binding GDetailTooltip}" />
                             </ContentControl.ToolTip>
                         </ContentControl>
                     </StackPanel>
@@ -743,6 +759,7 @@
                 </Grid>
 
                 <Border x:Name="ClosureReconstructionPanel"
+                        Style="{StaticResource NonReplayPanelStyle}"
                         Grid.Row="2"
                         Margin="24,0,24,18"
                         Padding="14,10"
@@ -929,7 +946,8 @@
                     <StackPanel Orientation="Horizontal" VerticalAlignment="Bottom">
                         <RadioButton x:Name="VerticalRateTab" Content="{DynamicResource Chart.TabVerticalRate}" Tag="VerticalSpeed" GroupName="ChartMode" Style="{StaticResource ChartTabStyle}" Checked="OnChartModeChanged" />
                         <RadioButton Content="{DynamicResource Chart.TabLoads}" Tag="LoadFactors" GroupName="ChartMode" Style="{StaticResource ChartTabStyle}" Checked="OnChartModeChanged" />
-                        <RadioButton Content="{DynamicResource Chart.TabControls}" Tag="FlightControls" GroupName="ChartMode" Style="{StaticResource ChartTabStyle}" Checked="OnChartModeChanged" />
+                        <RadioButton x:Name="ControlsTab" Content="{DynamicResource Chart.TabControls}" Tag="FlightControls" GroupName="ChartMode" Style="{StaticResource ChartTabStyle}" Checked="OnChartModeChanged" />
+                        <RadioButton x:Name="ReconstructionTab" Content="{DynamicResource Chart.TabReconstruction}" Tag="Reconstruction" Visibility="Collapsed" GroupName="ChartMode" Style="{StaticResource ChartTabStyle}" Checked="OnChartModeChanged" />
                         <RadioButton Content="{DynamicResource Chart.TabAttitude}" Tag="Attitude" GroupName="ChartMode" Style="{StaticResource ChartTabStyle}" Checked="OnChartModeChanged" />
                         <RadioButton Content="{DynamicResource Chart.TabPower}" Tag="Power" GroupName="ChartMode" Style="{StaticResource ChartTabStyle}" Checked="OnChartModeChanged" />
                         <RadioButton Content="{DynamicResource Chart.TabGear}" Tag="Gear" GroupName="ChartMode" Style="{StaticResource ChartTabStyle}" Checked="OnChartModeChanged" />
@@ -943,6 +961,9 @@
 
                 <Grid Grid.Row="4" Margin="0,12,24,6">
                     <controls:LandingChart x:Name="MainChart" Mode="VerticalSpeed" ShowLegend="False" ShowXAxisLabels="False" />
+                    <Grid x:Name="ReplayPanel" Visibility="Collapsed" Margin="24,0,0,0">
+                        <controls:LandingReplayView x:Name="ReplayView" />
+                    </Grid>
                     <TextBlock x:Name="ModeUnitText" Text="fpm" Foreground="{StaticResource LabelTextBrush}"
                                FontFamily="Cascadia Mono, Consolas" FontSize="10"
                                HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="24,0,0,8" />
@@ -961,7 +982,7 @@
                     </Grid>
                 </Border>
 
-                <Border Grid.Row="6" BorderBrush="#1A1917" BorderThickness="0,1,0,0" Margin="0,0,24,0">
+                <Border Grid.Row="6" Style="{StaticResource NonReplayPanelStyle}" BorderBrush="#1A1917" BorderThickness="0,1,0,0" Margin="0,0,24,0">
                     <Grid>
                         <Grid.ColumnDefinitions><ColumnDefinition Width="96" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
                         <StackPanel Margin="24,9,0,0">
@@ -974,7 +995,7 @@
                     </Grid>
                 </Border>
 
-                <Border Grid.Row="7" BorderBrush="#1A1917" BorderThickness="0,1,0,0" Margin="0,0,24,0">
+                <Border Grid.Row="7" Style="{StaticResource NonReplayPanelStyle}" BorderBrush="#1A1917" BorderThickness="0,1,0,0" Margin="0,0,24,0">
                     <Grid>
                         <Grid.ColumnDefinitions><ColumnDefinition Width="96" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
                         <StackPanel Margin="24,9,0,0">

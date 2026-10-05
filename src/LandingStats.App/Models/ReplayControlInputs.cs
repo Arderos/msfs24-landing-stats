@@ -1,0 +1,254 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using LandingStats.Core;
+
+namespace LandingStats.App.Models;
+
+/// <summary>
+/// Ranks physical axes against the recorded pilot commands. Correlation selects
+/// the source and polarity, but never changes physical amplitude or sample time.
+/// </summary>
+public sealed class ReplayControlInputs
+{
+    public const double MaximumAgeSeconds = 0.25;
+    // A strong, bounded preference for a two-axis stick/yoke, not a binding rule
+    // or acceptance cutoff. The weight is a heuristic, not a probability.
+    private const double SameDevicePreference = 0.5;
+    private readonly LandingSeriesPoint[] _points;
+    private readonly int[] _segments;
+
+    private ReplayControlInputs(LandingSeriesPoint[] points)
+    {
+        _points = points;
+        _segments = new int[points.Length];
+        for (var i = 1; i < points.Length; i++)
+            _segments[i] = _segments[i - 1] + (points[i].TimeSeconds - points[i - 1].TimeSeconds > LandingReplayTrack.MaximumInterpolationGapSeconds ||
+                points[i].OnGround != points[i - 1].OnGround ? 1 : 0);
+    }
+    public ReplayControlAxis? Pitch { get; private set; }
+    public ReplayControlAxis? Roll { get; private set; }
+    public ReplayControlAxis? Yaw { get; private set; }
+
+    public static ReplayControlInputs Resolve(LandingRecord? record)
+    {
+        var points = new List<LandingSeriesPoint>();
+        if (record != null)
+            foreach (var point in record.Series)
+            {
+                if (!Finite(point.TimeSeconds) || (points.Count > 0 && point.TimeSeconds < points[points.Count - 1].TimeSeconds))
+                    return new ReplayControlInputs(Array.Empty<LandingSeriesPoint>());
+                if (points.Count > 0 && point.TimeSeconds == points[points.Count - 1].TimeSeconds) points[points.Count - 1] = point;
+                else points.Add(point);
+            }
+        var result = new ReplayControlInputs(points.ToArray());
+        if (record == null || points.Count < 2) return result;
+        var legacy = record.RawControllerAxesSourceIndices.Count == 0;
+        var sources = legacy
+            ? record.RawControllerSourceIndices.Count > 0 ? record.RawControllerSourceIndices.ToArray() : Enumerable.Range(0, TelemetrySample.CapturedControllerCount).ToArray()
+            : record.RawControllerAxesSourceIndices.ToArray();
+        if (sources.Distinct().Count() != sources.Length) return result; // Malformed column provenance.
+        // Historical recordings have their own Y-only layout. A full-axis
+        // recording can legitimately contain only Y axes from separate devices;
+        // physical axis names do not determine their simulator bindings.
+        var pitchOnly = legacy;
+
+        // All contacts in a bounce sequence use the approach before the FIRST
+        // contact. Ground-mode FBW cannot veto an available approach match.
+        var contact = points.Count;
+        for (var i = 1; i < points.Count; i++)
+            if (points[i].OnGround && !points[i - 1].OnGround) { contact = i; break; }
+        var approach = Enumerable.Range(0, contact).Where(i => !points[i].OnGround).ToArray();
+        var ground = Enumerable.Range(0, points.Count).Where(i => points[i].OnGround).ToArray();
+        var ranked = new List<ReplayControlAxis>[3];
+        for (var role = 0; role < 3; role++)
+        {
+            // Unlike flare controls, directional steering often first moves on
+            // the runway; rank yaw over the complete recorded sequence.
+            var indices = role == 2 ? Enumerable.Range(0, points.Count).ToArray() : approach;
+            ranked[role] = pitchOnly && role != 0 ? new List<ReplayControlAxis>() : result.Rank(record, sources, legacy, role, indices);
+            // Rudder may first move during rollout. Fallback requires absence of
+            // a computable approach correlation, never a low score.
+            if (ranked[role].Count == 0 && (!pitchOnly || role == 0))
+                ranked[role] = result.Rank(record, sources, legacy, role, ground);
+        }
+        var pairs = (from pitch in ranked[0] from roll in ranked[1]
+                     where pitch.SourceIndex != roll.SourceIndex
+                     let p = Math.Abs(pitch.Correlation)
+                     let r = Math.Abs(roll.Correlation)
+                     let sameDevice = pitch.SourceIndex / TelemetrySample.CapturedControllerAxisCount == roll.SourceIndex / TelemetrySample.CapturedControllerAxisCount
+                     select new { Pitch = pitch, Roll = roll, Score = p + r + (sameDevice ? SameDevicePreference * Math.Min(p, r) : 0) }).ToArray();
+        if (pairs.Length > 0)
+        {
+            var best = pairs.Max(pair => pair.Score);
+            var winners = pairs.Where(pair => pair.Score == best).ToArray();
+            result.Pitch = Unique(winners.Select(pair => pair.Pitch));
+            result.Roll = Unique(winners.Select(pair => pair.Roll));
+        }
+        else
+        {
+            result.Pitch = Best(ranked[0]); result.Roll = Best(ranked[1]);
+            if (result.Pitch != null && result.Roll?.SourceIndex == result.Pitch.SourceIndex)
+            {
+                var p = Math.Abs(result.Pitch.Correlation); var r = Math.Abs(result.Roll.Correlation);
+                if (p <= r) result.Pitch = null;
+                if (r <= p) result.Roll = null;
+            }
+        }
+        // Preserve already recorded Y-only selections. These are historical
+        // metadata, not a confidence cutoff for newly matched full-axis input.
+        if (pitchOnly && record.RawPitchInputSourceIndex >= 0 && record.RawPitchInputSourceIndex < TelemetrySample.CapturedControllerCount &&
+            Finite(record.RawPitchInputCorrelation) && record.RawPitchInputCorrelation != 0 && Math.Abs(record.RawPitchInputCorrelation) <= 1 &&
+            Finite(record.RawPitchInputLagSeconds) && record.RawPitchInputLagSeconds >= 0 && record.RawPitchInputLagSeconds <= .8)
+        {
+            var source = record.RawPitchInputSourceIndex * TelemetrySample.CapturedControllerAxisCount + 1;
+            var stored = legacy ? record.RawPitchInputSourceIndex : source;
+            var column = Array.IndexOf(sources, stored);
+            if (column >= 0 && sources.Count(value => value == stored) == 1 && points.Count(point => Raw(point, column, legacy, out _)) >= 2)
+                result.Pitch = new ReplayControlAxis(source, column,
+                    (record.RawPitchInputSourceIndex < record.ControlInputSources.Count ? record.ControlInputSources[record.RawPitchInputSourceIndex] : "Controller " + (record.RawPitchInputSourceIndex + 1)) + " · Y",
+                    record.RawPitchInputCorrelation, record.RawPitchInputLagSeconds, legacy);
+        }
+        result.Yaw = Best(ranked[2].Where(axis => axis.SourceIndex != result.Pitch?.SourceIndex && axis.SourceIndex != result.Roll?.SourceIndex));
+        return result;
+    }
+
+    private List<ReplayControlAxis> Rank(LandingRecord record, int[] sources, bool legacy, int role, int[] indices)
+    {
+        var candidates = new List<ReplayControlAxis>();
+        if (indices.Length < 2) return candidates;
+        for (var column = 0; column < sources.Length; column++)
+        {
+            var source = legacy ? sources[column] * TelemetrySample.CapturedControllerAxisCount + 1 : sources[column];
+            if (source < 0 || source >= TelemetrySample.CapturedControllerCount * TelemetrySample.CapturedControllerAxisCount ||
+                sources.Count(value => value == sources[column]) != 1) continue;
+            // Constant input has undefined correlation; skip it before lag search.
+            var observed = false; var first = 0.0; var varies = false;
+            foreach (var index in indices)
+                if (Raw(_points[index], column, legacy, out var value))
+                {
+                    if (observed && value != first) { varies = true; break; }
+                    first = value; observed = true;
+                }
+            if (!varies) continue;
+            double? best = null; var delay = 0.0;
+            for (var step = 0; step <= 16; step++)
+            {
+                var lag = step * 0.05;
+                var correlation = Correlation(column, legacy, role, lag, indices);
+                if (correlation.HasValue && (!best.HasValue || Math.Abs(correlation.Value) > Math.Abs(best.Value)))
+                { best = correlation; delay = lag; }
+            }
+            // Constant channels have undefined Pearson correlation. Exactly zero
+            // covariance supplies no polarity; neither is a quality threshold.
+            if (!best.HasValue || best.Value == 0) continue;
+            var device = source / TelemetrySample.CapturedControllerAxisCount;
+            var label = (device < record.ControlInputSources.Count ? record.ControlInputSources[device] : "Controller " + (device + 1)) +
+                        " · " + new[] { "X", "Y", "Z", "R", "U", "V" }[source % TelemetrySample.CapturedControllerAxisCount];
+            candidates.Add(new ReplayControlAxis(source, column, label, best.Value, delay, legacy));
+        }
+        return candidates.OrderByDescending(axis => Math.Abs(axis.Correlation)).ToList();
+    }
+
+    private static ReplayControlAxis? Best(IEnumerable<ReplayControlAxis> candidates)
+    {
+        var ranked = candidates.OrderByDescending(axis => Math.Abs(axis.Correlation)).ToArray();
+        return ranked.Length == 0 ? null : Unique(ranked.Where(axis => Math.Abs(axis.Correlation) == Math.Abs(ranked[0].Correlation)));
+    }
+
+    private static ReplayControlAxis? Unique(IEnumerable<ReplayControlAxis> candidates)
+    {
+        var axes = candidates.ToArray();
+        return axes.Length > 0 && axes.All(axis => axis.SourceIndex == axes[0].SourceIndex && Math.Sign(axis.Correlation) == Math.Sign(axes[0].Correlation)) ? axes[0] : null;
+    }
+
+    public ReplayControlSample Sample(double timeSeconds)
+    {
+        if (!Find(timeSeconds, out var a, out var b, out var fraction)) return default;
+        return new ReplayControlSample(Value(Pitch, a, b, fraction), Value(Roll, a, b, fraction), Value(Yaw, a, b, fraction));
+    }
+
+    private double? Value(ReplayControlAxis? axis, LandingSeriesPoint a, LandingSeriesPoint b, double fraction)
+    {
+        if (axis == null || !Raw(a, axis.Column, axis.Legacy, out var first) || !Raw(b, axis.Column, axis.Legacy, out var last)) return null;
+        return Math.Sign(axis.Correlation) * (first + (last - first) * fraction);
+    }
+
+    private double? Correlation(int column, bool legacy, int role, double lag, int[] indices)
+    {
+        var n = 0; var mx = 0.0; var my = 0.0; var vx = 0.0; var vy = 0.0; var covariance = 0.0;
+        var end = _points[indices[indices.Length - 1]].TimeSeconds;
+        foreach (var index in indices)
+        {
+            var point = _points[index]; var time = point.TimeSeconds + lag;
+            if (time > end || !Raw(point, column, legacy, out var raw) ||
+                !Find(time, out var a, out var b, out var fraction, out var segment) ||
+                segment != _segments[index] || a.OnGround != point.OnGround || b.OnGround != point.OnGround) continue;
+            var before = Command(a, role); var after = Command(b, role);
+            if (!Finite(before) || !Finite(after) || Math.Abs(before) > 100.001 || Math.Abs(after) > 100.001) continue;
+            var command = before + (after - before) * fraction;
+            n++; var dx = raw - mx; var dy = command - my;
+            mx += dx / n; my += dy / n;
+            vx += dx * (raw - mx); vy += dy * (command - my); covariance += dx * (command - my);
+        }
+        if (n < 2 || vx <= 0 || vy <= 0) return null;
+        var correlation = covariance / Math.Sqrt(vx * vy);
+        return Finite(correlation) ? Math.Max(-1, Math.Min(1, correlation)) : (double?)null;
+    }
+
+    private bool Find(double time, out LandingSeriesPoint a, out LandingSeriesPoint b, out double fraction)
+        => Find(time, out a, out b, out fraction, out _);
+
+    private bool Find(double time, out LandingSeriesPoint a, out LandingSeriesPoint b, out double fraction, out int segment)
+    {
+        a = b = null!; fraction = 0; segment = -1;
+        if (!Finite(time) || _points.Length == 0 || time < _points[0].TimeSeconds || time > _points[_points.Length - 1].TimeSeconds) return false;
+        var low = 0; var high = _points.Length - 1;
+        while (low < high) { var middle = low + (high - low) / 2; if (_points[middle].TimeSeconds < time) low = middle + 1; else high = middle; }
+        b = _points[low];
+        segment = _segments[low];
+        if (low == 0 || b.TimeSeconds == time) { a = b; return true; }
+        a = _points[low - 1];
+        if (b.TimeSeconds - a.TimeSeconds > LandingReplayTrack.MaximumInterpolationGapSeconds) return false;
+        fraction = (time - a.TimeSeconds) / (b.TimeSeconds - a.TimeSeconds);
+        return true;
+    }
+
+    private static bool Raw(LandingSeriesPoint point, int column, bool legacy, out double value)
+    {
+        value = 0;
+        var values = legacy ? point.RawControllerYAxisPercent : point.RawControllerAxesPercent;
+        var valid = legacy ? point.RawControllerYAxisValid : point.RawControllerAxesValid;
+        var ages = legacy ? point.RawControllerYAxisAgeSeconds : point.RawControllerAxesAgeSeconds;
+        if (values == null || valid == null || ages == null || column >= values.Length || column >= valid.Length || column >= ages.Length ||
+            !valid[column] || !Finite(values[column]) || Math.Abs(values[column]) > 100.001 || !Finite(ages[column]) || ages[column] < 0 || ages[column] > MaximumAgeSeconds) return false;
+        value = values[column]; return true;
+    }
+
+    private static double Command(LandingSeriesPoint point, int role) => role == 0 ? point.PilotPitchPercent : role == 1 ? point.PilotRollPercent : point.PilotYawPercent;
+    private static bool Finite(double value) => !double.IsNaN(value) && !double.IsInfinity(value);
+}
+
+public sealed class ReplayControlAxis
+{
+    internal ReplayControlAxis(int sourceIndex, int column, string label, double correlation, double lag, bool legacy)
+    { SourceIndex = sourceIndex; Column = column; SourceLabel = label; Correlation = correlation; LagSeconds = lag; Legacy = legacy; }
+    public int SourceIndex { get; }
+    internal int Column { get; }
+    public string SourceLabel { get; }
+    public double Correlation { get; }
+    public double LagSeconds { get; }
+    public bool Legacy { get; }
+}
+
+public readonly struct ReplayControlSample
+{
+    internal ReplayControlSample(double? pitch, double? roll, double? yaw) { PitchPercent = pitch; RollPercent = roll; YawPercent = yaw; }
+    /// <summary>Positive pull, matching the recorded YOKE Y command; rendered downward.</summary>
+    public double? PitchPercent { get; }
+    /// <summary>Positive right, matching the recorded YOKE X command.</summary>
+    public double? RollPercent { get; }
+    /// <summary>Positive right rudder command; the device can be pedals, twist or another bound axis.</summary>
+    public double? YawPercent { get; }
+    public bool HasStick => PitchPercent.HasValue && RollPercent.HasValue;
+}

@@ -7,7 +7,7 @@ namespace LandingStats.Core;
 
 public static class TelemetryCsv
 {
-    public const int SchemaVersion = 5;
+    public const int SchemaVersion = 6;
 
     private const int LegacyContactPointCount = 64;
 
@@ -25,7 +25,9 @@ public static class TelemetryCsv
 
     public static readonly string V4Header = BuildHeader(includeContactPosition: true, includeBlackBoxChannels: true, includeControlDiagnostics: true, LegacyContactPointCount);
 
-    public static readonly string Header = BuildCompactHeader();
+    public static readonly string V5Header = BuildCompactHeader(includeAllControllerAxes: false);
+
+    public static readonly string Header = BuildCompactHeader(includeAllControllerAxes: true);
 
     private static readonly CultureInfo Invariant = CultureInfo.InvariantCulture;
     private static readonly int LegacyColumnCount = ColumnCount(LegacyHeader);
@@ -33,6 +35,7 @@ public static class TelemetryCsv
     private static readonly int PreviousColumnCount = ColumnCount(PreviousHeader);
     private static readonly int BlackBoxV3ColumnCount = ColumnCount(BlackBoxV3Header);
     private static readonly int V4ColumnCount = ColumnCount(V4Header);
+    private static readonly int V5ColumnCount = ColumnCount(V5Header);
     private static readonly int CurrentColumnCount = ColumnCount(Header);
 
     public static string Format(TelemetrySample sample)
@@ -137,6 +140,18 @@ public static class TelemetryCsv
             values.Add(Number(sample.RawControllerYAxisAgeSeconds[index]));
         }
 
+        for (var controller = 0; controller < TelemetrySample.CapturedControllerCount; controller++)
+        {
+            for (var axis = 0; axis < TelemetrySample.CapturedControllerAxisCount; axis++)
+            {
+                if (axis == 1) continue; // Y is already in the backward-compatible prefix.
+                var offset = controller * TelemetrySample.CapturedControllerAxisCount + axis;
+                values.Add(Number(sample.RawControllerAxesPercent[offset]));
+                values.Add(sample.RawControllerAxesValid[offset] ? "1" : "0");
+                values.Add(Number(sample.RawControllerAxesAgeSeconds[offset]));
+            }
+        }
+
         return string.Join(",", values);
     }
 
@@ -146,6 +161,7 @@ public static class TelemetryCsv
         using var reader = new StreamReader(path);
         var header = reader.ReadLine();
         if (!string.Equals(header, Header, StringComparison.Ordinal) &&
+            !string.Equals(header, V5Header, StringComparison.Ordinal) &&
             !string.Equals(header, V4Header, StringComparison.Ordinal) &&
             !string.Equals(header, BlackBoxV3Header, StringComparison.Ordinal) &&
             !string.Equals(header, PreviousHeader, StringComparison.Ordinal) &&
@@ -193,7 +209,7 @@ public static class TelemetryCsv
         var isBlackBoxV3 = values.Length == BlackBoxV3ColumnCount;
         var isV4 = values.Length == V4ColumnCount;
         var isCurrent = values.Length == CurrentColumnCount;
-        if (isCurrent)
+        if (isCurrent || values.Length == V5ColumnCount)
         {
             return TryParseCompact(values, out sample);
         }
@@ -685,12 +701,42 @@ public static class TelemetryCsv
             sample.RawControllerYAxisPercent[controllerIndex] = rawY;
             sample.RawControllerYAxisValid[controllerIndex] = rawYValid;
             sample.RawControllerYAxisAgeSeconds[controllerIndex] = rawYAge;
+            // Keep historical Y-only captures in their original layout. Making
+            // up full-axis columns here would erase the source-schema provenance
+            // and make replay confuse old captures with real Y-only devices.
+            if (values.Length == CurrentColumnCount) CopyYAxisToAxes(sample, controllerIndex);
+        }
+
+        if (values.Length == CurrentColumnCount)
+        {
+            for (var controller = 0; controller < TelemetrySample.CapturedControllerCount; controller++)
+            {
+                for (var axis = 0; axis < TelemetrySample.CapturedControllerAxisCount; axis++)
+                {
+                    if (axis == 1) continue;
+                    var offset = controller * TelemetrySample.CapturedControllerAxisCount + axis;
+                    if (!TryNumber(values[index++], out var percent) ||
+                        !TryBoolean(values[index++], out var valid) ||
+                        !TryNumber(values[index++], out var age)) return false;
+                    sample.RawControllerAxesPercent[offset] = percent;
+                    sample.RawControllerAxesValid[offset] = valid;
+                    sample.RawControllerAxesAgeSeconds[offset] = age;
+                }
+            }
         }
 
         return index == values.Length;
     }
 
-    private static string BuildCompactHeader()
+    private static void CopyYAxisToAxes(TelemetrySample sample, int controller)
+    {
+        var offset = controller * TelemetrySample.CapturedControllerAxisCount + 1;
+        sample.RawControllerAxesPercent[offset] = sample.RawControllerYAxisPercent[controller];
+        sample.RawControllerAxesValid[offset] = sample.RawControllerYAxisValid[controller];
+        sample.RawControllerAxesAgeSeconds[offset] = sample.RawControllerYAxisAgeSeconds[controller];
+    }
+
+    private static string BuildCompactHeader(bool includeAllControllerAxes)
     {
         var columns = new List<string>
         {
@@ -790,6 +836,19 @@ public static class TelemetryCsv
             columns.Add($"controller_{index}_raw_y_percent");
             columns.Add($"controller_{index}_raw_y_valid");
             columns.Add($"controller_{index}_raw_y_age_s");
+        }
+
+        if (includeAllControllerAxes)
+        {
+            for (var controller = 0; controller < TelemetrySample.CapturedControllerCount; controller++)
+            {
+                foreach (var axis in new[] { "x", "z", "r", "u", "v" })
+                {
+                    columns.Add($"controller_{controller}_raw_{axis}_percent");
+                    columns.Add($"controller_{controller}_raw_{axis}_valid");
+                    columns.Add($"controller_{controller}_raw_{axis}_age_s");
+                }
+            }
         }
 
         return string.Join(",", columns);

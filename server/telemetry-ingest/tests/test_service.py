@@ -17,9 +17,39 @@ from app.validation import validate_capture
 
 ROOT = Path(__file__).resolve().parents[1]
 HEADER = (ROOT / "schema-v5.header").read_text(encoding="utf-8").strip()
+HEADER_V6 = (ROOT / "schema-v6.header").read_text(encoding="utf-8").strip()
 
 
 class CaptureValidationTests(unittest.TestCase):
+    def _axis_archive(self, directory: Path, schema=6, bad_valid=False):
+        columns = HEADER_V6.split(",")
+        values = ["0"] * len(columns)
+        values[columns.index("sequence")] = "1"
+        values[columns.index("controller_7_raw_v_percent")] = "-63.5"
+        values[columns.index("controller_7_raw_v_valid")] = "2" if bad_valid else "1"
+        path = directory / "axes.zip"
+        with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr("telemetry.csv", HEADER_V6 + "\n" + ",".join(values) + "\n")
+            archive.writestr("session.txt", f"telemetry_schema={schema}\nsource_period=SIM_FRAME\nsample_count=1\n")
+        return path
+
+    def test_accepts_v6_axes_and_retains_v5_prefix(self):
+        self.assertTrue(HEADER_V6.startswith(HEADER + ","))
+        self.assertEqual(len(HEADER.split(",")) + 120, len(HEADER_V6.split(",")))
+        with tempfile.TemporaryDirectory() as value:
+            facts = validate_capture(self._axis_archive(Path(value)), HEADER_V6, 64 * 1024 * 1024, 6)
+            self.assertEqual(1, facts.sample_count)
+
+    def test_rejects_new_axis_non_boolean_validity(self):
+        with tempfile.TemporaryDirectory() as value:
+            with self.assertRaisesRegex(ValueError, "not boolean"):
+                validate_capture(self._axis_archive(Path(value), bad_valid=True), HEADER_V6, 64 * 1024 * 1024, 6)
+
+    def test_rejects_signed_schema_and_session_mismatch(self):
+        with tempfile.TemporaryDirectory() as value:
+            with self.assertRaisesRegex(ValueError, "unsupported telemetry schema"):
+                validate_capture(self._axis_archive(Path(value), schema=5), HEADER_V6, 64 * 1024 * 1024, 6)
+
     def _archive(self, directory: Path, row_values=None, session_count=1) -> Path:
         values = row_values or ["0"] * len(HEADER.split(","))
         values[0] = "1"

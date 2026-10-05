@@ -26,7 +26,7 @@ behind them:
 | Sloped or uneven scenery | Can be folded into the displayed FPM | Local terrain contribution is measured and shown separately |
 | Simulator latch differences | Left unexplained | Experimental telemetry reconstruction separates effective timing, terrain, and pitch rotation with an explicit uncertainty band |
 | Bounces | Often only the first or last contact survives | Every contact is analyzed and retained as its own event |
-| G-load | One value with an unspecified sampling window | Peaks are calculated in declared 150 ms and 2 s windows, bounded by the next contact |
+| G-load | One value with an unspecified sampling window | An adaptive window isolates each contact's load response; SMOOTH / NORMAL / FIRM uses its recorded G peak, not descent rate |
 | Evidence | Summary values only | Synchronized black-box traces for motion, loads, controls, power, attitude, and gear |
 | Data quality | A number is shown even when its source is ambiguous | Extrapolation, fallback, latch verification, and unavailable data are identified explicitly |
 | Ownership | Often cloud-backed | Local, portable landing records with optional backup to the user's own Google Drive; new diagnostic reports are created only after an explicit **Report bug** action |
@@ -52,12 +52,17 @@ data handling.
   aircraft fall back safely to telemetry-derived gear roles or geometry. The
   result includes the remaining residual and a conservative uncertainty band.
 - Vertical, longitudinal, and lateral load-factor graphs.
-- Synchronized hover and zoom across flight-path, controls, attitude, engine,
+- Synchronized hover and zoom across flight-path, load, attitude, engine,
   and landing-gear charts.
+- 3D reconstruction of new landings: a complete recorded track, generic aircraft
+  moving with recorded position and attitude, and runway geometry from MSFS when
+  it can be identified confidently. Orbit/zoom the camera, play the landing, or
+  scrub time. Older files without recorded coordinates retain their charts.
 - Flight-control inputs and surfaces, engine power and throttles, flare,
   attitude, wind, gear compression, and rollout data.
-- Hardware pitch-input capture with automatic source matching when SimConnect
-  exposes an aircraft-processed command instead of the pilot's controller axis.
+- All available physical joystick axes, including separate pedal devices, shown
+  independently from simulator commands. Legacy raw pitch-source matching is
+  retained; an axis name never implies a particular simulator binding.
 - One-click bug reports that securely bundle the last landing telemetry with
   its calculated results; no full-flight recording mode is exposed in the UI.
 - Compact local landing history containing only the data used by the dashboard.
@@ -169,7 +174,7 @@ remains in force and causes no network request. On a new installation, the
 uploader stays inactive until **Report bug** is pressed.
 
 The receiver accepts signed, automatically enrolled installations and exact
-schema-v5 archives, including user-initiated bug-report bundles with calculated
+schema-v5/v6 archives, including user-initiated bug-report bundles with calculated
 landing results.
 It limits one upload to 16 MiB compressed and 64 MiB expanded, one installation
 to 512 MiB per day (counting rejected signed attempts too), one source address
@@ -181,8 +186,10 @@ capped at 100,000 identities and removes stale unreferenced identities after
 corpus. The receiver checks replay kinematics independently of the client by
 requiring recorded position and altitude motion to agree with the reported
 flight velocities.
-New captures use telemetry schema v5 with the documented 20 numeric contact
-points; the parser remains compatible with earlier schema v4 captures. Landing
+New captures use telemetry schema v6 with the documented 20 numeric contact
+points and all six WinMM axes per controller; the parser remains compatible with
+earlier schema v4/v5 captures. The v5/v6 receiver must be deployed before releasing
+the v6 client; older queued captures retain their original signed schema. Landing
 details use the documented [columnar v7 format](docs/format-v7.md), while v1-v6
 record files remain readable.
 

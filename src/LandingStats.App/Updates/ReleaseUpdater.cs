@@ -164,7 +164,7 @@ internal sealed class ReleaseUpdater : IDisposable
         {
             return new ReleaseUpdateResult(ReleaseUpdateState.Unavailable, "Update.MetadataUnavailable");
         }
-        catch (TaskCanceledException)
+        catch (OperationCanceledException)
         {
             return new ReleaseUpdateResult(ReleaseUpdateState.Unavailable, "Update.Timeout");
         }

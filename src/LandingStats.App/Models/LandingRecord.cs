@@ -184,6 +184,30 @@ public sealed class LandingRecord
     [DataMember(Order = 57, EmitDefaultValue = false)]
     public string ClosureReconstructionGeometrySource { get; set; } = string.Empty;
 
+    [DataMember(Order = 58, EmitDefaultValue = false)]
+    public int ImpactAnalysisVersion { get; set; }
+
+    [DataMember(Order = 59, EmitDefaultValue = false)]
+    public double? ImpactPeakG { get; set; }
+
+    [DataMember(Order = 60, EmitDefaultValue = false)]
+    public double? ImpactPeakOffsetSeconds { get; set; }
+
+    [DataMember(Order = 61, EmitDefaultValue = false)]
+    public double? ImpactEndOffsetSeconds { get; set; }
+
+    [DataMember(Order = 62, EmitDefaultValue = false)]
+    public string? ImpactStatus { get; set; }
+
+    [DataMember(Order = 63, EmitDefaultValue = false)]
+    public double? ImpactWindowSeconds { get; set; }
+
+    [DataMember(Order = 64, EmitDefaultValue = false)]
+    public List<int> RawControllerAxesSourceIndices { get; set; } = new List<int>();
+
+    [DataMember(Order = 65, EmitDefaultValue = false)]
+    public RunwayFacility? RunwayGeometry { get; set; }
+
     [IgnoreDataMember]
     public bool IsSummaryOnly { get; set; }
 
@@ -321,16 +345,50 @@ public sealed class LandingRecord
             ? LocalizationManager.Format("Model.ExtrapolatedFormat", InertialFitDurationSeconds)
             : LocalizationManager.Text("Model.LastAirborne");
 
-    public string LandingFeelDisplay => Math.Abs(InertialFpm) <= 240.0
-        ? LocalizationManager.Text("Model.Smooth")
-        : LocalizationManager.Text("Model.Firm");
+    private TouchdownImpactResult ImpactResult =>
+        ImpactAnalysisVersion == TouchdownImpactAnalysis.CurrentVersion &&
+        Enum.TryParse(ImpactStatus, out TouchdownImpactStatus status)
+            ? new TouchdownImpactResult(status, ImpactPeakG ?? double.NaN,
+                ImpactPeakOffsetSeconds ?? double.NaN, ImpactEndOffsetSeconds ?? double.NaN)
+            : new TouchdownImpactResult(TouchdownImpactStatus.Unavailable);
 
-    public bool IsFirmLanding => Math.Abs(InertialFpm) > 240.0;
+    private bool UsesLegacyImpact => ImpactAnalysisVersion == 0;
+    private double DisplayImpactPeak => UsesLegacyImpact ? PeakG150Milliseconds : ImpactResult.PeakG;
+    private TouchdownImpactCategory ImpactCategory => UsesLegacyImpact
+        ? !IsFinite(PeakG150Milliseconds) || PeakG150Milliseconds <= 0 ? TouchdownImpactCategory.Unavailable
+            : PeakG150Milliseconds < 1.2 ? TouchdownImpactCategory.Smooth
+            : PeakG150Milliseconds < 1.5 ? TouchdownImpactCategory.Normal : TouchdownImpactCategory.Firm
+        : ImpactResult.Category;
 
-    public string LandingFeelTooltip => LocalizationManager.Format(
-        "Model.FeelHelpFormat",
+    public bool HasImpactClassification => ImpactCategory != TouchdownImpactCategory.Unavailable;
+    public bool IsSmoothLanding => ImpactCategory == TouchdownImpactCategory.Smooth;
+    public bool IsNormalLanding => ImpactCategory == TouchdownImpactCategory.Normal;
+    public bool IsFirmLanding => ImpactCategory == TouchdownImpactCategory.Firm;
+
+    public string LandingFeelDisplay => LocalizationManager.Text(IsSmoothLanding ? "Model.Smooth" :
+        IsNormalLanding ? "Model.Normal" : IsFirmLanding ? "Model.Firm" : "Model.NotAvailable");
+
+    public string ImpactPeakDisplay => IsFinite(DisplayImpactPeak) && DisplayImpactPeak > 0 &&
+        (UsesLegacyImpact || (ImpactResult.Status != TouchdownImpactStatus.InvalidTelemetry &&
+                             ImpactResult.Status != TouchdownImpactStatus.Unavailable))
+            ? DisplayImpactPeak.ToString("F2", CultureInfo.CurrentCulture)
+            : LocalizationManager.Text("Model.NotAvailable");
+
+    public string GDetailDisplay => UsesLegacyImpact ? G2SecondsDisplay :
+        ImpactResult.IsComplete && ImpactWindowSeconds.HasValue &&
+        IsFinite(ImpactWindowSeconds.Value) && ImpactWindowSeconds.Value > 0
+            ? LocalizationManager.Format("Model.ImpactWindowFormat", ImpactWindowSeconds.Value)
+            : LocalizationManager.Text(ImpactResult.Status == TouchdownImpactStatus.Incomplete
+                ? "Model.ImpactWindowIncomplete" : "Model.NotAvailable");
+
+    public string GDetailTooltip => LocalizationManager.Text(UsesLegacyImpact
+        ? "Help.PeakG2" : "Help.ImpactWindow");
+
+    public string LandingFeelTooltip => LocalizationManager.Format("Model.ImpactFeelHelpFormat",
         LandingFeelDisplay,
-        InertialQualityDisplay);
+        IsFinite(DisplayImpactPeak) && DisplayImpactPeak > 0
+            ? DisplayImpactPeak.ToString("R", CultureInfo.CurrentCulture) + " G"
+            : LocalizationManager.Text("Model.NotAvailable"));
 
     public string SurfaceQualityDisplay
     {
@@ -404,6 +462,7 @@ public sealed class LandingRecord
         ContactPoints ??= new List<LandingContactSeries>();
         ControlInputSources ??= new List<string>();
         RawControllerSourceIndices ??= new List<int>();
+        RawControllerAxesSourceIndices ??= new List<int>();
         ClosureReconstructionModel ??= string.Empty;
     }
 

@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
+using System.IO.Compression;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
@@ -549,7 +550,10 @@ internal sealed class TelemetryUploadClient : IDisposable
         var sentAt = Timestamp();
         var nonce = Nonce();
         var appVersion = ApplicationVersion();
-        var canonical = CanonicalCapture(identity.InstallId, sentAt, nonce, sha256, size, TelemetryCsv.SchemaVersion, appVersion);
+        int schema;
+        try { schema = ReadCaptureSchema(path); }
+        catch (InvalidDataException) { return new UploadOutcome(UploadDisposition.Rejected, 422); }
+        var canonical = CanonicalCapture(identity.InstallId, sentAt, nonce, sha256, size, schema, appVersion);
 
         using var input = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 65536, true);
         using var content = new StreamContent(input, 65536);
@@ -561,7 +565,7 @@ internal sealed class TelemetryUploadClient : IDisposable
         request.Headers.Add("X-Capture-Nonce", nonce);
         request.Headers.Add("X-Capture-SHA256", sha256);
         request.Headers.Add("X-Capture-Size", size.ToString(CultureInfo.InvariantCulture));
-        request.Headers.Add("X-Telemetry-Schema", TelemetryCsv.SchemaVersion.ToString(CultureInfo.InvariantCulture));
+        request.Headers.Add("X-Telemetry-Schema", schema.ToString(CultureInfo.InvariantCulture));
         request.Headers.Add("X-App-Version", appVersion);
         request.Headers.Add("X-Signature", identity.Sign(canonical));
         using var response = await _client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
@@ -589,11 +593,40 @@ internal sealed class TelemetryUploadClient : IDisposable
         response.EnsureSuccessStatusCode();
         using var input = await response.Content.ReadAsStreamAsync().ConfigureAwait(false);
         var config = (ReceiverConfig?)new DataContractJsonSerializer(typeof(ReceiverConfig)).ReadObject(input);
-        if (config == null || config.Protocol != 1 || config.TelemetrySchema != TelemetryCsv.SchemaVersion)
+        if (config == null || config.Protocol != 1 ||
+            (config.TelemetrySchema != TelemetryCsv.SchemaVersion &&
+             (config.TelemetrySchemas == null || Array.IndexOf(config.TelemetrySchemas, TelemetryCsv.SchemaVersion) < 0)))
         {
             throw new SerializationException("Telemetry receiver protocol is incompatible");
         }
         return config;
+    }
+
+    internal static int ReadCaptureSchema(string path)
+    {
+        using var input = File.OpenRead(path);
+        using var archive = new ZipArchive(input, ZipArchiveMode.Read);
+        var entry = archive.GetEntry("session.txt");
+        if (entry == null || entry.Length > 8192)
+            throw new InvalidDataException("Capture session metadata is missing or too large.");
+        using var reader = new StreamReader(entry.Open(), Encoding.UTF8);
+        var buffer = new char[8193];
+        var length = 0;
+        int read;
+        while (length < buffer.Length && (read = reader.Read(buffer, length, buffer.Length - length)) > 0)
+            length += read;
+        if (length > 8192) throw new InvalidDataException("Capture session metadata is too large.");
+        int? schema = null;
+        foreach (var line in new string(buffer, 0, length).Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
+        {
+            const string prefix = "telemetry_schema=";
+            if (!line.StartsWith(prefix, StringComparison.Ordinal)) continue;
+            if (schema.HasValue || !int.TryParse(line.Substring(prefix.Length), NumberStyles.None,
+                    CultureInfo.InvariantCulture, out var value) || (value != 5 && value != TelemetryCsv.SchemaVersion))
+                throw new InvalidDataException("Capture telemetry schema is unsupported.");
+            schema = value;
+        }
+        return schema ?? throw new InvalidDataException("Capture telemetry schema is missing.");
     }
 
     private void EnqueueExistingPattern(string pattern, bool excludeBugReports = false)
@@ -768,6 +801,8 @@ internal sealed class TelemetryUploadClient : IDisposable
         public string RegistrationMode { get; set; } = string.Empty;
         [DataMember(Name = "telemetry_schema")]
         public int TelemetrySchema { get; set; }
+        [DataMember(Name = "telemetry_schemas")]
+        public int[]? TelemetrySchemas { get; set; }
     }
 
     [DataContract]

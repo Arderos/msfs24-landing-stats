@@ -317,8 +317,12 @@ as nose gear, subject to the independent derotation checks below. This covers
 ordinary tricycle layouts, a center main gear, and four-main-plus-nose layouts;
 there is no special rejection at five points. Aircraft with six or more settled
 wheel points may use a clustered path where a dominant derotation gap separates
-an early main cluster from a later nose/helper cluster. Weak or mixed evidence
-makes reconstruction unavailable rather than triggering an index-based guess.
+an early main cluster from a later nose/helper cluster. That established path
+retains priority. If it refuses, the analyzer also tries multiple main points
+followed by a single delayed nose point, with the same sustained-contact,
+derotation, and foreign-contact checks as the simpler layout. Weak or mixed
+evidence makes reconstruction unavailable rather than triggering an index-based
+guess.
 
 The last point is accepted as the nose only when it arrives at least 0.20 seconds
 after the latest main and pitch moves at least 0.5 degrees in the normal nose-
@@ -330,6 +334,19 @@ GROUND ALTITUDE`, pitch `theta`, and mean main compression `c_bar`, it solves:
 H(t) = b0 + A_theta theta(t) + A_c c_bar(t) + error(t)
 L = A_theta + D
 ```
+
+The additional multi-main/single-nose path requires at least 12 usable main-only
+observations and a stability check before accepting even the inferred topology.
+It refits the pitch arm on the first and last 70% of elapsed observation time,
+then with each of five contiguous time blocks omitted. Every subset must omit
+some observations, retain at least six, and pass the existing pitch/compression
+identifiability check. Each refitted arm must differ from the full fit by no
+more than 5 ft. The datum offset is held fixed, so these are also differences
+in final longitudinal arm. These are conservative engineering acceptance limits,
+not a statistical confidence interval or proof of physical gear roles. This
+additional inference retains the multi-bogie `+/-50 fpm` reporting band when the
+arm is recovered from telemetry. Existing topology paths and verified configured
+geometry do not acquire this new gate.
 
 The fallback quality value summarizes pitch/compression separation, phase
 coverage, and agreement across interleaved estimates. It is an identifiability
@@ -429,37 +446,283 @@ for aircraft vertical rate.
 ## 9. G-load
 
 There is no single touchdown-scoped G value in the captured telemetry. The app
-records instantaneous `G FORCE` every simulator frame and reports explicit peak
-windows:
+records instantaneous `G FORCE` every simulator frame. **Impact G** is the maximum
+original sample within the selected contact's adaptive impact window. It is not
+an average, a velocity derivative, a vector magnitude including braking loads,
+or a maximum over the whole landing sequence.
 
-- maximum G from contact through 150 ms;
-- maximum G from contact through 2 seconds.
+### Adaptive impact window (analysis version 1)
 
-Both windows are strictly cut off before the next contact in a bounce. The short
-window describes the immediate impact response; the longer window exposes a later
-airframe or gear response without pretending that it occurred at the exact
-contact instant.
+The window starts at the first observed on-ground frame of the accepted contact.
+It closes when the load response and vertical motion have settled, or immediately
+before the first airborne frame. Each bounce has its own window. No wheel count,
+gear geometry, or all-gears-on-ground condition is required; the same logic also
+applies to water contacts. A later rollout bump after a confirmed quiet interval
+is not part of the initial impact.
 
-These values describe simulator telemetry. They are not aircraft-specific hard-
-landing inspection thresholds and must not be used as a maintenance decision.
+Settling is evaluated using time-weighted linear fits over at least 0.30 s
+(extended to 3.1 frame intervals at a low cadence), with at least four samples.
+All conditions must remain satisfied for 0.15 s:
 
-## 10. Controls, power, attitude, and gear
+- G slope at most 0.10 G/s, maximum fit residual 0.015 G, and range 0.05 G;
+- absolute vertical motion relative to the local terrain trend at most
+  `clamp(0.20 * abs(incoming_vertical_speed), 0.35, 0.75)` ft/s, with maximum
+  velocity-fit residual 0.12 ft/s;
+- when terrain altitude is available, its maximum fit residual at most 0.10 ft;
+- when pitch/roll rate channels are available, each maximum linear-fit residual
+  at most 0.003 rad/s.
+
+The incoming vertical speed is estimated from the last contiguous airborne
+half-second. Without a usable estimate, the conservative 0.35 ft/s band is used.
+These short intervals confirm a state, **not** a fixed deadline after touchdown.
+The impact can last longer. Smooth derotation can keep the window open; the
+algorithm does not claim an exact physical end time of a damped response.
+
+Native analysis uses simulation timestamps and keeps the last duplicate frame.
+An interruption over 0.15 s, backward time, slew, missing required G/vertical
+velocity, an all-zero G window, or an unfinished recording cannot establish a
+complete result. Fully absent optional terrain/rate channels are supported;
+an intermittent invalid channel is not silently replaced by zero. A valid
+liftoff ends this contact without including airborne samples or the next impact.
+An incomplete observation can retain its observed peak, but receives no
+SMOOTH/NORMAL/FIRM label.
+
+### Landing feel
+
+The unrounded peak determines the category:
+
+| Recorded adaptive peak | Label |
+| --- | --- |
+| below 1.20 G | SMOOTH |
+| 1.20 G to below 1.50 G | NORMAL |
+| 1.50 G and above | FIRM |
+
+These are application categories for the **load response of one contact**, not
+pilot scores or aircraft-specific damage/inspection thresholds. The 1.20 G
+boundary is an engineering/UI choice. The 1.50 G boundary has published
+operational precedents in studies of [B737-800 flights](https://onlinelibrary.wiley.com/doi/10.1111/risa.13680)
+and [A320 flights](https://www.jksaa.org/archive/view_article?pid=jksaa-32-2-135),
+but those studies do not validate our exact sampling/window method or establish
+a universal passenger-comfort standard. FIRM does not mean a structural hard
+landing. Sampling can miss a peak, especially close to a category boundary.
+
+The former 150 ms and 2 s peaks remain in saved records as legacy diagnostics,
+strictly cut off before the next contact. For newly recorded landings they no
+longer control the feel label.
+Aircraft vertical rate and surface closure are unchanged and are not substituted
+for G when an impact cannot be classified.
+
+Older landings are **not reanalysed or rewritten**. Their existing saved 150 ms
+peak is displayed and classified using the same numeric thresholds. This is not
+equivalent to an adaptive-window measurement. The new adaptive analysis applies
+only to newly recorded contacts.
+A new contact with an incomplete adaptive result never falls back to its 150 ms
+peak to obtain a label.
+
+## 10. 3D replay, controls, power, attitude, and gear
 
 The saved black-box trace includes only data used by the dashboard: pitch, bank,
 angle of attack, body rates, longitudinal and lateral loads, pilot commands,
 control-surface positions, spoilers, flaps, brakes, engine power, throttles,
-reverse, wind, and active contact-point compression.
+reverse, wind, and active contact-point compression. New recordings also retain
+latitude, longitude, altitude, ground altitude and true heading for the 3D view.
 
 Some add-on aircraft process or delay the SimConnect `YOKE Y POSITION` value. On
-Windows, the app also samples available joystick Y axes directly. For each live
+Windows, the app samples all available X/Y/Z/R/U/V axes from up to eight devices
+directly, including separate pedal devices. Device capability flags and ranges
+determine availability; an unplugged or unsupported axis is not zero input.
+Names are physical axis names, not inferred simulator assignments. For each live Y
 source it searches a bounded set of time lags and correlates the raw axis with the
 aircraft-processed pitch command during the airborne portion. A sufficiently
 correlated source is selected, its direction is normalized, and only live raw
-controller columns are retained in the landing record. The compact UI label
-identifies the selected controller index and measured lag.
+controller columns are retained in the landing record. This legacy source-match
+metadata remains available for older Y-only recordings.
 
-This logic affects the controls graph only; it does not affect the landing-rate
-calculation.
+The 3D view identifies pitch, roll and yaw roles by correlating the recorded
+physical axes with their corresponding simulator pilot-command channels, allowing
+for processing lag and inverted axes. Windows axis letters do not establish these
+roles. Pitch and roll use the entire available approach before the first contact,
+not individually selected short windows. Each candidate's delay is fitted over that
+whole interval. All contacts in a bounce sequence use this same approach. Ground
+samples are a fallback only when no approach correlation can be computed; a ground
+mode cannot veto or reverse an available approach match. Yaw uses the complete saved
+sequence because directional input may first move during rollout. Lag interpolation
+never crosses a telemetry gap or an airborne/ground transition.
+
+Candidates are ranked by absolute Pearson correlation, without a minimum correlation,
+minimum winner margin, amplitude cutoff or statistical-confidence veto. Pitch and roll
+are ranked jointly as distinct axes. Their pair score is
+`abs(r_pitch) + abs(r_roll) + 0.5 * min(abs(r_pitch), abs(r_roll))` when both axes belong
+to the same recorded device; otherwise the score is just the first two terms. This
+is a strong but bounded device preference, not a hard binding constraint. A sufficiently
+better cross-device pair can win. The weight is an explicit heuristic, not a calibrated
+probability. Device names, aircraft types and axis letters do not determine roles.
+Yaw is ranked independently among channels not already assigned to pitch or roll.
+
+Constant channels have undefined correlation; exactly zero covariance cannot supply
+a polarity, and exact assignment ties remain unresolved. Missing/invalid/stale input
+and malformed duplicate source IDs are data-validity failures, not score thresholds.
+This is relative inference: it does not prove a simulator binding if none of the
+recorded physical signals actually controls the corresponding simulator channel.
+Legacy Y-only recordings remain pitch-only, including sparse Y-only CSV imports.
+The selected axis is
+displayed at its original recorded time and amplitude, before simulator curves;
+the matching lag does not shift the animation. This is not a control-surface
+animation and does not claim to recover bindings when the add-on's command channel
+is unavailable. Previously selected legacy pitch metadata remains supported.
+
+The stick square uses down for pull, up for push and right for right roll. A
+single available stick axis moves a dot along the centre guide, with the missing
+axis explicitly labelled. The centred display coordinate is only a visual fallback;
+the missing measurement remains unknown, not zero. The bar beneath it shows the single centred physical yaw
+axis (pedals or stick twist), not independent toe brakes. Tooltips identify the
+recorded source. Missing physical input is never replaced with simulator input.
+Translucent mini charts share replay time: pitch, bank and yaw in the left column;
+ground speed, vertical speed and vertical G in the right. Yaw is the signed nose
+angle relative to the selected runway direction (positive right), unavailable without
+resolved runway geometry. VS is recorded world vertical speed, positive climbing,
+not surface closure. All saved contacts in the same episode are marked together
+on the surface from each contact's own analysed zero time. The markers are visible
+throughout playback; extra OnGround transitions do not create additional contacts.
+
+This input-capture logic does not affect the landing-rate calculation.
+
+History without usable recorded position and heading retains the Controls tab and
+its original input/surface charts. Records with a usable 3D track show reconstruction
+in the same tab position. Selection follows the tab when switching between these
+record types; other selected charts stay selected. Availability is based on the
+actual series, not the file version or recording date; no history files are rewritten.
+
+The 3D aircraft follows recorded geodetic positions, projected to a local
+east/up/south frame in metres. Orientation uses true heading and the simulator's
+pitch/bank convention; quaternion interpolation avoids a long spin at north.
+Gaps longer than 0.5 seconds are not bridged with invented motion. The generic
+model is not the installed aircraft mesh. A single visual height registration
+keeps the recorded body trajectory intact. Its symbolic landing gear is registered
+to the exact selected contact and adapts to the displayed surface during support;
+the nose/high-side wheel is not forced down by the global ground flag. Across
+airborne intervals the visual strut datum is interpolated between support anchors,
+with up to 1 cm of clearance protection for the generic tyres, tapering to zero at
+contact. Only gear transforms change: neither the body nor its airborne arc is
+clamped to the surface. This does not claim measured wheel locations or suspension
+travel, particularly for hull/water contacts. The cross marks the interpolated
+aircraft-reference projection at exact contact time, not individual wheel coordinates.
+The trail preserves the complete saved recording, independent of chart zoom.
+
+Runways are requested afresh from the installed MSFS scenery after each landing
+episode completes (one batch shared by all its contacts),
+not from a global third-party runway database. A complete facility response is
+required. Selection uses recorded ground track and touchdown position inside the
+runway footprint, not aircraft heading during a crab. Ambiguous associations,
+water strips and missing data leave the scene without a runway. The ground strip
+is a visualization of the recorded terrain-height profile, not scenery terrain.
+Facility altitude is a single reference height, not a runway elevation mesh.
+Where the recording passes over the runway footprint, pavement and its markings
+follow the measured longitudinal ground-height profile; outside that observed
+span the nearest measured height is held constant. With no observations inside
+the footprint, facility altitude is the fallback. No cross-slope is inferred.
+The surrounding ground strip is cut out beneath the pavement so the two surfaces
+cannot intersect. This display geometry never changes recorded aircraft heights
+or any landing measurements.
+
+The pavement uses the **actual SimConnect length and width in metres**, including
+non-round scenery values, with no aspect-ratio exaggeration. Paint fits inside
+that footprint. Primary and secondary displaced thresholds are read in separate,
+bounded facility requests and associated by native parent IDs, not arrival order.
+Optional metadata failure keeps the base runway. Native displaced-threshold
+metadata is preserved, but does not position the schematic paint described below.
+Four optional PAPI-side queries and bounded ILS glide-slope queries collect
+guidance for each end. A missing, invalid or timed-out optional query never
+discards the base runway dimensions.
+
+Scenery snapshots are not reused across landing episodes. A missed threshold
+request is retried with the next landing's fresh batch. Replies are associated
+with the requesting episode, including when analysis finishes later than the
+facility query; they never enrich unrelated historical records. Published
+snapshots already saved with older landings are left unchanged.
+
+Runway markings are a **schematic reference**, not extracted airport textures or
+a claim about its certified approach category. Each direction chooses ILS first,
+then PAPI; without usable guidance the centreline and known runway designation
+remain, but no aiming-point, threshold-stripe or TDZ pattern is invented.
+The aiming rectangles begin at the nominal glide-path intersection. ILS uses the
+transmitter's along-runway station, GS altitude and actual GS angle, intersected
+with the horizontal plane at facility altitude. This is not an intersection with
+the telemetry-derived ground profile or a simulation of the radio field.
+SimConnect provides PAPI position and angle but no optical reference elevation.
+The approved PAPI-only approximation puts that reference on the runway plane,
+so its longitudinal station is the nominal intersection. It is not a measured
+PAPI intercept. Only PAPI-2/PAPI-4 lights qualify, not other VASI types.
+
+The display threshold is inferred **290.7965 m before the aiming start**:
+15.24 m (50 ft) divided by tan(3 degrees). This is an explicit product convention,
+not a claim that every airport has exactly this threshold-crossing height.
+For other glide-path angles the actual angle still determines the ILS intercept;
+the threshold offset is normalized to the same 3-degree reference. Native
+threshold offsets and recorded contact positions never move this paint lattice.
+If the inferred threshold lies outside the footprint, its piano keys are omitted,
+not moved to the physical end. All individual paint rectangles must fit completely
+inside the actual pavement and their direction's non-overlapping region.
+
+ICAO/EASA TDZ slots are 150 m apart from the inferred threshold. Slot count follows
+the geometric usable length categories, using the distance between inferred
+thresholds when both ends have guidance. Pattern B uses 3/3/2/2/1/1 stripes per
+side at the six slots, excludes groups within 50 m of the aiming rectangles, and
+ends with a single stripe per side when truncated. Narrow strips use permitted
+pattern A instead of shrinking pattern B below its 1.8 m width and 1.5 m spacing.
+ICAO threshold stripes begin 6 m after the inferred threshold and are 30 m long.
+
+US facility regions (including K1–K7 local identifiers) and explicit US ICAO
+families select FAA conventions; Canada and unknown regions do not automatically
+become FAA. FAA TDZ slots start at 520/1520/2020/2520/3020 ft, with 3/2/2/1/1
+stripes per side. There is no extra small group in the 1020 ft aiming slot even
+when the aiming point is relocated by guidance. Small bars are 75 by 6 ft, with
+5 ft gaps. Aim rectangles are 30 ft wide with a 72 ft inner gap, scaled laterally
+on runways no wider than 150 ft. Aim length is 150 ft, or 100 ft below 4200 ft
+between thresholds. The 160 ft aiming exclusion and reciprocal 900 ft midpoint
+clearance apply. For a single guided end the FAA opposite-aim clearance geometry
+is retained; extensions below the published table range remain a reconstruction.
+FAA threshold stripes start 20 ft after the inferred threshold, are 150 ft long,
+and use 5.75 ft stripes/gaps with explicit standard-width counts. Other widths use
+the specified edge clearance. Known runway numbers and L/C/R face each approach;
+FAA numbers omit a leading zero. Their footprints follow the inferred threshold
+when guidance exists, otherwise the saved native displacement (or physical end
+if unknown). Designations follow the pavement profile and leave the centreline
+and piano keys clear. Their vector outlines are constructed from the dimensioned
+EASA CS ADR-DSN Figure L-2 and FAA AC 150/5340-1M Figure A-6, not an installed
+computer font. ICAO glyphs use a uniform enlargement of the minimum 9 m drawing
+to 18 m nominal height; FAA glyphs use 60 ft. The longer 6/9 tips retain their
+row alignment, and FAA uses the separate footed 1 for a single-digit designation.
+Spacing is measured against the nominal row, excluding the extra 6/9 tips
+(FAA paragraph 2.3.6), while the complete ink contour is retained for rendering.
+Undimensioned outline joins remain schematic. EASA's dimensioned 10/11 gaps are
+retained; other ICAO pairs use a 1.5 m clear-gap convention at the 9 m scale,
+since L-2 does not explicitly dimension their spacing.
+Narrow pavement reduces FAA ordinary digit spacing from 15 to 10 ft first, then
+uniformly fits the whole designation if necessary; ICAO is uniformly fitted too.
+Extremely narrow reconstructed strips can therefore be below the standard's
+minimum glyph size, but never acquire distorted character proportions. Letter
+and number share the same scale. Layout uses the L-1/A-1 threshold-stripe and
+letter/number gaps. Displaced-area arrows are not drawn.
+
+Declared LDA, approach classification, local exceptions and actual scenery paint
+are not collected. Geometric available pavement is a **layout proxy only**, never
+reported as LDA. Known unpaved/water surfaces get no white runway paint; unknown
+surface retains a schematic paved fallback. The runway-axis tooltip states the
+convention, actual dimensions and guidance/threshold assumptions. All paint meshes
+share pavement profile breakpoints to prevent clipping on longitudinal slopes.
+Contact crosses are added independently after the markings. This display does not
+grade touchdown distance, recalculate historical landings or change measurements.
+
+References: [EASA CS ADR-DSN.L.525–545](https://www.easa.europa.eu/en/document-library/easy-access-rules/online-publications/easy-access-rules-aerodromes-regulation-eu?erules-id=ERULES-1963177438-2468)
+and [FAA AC 150/5340-1M, Change 1](https://www.faa.gov/documentLibrary/media/Advisory_Circular/150-5340-1M-Chg-1-Airport-Markings.pdf).
+
+The runway-axis indicator is the horizontal distance from the recorded aircraft
+reference point to the real facility centreline (extended along the approach), in
+metres. Left/right follows the selected runway end, not the camera or crabbed nose.
+If an old record lacks the end name, unambiguous continuous approach motion may
+resolve its direction. Without valid land-runway geometry/direction the distance
+is unavailable; the flight trail is never substituted for a runway axis.
 
 ## 11. Validation evidence
 
@@ -502,10 +765,11 @@ supplying the target latch value.
 - `GROUND ALTITUDE` and the collision surface under a wheel need not sample the
   same scenery triangle.
 - Contact-point numbering has no semantic meaning in the calculation. The
-  topology gate accepts two or three inferred main points followed by one nose,
+  topology gate accepts two through four inferred main points followed by one nose,
   plus a conservative clustered path for six-or-more settled wheel points when
-  a dominant derotation gap separates main and nose/helper clusters. Other
-  ambiguous layouts remain unavailable.
+  a dominant derotation gap separates main and nose/helper clusters. A further
+  multi-main/single-nose fallback requires stable temporal refits as described
+  in section 7.3. Other ambiguous layouts remain unavailable.
 - Nose-first and mixed main/nose contacts deliberately fall back to the legacy
   metrics; an explicitly supplied arm does not bypass the per-contact gate.
 - The surface latch is unavailable when no update can be attributed safely.

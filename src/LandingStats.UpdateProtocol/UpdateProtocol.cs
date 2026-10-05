@@ -78,30 +78,44 @@ internal static class ReleaseUpdateProtocol
         int maximumBytes,
         CancellationToken cancellationToken)
     {
-        using var request = new HttpRequestMessage(HttpMethod.Get, url);
-        using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
-        response.EnsureSuccessStatusCode();
-        VerifyGitHubDownloadUri(response.RequestMessage?.RequestUri);
-        if (response.Content.Headers.ContentLength > maximumBytes)
+        using var transfer = CreateTransferCancellation(client, cancellationToken);
+        var token = transfer.Token;
+        try
         {
-            throw new InvalidDataException($"{name} exceeds the size limit");
-        }
-
-        using var input = await response.Content.ReadAsStreamAsync().ConfigureAwait(false);
-        using var output = new MemoryStream();
-        var buffer = new byte[4096];
-        int read;
-        while ((read = await input.ReadAsync(buffer, 0, buffer.Length, cancellationToken).ConfigureAwait(false)) > 0)
-        {
-            if (output.Length + read > maximumBytes)
+            using var request = new HttpRequestMessage(HttpMethod.Get, url);
+            using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, token).ConfigureAwait(false);
+            // net48 response streams may ignore ReadAsync's cancellation token.
+            // Closing the response also interrupts their in-flight native read.
+            using var abort = token.Register(response.Dispose);
+            token.ThrowIfCancellationRequested();
+            response.EnsureSuccessStatusCode();
+            VerifyGitHubDownloadUri(response.RequestMessage?.RequestUri);
+            if (response.Content.Headers.ContentLength > maximumBytes)
             {
                 throw new InvalidDataException($"{name} exceeds the size limit");
             }
 
-            output.Write(buffer, 0, read);
-        }
+            using var input = await response.Content.ReadAsStreamAsync().ConfigureAwait(false);
+            using var output = new MemoryStream();
+            var buffer = new byte[4096];
+            int read;
+            while ((read = await input.ReadAsync(buffer, 0, buffer.Length, token).ConfigureAwait(false)) > 0)
+            {
+                if (output.Length + read > maximumBytes)
+                {
+                    throw new InvalidDataException($"{name} exceeds the size limit");
+                }
 
-        return output.ToArray();
+                output.Write(buffer, 0, read);
+            }
+
+            token.ThrowIfCancellationRequested();
+            return output.ToArray();
+        }
+        catch (Exception exception) when (transfer.IsCancellationRequested)
+        {
+            throw new OperationCanceledException("The update download was cancelled or timed out.", exception, token);
+        }
     }
 
     public static async Task DownloadVerifiedFileAsync(
@@ -126,10 +140,15 @@ internal static class ReleaseUpdateProtocol
         }
         Directory.CreateDirectory(parent);
 
+        using var transfer = CreateTransferCancellation(client, cancellationToken);
+        var token = transfer.Token;
+        var createdDestination = false;
         try
         {
             using var request = new HttpRequestMessage(HttpMethod.Get, url);
-            using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
+            using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, token).ConfigureAwait(false);
+            using var abort = token.Register(response.Dispose);
+            token.ThrowIfCancellationRequested();
             response.EnsureSuccessStatusCode();
             VerifyGitHubDownloadUri(response.RequestMessage?.RequestUri);
             if (response.Content.Headers.ContentLength.HasValue &&
@@ -140,11 +159,12 @@ internal static class ReleaseUpdateProtocol
 
             using var input = await response.Content.ReadAsStreamAsync().ConfigureAwait(false);
             using var output = new FileStream(destination, FileMode.CreateNew, FileAccess.Write, FileShare.None, 65536, true);
+            createdDestination = true;
             using var sha256 = SHA256.Create();
             var buffer = new byte[65536];
             long total = 0;
             int read;
-            while ((read = await input.ReadAsync(buffer, 0, buffer.Length, cancellationToken).ConfigureAwait(false)) > 0)
+            while ((read = await input.ReadAsync(buffer, 0, buffer.Length, token).ConfigureAwait(false)) > 0)
             {
                 total += read;
                 if (total > expectedSize || total > maximumBytes)
@@ -153,24 +173,38 @@ internal static class ReleaseUpdateProtocol
                 }
 
                 sha256.TransformBlock(buffer, 0, read, null, 0);
-                await output.WriteAsync(buffer, 0, read, cancellationToken).ConfigureAwait(false);
+                await output.WriteAsync(buffer, 0, read, token).ConfigureAwait(false);
             }
 
             sha256.TransformFinalBlock(Array.Empty<byte>(), 0, 0);
-            await output.FlushAsync(cancellationToken).ConfigureAwait(false);
+            await output.FlushAsync(token).ConfigureAwait(false);
+            token.ThrowIfCancellationRequested();
             if (total != expectedSize || !FixedTimeEquals(ToHex(sha256.Hash!), expectedSha256))
             {
                 throw new InvalidDataException($"{name} hash or size does not match the signed manifest");
             }
         }
-        catch
+        catch (Exception exception)
         {
-            if (File.Exists(destination))
+            if (createdDestination && File.Exists(destination))
             {
                 File.Delete(destination);
             }
+            if (transfer.IsCancellationRequested)
+            {
+                throw new OperationCanceledException("The update download was cancelled or timed out.", exception, token);
+            }
             throw;
         }
+    }
+
+    private static CancellationTokenSource CreateTransferCancellation(HttpClient client, CancellationToken cancellationToken)
+    {
+        // ResponseHeadersRead ends HttpClient.Timeout at the headers. Retain
+        // that same configured deadline through the complete body transfer.
+        var transfer = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        transfer.CancelAfter(client.Timeout);
+        return transfer;
     }
 
     public static string HashFile(string path)

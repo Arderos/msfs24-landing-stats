@@ -42,6 +42,10 @@ internal static class Program
         LocalizationManager.Apply("en");
 
         Run("deduplicator keeps the last same-time frame", DeduplicatorKeepsLastFrame);
+        Run("adaptive impact segmentation and classification", TouchdownImpactRegressionTests.RunAll);
+        Run("matched runway corrects the nearest airport guess", RunwayAirportMetadataRegressionTests.RunwayIdentityOverridesNearestAirportGuess);
+        Run("full-axis bindings do not depend on axis names", ReplayControlAxisProvenanceTests.FullAxisBindingsDoNotDependOnAxisNames);
+        Run("imported legacy CSV retains its physical input provenance", ReplayControlAxisProvenanceTests.ImportedLegacyCsvRetainsItsLayout);
         Run("approach timeout re-arms capture", ApproachTimeoutRearmsCapture);
         Run("paused simulator frames do not grow the active episode", PausedFramesDoNotGrowEpisode);
         Run("pre-roll uses monotonic receipt time and remains bounded", PreRollUsesReceiptTimeAndRemainsBounded);
@@ -72,6 +76,12 @@ internal static class Program
         Run("updater accepts the issued format-2 manifest shape", UpdaterAcceptsIssuedManifestShape);
         Run("updater accepts the format-3 single executable manifest shape", UpdaterAcceptsSingleExecutableManifestShape);
         Run("updater preserves bridge and current manifest channels", UpdaterPreservesManifestChannels);
+        Run("update deadlines cover stalled response bodies", UpdateDownloadRegressionTests.BodyTimeouts);
+        Run("update cancellation aborts stalled response bodies", UpdateDownloadRegressionTests.CallerCancellation);
+        Run("failed downloads preserve files they did not create", UpdateDownloadRegressionTests.DestinationOwnership);
+        Run("download deadlines preserve exact bytes and hash validation", UpdateDownloadRegressionTests.SuccessfulDownloads);
+        Run("update checks distinguish timeout and user cancellation", UpdateDownloadRegressionTests.ApplicationClassifiesCancellation);
+        Run("legacy extraction preserves a pre-existing destination", UpdateDownloadRegressionTests.ExtractionPreservesExistingFile);
         Run("updater accepts browser-renamed executable targets", UpdaterAcceptsBrowserRenamedTarget);
         Run("updater extracts only one bundled executable from legacy package", UpdaterExtractsLegacySingleExecutable);
         Run("updater cleanup refuses paths outside its private root", UpdaterCleanupRefusesUnsafePath);
@@ -90,12 +100,30 @@ internal static class Program
         Run("telemetry receiver header exactly matches the client schema", TelemetryReceiverHeaderMatchesClient);
         Run("header wind uses the contact-time sample", HeaderWindUsesContactTimeSample);
         Run("landing history uses lazy columnar v7 details", LandingHistoryUsesLazyColumnarDetails);
+        Run("new impact persistence and unchanged legacy landing measurements", LandingImpactStorageRegressionTests.RunAll);
+        Run("physical controller axes preserve capability and schema contracts", PhysicalControllerAxesRegressionTests.RunAll);
+        Run("physical input display supports legacy channels and localization", PhysicalInputStripRegressionTests.RunAll);
+        Run("physical replay controls preserve source, polarity and gaps", ReplayControlInputsRegressionTests.RunAll);
+        Run("physical axes rank the complete approach with soft device-pair evidence", ReplayControlEvidenceRegressionTests.RunAll);
+        Run("replay runway offset follows the selected runway direction", LandingReplayRunwayOffsetTests.RunAll);
+        Run("replay overlays preserve controls, chart gaps and localization", ReplayOverlayRegressionTests.RunAll);
+        Run("legacy Controls and 3D tabs follow recorded data and preserve selection", ReplayTabRegressionTests.RunAll);
+        Run("3D replay pose, projection, gaps and legacy guards", LandingReplayRegressionTests.RunAll);
+        Run("3D aircraft immutable geometry, silhouette and outward normals", ReplayAircraftModelRegressionTests.RunAll);
+        Run("3D contact marker and visual suspension preserve recorded motion", ReplayGearRegistrationTests.RunAll);
+        Run("3D replay storage, cloud backup and legacy compatibility", LandingReplayStorageRegressionTests.RunAll);
         Run("landing delete removes detail and index entry", LandingDeleteRemovesDetailAndIndexEntry);
         Run("landing index reconciles committed details after an interrupted save", LandingIndexReconcilesCommittedDetails);
         Run("landing filenames are culture invariant", LandingFilenamesAreCultureInvariant);
         Run("airport cache is never overwritten after a transient read failure", AirportCacheSurvivesTransientReadFailure);
         Run("corrupt airport cache is quarantined and rebuilt", CorruptAirportCacheIsRebuilt);
         Run("episode airport snapshots cannot roll back a newer refresh", EpisodeAirportSnapshotKeepsNewerRefresh);
+        Run("runway facilities require complete replies and unambiguous recorded track", RunwayFacilityRegressionTests.RunAll);
+        Run("runway PAPI and ILS guidance preserves native coordinates and optional failure isolation", RunwayGuidanceRegressionTests.RunAll);
+        Run("each landing refreshes runway data without rewriting older episodes", RunwayFacilityRegressionTests.RefreshIsScopedToEachEpisode);
+        Run("runway marking convention uses facility regions and explicit ICAO families", RunwayMarkingConventionTests.RunAll);
+        Run("guided runway markings respect reference thresholds, regional patterns and real widths", RunwayMarkingRegressionTests.RunAll);
+        Run("runway designation outlines preserve standard dimensions, counters and proportions", RunwayDesignationGlyphRegressionTests.RunAll);
         Run("chart ranges discard non-finite telemetry", ChartRangesDiscardNonFiniteTelemetry);
         Run("chart value ticks always label a visible zero", ChartValueTicksIncludeZero);
         Run("lane hover finds the nearest point without sorting", LaneHoverFindsNearestPoint);
@@ -127,6 +155,11 @@ internal static class Program
         Run("closure reconstruction rejects mixed main-nose contact", ClosureReconstructionRejectsMixedMainNoseContact);
         Run("closure reconstruction rejects nose-first contact without changing raw metrics", ClosureReconstructionRejectsNoseFirstContact);
         Run("telemetry geometry recovers an analytic arm from permuted points", TelemetryGeometryRecoversAnalyticArm);
+        Run("multi-main single-nose fallback recovers stable geometry", SingleNoseGeometryRegressionTests.StableMultiMainSingleNose);
+        Run("single-nose fallback rejects unstable and unidentifiable subfits", SingleNoseGeometryRegressionTests.StabilityRejectsDriftAndDegenerateSubsets);
+        Run("existing and configured topology keep priority over single-nose fallback", SingleNoseGeometryRegressionTests.ExistingAndConfiguredPathsKeepPriority);
+        Run("single-nose fallback preserves contact guards", SingleNoseGeometryRegressionTests.FallbackPreservesContactGuards);
+        Run("single-nose geometry is independent of latch and delivery", SingleNoseGeometryRegressionTests.CalibrationIsIndependentOfLatchAndDelivery);
         Run("datum calibration rejects inconsistent phases", DatumCalibrationRejectsInconsistentPhases);
         Run("flight model parser merges modular geometry and named points", FlightModelParserMergesModularGeometry);
         Run("flight model resolver maps aircraft title and model", FlightModelResolverMapsAircraftIdentity);
@@ -159,6 +192,7 @@ internal static class Program
         Run("Google Drive landing conflicts do not block unrelated synchronization", GoogleDriveBackupRegressionTests.ConcurrentLandingEditsAreRejectedWithoutLoss);
         Run("Google Drive sibling revisions are isolated from unrelated synchronization", GoogleDriveBackupRegressionTests.SiblingRevisionConflictsAreIsolated);
         Run("Google Drive merges independent landing metadata resolution", GoogleDriveBackupRegressionTests.MetadataOnlyLandingConflictMergesResolvedValues);
+        Run("Google Drive merges runway metadata without hiding content conflicts", GoogleDriveBackupRegressionTests.RunwayGeometryMetadataMergesDeterministically);
         Run("Google Drive restores unreadable local settings from cloud", GoogleDriveBackupRegressionTests.MissingLocalSettingsRestoreFromCloud);
         Run("Google Drive settings recovery survives an offline restart", GoogleDriveBackupRegressionTests.SettingsRecoverySurvivesOfflineRestart);
         Run("Google Drive concurrent settings edits converge", GoogleDriveBackupRegressionTests.ConcurrentSettingsEditsAreRejectedWithoutLoss);
@@ -732,15 +766,33 @@ internal static class Program
 
     private static void LandingFeelSeverityIsLanguageIndependent()
     {
-        var record = new LandingRecord { InertialFpm = 300.0 };
+        var record = new LandingRecord
+        {
+            InertialFpm = 50.0,
+            ImpactAnalysisVersion = TouchdownImpactAnalysis.CurrentVersion,
+            ImpactPeakG = 1.50,
+            ImpactPeakOffsetSeconds = 0.1,
+            ImpactEndOffsetSeconds = 0.8,
+            ImpactStatus = nameof(TouchdownImpactStatus.Settled)
+        };
         LocalizationManager.Apply("ru");
         Equal("ЖЁСТКАЯ", record.LandingFeelDisplay, "Russian firm label");
         Equal(true, record.IsFirmLanding, "firm severity flag");
 
-        record.InertialFpm = 200.0;
+        record.InertialFpm = 600.0;
+        record.ImpactPeakG = 1.19;
         Equal("МЯГКАЯ", record.LandingFeelDisplay, "Russian smooth label");
         Equal(false, record.IsFirmLanding, "smooth severity flag");
+        Equal(true, record.IsSmoothLanding, "feel is independent of FPM");
+        record.ImpactPeakG = 1.20;
+        Equal("ОБЫЧНАЯ", record.LandingFeelDisplay, "Russian normal label at exact boundary");
+        Equal(true, record.IsNormalLanding, "normal severity flag");
+        record.ImpactStatus = nameof(TouchdownImpactStatus.Incomplete);
+        Equal(false, record.HasImpactClassification, "incomplete observation is not classified");
+        Equal(false, record.IsSmoothLanding, "unavailable feel is not green");
         LocalizationManager.Apply("en");
+        record.ImpactStatus = nameof(TouchdownImpactStatus.Settled);
+        Equal("NORMAL", record.LandingFeelDisplay, "English normal label");
     }
 
     private static void LocalizedWhitespaceSurvivesWpfLoading()
@@ -756,9 +808,10 @@ internal static class Program
     private static void TelemetryReceiverHeaderMatchesClient()
     {
         var serverHeader = File.ReadAllText(
-            Path.Combine(AppContext.BaseDirectory, "schema-v5.header"),
+            Path.Combine(AppContext.BaseDirectory, "schema-v6.header"),
             Encoding.UTF8).Trim();
         Equal(TelemetryCsv.Header, serverHeader, "server/client telemetry header");
+        Equal(TelemetryCsv.V5Header, File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "schema-v5.header"), Encoding.UTF8).Trim(), "legacy server/client telemetry header");
     }
 
     private static void DeduplicatorKeepsLastFrame()
@@ -1145,6 +1198,20 @@ internal static class Program
         }
     }
 
+    private static void WriteTelemetryUploadFixture(string path, int schema = TelemetryCsv.SchemaVersion)
+    {
+        using var file = new FileStream(path, FileMode.Create);
+        using var archive = new ZipArchive(file, ZipArchiveMode.Create);
+        using (var writer = new StreamWriter(archive.CreateEntry("session.txt").Open()))
+            writer.WriteLine("Generated by test\ntelemetry_schema=" + schema + "\nsource_period=SIM_FRAME\nsample_count=1");
+        using (var writer = new StreamWriter(archive.CreateEntry("telemetry.csv").Open()))
+        {
+            var header = schema == 5 ? TelemetryCsv.V5Header : TelemetryCsv.Header;
+            writer.WriteLine(header);
+            writer.WriteLine(string.Join(",", TelemetryCsv.Format(new TelemetrySample { Sequence = 1 }).Split(',').Take(header.Split(',').Length)));
+        }
+    }
+
     private static void ExistingTelemetryWaitsForEnrollmentAndConsent()
     {
         var root = Path.Combine(Path.GetTempPath(), "landing-stats-existing-upload-test-" + Guid.NewGuid().ToString("N"));
@@ -1155,8 +1222,8 @@ internal static class Program
             Directory.CreateDirectory(queue);
             var legacy = Path.Combine(queue, "20260820_legacy_raw.zip");
             var report = Path.Combine(queue, "20260821_latest_bug_raw.zip");
-            File.WriteAllBytes(legacy, new byte[] { 1, 2, 3 });
-            File.WriteAllBytes(report, new byte[] { 4, 5, 6 });
+            WriteTelemetryUploadFixture(legacy, 5);
+            WriteTelemetryUploadFixture(report);
             Environment.SetEnvironmentVariable("MSFS_LANDING_STATS_TELEMETRY_URL", "https://telemetry.example.test/");
 
             var handler = new TelemetryEnrollmentFixtureHandler();
@@ -1201,7 +1268,7 @@ internal static class Program
             var acceptedIdentity = Path.Combine(root, "accepted-identity");
             Directory.CreateDirectory(acceptedQueue);
             var acceptedRaw = Path.Combine(acceptedQueue, "legacy_raw.zip");
-            File.WriteAllBytes(acceptedRaw, new byte[] { 1, 2, 3 });
+            WriteTelemetryUploadFixture(acceptedRaw, 5);
             new TelemetryUploadIdentityStore(acceptedIdentity).AcceptConsent();
             var acceptedHandler = new TelemetryEnrollmentFixtureHandler();
             using (var client = new TelemetryUploadClient(acceptedQueue, acceptedHandler, acceptedIdentity))
@@ -1219,7 +1286,7 @@ internal static class Program
             var refusedIdentity = Path.Combine(root, "refused-identity");
             Directory.CreateDirectory(refusedQueue);
             var refusedRaw = Path.Combine(refusedQueue, "legacy_raw.zip");
-            File.WriteAllBytes(refusedRaw, new byte[] { 4, 5, 6 });
+            WriteTelemetryUploadFixture(refusedRaw, 5);
             var refusedHandler = new TelemetryEnrollmentFixtureHandler();
             using (var client = new TelemetryUploadClient(refusedQueue, refusedHandler, refusedIdentity))
             {
@@ -1283,7 +1350,7 @@ internal static class Program
                 .ToArray();
             foreach (var report in reports)
             {
-                File.WriteAllBytes(report, new byte[] { 1, 2, 3 });
+                WriteTelemetryUploadFixture(report);
             }
             Environment.SetEnvironmentVariable("MSFS_LANDING_STATS_TELEMETRY_URL", "https://telemetry.example.test/");
 
@@ -1292,7 +1359,7 @@ internal static class Program
                 queue,
                 handler,
                 Path.Combine(root, "identity"),
-                maximumQueueBytes: 4,
+                maximumQueueBytes: new FileInfo(reports[0]).Length + 1,
                 maximumQueuedFiles: 1);
             var preparation = client.PrepareAsync(CancellationToken.None).GetAwaiter().GetResult();
             Equal(TelemetryPreparationState.Ready, preparation.State, "saturated backlog enrollment");
@@ -1324,7 +1391,7 @@ internal static class Program
             var queue = Path.Combine(root, "queue");
             Directory.CreateDirectory(queue);
             var report = Path.Combine(queue, "offline_bug_raw.zip");
-            File.WriteAllBytes(report, new byte[] { 1, 2, 3 });
+            WriteTelemetryUploadFixture(report);
             Environment.SetEnvironmentVariable("MSFS_LANDING_STATS_TELEMETRY_URL", "https://telemetry.example.test/");
 
             var handler = new TelemetryRecoveringFixtureHandler(enrollmentFailures: 1);
@@ -1363,8 +1430,8 @@ internal static class Program
             Directory.CreateDirectory(queue);
             var oversized = Path.Combine(queue, "20260820_old_bug_raw.zip");
             var valid = Path.Combine(queue, "20260821_new_bug_raw.zip");
-            File.WriteAllBytes(oversized, new byte[] { 1, 2, 3, 4, 5 });
-            File.WriteAllBytes(valid, new byte[] { 6, 7, 8 });
+            WriteTelemetryUploadFixture(valid);
+            File.WriteAllBytes(oversized, new byte[new FileInfo(valid).Length + 2]);
             Environment.SetEnvironmentVariable("MSFS_LANDING_STATS_TELEMETRY_URL", "https://telemetry.example.test/");
 
             var handler = new TelemetryEnrollmentFixtureHandler();
@@ -1372,7 +1439,7 @@ internal static class Program
                 queue,
                 handler,
                 Path.Combine(root, "identity"),
-                maximumQueueBytes: 4);
+                maximumQueueBytes: new FileInfo(valid).Length + 1);
             Equal(
                 TelemetryPreparationState.Ready,
                 client.PrepareAsync(CancellationToken.None).GetAwaiter().GetResult().State,
@@ -1402,7 +1469,7 @@ internal static class Program
             var queue = Path.Combine(root, "queue");
             Directory.CreateDirectory(queue);
             var report = Path.Combine(queue, "reenroll_bug_raw.zip");
-            File.WriteAllBytes(report, new byte[] { 1, 2, 3 });
+            WriteTelemetryUploadFixture(report);
             Environment.SetEnvironmentVariable("MSFS_LANDING_STATS_TELEMETRY_URL", "https://telemetry.example.test/");
 
             var handler = new TelemetryRecoveringFixtureHandler(forbidFirstCapture: true);
@@ -1440,7 +1507,7 @@ internal static class Program
             var queue = Path.Combine(root, "queue");
             Directory.CreateDirectory(queue);
             var report = Path.Combine(queue, "readonly_bug_raw.zip");
-            File.WriteAllBytes(report, new byte[] { 1, 2, 3 });
+            WriteTelemetryUploadFixture(report);
             File.SetAttributes(report, FileAttributes.ReadOnly);
             Environment.SetEnvironmentVariable("MSFS_LANDING_STATS_TELEMETRY_URL", "https://telemetry.example.test/");
 
@@ -1493,7 +1560,7 @@ internal static class Program
             var queue = Path.Combine(root, "queue");
             Directory.CreateDirectory(queue);
             var capture = Path.Combine(queue, "race_raw.zip");
-            File.WriteAllBytes(capture, new byte[] { 1, 2, 3 });
+            WriteTelemetryUploadFixture(capture);
             Environment.SetEnvironmentVariable("MSFS_LANDING_STATS_TELEMETRY_URL", "https://telemetry.example.test/");
             var client = new TelemetryUploadClient(queue, new TelemetryEnrollmentFixtureHandler(), Path.Combine(root, "identity"));
             Exception? producerFailure = null;
@@ -1539,7 +1606,7 @@ internal static class Program
             Equal(TelemetryPreparationState.Ready, preparation.State, "rejection fixture enrollment");
 
             var capture = Path.Combine(queue, "permanent_raw.zip");
-            File.WriteAllBytes(capture, Enumerable.Repeat((byte)0x5A, 64).ToArray());
+            WriteTelemetryUploadFixture(capture);
             Equal(true, client.Enqueue(capture), "capture accepted into upload queue");
             Equal(
                 true,
@@ -2001,8 +2068,8 @@ internal static class Program
         sample.ContactPointOnGround[19] = true;
 
         var currentLine = TelemetryCsv.Format(sample);
-        Equal(5, TelemetryCsv.SchemaVersion, "current telemetry schema");
-        Equal(160, TelemetryCsv.Header.Split(',').Length, "compact telemetry columns");
+        Equal(6, TelemetryCsv.SchemaVersion, "current telemetry schema");
+        Equal(280, TelemetryCsv.Header.Split(',').Length, "compact telemetry columns");
         Equal(325, TelemetryCsv.V4Header.Split(',').Length, "v4 telemetry columns");
         Equal(TelemetryCsv.Header.Split(',').Length, currentLine.Split(',').Length, "header and row column count");
         Equal(true, TelemetryCsv.TryParse(currentLine, out var current), "parse current telemetry row");
@@ -4291,7 +4358,7 @@ internal static class Program
                 {
                     RequestMessage = request,
                     Content = new StringContent(
-                        "{\"protocol\":1,\"registration_mode\":\"open\",\"telemetry_schema\":5,\"max_upload_bytes\":16777216}",
+                        "{\"protocol\":1,\"registration_mode\":\"open\",\"telemetry_schema\":5,\"telemetry_schemas\":[5,6],\"max_upload_bytes\":16777216}",
                         Encoding.UTF8,
                         "application/json"),
                 });
@@ -4310,7 +4377,14 @@ internal static class Program
 
             if (request.Method == HttpMethod.Post && request.RequestUri!.AbsolutePath.EndsWith("/v1/captures", StringComparison.Ordinal))
             {
-                _ = request.Content!.ReadAsByteArrayAsync().GetAwaiter().GetResult();
+                var captureBytes = request.Content!.ReadAsByteArrayAsync().GetAwaiter().GetResult();
+                using (var zip = new ZipArchive(new MemoryStream(captureBytes), ZipArchiveMode.Read))
+                using (var reader = new StreamReader(zip.GetEntry("session.txt")!.Open()))
+                {
+                    var schemaLine = reader.ReadToEnd().Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
+                        .Single(line => line.StartsWith("telemetry_schema=", StringComparison.Ordinal));
+                    Equal(schemaLine.Substring("telemetry_schema=".Length), request.Headers.GetValues("X-Telemetry-Schema").Single(), "signed request retains archived schema");
+                }
                 Interlocked.Increment(ref _captureCount);
                 return System.Threading.Tasks.Task.FromResult(new HttpResponseMessage(HttpStatusCode.Created)
                 {
@@ -4355,7 +4429,7 @@ internal static class Program
                 {
                     RequestMessage = request,
                     Content = new StringContent(
-                        "{\"protocol\":1,\"registration_mode\":\"open\",\"telemetry_schema\":5,\"max_upload_bytes\":16777216}",
+                        "{\"protocol\":1,\"registration_mode\":\"open\",\"telemetry_schema\":5,\"telemetry_schemas\":[5,6],\"max_upload_bytes\":16777216}",
                         Encoding.UTF8,
                         "application/json"),
                 });
@@ -4422,7 +4496,7 @@ internal static class Program
                 {
                     RequestMessage = request,
                     Content = new StringContent(
-                        "{\"protocol\":1,\"registration_mode\":\"open\",\"telemetry_schema\":5,\"max_upload_bytes\":16777216}",
+                        "{\"protocol\":1,\"registration_mode\":\"open\",\"telemetry_schema\":5,\"telemetry_schemas\":[5,6],\"max_upload_bytes\":16777216}",
                         Encoding.UTF8,
                         "application/json"),
                 });

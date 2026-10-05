@@ -1,6 +1,6 @@
 # Telemetry ingress
 
-The service accepts signed schema-v5 DEBUG RAW captures and explicit
+The service accepts signed schema-v5/v6 DEBUG RAW captures and explicit
 last-landing bug-report bundles. It is intended to run
 from `/opt/msfs-landing-telemetry` with capture data bind-mounted from
 `/srv/msfs-landing-telemetry/data`.
@@ -21,13 +21,18 @@ hardware identifier or invitation code is collected.
 
 An accepted archive is never extracted to disk. The service validates its
 signature, replay nonce, capture-kind-specific ZIP members, expansion bounds, session metadata,
-schema-v5 header, row width, finite numeric values, boolean fields, sequence,
+schema-specific header, row width, finite numeric values, boolean fields, sequence,
 declared sample count, and replay-like kinematic inconsistencies before
 atomically moving it from `incoming` to `accepted`. The replay check mirrors
 the conservative compound desktop detector: position must move at flight speed
 while reported horizontal, air, and vertical velocities remain inert.
 Bug-report bundles additionally contain a bounded, validated JSON result for
 the calculated landing, and are marked as `bug_report` in the capture index.
+
+Schema v6 appends five physical controller axes (X/Z/R/U/V) to the v5 prefix;
+the existing Y columns are unchanged. The legacy `telemetry_schema: 5` config
+field is retained for older clients; `telemetry_schemas: [5, 6]` advertises both
+accepted versions to newer clients. Deploy the receiver before a v6 client release.
 
 Capacity is fail-closed: 16 MiB per request, 64 MiB expanded, 512 MiB per
 installation per rolling day, and the same 512 MiB fixed-day budget counts all
@@ -43,3 +48,10 @@ installations, and a 30-day expiry for active identities that have no retained
 capture. Referenced and revoked identities are never pruned. A new identity is
 rejected when the registry is full or the 2 GiB free-space reserve is active;
 an existing identity can still refresh its signed registration.
+
+Read the live SQLite database through `docker compose exec -T telemetry-api python -`
+from the deployment directory, using `file:/data/telemetry.sqlite3?mode=ro` and
+`PRAGMA query_only=ON`. This retains the receiver's UID. Even read-only SQLite
+queries can create WAL/SHM sidecars; reading as a different host user can leave
+files that prevent the service from writing. Do not delete live WAL/SHM files or
+use `immutable=1` to bypass this: it can omit transactions still in the WAL.

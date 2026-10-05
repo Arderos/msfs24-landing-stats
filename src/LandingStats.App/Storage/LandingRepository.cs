@@ -590,6 +590,8 @@ public sealed class LandingRepository
             RawPitchInputCorrelation = source.RawPitchInputCorrelation,
             RawPitchInputLagSeconds = source.RawPitchInputLagSeconds,
             RawControllerSourceIndices = new List<int>(source.RawControllerSourceIndices ?? new List<int>()),
+            RawControllerAxesSourceIndices = new List<int>(source.RawControllerAxesSourceIndices ?? new List<int>()),
+            RunwayGeometry = source.RunwayGeometry,
             WindSpeedKnotsAtContact = source.WindSpeedKnotsAtContact,
             WindDirectionDegreesAtContact = source.WindDirectionDegreesAtContact,
             ClosureReconstructionModel = source.ClosureReconstructionModel,
@@ -615,6 +617,12 @@ public sealed class LandingRepository
             summary.WindDirectionDegreesAtContact = closest.WindDirectionDegrees;
         }
 
+        summary.ImpactAnalysisVersion = source.ImpactAnalysisVersion;
+        summary.ImpactPeakG = source.ImpactPeakG;
+        summary.ImpactPeakOffsetSeconds = source.ImpactPeakOffsetSeconds;
+        summary.ImpactEndOffsetSeconds = source.ImpactEndOffsetSeconds;
+        summary.ImpactWindowSeconds = source.ImpactWindowSeconds;
+        summary.ImpactStatus = source.ImpactStatus;
         return summary;
     }
 

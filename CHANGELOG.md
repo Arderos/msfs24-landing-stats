@@ -2,6 +2,36 @@
 
 All notable changes to MSFS Landing Stats are documented in this file.
 
+## [0.8.8] - 2026-10-05
+
+### Added
+
+- 3D landing reconstruction for newly recorded landings: flight path and aircraft
+  attitude, simulator runway geometry when available, an orbit camera, playback,
+  and a time slider. Older landings keep their original Controls view.
+- Reconstructed runway markings and designations, using simulator geometry,
+  landing guidance, and regional marking standards.
+- Record all available physical controller axes, including separate pedal devices.
+  Automatically match sidestick/yoke and pedal axes for replay overlays;
+  physical inputs remain distinct from simulator commands.
+
+### Improved
+
+- Landing feel now uses each contact's peak G in an adaptive impact window:
+  SMOOTH, NORMAL, or FIRM. The indicator is shown beside G instead of descent rate.
+- Existing landings retain their saved G measurements and are not recalculated.
+  Incomplete or unavailable new measurements are left unclassified.
+- Improved iniBuilds A380 reconstruction for single-nose contact layouts, with
+  additional checks that the recovered geometry remains stable.
+
+### Fixed
+
+- Keep the airport identity consistent with the matched runway near neighboring airports.
+- Preserve universal axis matching for devices exposing only a Y axis, while
+  keeping older pitch-only recordings compatible.
+- Apply update download timeouts to the entire transfer, including a stalled
+  response body, and preserve existing files when a download cannot begin.
+
 ## [0.8.7] - 2026-09-21
 
 ### Improved

@@ -8,46 +8,35 @@ namespace LandingStats.App.Telemetry;
 
 internal sealed class WindowsJoystickReader
 {
-    private const uint JoyReturnY = 0x00000002;
+    private const uint JoyReturnAxes = 0x0000003f;
     private const uint JoyNoError = 0;
     private const int MaximumWinmmJoysticks = 16;
 
     private Slot[] _slots = Array.Empty<Slot>();
+    private readonly IJoystickApi _api;
 
-    public WindowsJoystickReader()
+    public WindowsJoystickReader() : this(new NativeJoystickApi())
     {
+    }
+
+    internal WindowsJoystickReader(IJoystickApi api)
+    {
+        _api = api;
         Refresh();
     }
 
     public bool Refresh()
     {
         var slots = new List<Slot>();
-        var supported = Math.Min(MaximumWinmmJoysticks, unchecked((int)joyGetNumDevs()));
+        var supported = Math.Min(MaximumWinmmJoysticks, unchecked((int)_api.DeviceCount));
         for (uint joystickId = 0; joystickId < supported && slots.Count < TelemetrySample.CapturedControllerCount; joystickId++)
         {
-            var info = NewInfo();
-            if (joyGetPosEx(joystickId, ref info) != JoyNoError)
+            if (!_api.TryGetState(joystickId, out _) || !_api.TryGetCapabilities(joystickId, out var caps))
             {
                 continue;
             }
 
-            var minimum = 0u;
-            var maximum = 65535u;
-            var name = "Windows joystick";
-            var axisCount = 0u;
-            if (joyGetDevCaps(joystickId, out var caps, unchecked((uint)Marshal.SizeOf(typeof(JoyCaps)))) == JoyNoError)
-            {
-                if (caps.YMaximum > caps.YMinimum)
-                {
-                    minimum = caps.YMinimum;
-                    maximum = caps.YMaximum;
-                }
-
-                name = ResolveProductName(caps);
-                axisCount = caps.AxisCount;
-            }
-
-            slots.Add(new Slot(joystickId, minimum, maximum, name, axisCount));
+            slots.Add(new Slot(joystickId, caps, ResolveProductName(joystickId, caps, ReadRegistryString)));
         }
 
         var refreshed = slots.ToArray();
@@ -57,8 +46,7 @@ internal sealed class WindowsJoystickReader
             for (var index = 0; index < refreshed.Length; index++)
             {
                 if (refreshed[index].JoystickId != _slots[index].JoystickId ||
-                    refreshed[index].Minimum != _slots[index].Minimum ||
-                    refreshed[index].Maximum != _slots[index].Maximum ||
+                    !refreshed[index].HasSameAxes(_slots[index]) ||
                     refreshed[index].AxisCount != _slots[index].AxisCount ||
                     !string.Equals(refreshed[index].Name, _slots[index].Name, StringComparison.Ordinal))
                 {
@@ -72,27 +60,45 @@ internal sealed class WindowsJoystickReader
         return changed;
     }
 
-    public bool TryReadYAxis(int slotIndex, out int joystickId, out double percent)
+    public void ReadInto(TelemetrySample sample)
     {
-        joystickId = -1;
-        percent = 0;
-        if (slotIndex < 0 || slotIndex >= _slots.Length)
+        for (var slotIndex = 0; slotIndex < TelemetrySample.CapturedControllerCount; slotIndex++)
         {
-            return false;
-        }
+            var offset = slotIndex * TelemetrySample.CapturedControllerAxisCount;
+            Array.Clear(sample.RawControllerAxesPercent, offset, TelemetrySample.CapturedControllerAxisCount);
+            Array.Clear(sample.RawControllerAxesValid, offset, TelemetrySample.CapturedControllerAxisCount);
+            Array.Clear(sample.RawControllerAxesAgeSeconds, offset, TelemetrySample.CapturedControllerAxisCount);
+            sample.RawControllerDeviceId[slotIndex] = -1;
+            if (slotIndex < _slots.Length)
+            {
+                var slot = _slots[slotIndex];
+                // One native poll supplies every axis at the same receipt time. A disconnected
+                // controller never reuses its previous values or masquerades as a centred stick.
+                if (_api.TryGetState(slot.JoystickId, out var info))
+                {
+                    sample.RawControllerDeviceId[slotIndex] = unchecked((int)slot.JoystickId);
+                    for (var axis = 0; axis < TelemetrySample.CapturedControllerAxisCount; axis++)
+                    {
+                        if (!slot.Supported[axis]) continue;
+                        sample.RawControllerAxesPercent[offset + axis] = NormalizeAxis(
+                            info.Axis(axis), slot.Minimum[axis], slot.Maximum[axis]);
+                        sample.RawControllerAxesValid[offset + axis] = true;
+                    }
+                }
+            }
 
-        var slot = _slots[slotIndex];
-        var info = NewInfo();
-        if (joyGetPosEx(slot.JoystickId, ref info) != JoyNoError)
-        {
-            return false;
+            sample.RawControllerYAxisPercent[slotIndex] = sample.RawControllerAxesPercent[offset + 1];
+            sample.RawControllerYAxisValid[slotIndex] = sample.RawControllerAxesValid[offset + 1];
+            sample.RawControllerYAxisAgeSeconds[slotIndex] = sample.RawControllerAxesAgeSeconds[offset + 1];
         }
+    }
 
-        joystickId = unchecked((int)slot.JoystickId);
-        var midpoint = (slot.Minimum + slot.Maximum) / 2.0;
-        var halfRange = Math.Max(1.0, (slot.Maximum - slot.Minimum) / 2.0);
-        percent = Math.Max(-100, Math.Min(100, (info.YPosition - midpoint) / halfRange * 100.0));
-        return true;
+    internal static double NormalizeAxis(uint position, uint minimum, uint maximum)
+    {
+        if (maximum <= minimum) return 0;
+        var midpoint = ((double)minimum + maximum) / 2.0;
+        var halfRange = ((double)maximum - minimum) / 2.0;
+        return Math.Max(-100, Math.Min(100, (position - midpoint) / halfRange * 100.0));
     }
 
     public int Count => _slots.Length;
@@ -109,29 +115,47 @@ internal sealed class WindowsJoystickReader
         return $"winmm:{slot.JoystickId}: {slot.Name} ({axes})";
     }
 
-    private static string ResolveProductName(JoyCaps caps)
+    internal static string ResolveProductName(uint joystickId, JoyCaps caps, Func<RegistryHive, string, string, string?> readString)
     {
         if (!string.IsNullOrWhiteSpace(caps.RegistryKey))
         {
             const string oemPath = @"System\CurrentControlSet\Control\MediaProperties\PrivateProperties\Joystick\OEM\";
-            foreach (var hive in new[] { Registry.CurrentUser, Registry.LocalMachine })
+            var hives = new[] { RegistryHive.CurrentUser, RegistryHive.LocalMachine };
+            var settingsPath = @"System\CurrentControlSet\Control\MediaResources\Joystick\" + caps.RegistryKey + @"\CurrentJoystickSettings";
+            foreach (var hive in hives)
             {
-                try
+                // szRegKey identifies the driver, not the product. WinMM IDs are zero-based;
+                // CurrentJoystickSettings maps one-based slots to their OEM product keys.
+                var productKey = readString(hive, settingsPath, "Joystick" + (joystickId + 1) + "OEMName");
+                if (string.IsNullOrWhiteSpace(productKey)) continue;
+                foreach (var oemHive in hives)
                 {
-                    using var key = hive.OpenSubKey(oemPath + caps.RegistryKey);
-                    if (key?.GetValue("OEMName") is string oemName && !string.IsNullOrWhiteSpace(oemName))
-                    {
-                        return oemName.Trim();
-                    }
+                    var oemName = readString(oemHive, oemPath + productKey, "OEMName");
+                    if (!string.IsNullOrWhiteSpace(oemName)) return oemName!.Trim();
                 }
-                catch
-                {
-                    // Device provenance is diagnostic metadata; polling must still work if the registry is unavailable.
-                }
+            }
+            foreach (var hive in hives)
+            {
+                var directName = readString(hive, oemPath + caps.RegistryKey, "OEMName");
+                if (!string.IsNullOrWhiteSpace(directName)) return directName!.Trim();
             }
         }
 
         return string.IsNullOrWhiteSpace(caps.ProductName) ? "Windows joystick" : caps.ProductName.Trim();
+    }
+
+    private static string? ReadRegistryString(RegistryHive hive, string path, string name)
+    {
+        try
+        {
+            using var key = (hive == RegistryHive.CurrentUser ? Registry.CurrentUser : Registry.LocalMachine).OpenSubKey(path);
+            return key?.GetValue(name) as string;
+        }
+        catch
+        {
+            // Provenance is diagnostic metadata; a registry ACL must never stop input capture.
+            return null;
+        }
     }
 
     private static JoyInfoEx NewInfo()
@@ -139,7 +163,7 @@ internal sealed class WindowsJoystickReader
         return new JoyInfoEx
         {
             Size = unchecked((uint)Marshal.SizeOf(typeof(JoyInfoEx))),
-            Flags = JoyReturnY,
+            Flags = JoyReturnAxes,
         };
     }
 
@@ -153,7 +177,7 @@ internal sealed class WindowsJoystickReader
     private static extern uint joyGetDevCaps(uint joystickId, out JoyCaps capabilities, uint capabilitiesSize);
 
     [StructLayout(LayoutKind.Sequential)]
-    private struct JoyInfoEx
+    internal struct JoyInfoEx
     {
         public uint Size;
         public uint Flags;
@@ -168,10 +192,17 @@ internal sealed class WindowsJoystickReader
         public uint PointOfView;
         public uint Reserved1;
         public uint Reserved2;
+
+        public uint Axis(int index) => index switch
+        {
+            0 => XPosition, 1 => YPosition, 2 => ZPosition,
+            3 => RPosition, 4 => UPosition, 5 => VPosition,
+            _ => throw new ArgumentOutOfRangeException(nameof(index)),
+        };
     }
 
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-    private struct JoyCaps
+    internal struct JoyCaps
     {
         public ushort ManufacturerId;
         public ushort ProductId;
@@ -208,23 +239,60 @@ internal sealed class WindowsJoystickReader
 
     private sealed class Slot
     {
-        public Slot(uint joystickId, uint minimum, uint maximum, string name, uint axisCount)
+        public Slot(uint joystickId, JoyCaps caps, string name)
         {
             JoystickId = joystickId;
-            Minimum = minimum;
-            Maximum = maximum;
+            Minimum = new[] { caps.XMinimum, caps.YMinimum, caps.ZMinimum, caps.RMinimum, caps.UMinimum, caps.VMinimum };
+            Maximum = new[] { caps.XMaximum, caps.YMaximum, caps.ZMaximum, caps.RMaximum, caps.UMaximum, caps.VMaximum };
+            // Z/R/U/V presence comes from JOYCAPS_HAS*, not a guess based on axis count.
+            Supported = new[] { caps.AxisCount >= 1, caps.AxisCount >= 2,
+                (caps.Capabilities & 1) != 0, (caps.Capabilities & 2) != 0,
+                (caps.Capabilities & 4) != 0, (caps.Capabilities & 8) != 0 };
+            for (var axis = 0; axis < Supported.Length; axis++)
+                Supported[axis] &= Maximum[axis] > Minimum[axis];
             Name = name;
-            AxisCount = axisCount;
+            AxisCount = caps.AxisCount;
         }
 
         public uint JoystickId { get; }
 
-        public uint Minimum { get; }
+        public uint[] Minimum { get; }
 
-        public uint Maximum { get; }
+        public uint[] Maximum { get; }
+
+        public bool[] Supported { get; }
 
         public string Name { get; }
 
         public uint AxisCount { get; }
+
+        public bool HasSameAxes(Slot other)
+        {
+            for (var axis = 0; axis < Supported.Length; axis++)
+                if (Minimum[axis] != other.Minimum[axis] || Maximum[axis] != other.Maximum[axis] ||
+                    Supported[axis] != other.Supported[axis]) return false;
+            return true;
+        }
+    }
+
+    internal interface IJoystickApi
+    {
+        uint DeviceCount { get; }
+        bool TryGetState(uint joystickId, out JoyInfoEx state);
+        bool TryGetCapabilities(uint joystickId, out JoyCaps capabilities);
+    }
+
+    private sealed class NativeJoystickApi : IJoystickApi
+    {
+        public uint DeviceCount => joyGetNumDevs();
+
+        public bool TryGetState(uint joystickId, out JoyInfoEx state)
+        {
+            state = NewInfo();
+            return joyGetPosEx(joystickId, ref state) == JoyNoError;
+        }
+
+        public bool TryGetCapabilities(uint joystickId, out JoyCaps capabilities) =>
+            joyGetDevCaps(joystickId, out capabilities, unchecked((uint)Marshal.SizeOf(typeof(JoyCaps)))) == JoyNoError;
     }
 }

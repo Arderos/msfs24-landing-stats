@@ -780,11 +780,13 @@ internal sealed class GoogleDriveBackupService : IDisposable
     {
         var airport = record.Airport;
         var runway = record.Runway;
+        var runwayGeometry = record.RunwayGeometry;
         var distance = record.AirportDistanceNauticalMiles;
         try
         {
             record.Airport = "Unknown airport";
             record.Runway = "—";
+            record.RunwayGeometry = null;
             record.AirportDistanceNauticalMiles = null;
             return Hash(_landings.SerializeForBackup(record));
         }
@@ -792,6 +794,7 @@ internal sealed class GoogleDriveBackupService : IDisposable
         {
             record.Airport = airport;
             record.Runway = runway;
+            record.RunwayGeometry = runwayGeometry;
             record.AirportDistanceNauticalMiles = distance;
         }
     }
@@ -799,7 +802,8 @@ internal sealed class GoogleDriveBackupService : IDisposable
     private static bool TryMergeLandingMetadata(LandingRecord local, LandingRecord remote)
     {
         if (!TryMergeText(local.Airport, remote.Airport, IsUnknownAirport, out var airport) ||
-            !TryMergeText(local.Runway, remote.Runway, IsUnknownRunway, out var runway))
+            !TryMergeText(local.Runway, remote.Runway, IsUnknownRunway, out var runway) ||
+            !TryMergeRunwayGeometry(local.RunwayGeometry, remote.RunwayGeometry, out var geometry))
         {
             return false;
         }
@@ -810,12 +814,89 @@ internal sealed class GoogleDriveBackupService : IDisposable
                                !IsUnknownAirport(remote.Airport);
         local.Airport = airport;
         local.Runway = runway;
+        local.RunwayGeometry = geometry;
         local.AirportDistanceNauticalMiles = localAirportWon && !remoteAirportWon
             ? local.AirportDistanceNauticalMiles
             : remoteAirportWon && !localAirportWon
                 ? remote.AirportDistanceNauticalMiles
                 : MinimumDistance(local.AirportDistanceNauticalMiles, remote.AirportDistanceNauticalMiles);
         return true;
+    }
+
+    private static bool TryMergeRunwayGeometry(RunwayFacility? local, RunwayFacility? remote, out RunwayFacility? merged)
+    {
+        merged = null;
+        if ((local != null && (!local.HasValidGeometry || !local.HasValidGuidanceMetadata)) ||
+            (remote != null && (!remote.HasValidGeometry || !remote.HasValidGuidanceMetadata))) return false;
+        if (local == null || remote == null)
+        {
+            merged = local ?? remote;
+            return true;
+        }
+        // Facility retrieval time is not a different landing. Distinct scenery
+        // geometry, however, remains a real conflict rather than silently winning.
+        if (!string.Equals(local.AirportIdent, remote.AirportIdent, StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(local.AirportRegion, remote.AirportRegion, StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(local.PrimaryName, remote.PrimaryName, StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(local.SecondaryName, remote.SecondaryName, StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(local.Source, remote.Source, StringComparison.OrdinalIgnoreCase) ||
+            local.LatitudeDegrees != remote.LatitudeDegrees || local.LongitudeDegrees != remote.LongitudeDegrees ||
+            local.AltitudeMeters != remote.AltitudeMeters || local.HeadingTrueDegrees != remote.HeadingTrueDegrees ||
+            local.LengthMeters != remote.LengthMeters || local.WidthMeters != remote.WidthMeters ||
+            (local.SurfaceType.HasValue && remote.SurfaceType.HasValue && local.SurfaceType != remote.SurfaceType) ||
+            (local.PrimaryThresholdOffsetMeters.HasValue && remote.PrimaryThresholdOffsetMeters.HasValue && local.PrimaryThresholdOffsetMeters != remote.PrimaryThresholdOffsetMeters) ||
+            (local.SecondaryThresholdOffsetMeters.HasValue && remote.SecondaryThresholdOffsetMeters.HasValue && local.SecondaryThresholdOffsetMeters != remote.SecondaryThresholdOffsetMeters) ||
+            (local.PrimaryPapiQueried && remote.PrimaryPapiQueried && !SamePapi(local.PrimaryPapi, remote.PrimaryPapi)) ||
+            (local.SecondaryPapiQueried && remote.SecondaryPapiQueried && !SamePapi(local.SecondaryPapi, remote.SecondaryPapi)) ||
+            (local.PrimaryIlsGlideSlope != null && remote.PrimaryIlsGlideSlope != null && !SameGlideSlope(local.PrimaryIlsGlideSlope, remote.PrimaryIlsGlideSlope)) ||
+            (local.SecondaryIlsGlideSlope != null && remote.SecondaryIlsGlideSlope != null && !SameGlideSlope(local.SecondaryIlsGlideSlope, remote.SecondaryIlsGlideSlope))) return false;
+
+        merged = new RunwayFacility
+        {
+            AirportIdent = CanonicalText(local.AirportIdent, remote.AirportIdent),
+            AirportRegion = CanonicalText(local.AirportRegion, remote.AirportRegion),
+            PrimaryName = CanonicalText(local.PrimaryName, remote.PrimaryName),
+            SecondaryName = CanonicalText(local.SecondaryName, remote.SecondaryName),
+            Source = CanonicalText(local.Source, remote.Source),
+            LatitudeDegrees = local.LatitudeDegrees, LongitudeDegrees = local.LongitudeDegrees,
+            AltitudeMeters = local.AltitudeMeters, HeadingTrueDegrees = local.HeadingTrueDegrees,
+            LengthMeters = local.LengthMeters, WidthMeters = local.WidthMeters,
+            SurfaceType = local.SurfaceType ?? remote.SurfaceType,
+            PrimaryThresholdOffsetMeters = local.PrimaryThresholdOffsetMeters ?? remote.PrimaryThresholdOffsetMeters,
+            SecondaryThresholdOffsetMeters = local.SecondaryThresholdOffsetMeters ?? remote.SecondaryThresholdOffsetMeters,
+            PrimaryPapi = local.PrimaryPapi ?? remote.PrimaryPapi,
+            SecondaryPapi = local.SecondaryPapi ?? remote.SecondaryPapi,
+            PrimaryPapiQueried = local.PrimaryPapiQueried || remote.PrimaryPapiQueried,
+            SecondaryPapiQueried = local.SecondaryPapiQueried || remote.SecondaryPapiQueried,
+            PrimaryIlsGlideSlope = CanonicalGlideSlope(local.PrimaryIlsGlideSlope, remote.PrimaryIlsGlideSlope),
+            SecondaryIlsGlideSlope = CanonicalGlideSlope(local.SecondaryIlsGlideSlope, remote.SecondaryIlsGlideSlope),
+            RetrievedUtc = EarliestUtc(local.RetrievedUtc, remote.RetrievedUtc),
+        };
+        return merged.HasValidGeometry && merged.HasValidGuidanceMetadata;
+    }
+
+    private static bool SamePapi(RunwayPapi? a, RunwayPapi? b) => a == null || b == null ? a == b :
+        a.StationFromEndMeters == b.StationFromEndMeters && a.AngleDegrees == b.AngleDegrees;
+
+    private static bool SameGlideSlope(RunwayGlideSlope a, RunwayGlideSlope b) =>
+        string.Equals(a.Ident, b.Ident, StringComparison.OrdinalIgnoreCase) && string.Equals(a.Region, b.Region, StringComparison.OrdinalIgnoreCase) &&
+        a.LatitudeDegrees == b.LatitudeDegrees && a.LongitudeDegrees == b.LongitudeDegrees &&
+        a.AltitudeMeters == b.AltitudeMeters && a.AngleDegrees == b.AngleDegrees;
+
+    private static RunwayGlideSlope? CanonicalGlideSlope(RunwayGlideSlope? a, RunwayGlideSlope? b) => a == null || b == null ? a ?? b :
+        new RunwayGlideSlope { Ident = CanonicalText(a.Ident, b.Ident), Region = CanonicalText(a.Region, b.Region),
+            LatitudeDegrees = a.LatitudeDegrees, LongitudeDegrees = a.LongitudeDegrees, AltitudeMeters = a.AltitudeMeters, AngleDegrees = a.AngleDegrees };
+
+    private static string CanonicalText(string? first, string? second) =>
+        (StringComparer.Ordinal.Compare(first, second) <= 0 ? first : second) ?? string.Empty;
+
+    private static DateTime? EarliestUtc(DateTime? first, DateTime? second)
+    {
+        DateTime? Normalize(DateTime? value) => !value.HasValue ? null : value.Value.Kind == DateTimeKind.Local
+            ? value.Value.ToUniversalTime() : DateTime.SpecifyKind(value.Value, DateTimeKind.Utc);
+        first = Normalize(first);
+        second = Normalize(second);
+        return !first.HasValue ? second : !second.HasValue || first.Value <= second.Value ? first : second;
     }
 
     private static bool TryMergeText(

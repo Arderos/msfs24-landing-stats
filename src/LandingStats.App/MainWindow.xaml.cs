@@ -57,10 +57,13 @@ public partial class MainWindow : Window
     private IReadOnlyList<LandingRecord> _landings = Array.Empty<LandingRecord>();
     private IReadOnlyList<AirportFacility> _airportFacilities = Array.Empty<AirportFacility>();
     private readonly Dictionary<string, LandingRecord> _loadedDetails = new Dictionary<string, LandingRecord>(StringComparer.Ordinal);
+    private long _runwayRecordsEpisodeId;
+    private IReadOnlyList<LandingRecord> _runwayRecords = Array.Empty<LandingRecord>();
     private HwndSource? _messageSource;
     private SimConnectLandingRecorder? _recorder;
     private LandingChart[] _charts = Array.Empty<LandingChart>();
     private bool _showFullApproach;
+    private bool _showReplay;
     private int _primaryGearSeriesIndex;
     private int? _mainIsolatedSeriesIndex;
     private bool _changingLanguageSelection;
@@ -129,6 +132,7 @@ public partial class MainWindow : Window
         }
         LoadHistory();
         _charts = new[] { MainChart, MiniGChart, MiniPowerChart, MiniGearChart };
+        ReplayView.TimeChanged += OnChartHoverTimeChanged;
         foreach (var chart in _charts)
         {
             chart.HoverTimeChanged += OnChartHoverTimeChanged;
@@ -277,6 +281,8 @@ public partial class MainWindow : Window
 
         DataContext = detail;
         MainChart.Record = detail;
+        ReplayView.SetRecord(detail, LoadReplayContacts(detail));
+        UpdateControlTab(ReplayView.IsPlaybackAvailable, ReconstructionTab, ControlsTab);
         MiniGChart.Record = detail;
         MiniPowerChart.Record = detail;
         MiniGearChart.Record = detail;
@@ -293,16 +299,42 @@ public partial class MainWindow : Window
         UpdateLaneReadouts(detail, 0);
     }
 
+    private IReadOnlyList<LandingRecord> LoadReplayContacts(LandingRecord selected)
+    {
+        var contacts = new List<LandingRecord> { selected };
+        lock (_landingRepositoryGate)
+        {
+            // Use unfiltered history so searching the sidebar cannot hide a
+            // contact from the scene. Load only this episode's sibling details.
+            foreach (var summary in LandingReplayContacts.ForEpisode(selected, _landings).Where(r => r.Id != selected.Id))
+            {
+                if (!_loadedDetails.TryGetValue(summary.Id, out var detail))
+                {
+                    detail = _repository.LoadDetail(summary);
+                    if (detail == null || detail.IsSummaryOnly) continue;
+                    _loadedDetails[summary.Id] = detail;
+                }
+                contacts.Add(detail);
+            }
+        }
+        return contacts;
+    }
+
     private void OnChartHoverTimeChanged(object? sender, LandingChartHoverEventArgs eventArgs)
     {
+        var time = eventArgs.TimeSeconds ?? (_showReplay ? ReplayView.CurrentTimeSeconds : (double?)null);
+        if (time.HasValue)
+        {
+            if (!ReferenceEquals(sender, ReplayView)) ReplayView.SetTime(time.Value);
+        }
         foreach (var chart in _charts)
         {
-            chart.SetHoverTime(eventArgs.TimeSeconds);
+            chart.SetHoverTime(time);
         }
 
         if (DataContext is LandingRecord record)
         {
-            UpdateLaneReadouts(record, eventArgs.TimeSeconds ?? 0);
+            UpdateLaneReadouts(record, time ?? 0);
         }
     }
 
@@ -318,10 +350,10 @@ public partial class MainWindow : Window
         _zoomEndSeconds = endSeconds;
         foreach (var chart in _charts)
         {
-            chart.SetZoomRange(startSeconds, endSeconds);
+            chart.SetZoomRange(_showReplay ? null : startSeconds, _showReplay ? null : endSeconds);
         }
 
-        Timeline.SetZoomRange(startSeconds, endSeconds);
+        Timeline.SetZoomRange(_showReplay ? null : startSeconds, _showReplay ? null : endSeconds);
         if (startSeconds.HasValue && endSeconds.HasValue)
         {
             ChartWindowButton.Content = LocalizationManager.Format(
@@ -426,6 +458,8 @@ public partial class MainWindow : Window
     {
         DataContext = null;
         MainChart.Record = null;
+        ReplayView.Record = null;
+        UpdateControlTab(false, ReconstructionTab, ControlsTab);
         MiniGChart.Record = null;
         MiniPowerChart.Record = null;
         MiniGearChart.Record = null;
@@ -1322,6 +1356,7 @@ public partial class MainWindow : Window
         }
 
         UpdateHistoryPresentation(LandingHistoryList.Items.Count);
+        ReplayView.RefreshLocalization();
         UpdateChartDescription(MainChart.Mode);
         UpdateModeUnit(MainChart.Mode);
         UpdateMainLegend(MainChart.Mode);
@@ -1352,22 +1387,41 @@ public partial class MainWindow : Window
             $"{record.AircraftTitle}\n{record.LocationDisplay} · {record.TimestampDisplay}{contact}";
     }
 
+    internal static void UpdateControlTab(bool hasReplay, RadioButton reconstructionTab, RadioButton controlsTab)
+    {
+        var selected = reconstructionTab.IsChecked == true || controlsTab.IsChecked == true;
+        reconstructionTab.Visibility = hasReplay ? Visibility.Visible : Visibility.Collapsed;
+        controlsTab.Visibility = hasReplay ? Visibility.Collapsed : Visibility.Visible;
+        // Preserve the chosen tab when moving between old and new recordings.
+        // Checked invokes the normal mode handler, restoring charts, legend and lanes.
+        if (selected) (hasReplay ? reconstructionTab : controlsTab).IsChecked = true;
+    }
+
     private void OnChartModeChanged(object sender, RoutedEventArgs eventArgs)
     {
         if (sender is not RadioButton button ||
             button.IsChecked != true ||
             button.Tag is not string modeName ||
-            !Enum.TryParse(modeName, out LandingChartMode mode) ||
             MainChart == null)
         {
             return;
         }
 
+        var replay = modeName == "Reconstruction";
+        if (!replay && !Enum.TryParse(modeName, out LandingChartMode _)) return;
+        _showReplay = replay;
+        ReplayPanel.Visibility = replay ? Visibility.Visible : Visibility.Collapsed;
+        MainChart.Visibility = replay ? Visibility.Collapsed : Visibility.Visible;
+        ModeUnitText.Visibility = replay ? Visibility.Collapsed : Visibility.Visible;
+        ChartWindowButton.Visibility = replay ? Visibility.Collapsed : Visibility.Visible;
+        var mode = replay ? MainChart.Mode : (LandingChartMode)Enum.Parse(typeof(LandingChartMode), modeName);
         MainChart.Mode = mode;
         _mainIsolatedSeriesIndex = null;
         UpdateChartDescription(mode);
         UpdateModeUnit(mode);
         UpdateMainLegend(mode);
+        ApplyZoom(_zoomStartSeconds, _zoomEndSeconds);
+        if (replay) OnChartHoverTimeChanged(ReplayView, new LandingChartHoverEventArgs(ReplayView.CurrentTimeSeconds));
     }
 
     private void UpdateModeUnit(LandingChartMode mode)
@@ -1386,6 +1440,11 @@ public partial class MainWindow : Window
 
     private void UpdateChartDescription(LandingChartMode mode)
     {
+        if (_showReplay)
+        {
+            MainChartDescription.Text = string.Empty;
+            return;
+        }
         var record = DataContext as LandingRecord;
         MainChartDescription.Text = mode switch
         {
@@ -1421,6 +1480,12 @@ public partial class MainWindow : Window
 
     private void UpdateMainLegend(LandingChartMode mode)
     {
+        if (_showReplay)
+        {
+            MainLegendPanel.Children.Clear();
+            MainLegendSeparator.Visibility = Visibility.Collapsed;
+            return;
+        }
         string[] labels;
         Brush[] brushes;
         bool[] dashed;
@@ -1544,6 +1609,7 @@ public partial class MainWindow : Window
         _recorder.EpisodeStarted += OnEpisodeStarted;
         _recorder.EpisodeCompleted += OnEpisodeCompleted;
         _recorder.AirportFacilitiesUpdated += OnAirportFacilitiesUpdated;
+        _recorder.RunwayFacilitiesUpdated += OnRunwayFacilitiesUpdated;
         _recorder.AircraftGroundStateChanged += OnAircraftGroundStateChanged;
         _recorder.SeedAirportFacilities(_airportFacilities);
         _recorder.Start();
@@ -1694,8 +1760,14 @@ public partial class MainWindow : Window
                 processed.AirportFacilities,
                 _airportFacilities);
             var airportUpdates = new List<LandingRecord>();
+            if (eventArgs.EpisodeId >= _runwayRecordsEpisodeId)
+            {
+                _runwayRecordsEpisodeId = eventArgs.EpisodeId;
+                _runwayRecords = processed.Records;
+            }
             foreach (var record in processed.Records)
             {
+                if (_recorder != null) TryPersistRunway(record, _recorder.GetRunwayFacilities(eventArgs.EpisodeId));
                 if (TryResolveAirport(record, _airportFacilities))
                 {
                     airportUpdates.Add(record);
@@ -1816,7 +1888,8 @@ public partial class MainWindow : Window
                 eventArgs.AircraftTitle,
                 aircraftType,
                 contactCount: touchdowns.Count,
-                timestampUtc: episodeTimestampUtc);
+                timestampUtc: episodeTimestampUtc,
+                episodeEndSimulationTimeSeconds: samples[samples.Count - 1].SimulationTimeSeconds);
             record.Simulator = eventArgs.Simulator;
             record.ControlInputSources = eventArgs.ControlInputSources.ToList();
             TryResolveAirport(record, facilities);
@@ -1871,6 +1944,77 @@ public partial class MainWindow : Window
             .ToArray();
 
         ApplySessionFilter(newestFirst[0].Id);
+    }
+
+    private void OnRunwayFacilitiesUpdated(object? sender, RunwayFacilitiesEventArgs eventArgs)
+    {
+        if (_isClosed || _recorder == null || eventArgs.EpisodeId != _runwayRecordsEpisodeId) return;
+        var facilities = eventArgs.Runways;
+        var changed = false;
+        // Only the contacts whose landing requested this snapshot. Browsing an
+        // older record with missing geometry must not silently rewrite history.
+        foreach (var record in _runwayRecords)
+        {
+            if (!TryPersistRunway(record, facilities)) continue;
+            var summary = _landings.FirstOrDefault(item => item.Id == record.Id);
+            if (summary != null)
+            {
+                summary.RunwayGeometry = record.RunwayGeometry;
+                summary.Runway = record.Runway;
+                summary.Airport = record.Airport;
+                summary.AirportDistanceNauticalMiles = record.AirportDistanceNauticalMiles;
+            }
+            changed = true;
+        }
+        if (!changed) return;
+        LandingHistoryList.Items.Refresh();
+        if (LandingHistoryList.SelectedItem is LandingRecord selected) SelectRecord(selected);
+        QueueGoogleDriveSync();
+    }
+
+    private bool TryPersistRunway(LandingRecord record, IReadOnlyList<RunwayFacility> facilities)
+    {
+        var previousName = record.Runway;
+        var previousAirport = record.Airport;
+        var previousDistance = record.AirportDistanceNauticalMiles;
+        if (!TryResolveRunway(record, facilities)) return false;
+        try
+        {
+            lock (_landingRepositoryGate)
+            {
+                // A delayed response must not recreate a deleted landing.
+                if (_repository.Contains(record.Id))
+                {
+                    _repository.Save(record);
+                    return true;
+                }
+            }
+        }
+        catch (Exception exception) when (exception is System.IO.IOException || exception is UnauthorizedAccessException || exception is System.Runtime.Serialization.SerializationException)
+        {
+            // The landing itself was already saved. Optional scenery metadata
+            // must not turn it into a failed analysis or interrupt frame capture.
+        }
+        record.RunwayGeometry = null;
+        record.Runway = previousName;
+        record.Airport = previousAirport;
+        record.AirportDistanceNauticalMiles = previousDistance;
+        return false;
+    }
+
+    internal static bool TryResolveRunway(LandingRecord record, IReadOnlyList<RunwayFacility> facilities)
+    {
+        if (record.RunwayGeometry != null || record.IsSummaryOnly) return false;
+        var runway = RunwayResolver.Select(record, facilities);
+        if (runway == null) return false;
+        record.RunwayGeometry = runway;
+        record.Runway = RunwayResolver.NameForDirection(record, runway);
+        // A nearby airport's reference point can be closer than the airport
+        // whose runway actually contains this touchdown. Keep the identities together.
+        if (!string.Equals(record.Airport, runway.AirportIdent, StringComparison.OrdinalIgnoreCase))
+            record.AirportDistanceNauticalMiles = null;
+        record.Airport = runway.AirportIdent;
+        return true;
     }
 
     private void OnAirportFacilitiesUpdated(object? sender, AirportFacilitiesEventArgs eventArgs)
@@ -2250,6 +2394,7 @@ public partial class MainWindow : Window
             _recorder.EpisodeStarted -= OnEpisodeStarted;
             _recorder.EpisodeCompleted -= OnEpisodeCompleted;
             _recorder.AirportFacilitiesUpdated -= OnAirportFacilitiesUpdated;
+            _recorder.RunwayFacilitiesUpdated -= OnRunwayFacilitiesUpdated;
             _recorder = null;
         }
 

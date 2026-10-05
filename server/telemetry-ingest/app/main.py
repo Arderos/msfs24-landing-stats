@@ -47,7 +47,10 @@ UNREFERENCED_INSTALLATION_RETENTION_DAYS = int(
     os.environ.get("UNREFERENCED_INSTALLATION_RETENTION_DAYS", "30")
 )
 PEPPER_PATH = Path(os.environ.get("SERVER_PEPPER_FILE", "/run/secrets/server_pepper"))
-EXPECTED_HEADER = (Path(__file__).parent.parent / "schema-v5.header").read_text(encoding="utf-8").strip()
+EXPECTED_HEADERS = {
+    version: (Path(__file__).parent.parent / f"schema-v{version}.header").read_text(encoding="utf-8").strip()
+    for version in (5, 6)
+}
 STORE = Store(DATA_ROOT)
 
 if not 1024 * 1024 <= MAX_UPLOAD_BYTES <= 64 * 1024 * 1024:
@@ -133,6 +136,7 @@ def config() -> dict[str, object]:
         "protocol": 1,
         "registration_mode": REGISTRATION_MODE,
         "telemetry_schema": 5,
+        "telemetry_schemas": list(EXPECTED_HEADERS),
         "max_upload_bytes": MAX_UPLOAD_BYTES,
     }
 
@@ -208,7 +212,7 @@ async def upload_capture(request: Request) -> dict[str, object]:
         raise HTTPException(status_code=400, detail="invalid nonce")
     if not re.fullmatch(r"[a-f0-9]{64}", expected_sha):
         raise HTTPException(status_code=400, detail="invalid SHA-256")
-    if schema != 5 or not VERSION_RE.fullmatch(app_version):
+    if schema not in EXPECTED_HEADERS or not VERSION_RE.fullmatch(app_version):
         raise HTTPException(status_code=400, detail="unsupported client metadata")
     if expected_size <= 0 or expected_size > MAX_UPLOAD_BYTES:
         raise HTTPException(status_code=413, detail="upload size exceeds policy")
@@ -280,7 +284,7 @@ async def upload_capture(request: Request) -> dict[str, object]:
             raise HTTPException(status_code=400, detail="upload hash or size mismatch")
         try:
             facts = await run_in_threadpool(
-                validate_capture, incoming, EXPECTED_HEADER, MAX_UNCOMPRESSED_BYTES
+                validate_capture, incoming, EXPECTED_HEADERS[schema], MAX_UNCOMPRESSED_BYTES, schema
             )
         except (ValueError, OSError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc

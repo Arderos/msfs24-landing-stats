@@ -180,6 +180,7 @@ public static class TouchdownAnalysis
 
         return new TouchdownResult
         {
+            Impact = TouchdownImpactAnalysis.Analyze(samples, contactIndex),
             ClosureReconstructionModel = TouchdownClosureReconstruction.ModelName,
             EpisodeNumber = episodeNumber,
             ContactNumber = contactNumber,

@@ -150,7 +150,7 @@ internal sealed class AircraftGroundStateEventArgs : EventArgs
     public bool OnGround { get; }
 }
 
-internal sealed class SimConnectLandingRecorder : IDisposable
+internal sealed partial class SimConnectLandingRecorder : IDisposable
 {
     public const int WindowMessage = 0x0403;
 
@@ -336,6 +336,7 @@ internal sealed class SimConnectLandingRecorder : IDisposable
 
     private void OnRetryTimerTick(object? sender, EventArgs eventArgs)
     {
+        ExpireRunwayRequests();
         var now = DateTime.UtcNow;
         if (_episodeSamples == null && !RawDebugEnabled && now >= _nextJoystickRefreshUtc)
         {
@@ -376,6 +377,8 @@ internal sealed class SimConnectLandingRecorder : IDisposable
             connection.OnRecvException += OnRecvException;
             connection.OnRecvSimobjectData += OnRecvSimobjectData;
             connection.OnRecvAirportList += OnRecvAirportList;
+            connection.OnRecvFacilityData += OnRecvRunwayFacilityData;
+            connection.OnRecvFacilityDataEnd += OnRecvRunwayFacilityDataEnd;
             connection.OnRecvEvent += OnRecvEvent;
             connection.OnRecvEventEx1 += OnRecvEventEx1;
             connection.OnRecvFlowEvent += OnRecvFlowEvent;
@@ -450,6 +453,7 @@ internal sealed class SimConnectLandingRecorder : IDisposable
 
     private void OnRecvException(SimConnect sender, SIMCONNECT_RECV_EXCEPTION data)
     {
+        if (HandleRunwayException(sender, data.dwSendID)) return;
         var operation = _simConnectOperations.TryGetValue(data.dwSendID, out var value)
             ? $" · {value}"
             : string.Empty;
@@ -560,6 +564,7 @@ internal sealed class SimConnectLandingRecorder : IDisposable
             AirportFacilitiesUpdated?.Invoke(
                 this,
                 new AirportFacilitiesEventArgs(new List<AirportFacility>(_airportFacilities.Values)));
+            RequestNearbyRunways();
         }
     }
 
@@ -763,6 +768,9 @@ internal sealed class SimConnectLandingRecorder : IDisposable
             return;
         }
 
+        // Clear the previous scenery snapshot before an analysis callback can
+        // observe it; even a disconnect-completed episode must not inherit it.
+        BeginRunwayEpisode(episodeId);
         EpisodeCompleted?.Invoke(
             this,
             new LandingEpisodeEventArgs(
@@ -779,6 +787,7 @@ internal sealed class SimConnectLandingRecorder : IDisposable
         {
             RequestAirportFacilities(_simConnect);
         }
+        if (refreshAirportFacilities && _simConnect != null && !_disposed) RequestEpisodeRunways(samples);
     }
 
     private void DiscardEpisode()
@@ -916,6 +925,7 @@ internal sealed class SimConnectLandingRecorder : IDisposable
 
     private void CloseSimConnect()
     {
+        ResetRunwayConnection();
         var connection = _simConnect;
         _simConnect = null;
         try
@@ -989,16 +999,7 @@ internal sealed class SimConnectLandingRecorder : IDisposable
             ? Math.Max(0, hostSeconds - _axisElevatorSetReceivedHostSeconds)
             : 0;
 
-        for (var index = 0; index < TelemetrySample.CapturedControllerCount; index++)
-        {
-            sample.RawControllerYAxisValid[index] = _windowsJoystickReader.TryReadYAxis(
-                index,
-                out var joystickId,
-                out var rawYPercent);
-            sample.RawControllerDeviceId[index] = joystickId;
-            sample.RawControllerYAxisPercent[index] = rawYPercent;
-            sample.RawControllerYAxisAgeSeconds[index] = 0;
-        }
+        _windowsJoystickReader.ReadInto(sample);
 
         CopyArray(frame.EngineThrottlePercent, sample.EngineThrottlePercent);
         CopyArray(frame.EngineN1Percent, sample.EngineN1Percent);
@@ -1283,6 +1284,14 @@ internal sealed class SimConnectLandingRecorder : IDisposable
         Guard,
         Frame,
         Metadata,
+        Runways,
+        RunwayPrimaryThresholds,
+        RunwaySecondaryThresholds,
+        RunwayPrimaryLeftPapi,
+        RunwayPrimaryRightPapi,
+        RunwaySecondaryLeftPapi,
+        RunwaySecondaryRightPapi,
+        RunwayIlsGlideSlope,
     }
 
     private enum Requests

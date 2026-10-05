@@ -10,6 +10,7 @@ RUN pip install --no-cache-dir --disable-pip-version-check -r requirements.txt
 
 COPY app ./app
 COPY schema-v5.header ./schema-v5.header
+COPY schema-v6.header ./schema-v6.header
 
 RUN addgroup --system --gid 10001 telemetry \
     && adduser --system --uid 10001 --ingroup telemetry --home /nonexistent --no-create-home telemetry
