@@ -15,6 +15,9 @@
     <ProjectReference Include="..\..\src\LandingStats.Core\LandingStats.Core.csproj" />
     <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies.net48" Version="1.0.3" PrivateAssets="all" />
     <Reference Include="System.IO.Compression" />
+    <Reference Include="Microsoft.FlightSimulator.SimConnect">
+      <HintPath>..\..\src\LandingStats.App\bin\$(Configuration)\net48\Microsoft.FlightSimulator.SimConnect.dll</HintPath>
+    </Reference>
     <Reference Include="System.IO.Compression.FileSystem" />
     <Reference Include="System.Net.Http" />
     <Reference Include="System.Security" />

@@ -7,6 +7,19 @@ namespace LandingStats.App.Telemetry;
 
 internal static class RunwayResolver
 {
+    internal static bool TryApply(LandingRecord record, IReadOnlyList<RunwayFacility> facilities)
+    {
+        if (record.RunwayGeometry != null || record.IsSummaryOnly) return false;
+        var runway = Select(record, facilities);
+        if (runway == null) return false;
+        record.RunwayGeometry = runway;
+        record.Runway = NameForDirection(record, runway);
+        if (!string.Equals(record.Airport, runway.AirportIdent, StringComparison.OrdinalIgnoreCase))
+            record.AirportDistanceNauticalMiles = null;
+        record.Airport = runway.AirportIdent;
+        return true;
+    }
+
     // This is a conservative visual association, not a runway-incursion detector.
     public static RunwayFacility? Select(LandingRecord record, IEnumerable<RunwayFacility> runways)
     {

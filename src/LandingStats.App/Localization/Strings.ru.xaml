@@ -10,6 +10,13 @@
     <system:String x:Key="Top.Close">Закрыть</system:String>
 
     <system:String x:Key="History.Title">ПОСАДКИ</system:String>
+    <system:String x:Key="History.Loading">Загрузка истории посадок…</system:String>
+    <system:String x:Key="History.DetailLoading">Загрузка данных посадки…</system:String>
+    <system:String x:Key="History.LoadingRunway">Загрузка данных ВПП…</system:String>
+    <system:String x:Key="History.LoadFailed">Не удалось загрузить историю посадок.</system:String>
+    <system:String x:Key="History.DetailLoadFailed">Не удалось загрузить данные посадки.</system:String>
+    <system:String x:Key="History.RetryLoad">Повторить</system:String>
+    <system:String x:Key="Lifecycle.Closing">Сохранение локальных изменений и закрытие…</system:String>
     <system:String x:Key="History.Filter">Фильтр по самолёту или аэропорту</system:String>
     <system:String x:Key="History.Delete">Удалить посадку</system:String>
     <system:String x:Key="History.AverageRate">Средняя вертикальная скорость за месяц</system:String>
@@ -147,6 +154,8 @@
     <system:String x:Key="Settings.Russian">РУССКИЙ</system:String>
     <system:String x:Key="Settings.AutomaticResolvedFormat">Сейчас автоматический режим выбирает: {0}.</system:String>
     <system:String x:Key="Settings.SaveErrorFormat">Не удалось сохранить настройки. {0}</system:String>
+    <system:String x:Key="Settings.Applying">Применение настроек…</system:String>
+    <system:String x:Key="Settings.Loading">Загрузка настроек…</system:String>
     <system:String x:Key="Settings.FileFormat">Файл настроек: {0}</system:String>
     <system:String x:Key="Settings.AutoStart">АВТОЗАПУСК С СИМУЛЯТОРОМ</system:String>
     <system:String x:Key="Settings.AutoStartBody">Автоматически открывает Landing Stats при запуске Microsoft Flight Simulator 2024. Поддерживаются версии Steam и Microsoft Store.</system:String>

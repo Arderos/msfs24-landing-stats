@@ -372,7 +372,7 @@
                     <TextBlock x:Name="RecorderModeText" Text="{DynamicResource Top.Offline}" Foreground="{StaticResource MutedTextBrush}" FontSize="12" />
                 </StackPanel>
                 <StackPanel Grid.Column="3" Orientation="Horizontal">
-                    <Button Width="34" Height="28" Style="{StaticResource TopBarButtonStyle}" Click="OnSettingsClick"
+                    <Button x:Name="SettingsButton" IsEnabled="False" Width="34" Height="28" Style="{StaticResource TopBarButtonStyle}" Click="OnSettingsClick"
                             ToolTip="{DynamicResource Top.Settings}" AutomationProperties.Name="{DynamicResource Top.Settings}">
                         <TextBlock Text="&#xE713;" FontFamily="Segoe MDL2 Assets" FontSize="13" />
                     </Button>
@@ -515,6 +515,19 @@
                     </ListBox.ItemTemplate>
                 </ListBox>
 
+                <StackPanel x:Name="HistoryLoadingPanel" Grid.Row="2" Margin="18,26"
+                            HorizontalAlignment="Center" VerticalAlignment="Top"
+                            Visibility="Collapsed" MaxWidth="230">
+                    <ProgressBar x:Name="HistoryLoadingProgress" Height="3" IsIndeterminate="True"
+                                 Foreground="{StaticResource AccentBrush}" />
+                    <TextBlock x:Name="HistoryLoadingText" Margin="0,10,0,0"
+                               Text="{DynamicResource History.Loading}" TextWrapping="Wrap"
+                               TextAlignment="Center" Foreground="{StaticResource MutedTextBrush}" FontSize="12" />
+                    <Button x:Name="RetryHistoryIndexLoadButton" Content="{DynamicResource History.RetryLoad}"
+                            Visibility="Collapsed" HorizontalAlignment="Center" Margin="0,12,0,0"
+                            Style="{StaticResource OutlineButtonStyle}" Click="OnRetryHistoryLoadClick" />
+                </StackPanel>
+
                 <Grid Grid.Row="3" Margin="16,0" VerticalAlignment="Center">
                     <TextBlock Text="{DynamicResource History.AverageRate}" Foreground="{StaticResource SubtleTextBrush}" FontSize="11" />
                     <TextBlock x:Name="AverageRateText" HorizontalAlignment="Right" Foreground="{StaticResource MutedTextBrush}"
@@ -524,7 +537,7 @@
         </Border>
 
         <Grid Grid.Row="1" Grid.Column="1">
-            <Grid x:Name="LandingContent">
+            <Grid x:Name="LandingContent" Visibility="Collapsed">
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto" />
                     <RowDefinition Height="Auto" />
@@ -544,6 +557,9 @@
                     </Grid.ColumnDefinitions>
                     <StackPanel VerticalAlignment="Top">
                         <TextBlock Text="{Binding LocationDisplay}" FontSize="19" FontWeight="SemiBold" />
+                        <TextBlock x:Name="RunwayLoadingText" Visibility="Collapsed"
+                                   Text="{DynamicResource History.LoadingRunway}"
+                                   Foreground="{StaticResource MutedTextBrush}" FontSize="11" Margin="0,4,0,0" />
                         <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
                             <TextBlock Text="{Binding AircraftTitle}" Foreground="{StaticResource SubtleTextBrush}" FontSize="12" />
                             <TextBlock Text="  ·  " Foreground="{StaticResource SubtleTextBrush}" FontSize="12" />
@@ -1017,6 +1033,19 @@
                 </Border>
             </Grid>
 
+            <Grid x:Name="DetailLoadingPanel" Visibility="Collapsed">
+                <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Width="320">
+                    <ProgressBar x:Name="DetailLoadingProgress" Height="3" IsIndeterminate="True"
+                                 Foreground="{StaticResource AccentBrush}" />
+                    <TextBlock x:Name="DetailLoadingText" Text="{DynamicResource History.DetailLoading}"
+                               FontSize="15" TextAlignment="Center" TextWrapping="Wrap"
+                               Foreground="{StaticResource MutedTextBrush}" Margin="0,18,0,0" />
+                    <Button x:Name="RetryHistoryLoadButton" Content="{DynamicResource History.RetryLoad}"
+                            Visibility="Collapsed" HorizontalAlignment="Center" Margin="0,16,0,0"
+                            Style="{StaticResource OutlineButtonStyle}" Click="OnRetryHistoryLoadClick" />
+                </StackPanel>
+            </Grid>
+
             <Grid x:Name="EmptyState" Visibility="Collapsed">
                 <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" MaxWidth="470">
                     <Border Width="15" Height="15" Background="{StaticResource AccentBrush}" CornerRadius="3" HorizontalAlignment="Center" />
@@ -1401,6 +1430,19 @@
                                 Style="{StaticResource DangerButtonStyle}"
                                 Click="OnConfirmDeleteLandingClick" />
                     </StackPanel>
+                </StackPanel>
+            </Border>
+        </Grid>
+        <Grid x:Name="ClosingOverlay" Grid.RowSpan="3" Grid.ColumnSpan="2"
+              Panel.ZIndex="250" Background="#E8000000" Visibility="Collapsed"
+              Focusable="True" KeyboardNavigation.TabNavigation="Cycle">
+            <Border Width="390" Padding="26" HorizontalAlignment="Center" VerticalAlignment="Center"
+                    Background="{StaticResource SurfaceRaisedBrush}" CornerRadius="10">
+                <StackPanel>
+                    <TextBlock x:Name="ClosingStatusText" Text="{DynamicResource Lifecycle.Closing}"
+                               FontSize="15" TextWrapping="Wrap" TextAlignment="Center" />
+                    <ProgressBar Height="3" Margin="0,20,0,0" IsIndeterminate="True"
+                                 Foreground="{StaticResource AccentBrush}" />
                 </StackPanel>
             </Border>
         </Grid>

@@ -27,14 +27,14 @@ namespace LandingStats.App;
 public partial class MainWindow : Window
 {
     private readonly ApplicationSettingsRepository _settingsRepository;
-    private readonly ApplicationSettings _settings;
+    private ApplicationSettings _settings = new ApplicationSettings();
     private readonly SimulatorAutoStartManager _autoStartManager = new SimulatorAutoStartManager();
     private readonly LandingRepository _repository = new LandingRepository();
-    private readonly RawCaptureRepository _rawCaptureRepository = new RawCaptureRepository();
+    private readonly RawCaptureRepository _rawCaptureRepository = new RawCaptureRepository(null, false);
     private readonly BugReportRepository _bugReportRepository;
     private readonly LastLandingBugReportBuffer _lastLandingBugReport = new LastLandingBugReportBuffer();
     private readonly AirportFacilityRepository _airportFacilityRepository = new AirportFacilityRepository();
-    private readonly FlightModelGeometryResolver _flightModelGeometryResolver = new FlightModelGeometryResolver();
+    private readonly FlightModelGeometryResolver _flightModelGeometryResolver;
     private readonly ReleaseUpdater _releaseUpdater = new ReleaseUpdater();
     private readonly GoogleOAuthTokenStore _googleDriveTokenStore = new GoogleOAuthTokenStore();
     private readonly GoogleOAuthClient _googleOAuthClient;
@@ -45,10 +45,12 @@ public partial class MainWindow : Window
     private readonly object _episodeProcessingGate = new object();
     private readonly object _landingRepositoryGate = new object();
     private readonly object _airportFacilityRepositoryGate = new object();
+    private readonly object _airportMetadataPersistenceGate = new object();
     private readonly object _telemetryUploadClientGate = new object();
     private readonly object _bugReportRetryGate = new object();
     private readonly object _bugReportPersistenceGate = new object();
     private Task _episodePersistenceTask = Task.CompletedTask;
+    private Task _airportMetadataPersistenceTask = Task.CompletedTask;
     private Task _bugReportRetryTask = Task.CompletedTask;
     private Task _bugReportPersistenceTask = Task.CompletedTask;
     private Task _googleDriveSyncTask = Task.CompletedTask;
@@ -68,7 +70,6 @@ public partial class MainWindow : Window
     private int? _mainIsolatedSeriesIndex;
     private bool _changingLanguageSelection;
     private bool _changingAutoStartSelection;
-    private bool _applyingCloudSettings;
     private bool _settingsPersistedAndReadable;
     private bool _autoStartInitialized;
     private bool _googleDriveAuthorizing;
@@ -96,21 +97,15 @@ public partial class MainWindow : Window
 
     private bool GoogleDriveBusy => _googleDriveAuthorizing || _googleDrivePendingOperations > 0;
 
-    public MainWindow()
+    public MainWindow() : this(null)
     {
+    }
+
+    internal MainWindow(FlightModelGeometryResolver? geometryResolver)
+    {
+        _flightModelGeometryResolver = geometryResolver ?? new FlightModelGeometryResolver();
         _bugReportRepository = new BugReportRepository(_rawCaptureRepository.RootPath);
         _settingsRepository = new ApplicationSettingsRepository();
-        var settingsLoaded = _settingsRepository.TryLoad(out var settings);
-        if (!settingsLoaded)
-        {
-            // Recovery metadata is best-effort at startup: a transient file lock
-            // must not prevent the application from opening. The in-memory false
-            // state still prevents fallback settings from being treated as valid.
-            _settingsRepository.TryMarkGoogleDriveRestorePending();
-        }
-        _settingsPersistedAndReadable =
-            settingsLoaded && !_settingsRepository.GoogleDriveRestorePending;
-        _settings = settings;
         _googleOAuthClient = new GoogleOAuthClient(_googleDriveTokenStore);
         _googleDriveApiClient = new GoogleDriveApiClient(_googleOAuthClient);
         _googleDriveBackupService = new GoogleDriveBackupService(
@@ -126,22 +121,12 @@ public partial class MainWindow : Window
         var version = assembly.GetName().Version;
         var company = assembly.GetCustomAttribute<AssemblyCompanyAttribute>()?.Company ?? "Evgeniy Zaytsev";
         VersionAuthorRun.Text = $"v{version?.Major ?? 0}.{version?.Minor ?? 0}.{version?.Build ?? 0} · {company}";
-        lock (_airportFacilityRepositoryGate)
-        {
-            _airportFacilities = _airportFacilityRepository.Load();
-        }
-        LoadHistory();
         _charts = new[] { MainChart, MiniGChart, MiniPowerChart, MiniGearChart };
         ReplayView.TimeChanged += OnChartHoverTimeChanged;
         foreach (var chart in _charts)
         {
             chart.HoverTimeChanged += OnChartHoverTimeChanged;
             chart.ZoomRangeSelected += OnChartZoomRangeSelected;
-        }
-
-        if (LandingHistoryList.SelectedItem is LandingRecord selected)
-        {
-            SelectRecord(selected);
         }
 
         VerticalRateTab.IsChecked = true;
@@ -151,28 +136,67 @@ public partial class MainWindow : Window
         MainChartDescription.Text = LocalizationManager.Text("Chart.DescriptionVertical");
         ModeUnitText.Text = "fpm";
         UpdateMainLegend(LandingChartMode.VerticalSpeed);
-        RefreshSettingsPresentation();
+        RefreshHistoryLoadingPresentation();
 
         SourceInitialized += OnSourceInitialized;
         Loaded += OnWindowLoaded;
+        Closing += OnWindowClosing;
         Closed += OnWindowClosed;
     }
 
-    private async void OnWindowLoaded(object sender, RoutedEventArgs eventArgs)
+    private void OnWindowLoaded(object sender, RoutedEventArgs eventArgs)
+    {
+        if (_initializationStarted) return;
+        _initializationStarted = true;
+        _initializationTask = InitializeWindowAsync();
+    }
+
+    private async Task InitializeWindowAsync()
+    {
+        try { await InitializeWindowCoreAsync(); }
+        catch (Exception exception)
+        {
+            if (!_isClosed)
+            {
+                SetConnectionWarning("Recorder.AnalysisFailedFormat", exception.Message);
+                if (!_startupReady)
+                {
+                    _historyLoading = false;
+                    _historyLoadError = exception.Message;
+                    RefreshHistoryLoadingPresentation();
+                }
+            }
+        }
+    }
+
+    private async Task InitializeWindowCoreAsync()
     {
         ReleaseUpdater.BeginCompletedUpdateCleanup(Environment.GetCommandLineArgs());
-        if (TelemetryUploadClient.HasPendingUploadFiles(_rawCaptureRepository.RootPath))
+        var initialState = LoadInitialStateAsync();
+        _initializationPersistenceTask = initialState;
+        var state = await initialState;
+        if (_isClosed) return;
+        _settings = state.Settings;
+        _settingsPersistedAndReadable = state.SettingsReadable;
+        LocalizationManager.Apply(_settings.Language);
+        await InitializeHistoryAsync();
+        if (_isClosed) return;
+        _startupReady = true;
+        SettingsButton.IsEnabled = true;
+        RefreshLocalizedPresentation();
+        if (state.PendingUploads)
         {
             StartPendingBugReportRetry();
         }
         var version = typeof(MainWindow).Assembly.GetName().Version ?? new Version(0, 0, 0);
         var result = await _releaseUpdater.CheckAndInstallAsync(version, _lifetimeCancellation.Token);
+        if (_isClosed) return;
         VersionAuthorText.ToolTip = result.Path == null ? result.Message : result.Message + "\n" + result.Path;
         if (result.State == ReleaseUpdateState.UpdateStarted && result.Version != null)
         {
             VersionAuthorRun.Text += LocalizationManager.Format("Update.StatusUpdatingFormat", result.Version);
             VersionAuthorText.Foreground = Brush("#8FD6A8");
-            Application.Current.Shutdown();
+            Close();
             return;
         }
         else if (result.State == ReleaseUpdateState.Rejected)
@@ -195,46 +219,24 @@ public partial class MainWindow : Window
                 _settingsPersistedAndReadable))
         {
             await googleDriveStartupSync;
+            if (_isClosed) return;
         }
 
-        InitializeAutoStartSetting();
+        if (_isClosed) return;
+        await InitializeAutoStartSettingAsync();
+        if (_isClosed) return;
         _autoStartInitialized = true;
         ShowGoogleDrivePromptIfNeeded();
         await googleDriveStartupSync;
     }
 
-    private void LoadHistory(string? preferredSelectionId = null)
-    {
-        List<LandingRecord> stored;
-        lock (_landingRepositoryGate)
-        {
-            stored = _repository.LoadAll().ToList();
-        }
-        var changedRecords = new List<LandingRecord>();
-        foreach (var record in stored)
-        {
-            var changed = TryResolveAirport(record, _airportFacilities);
-            if (changed)
-            {
-                changedRecords.Add(record);
-            }
-        }
-
-        lock (_landingRepositoryGate)
-        {
-            _repository.UpdateSummaries(changedRecords);
-        }
-
-        _landings = stored;
-        ApplySessionFilter(preferredSelectionId);
-        StoragePathText.Text = "%LOCALAPPDATA%\\MSFS Landing Stats\\Landings";
-        StoragePathText.ToolTip = _repository.RootPath;
-    }
-
     private void OnHistorySelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs eventArgs)
     {
+        if (_updatingHistorySelection) return;
         if (LandingHistoryList.SelectedItem is not LandingRecord selected)
         {
+            ClearSelectedRecord();
+            RefreshHistoryLoadingPresentation();
             return;
         }
 
@@ -243,34 +245,11 @@ public partial class MainWindow : Window
 
     private void SelectRecord(LandingRecord selected)
     {
-        var detail = selected;
-        if (selected.IsSummaryOnly)
-        {
-            if (_loadedDetails.TryGetValue(selected.Id, out var cachedDetail))
-            {
-                detail = cachedDetail;
-            }
-            else
-            {
-                lock (_landingRepositoryGate)
-                {
-                    detail = _repository.LoadDetail(selected) ?? selected;
-                }
-                if (!detail.IsSummaryOnly)
-                {
-                    if (detail.FormatVersion >= 6 && LandingRecordFactory.RefreshRawPitchInputSelection(detail))
-                    {
-                        lock (_landingRepositoryGate)
-                        {
-                            _repository.Save(detail);
-                        }
-                    }
+        _ = SelectRecordAsync(selected);
+    }
 
-                    _loadedDetails[selected.Id] = detail;
-                }
-            }
-        }
-
+    private void PresentRecord(LandingRecord detail, IReadOnlyList<LandingRecord> replayContacts)
+    {
         if (ReferenceEquals(DataContext, detail))
         {
             // Airport resolution mutates cached details after they have already been bound.
@@ -281,7 +260,7 @@ public partial class MainWindow : Window
 
         DataContext = detail;
         MainChart.Record = detail;
-        ReplayView.SetRecord(detail, LoadReplayContacts(detail));
+        ReplayView.SetRecord(detail, replayContacts);
         UpdateControlTab(ReplayView.IsPlaybackAvailable, ReconstructionTab, ControlsTab);
         MiniGChart.Record = detail;
         MiniPowerChart.Record = detail;
@@ -297,27 +276,7 @@ public partial class MainWindow : Window
         UpdateChartDescription(MainChart.Mode);
         ApplyZoom(_showFullApproach ? null : -6, _showFullApproach ? null : 8);
         UpdateLaneReadouts(detail, 0);
-    }
-
-    private IReadOnlyList<LandingRecord> LoadReplayContacts(LandingRecord selected)
-    {
-        var contacts = new List<LandingRecord> { selected };
-        lock (_landingRepositoryGate)
-        {
-            // Use unfiltered history so searching the sidebar cannot hide a
-            // contact from the scene. Load only this episode's sibling details.
-            foreach (var summary in LandingReplayContacts.ForEpisode(selected, _landings).Where(r => r.Id != selected.Id))
-            {
-                if (!_loadedDetails.TryGetValue(summary.Id, out var detail))
-                {
-                    detail = _repository.LoadDetail(summary);
-                    if (detail == null || detail.IsSummaryOnly) continue;
-                    _loadedDetails[summary.Id] = detail;
-                }
-                contacts.Add(detail);
-            }
-        }
-        return contacts;
+        RefreshRunwayLoadingPresentation();
     }
 
     private void OnChartHoverTimeChanged(object? sender, LandingChartHoverEventArgs eventArgs)
@@ -395,18 +354,29 @@ public partial class MainWindow : Window
 
         var selectedId = preferredSelectionId ?? (LandingHistoryList.SelectedItem as LandingRecord)?.Id;
         var query = SessionFilterBox?.Text?.Trim() ?? string.Empty;
-        var filtered = string.IsNullOrWhiteSpace(query)
-            ? _landings
-            : _landings.Where(record =>
+        var available = _landings.Where(record => !_locallyRemovedHistoryIds.Contains(record.Id)).ToArray();
+        IReadOnlyList<LandingRecord> filtered = string.IsNullOrWhiteSpace(query)
+            ? available
+            : available.Where(record =>
                 record.AircraftTitle.IndexOf(query, StringComparison.OrdinalIgnoreCase) >= 0 ||
                 record.AircraftType.IndexOf(query, StringComparison.OrdinalIgnoreCase) >= 0 ||
                 record.Airport.IndexOf(query, StringComparison.OrdinalIgnoreCase) >= 0 ||
                 record.Runway.IndexOf(query, StringComparison.OrdinalIgnoreCase) >= 0).ToArray();
 
-        LandingHistoryList.ItemsSource = filtered;
-        HistoryCountText.Text = filtered.Count.ToString();
         var selected = selectedId == null ? null : filtered.FirstOrDefault(record => record.Id == selectedId);
-        LandingHistoryList.SelectedItem = selected ?? filtered.FirstOrDefault();
+        _updatingHistorySelection = true;
+        try
+        {
+            LandingHistoryList.ItemsSource = filtered;
+            HistoryCountText.Text = filtered.Count.ToString();
+            LandingHistoryList.SelectedItem = selected ?? filtered.FirstOrDefault();
+        }
+        finally
+        {
+            _updatingHistorySelection = false;
+        }
+        if (LandingHistoryList.SelectedItem is LandingRecord current)
+            SelectRecord(current);
         UpdateHistoryPresentation(filtered.Count);
 
         var monthlyAverage = MonthlyAverageDisplayedFpm(_landings, DateTime.Now);
@@ -437,6 +407,7 @@ public partial class MainWindow : Window
         EmptyState.Visibility = hasVisibleLanding ? Visibility.Collapsed : Visibility.Visible;
         if (hasVisibleLanding)
         {
+            RefreshHistoryLoadingPresentation();
             return;
         }
 
@@ -452,10 +423,20 @@ public partial class MainWindow : Window
         }
 
         ClearSelectedRecord();
+        RefreshHistoryLoadingPresentation();
     }
 
     private void ClearSelectedRecord()
     {
+        _detailLoadVersion++;
+        _detailLoading = false;
+        _detailLoadError = null;
+        ClearRecordPresentation();
+    }
+
+    private void ClearRecordPresentation()
+    {
+        _presentedReplayContacts = Array.Empty<LandingRecord>();
         DataContext = null;
         MainChart.Record = null;
         ReplayView.Record = null;
@@ -464,6 +445,7 @@ public partial class MainWindow : Window
         MiniPowerChart.Record = null;
         MiniGearChart.Record = null;
         Timeline.Record = null;
+        RefreshRunwayLoadingPresentation();
     }
 
     private void OnDeleteLandingClick(object sender, RoutedEventArgs eventArgs)
@@ -506,6 +488,7 @@ public partial class MainWindow : Window
 
     private async void OnConfirmDeleteLandingClick(object sender, RoutedEventArgs eventArgs)
     {
+        if (_isClosed || _historyStopped || _deleteLandingInProgress) return;
         var record = _pendingDeleteRecord;
         if (record == null)
         {
@@ -534,21 +517,50 @@ public partial class MainWindow : Window
         }
 
         var signedIn = _googleOAuthClient.IsSignedIn;
+        Exception? queueError = null;
         try
         {
             _deleteLandingInProgress = true;
             ConfirmDeleteLandingButton.IsEnabled = false;
             CancelDeleteLandingButton.IsEnabled = false;
-            _googleDriveBackupService.DeleteLandingLocally(record.Id);
+            // Reserve the ID before yielding so any earlier history/detail read
+            // cannot republish the record while its deletion waits for storage.
+            _locallyRemovedHistoryIds.Add(record.Id);
+            ApplySessionFilter(preferredSelectionId);
+            var deletion = Task.Run(async () =>
+            {
+                _googleDriveBackupService.DeleteLandingLocally(record.Id);
+                try
+                {
+                    // Accepted local deletion metadata is durable work, not
+                    // network activity; finish it even if the window is closing.
+                    await _googleDriveBackupService.QueueLandingDeletionAsync(record.Id, CancellationToken.None)
+                        .ConfigureAwait(false);
+                    return (Exception?)null;
+                }
+                catch (Exception exception)
+                {
+                    return exception;
+                }
+            });
+            _localDeletionTask = deletion;
+            _googleDriveDeleteTask = deletion;
+            queueError = await deletion;
+            if (_isClosed || _historyStopped) return;
             _loadedDetails.Remove(record.Id);
             _landings = _landings
                 .Where(candidate => !string.Equals(candidate.Id, record.Id, StringComparison.Ordinal))
                 .ToArray();
             HideDeleteLandingConfirmation(true);
-            ApplySessionFilter(preferredSelectionId);
+            ApplySessionFilter();
         }
         catch (Exception exception)
         {
+            _locallyRemovedHistoryIds.Remove(record.Id);
+            if (_isClosed || _historyStopped) return;
+            if (!_landings.Any(candidate => candidate.Id == record.Id))
+                _landings = _landings.Concat(new[] { record }).OrderByDescending(candidate => candidate.TimestampUtc).ToArray();
+            ApplySessionFilter();
             _deleteLandingInProgress = false;
             ConfirmDeleteLandingButton.IsEnabled = true;
             CancelDeleteLandingButton.IsEnabled = true;
@@ -560,10 +572,7 @@ public partial class MainWindow : Window
 
         try
         {
-            _googleDriveDeleteTask = _googleDriveBackupService.QueueLandingDeletionAsync(
-                record.Id,
-                _lifetimeCancellation.Token);
-            await _googleDriveDeleteTask;
+            if (queueError != null) throw queueError;
             if (signedIn)
             {
                 QueueGoogleDriveSync();
@@ -599,6 +608,7 @@ public partial class MainWindow : Window
     private void OnSettingsClick(object sender, RoutedEventArgs eventArgs)
     {
         eventArgs.Handled = true;
+        if (!_startupReady || _isClosed) return;
         if (DeleteLandingOverlay.Visibility == Visibility.Visible)
         {
             HideDeleteLandingConfirmation();
@@ -634,9 +644,9 @@ public partial class MainWindow : Window
         Keyboard.Focus(LandingHistoryList);
     }
 
-    private void OnLanguageSelectionChanged(object sender, RoutedEventArgs eventArgs)
+    private async void OnLanguageSelectionChanged(object sender, RoutedEventArgs eventArgs)
     {
-        if (_changingLanguageSelection ||
+        if (_changingLanguageSelection || SettingsBusy || _settingsOperations.IsStopping ||
             sender is not RadioButton button ||
             button.IsChecked != true ||
             button.Tag is not string preference)
@@ -650,34 +660,47 @@ public partial class MainWindow : Window
             return;
         }
 
-        var previous = _settings.Language;
-        _settings.Language = preference;
-        try
+        string? error = null;
+        var saved = await RunSettingsOperationAsync(async () =>
         {
-            _settingsRepository.Save(_settings);
-        }
-        catch (Exception exception)
+            var snapshot = _settings.Clone();
+            snapshot.Language = preference;
+            try
+            {
+                await SettingsPersistence.SaveAsync(_settingsRepository, snapshot);
+            }
+            catch (Exception exception)
+            {
+                error = exception.Message;
+                return false;
+            }
+            _settings.CopyFrom(snapshot);
+            if (!_isClosed)
+            {
+                LocalizationManager.Apply(preference);
+                RefreshLocalizedPresentation();
+            }
+            return true;
+        });
+        if (_isClosed) return;
+        if (!saved)
         {
-            _settings.Language = previous;
-            SetLanguageSelection(previous);
-            SettingsErrorText.Text = LocalizationManager.Format("Settings.SaveErrorFormat", exception.Message);
-            SettingsErrorText.Visibility = Visibility.Visible;
+            SetLanguageSelection(_settings.Language);
+            if (error != null)
+            {
+                SettingsErrorText.Text = LocalizationManager.Format("Settings.SaveErrorFormat", error);
+                SettingsErrorText.Visibility = Visibility.Visible;
+            }
             return;
         }
-
-        LocalizationManager.Apply(preference);
         SettingsErrorText.Text = string.Empty;
         SettingsErrorText.Visibility = Visibility.Collapsed;
-        RefreshLocalizedPresentation();
-        if (!_applyingCloudSettings)
-        {
-            QueueGoogleDriveSync();
-        }
+        QueueGoogleDriveSync();
     }
 
-    private void OnAutoStartSelectionChanged(object sender, RoutedEventArgs eventArgs)
+    private async void OnAutoStartSelectionChanged(object sender, RoutedEventArgs eventArgs)
     {
-        if (_changingAutoStartSelection || !IsLoaded || sender is not CheckBox checkBox)
+        if (_changingAutoStartSelection || SettingsBusy || _settingsOperations.IsStopping || !IsLoaded || sender is not CheckBox checkBox)
         {
             return;
         }
@@ -688,16 +711,19 @@ public partial class MainWindow : Window
             return;
         }
 
-        if (!ApplyAutoStartPreference(enabled))
+        if (!await ApplyAutoStartPreferenceAsync(enabled) && !_isClosed)
         {
             SetAutoStartSelection(_settings.StartWithSimulator == true);
         }
     }
 
-    private void OnEnableAutoStartClick(object sender, RoutedEventArgs eventArgs)
+    private async void OnEnableAutoStartClick(object sender, RoutedEventArgs eventArgs)
     {
+        if (SettingsBusy || _settingsOperations.IsStopping) return;
         SetAutoStartPromptBusy(true);
-        if (ApplyAutoStartPreference(true))
+        var saved = await ApplyAutoStartPreferenceAsync(true);
+        if (_isClosed) return;
+        if (saved)
         {
             HideAutoStartPrompt();
         }
@@ -707,10 +733,13 @@ public partial class MainWindow : Window
         }
     }
 
-    private void OnDeclineAutoStartClick(object sender, RoutedEventArgs eventArgs)
+    private async void OnDeclineAutoStartClick(object sender, RoutedEventArgs eventArgs)
     {
+        if (SettingsBusy || _settingsOperations.IsStopping) return;
         SetAutoStartPromptBusy(true);
-        if (ApplyAutoStartPreference(false))
+        var saved = await ApplyAutoStartPreferenceAsync(false);
+        if (_isClosed) return;
+        if (saved)
         {
             HideAutoStartPrompt();
         }
@@ -720,44 +749,50 @@ public partial class MainWindow : Window
         }
     }
 
-    private void InitializeAutoStartSetting()
+    private async Task InitializeAutoStartSettingAsync()
     {
-        RefreshLegacyAutoStartCleanupState();
-
-        if (!_settings.StartWithSimulator.HasValue)
+        await RunSettingsOperationAsync(async () =>
         {
-            _autoStartErrorDetail = _autoStartLegacyCleanupError;
+            _autoStartLegacyCleanupError = await RemoveLegacyAutoStartEntriesAsync();
+            if (!_settings.StartWithSimulator.HasValue)
+            {
+                _autoStartErrorDetail = _autoStartLegacyCleanupError;
+                _autoStartInitialized = true;
+                return true;
+            }
+            var enabled = _settings.StartWithSimulator.Value;
+            try
+            {
+                var result = await Task.Run(() => _autoStartManager.SetEnabled(enabled));
+                _autoStartProfileCount = result.ConfigurationPaths.Count;
+                _autoStartErrorDetail = _autoStartLegacyCleanupError;
+            }
+            catch (Exception exception)
+            {
+                _autoStartErrorDetail = CombineAutoStartErrors(_autoStartLegacyCleanupError, exception.Message);
+            }
+            _autoStartInitialized = true;
+            return true;
+        });
+        if (!_isClosed && !_settings.StartWithSimulator.HasValue)
+        {
             ShowAutoStartPrompt();
             RefreshAutoStartErrorPresentation();
-            return;
         }
-
-        try
-        {
-            var result = _autoStartManager.SetEnabled(_settings.StartWithSimulator.Value);
-            _autoStartProfileCount = result.ConfigurationPaths.Count;
-            _autoStartErrorDetail = CombineAutoStartErrors(_autoStartLegacyCleanupError, null);
-        }
-        catch (Exception exception)
-        {
-            _autoStartErrorDetail = CombineAutoStartErrors(_autoStartLegacyCleanupError, exception.Message);
-        }
-
-        RefreshSettingsPresentation();
     }
 
-    private void RefreshLegacyAutoStartCleanupState()
+    private Task<string?> RemoveLegacyAutoStartEntriesAsync() => Task.Run(() =>
     {
         try
         {
             _autoStartManager.RemoveLegacyUnsupportedEntries();
-            _autoStartLegacyCleanupError = null;
+            return (string?)null;
         }
         catch (Exception exception)
         {
-            _autoStartLegacyCleanupError = exception.Message;
+            return exception.Message;
         }
-    }
+    });
 
     internal static string? CombineAutoStartErrors(string? legacyCleanupError, string? currentError)
     {
@@ -771,57 +806,34 @@ public partial class MainWindow : Window
             : legacyCleanupError + " " + currentError;
     }
 
-    private bool ApplyAutoStartPreference(bool enabled)
+    private async Task<bool> ApplyAutoStartPreferenceAsync(bool enabled)
     {
-        RefreshLegacyAutoStartCleanupState();
-        var previous = _settings.StartWithSimulator;
-        AutoStartOperationResult result;
-        try
+        var saved = await RunSettingsOperationAsync(async () =>
         {
-            result = _autoStartManager.SetEnabled(enabled);
-        }
-        catch (Exception exception)
-        {
-            _autoStartErrorDetail = CombineAutoStartErrors(_autoStartLegacyCleanupError, exception.Message);
-            RefreshAutoStartErrorPresentation();
-            return false;
-        }
-
-        _settings.StartWithSimulator = enabled;
-        try
-        {
-            _settingsRepository.Save(_settings);
-        }
-        catch (Exception saveException)
-        {
-            _settings.StartWithSimulator = previous;
+            _autoStartLegacyCleanupError = await RemoveLegacyAutoStartEntriesAsync();
+            var previous = _settings.StartWithSimulator;
+            var snapshot = _settings.Clone();
+            snapshot.StartWithSimulator = enabled;
+            AutoStartOperationResult? result = null;
             try
             {
-                _autoStartManager.SetEnabled(previous == true);
+                await SettingsPersistence.SaveAsync(
+                    _settingsRepository, snapshot,
+                    () => result = _autoStartManager.SetEnabled(enabled),
+                    () => _autoStartManager.SetEnabled(previous == true));
             }
-            catch (Exception rollbackException)
+            catch (Exception exception)
             {
-                _autoStartErrorDetail = CombineAutoStartErrors(
-                    _autoStartLegacyCleanupError,
-                    saveException.Message + " " + rollbackException.Message);
-                RefreshAutoStartErrorPresentation();
+                _autoStartErrorDetail = CombineAutoStartErrors(_autoStartLegacyCleanupError, exception.Message);
                 return false;
             }
-
-            _autoStartErrorDetail = CombineAutoStartErrors(_autoStartLegacyCleanupError, saveException.Message);
-            RefreshAutoStartErrorPresentation();
-            return false;
-        }
-
-        _autoStartProfileCount = result.ConfigurationPaths.Count;
-        _autoStartErrorDetail = _autoStartLegacyCleanupError;
-        RefreshAutoStartErrorPresentation();
-        RefreshSettingsPresentation();
-        if (!_applyingCloudSettings)
-        {
-            QueueGoogleDriveSync();
-        }
-        return true;
+            _settings.CopyFrom(snapshot);
+            _autoStartProfileCount = result!.ConfigurationPaths.Count;
+            _autoStartErrorDetail = _autoStartLegacyCleanupError;
+            return true;
+        });
+        if (saved) QueueGoogleDriveSync();
+        return saved;
     }
 
     private void ShowAutoStartPrompt()
@@ -844,9 +856,8 @@ public partial class MainWindow : Window
 
     private void SetAutoStartPromptBusy(bool busy)
     {
-        DeclineAutoStartButton.IsEnabled = !busy;
-        EnableAutoStartButton.IsEnabled = !busy;
-        SettingsAutoStartCheckBox.IsEnabled = !busy;
+        _autoStartPromptBusy = busy;
+        RefreshSettingsOperationPresentation();
     }
 
     private void RefreshAutoStartErrorPresentation()
@@ -859,6 +870,11 @@ public partial class MainWindow : Window
         SettingsErrorText.Visibility = hasError ? Visibility.Visible : Visibility.Collapsed;
         AutoStartPromptErrorText.Text = text;
         AutoStartPromptErrorText.Visibility = hasError ? Visibility.Visible : Visibility.Collapsed;
+        if (_settingsBusyIndicator.IsVisible && AutoStartPromptOverlay.Visibility == Visibility.Visible)
+        {
+            AutoStartPromptErrorText.Text = LocalizationManager.Text("Settings.Applying");
+            AutoStartPromptErrorText.Visibility = Visibility.Visible;
+        }
     }
 
     private void SetLanguageSelection(string preference)
@@ -892,6 +908,8 @@ public partial class MainWindow : Window
 
     private void RefreshSettingsPresentation()
     {
+        var showLoading = _settingsLoadingIndicator.Update(
+            !_isClosed && (!_startupReady || !_autoStartInitialized), null, RefreshSettingsPresentation);
         var effectiveName = LocalizationManager.Text(
             LocalizationManager.EffectiveLanguage == LocalizationManager.RussianLanguage
                 ? "Settings.Russian"
@@ -904,11 +922,14 @@ public partial class MainWindow : Window
             "%LOCALAPPDATA%\\MSFS Landing Stats\\settings.json");
         SettingsFileText.ToolTip = _settingsRepository.Path;
         SetAutoStartSelection(_settings.StartWithSimulator == true);
-        SettingsAutoStartStateText.Text = _settings.StartWithSimulator == true
+        SettingsAutoStartStateText.Text = !_autoStartInitialized
+            ? (showLoading ? LocalizationManager.Text("Settings.Loading") : string.Empty)
+            : _settings.StartWithSimulator == true
             ? LocalizationManager.Format("Settings.AutoStartEnabledFormat", _autoStartProfileCount)
             : LocalizationManager.Text("Settings.AutoStartDisabled");
         RefreshGoogleDrivePresentation();
         RefreshAutoStartErrorPresentation();
+        RefreshSettingsOperationPresentation();
     }
 
     private async void OnGoogleDrivePrimaryClick(object sender, RoutedEventArgs eventArgs)
@@ -918,7 +939,7 @@ public partial class MainWindow : Window
 
     private async Task ConnectOrSyncGoogleDriveAsync()
     {
-        if (GoogleDriveBusy)
+        if (GoogleDriveBusy || SettingsBusy || _settingsOperations.IsStopping || _isClosed)
         {
             return;
         }
@@ -936,7 +957,11 @@ public partial class MainWindow : Window
             authorizationCancellation.CancelAfter(TimeSpan.FromMinutes(3));
             try
             {
-                await _googleOAuthClient.SignInAsync(authorizationCancellation.Token);
+                await RunSettingsOperationAsync(async () =>
+                {
+                    await Task.Run(() => _googleOAuthClient.SignInAsync(authorizationCancellation.Token));
+                    return true;
+                });
             }
             catch (OperationCanceledException) when (_lifetimeCancellation.IsCancellationRequested)
             {
@@ -960,22 +985,26 @@ public partial class MainWindow : Window
                 _googleDriveAuthorizationCancellation = null;
                 _googleDriveAuthorizationCanceledByUser = false;
                 _googleDriveAuthorizing = false;
-                RefreshGoogleDrivePresentation();
+                if (!_isClosed) RefreshGoogleDrivePresentation();
             }
         }
 
+        if (_isClosed) return;
         _googleDriveSyncTask = RunGoogleDriveSyncAsync(true);
         await _googleDriveSyncTask;
-        if (_googleOAuthClient.IsSignedIn)
+        if (!_isClosed && _googleOAuthClient.IsSignedIn)
         {
-            TrySaveGoogleDrivePromptAnswered(false);
+            await TrySaveGoogleDrivePromptAnsweredAsync(false);
         }
     }
 
     private async void OnEnableGoogleDriveClick(object sender, RoutedEventArgs eventArgs)
     {
+        if (SettingsBusy || _settingsOperations.IsStopping || _isClosed) return;
         SetGoogleDrivePromptBusy(true);
-        if (!TrySaveGoogleDrivePromptAnswered(true))
+        var saved = await TrySaveGoogleDrivePromptAnsweredAsync(true);
+        if (_isClosed) return;
+        if (!saved)
         {
             SetGoogleDrivePromptBusy(false);
             return;
@@ -985,10 +1014,13 @@ public partial class MainWindow : Window
         await ConnectOrSyncGoogleDriveAsync();
     }
 
-    private void OnDeclineGoogleDriveClick(object sender, RoutedEventArgs eventArgs)
+    private async void OnDeclineGoogleDriveClick(object sender, RoutedEventArgs eventArgs)
     {
+        if (SettingsBusy || _settingsOperations.IsStopping || _isClosed) return;
         SetGoogleDrivePromptBusy(true);
-        if (TrySaveGoogleDrivePromptAnswered(true))
+        var saved = await TrySaveGoogleDrivePromptAnsweredAsync(true);
+        if (_isClosed) return;
+        if (saved)
         {
             HideGoogleDrivePrompt();
         }
@@ -1000,10 +1032,12 @@ public partial class MainWindow : Window
 
     private void ShowGoogleDrivePromptIfNeeded()
     {
+        if (_isClosed || _settingsOperations.IsStopping) return;
         var signedIn = _googleOAuthClient.IsSignedIn;
         if (signedIn && !_settings.GoogleDrivePromptAnswered)
         {
-            TrySaveGoogleDrivePromptAnswered(false);
+            // The save itself joins PendingSettingsOperations synchronously.
+            _ = TrySaveGoogleDrivePromptAnsweredAsync(false);
         }
         if (!ShouldShowGoogleDrivePrompt(
                 _settings,
@@ -1038,31 +1072,33 @@ public partial class MainWindow : Window
         bool settingsPersistedAndReadable) =>
         signedIn && !settingsPersistedAndReadable;
 
-    private bool TrySaveGoogleDrivePromptAnswered(bool showPromptError)
+    private async Task<bool> TrySaveGoogleDrivePromptAnsweredAsync(bool showPromptError)
     {
-        if (_settings.GoogleDrivePromptAnswered)
+        string? error = null;
+        var saved = await RunSettingsOperationAsync(async () =>
         {
-            return true;
-        }
-
-        _settings.GoogleDrivePromptAnswered = true;
-        try
-        {
-            _settingsRepository.Save(_settings);
-            return true;
-        }
-        catch (Exception exception)
-        {
-            _settings.GoogleDrivePromptAnswered = false;
-            if (showPromptError)
+            if (_settings.GoogleDrivePromptAnswered) return true;
+            var snapshot = _settings.Clone();
+            snapshot.GoogleDrivePromptAnswered = true;
+            try
             {
-                GoogleDrivePromptErrorText.Text = LocalizationManager.Format(
-                    "GoogleDrivePrompt.SaveErrorFormat",
-                    exception.Message);
-                GoogleDrivePromptErrorText.Visibility = Visibility.Visible;
+                await SettingsPersistence.SaveAsync(_settingsRepository, snapshot);
             }
-            return false;
+            catch (Exception exception)
+            {
+                error = exception.Message;
+                return false;
+            }
+            _settings.CopyFrom(snapshot);
+            return true;
+        });
+        if (!saved && showPromptError && error != null && !_isClosed)
+        {
+            GoogleDrivePromptErrorText.Text = LocalizationManager.Format(
+                "GoogleDrivePrompt.SaveErrorFormat", error);
+            GoogleDrivePromptErrorText.Visibility = Visibility.Visible;
         }
+        return saved;
     }
 
     private void HideGoogleDrivePrompt()
@@ -1074,11 +1110,11 @@ public partial class MainWindow : Window
 
     private void SetGoogleDrivePromptBusy(bool busy)
     {
-        DeclineGoogleDriveButton.IsEnabled = !busy;
-        EnableGoogleDriveButton.IsEnabled = !busy;
+        _googleDrivePromptBusy = busy;
+        RefreshSettingsOperationPresentation();
     }
 
-    private void OnGoogleDriveSignOutClick(object sender, RoutedEventArgs eventArgs)
+    private async void OnGoogleDriveSignOutClick(object sender, RoutedEventArgs eventArgs)
     {
         if (_googleDriveAuthorizing)
         {
@@ -1086,20 +1122,31 @@ public partial class MainWindow : Window
             _googleDriveAuthorizationCancellation?.Cancel();
             return;
         }
-        if (GoogleDriveBusy)
+        if (GoogleDriveBusy || SettingsBusy || _settingsOperations.IsStopping || _isClosed)
         {
             return;
         }
-        _googleOAuthClient.SignOut();
-        _lastGoogleDriveSyncUtc = null;
-        _googleDriveErrorDetail = null;
-        _googleDriveWarningDetail = null;
-        RefreshGoogleDrivePresentation();
+        await RunSettingsOperationAsync(async () =>
+        {
+            try
+            {
+                await Task.Run(() => _googleOAuthClient.SignOut());
+                _lastGoogleDriveSyncUtc = null;
+                _googleDriveErrorDetail = null;
+                _googleDriveWarningDetail = null;
+                return true;
+            }
+            catch (Exception exception)
+            {
+                _googleDriveErrorDetail = exception.Message;
+                return false;
+            }
+        });
     }
 
     private void QueueGoogleDriveSync()
     {
-        if (!_googleOAuthClient.IsSignedIn || _isClosed || _lifetimeCancellation.IsCancellationRequested)
+        if (_isClosed || !_startupReady || _lifetimeCancellation.IsCancellationRequested || !_googleOAuthClient.IsSignedIn)
         {
             return;
         }
@@ -1108,7 +1155,7 @@ public partial class MainWindow : Window
 
     private async Task RunGoogleDriveSyncAsync(bool userInitiated)
     {
-        if (!_googleOAuthClient.IsSignedIn || _isClosed)
+        if (_isClosed || !_startupReady || _lifetimeCancellation.IsCancellationRequested || !_googleOAuthClient.IsSignedIn)
         {
             return;
         }
@@ -1123,7 +1170,10 @@ public partial class MainWindow : Window
         try
         {
             var selectedId = (LandingHistoryList.SelectedItem as LandingRecord)?.Id;
-            var result = await _googleDriveBackupService.SyncAsync(_lifetimeCancellation.Token);
+            // SyncAsync loads its local state before the first network await.
+            // Start the whole operation off-dispatcher, including that prefix.
+            var cancellationToken = _lifetimeCancellation.Token;
+            var result = await Task.Run(() => _googleDriveBackupService.SyncAsync(cancellationToken));
             if (_isClosed)
             {
                 return;
@@ -1132,11 +1182,8 @@ public partial class MainWindow : Window
             {
                 // A successful sync either restored cloud settings or established
                 // the current local snapshot as the first cloud revision.
-                if (_settingsRepository.GoogleDriveRestorePending)
-                {
-                    _settingsRepository.CompleteGoogleDriveRestore(_settings);
-                }
-                _settingsPersistedAndReadable = true;
+                await CompleteGoogleDriveSettingsRestoreAsync();
+                if (_isClosed) return;
             }
             _lastGoogleDriveSyncUtc = DateTime.UtcNow;
             _googleDriveErrorDetail = null;
@@ -1164,8 +1211,8 @@ public partial class MainWindow : Window
             _googleDriveWarningDetail = warnings.Count == 0 ? null : string.Join(" ", warnings);
             if (result.HistoryChanged)
             {
-                _loadedDetails.Clear();
-                LoadHistory(selectedId);
+                InvalidateLoadedHistoryDetails();
+                await LoadHistoryAsync(selectedId);
             }
         }
         catch (OperationCanceledException) when (_lifetimeCancellation.IsCancellationRequested)
@@ -1193,9 +1240,16 @@ public partial class MainWindow : Window
     {
         if (Dispatcher.CheckAccess())
         {
-            return Task.FromResult(CreateLocalCloudSettingsSnapshot());
+            return ReadCommittedCloudSettingsAsync();
         }
-        return Dispatcher.InvokeAsync(CreateLocalCloudSettingsSnapshot).Task;
+        return Dispatcher.InvokeAsync(ReadCommittedCloudSettingsAsync).Task.Unwrap();
+    }
+
+    private async Task<GoogleDriveLocalSettings> ReadCommittedCloudSettingsAsync()
+    {
+        // Do not expose an old snapshot while an accepted local save is pending.
+        await PendingSettingsOperations;
+        return CreateLocalCloudSettingsSnapshot();
     }
 
     private GoogleDriveLocalSettings CreateLocalCloudSettingsSnapshot() =>
@@ -1213,15 +1267,15 @@ public partial class MainWindow : Window
     {
         if (Dispatcher.CheckAccess())
         {
-            return Task.FromResult(ApplyCloudSettingsIfUnchangedCore(cloudSettings, expectedLocalHash));
+            return ApplyCloudSettingsIfUnchangedAsync(cloudSettings, expectedLocalHash);
         }
         return Dispatcher.InvokeAsync(() =>
-            ApplyCloudSettingsIfUnchangedCore(cloudSettings, expectedLocalHash)).Task;
+            ApplyCloudSettingsIfUnchangedAsync(cloudSettings, expectedLocalHash)).Task.Unwrap();
     }
 
-    private bool ApplyCloudSettingsIfUnchangedCore(
+    private Task<bool> ApplyCloudSettingsIfUnchangedAsync(
         GoogleDriveCloudSettings cloudSettings,
-        string expectedLocalHash)
+        string expectedLocalHash) => RunSettingsOperationAsync(async () =>
     {
         var currentHash = GoogleDriveBackupService.Hash(
             GoogleDriveCloudSettings.Serialize(CreateCloudSettingsSnapshot()));
@@ -1230,48 +1284,33 @@ public partial class MainWindow : Window
             return false;
         }
 
-        ApplyCloudSettingsCore(cloudSettings);
+        await ApplyCloudSettingsCoreAsync(cloudSettings);
         return true;
-    }
+    });
 
-    private void ApplyCloudSettingsCore(GoogleDriveCloudSettings cloudSettings)
+    private async Task ApplyCloudSettingsCoreAsync(GoogleDriveCloudSettings cloudSettings)
     {
-        cloudSettings.Normalize();
+        var cloudSnapshot = cloudSettings.Clone();
+        cloudSnapshot.Normalize();
         var previousLanguage = _settings.Language;
         var previousAutoStart = _settings.StartWithSimulator;
-        var targetAutoStart = cloudSettings.StartWithSimulator ?? previousAutoStart;
+        var targetAutoStart = cloudSnapshot.StartWithSimulator ?? previousAutoStart;
         AutoStartOperationResult? autoStartResult = null;
-
-        _applyingCloudSettings = true;
-        try
-        {
-            if (_autoStartInitialized && targetAutoStart.HasValue && targetAutoStart != previousAutoStart)
-            {
-                autoStartResult = _autoStartManager.SetEnabled(targetAutoStart.Value);
-            }
-            _settings.Language = cloudSettings.Language;
-            _settings.StartWithSimulator = targetAutoStart;
-            _settingsRepository.Save(_settings);
-        }
-        catch
-        {
-            _settings.Language = previousLanguage;
-            _settings.StartWithSimulator = previousAutoStart;
-            if (autoStartResult != null)
-            {
-                _autoStartManager.SetEnabled(previousAutoStart == true);
-            }
-            throw;
-        }
-        finally
-        {
-            _applyingCloudSettings = false;
-        }
+        var snapshot = _settings.Clone();
+        snapshot.Language = cloudSnapshot.Language;
+        snapshot.StartWithSimulator = targetAutoStart;
+        var updateAutoStart = _autoStartInitialized && targetAutoStart.HasValue && targetAutoStart != previousAutoStart;
+        await SettingsPersistence.SaveAsync(
+            _settingsRepository, snapshot,
+            updateAutoStart ? () => autoStartResult = _autoStartManager.SetEnabled(targetAutoStart!.Value) : null,
+            updateAutoStart ? () => _autoStartManager.SetEnabled(previousAutoStart == true) : null);
+        _settings.CopyFrom(snapshot);
 
         if (autoStartResult != null)
         {
             _autoStartProfileCount = autoStartResult.ConfigurationPaths.Count;
         }
+        if (_isClosed) return;
         if (targetAutoStart.HasValue && AutoStartPromptOverlay.Visibility == Visibility.Visible)
         {
             HideAutoStartPrompt();
@@ -1293,16 +1332,25 @@ public partial class MainWindow : Window
         {
             return;
         }
+        if (!_startupReady)
+        {
+            GoogleDrivePrimaryButton.IsEnabled = false;
+            GoogleDriveSignOutButton.IsEnabled = false;
+            GoogleDriveStateText.Text = _settingsLoadingIndicator.IsVisible
+                ? LocalizationManager.Text("Settings.Loading") : string.Empty;
+            return;
+        }
         var signedIn = _googleOAuthClient.IsSignedIn;
         GoogleDrivePrimaryButton.Content = LocalizationManager.Text(
             signedIn ? "Settings.DriveSyncNow" : "Settings.DriveConnect");
-        GoogleDrivePrimaryButton.IsEnabled = !GoogleDriveBusy;
+        GoogleDrivePrimaryButton.IsEnabled = !GoogleDriveBusy && !SettingsBusy && !_settingsOperations.IsStopping;
         GoogleDriveSignOutButton.Content = LocalizationManager.Text(
             _googleDriveAuthorizing ? "Common.Cancel" : "Settings.DriveDisconnect");
         GoogleDriveSignOutButton.Visibility = signedIn || _googleDriveAuthorizing
             ? Visibility.Visible
             : Visibility.Collapsed;
-        GoogleDriveSignOutButton.IsEnabled = _googleDriveAuthorizing || !GoogleDriveBusy;
+        GoogleDriveSignOutButton.IsEnabled = !_settingsOperations.IsStopping &&
+            (_googleDriveAuthorizing || (!GoogleDriveBusy && !SettingsBusy));
 
         if (!string.IsNullOrWhiteSpace(_googleDriveErrorDetail))
         {
@@ -1765,9 +1813,13 @@ public partial class MainWindow : Window
                 _runwayRecordsEpisodeId = eventArgs.EpisodeId;
                 _runwayRecords = processed.Records;
             }
+            var runwayUpdates = await PersistRunwaysAsync(processed.Records,
+                _recorder?.GetRunwayFacilities(eventArgs.EpisodeId) ?? Array.Empty<RunwayFacility>());
+            if (_isClosed) return;
             foreach (var record in processed.Records)
             {
-                if (_recorder != null) TryPersistRunway(record, _recorder.GetRunwayFacilities(eventArgs.EpisodeId));
+                var update = runwayUpdates.FirstOrDefault(value => value.Id == record.Id);
+                if (update != null) CopyRunwayMetadata(update, record);
                 if (TryResolveAirport(record, _airportFacilities))
                 {
                     airportUpdates.Add(record);
@@ -1775,10 +1827,16 @@ public partial class MainWindow : Window
             }
             if (airportUpdates.Count > 0)
             {
-                lock (_landingRepositoryGate)
+                Task persistence;
+                lock (_airportMetadataPersistenceGate)
                 {
-                    _repository.UpdateSummaries(airportUpdates);
+                    persistence = AirportMetadataPersistence.SaveAfterAsync(_airportMetadataPersistenceTask,
+                        _airportFacilityRepository, _airportFacilityRepositoryGate, _repository,
+                        _landingRepositoryGate, _airportFacilities, airportUpdates);
+                    _airportMetadataPersistenceTask = persistence;
                 }
+                await persistence;
+                if (_isClosed) return;
             }
             if (processed.Records.Count == 0)
             {
@@ -1801,7 +1859,7 @@ public partial class MainWindow : Window
             }
             RefreshBugReportButton();
 
-            foreach (var record in processed.Records)
+            foreach (var record in processed.Records.Where(record => !_locallyRemovedHistoryIds.Contains(record.Id)))
             {
                 _loadedDetails[record.Id] = record;
             }
@@ -1927,6 +1985,7 @@ public partial class MainWindow : Window
 
     private void AddLandingRecords(IReadOnlyList<LandingRecord> records)
     {
+        records = records.Where(record => !_locallyRemovedHistoryIds.Contains(record.Id)).ToArray();
         if (records.Count == 0)
         {
             return;
@@ -1943,95 +2002,37 @@ public partial class MainWindow : Window
             .ThenByDescending(record => record.ContactNumber)
             .ToArray();
 
-        ApplySessionFilter(newestFirst[0].Id);
+        ApplySessionFilter((LandingHistoryList.SelectedItem as LandingRecord)?.Id ?? newestFirst[0].Id);
     }
 
-    private void OnRunwayFacilitiesUpdated(object? sender, RunwayFacilitiesEventArgs eventArgs)
+    private async void OnRunwayFacilitiesUpdated(object? sender, RunwayFacilitiesEventArgs eventArgs)
     {
         if (_isClosed || _recorder == null || eventArgs.EpisodeId != _runwayRecordsEpisodeId) return;
-        var facilities = eventArgs.Runways;
-        var changed = false;
         // Only the contacts whose landing requested this snapshot. Browsing an
         // older record with missing geometry must not silently rewrite history.
-        foreach (var record in _runwayRecords)
+        var updates = await PersistRunwaysAsync(_runwayRecords, eventArgs.Runways);
+        if (_isClosed) return;
+        foreach (var update in updates)
         {
-            if (!TryPersistRunway(record, facilities)) continue;
-            var summary = _landings.FirstOrDefault(item => item.Id == record.Id);
-            if (summary != null)
-            {
-                summary.RunwayGeometry = record.RunwayGeometry;
-                summary.Runway = record.Runway;
-                summary.Airport = record.Airport;
-                summary.AirportDistanceNauticalMiles = record.AirportDistanceNauticalMiles;
-            }
-            changed = true;
+            foreach (var record in _landings.Concat(_runwayRecords).Where(record => record.Id == update.Id))
+                CopyRunwayMetadata(update, record);
+            if (_loadedDetails.TryGetValue(update.Id, out var detail)) CopyRunwayMetadata(update, detail);
         }
-        if (!changed) return;
+        if (updates.Count == 0) return;
         LandingHistoryList.Items.Refresh();
         if (LandingHistoryList.SelectedItem is LandingRecord selected) SelectRecord(selected);
         QueueGoogleDriveSync();
     }
 
-    private bool TryPersistRunway(LandingRecord record, IReadOnlyList<RunwayFacility> facilities)
-    {
-        var previousName = record.Runway;
-        var previousAirport = record.Airport;
-        var previousDistance = record.AirportDistanceNauticalMiles;
-        if (!TryResolveRunway(record, facilities)) return false;
-        try
-        {
-            lock (_landingRepositoryGate)
-            {
-                // A delayed response must not recreate a deleted landing.
-                if (_repository.Contains(record.Id))
-                {
-                    _repository.Save(record);
-                    return true;
-                }
-            }
-        }
-        catch (Exception exception) when (exception is System.IO.IOException || exception is UnauthorizedAccessException || exception is System.Runtime.Serialization.SerializationException)
-        {
-            // The landing itself was already saved. Optional scenery metadata
-            // must not turn it into a failed analysis or interrupt frame capture.
-        }
-        record.RunwayGeometry = null;
-        record.Runway = previousName;
-        record.Airport = previousAirport;
-        record.AirportDistanceNauticalMiles = previousDistance;
-        return false;
-    }
+    internal static bool TryResolveRunway(LandingRecord record, IReadOnlyList<RunwayFacility> facilities) =>
+        RunwayResolver.TryApply(record, facilities);
 
-    internal static bool TryResolveRunway(LandingRecord record, IReadOnlyList<RunwayFacility> facilities)
+    private async void OnAirportFacilitiesUpdated(object? sender, AirportFacilitiesEventArgs eventArgs)
     {
-        if (record.RunwayGeometry != null || record.IsSummaryOnly) return false;
-        var runway = RunwayResolver.Select(record, facilities);
-        if (runway == null) return false;
-        record.RunwayGeometry = runway;
-        record.Runway = RunwayResolver.NameForDirection(record, runway);
-        // A nearby airport's reference point can be closer than the airport
-        // whose runway actually contains this touchdown. Keep the identities together.
-        if (!string.Equals(record.Airport, runway.AirportIdent, StringComparison.OrdinalIgnoreCase))
-            record.AirportDistanceNauticalMiles = null;
-        record.Airport = runway.AirportIdent;
-        return true;
-    }
+        if (_isClosed) return;
+        _airportFacilities = MergeAirportFacilities(_airportFacilities, eventArgs.Facilities);
 
-    private void OnAirportFacilitiesUpdated(object? sender, AirportFacilitiesEventArgs eventArgs)
-    {
-        try
-        {
-            lock (_airportFacilityRepositoryGate)
-            {
-                _airportFacilities = _airportFacilityRepository.MergeAndSave(eventArgs.Facilities);
-            }
-        }
-        catch
-        {
-            _airportFacilities = MergeAirportFacilities(_airportFacilities, eventArgs.Facilities);
-        }
-
-        var changed = false;
+        var changedRecords = new List<LandingRecord>();
         foreach (var record in _landings)
         {
             if (!TryResolveAirport(record, _airportFacilities))
@@ -2039,20 +2040,30 @@ public partial class MainWindow : Window
                 continue;
             }
 
-            lock (_landingRepositoryGate)
-            {
-                _repository.UpdateSummary(record);
-            }
+            changedRecords.Add(record);
             if (_loadedDetails.TryGetValue(record.Id, out var detail))
             {
                 detail.Airport = record.Airport;
                 detail.Runway = record.Runway;
                 detail.AirportDistanceNauticalMiles = record.AirportDistanceNauticalMiles;
             }
-            changed = true;
         }
 
-        if (changed)
+        Task persistence;
+        lock (_airportMetadataPersistenceGate)
+        {
+            persistence = AirportMetadataPersistence.SaveAfterAsync(
+                _airportMetadataPersistenceTask,
+                _airportFacilityRepository,
+                _airportFacilityRepositoryGate,
+                _repository,
+                _landingRepositoryGate,
+                eventArgs.Facilities,
+                changedRecords);
+            _airportMetadataPersistenceTask = persistence;
+        }
+
+        if (changedRecords.Count > 0)
         {
             var selected = LandingHistoryList.SelectedItem as LandingRecord;
             LandingHistoryList.Items.Refresh();
@@ -2060,6 +2071,15 @@ public partial class MainWindow : Window
             {
                 SelectRecord(selected);
             }
+        }
+
+        try
+        {
+            await persistence;
+        }
+        catch (Exception exception)
+        {
+            if (!_isClosed) SetConnectionWarning("Recorder.AnalysisFailedFormat", exception.Message);
         }
     }
 
@@ -2101,6 +2121,8 @@ public partial class MainWindow : Window
 
     private async void OnReportBugClick(object sender, RoutedEventArgs eventArgs)
     {
+        if (_isClosed) return;
+        var cancellationToken = _lifetimeCancellation.Token;
         var candidate = _lastLandingBugReport.Available();
         if (candidate == null || _bugReportSubmitting)
         {
@@ -2127,7 +2149,7 @@ public partial class MainWindow : Window
                 _bugReportPersistenceTask = persistenceTask;
             }
             path = await persistenceTask;
-            if (_lifetimeCancellation.IsCancellationRequested)
+            if (cancellationToken.IsCancellationRequested)
             {
                 return;
             }
@@ -2143,7 +2165,9 @@ public partial class MainWindow : Window
                 return;
             }
 
-            var preparation = await uploadClient.PrepareAsync(_lifetimeCancellation.Token);
+            if (_isClosed || cancellationToken.IsCancellationRequested) return;
+            var preparation = await Task.Run(() => uploadClient.PrepareAsync(cancellationToken));
+            if (_isClosed || cancellationToken.IsCancellationRequested) return;
             if (preparation.State != TelemetryPreparationState.Ready)
             {
                 SetUploadStatus("BugReport.SavedForRetryFormat", System.IO.Path.GetFileName(path));
@@ -2153,8 +2177,14 @@ public partial class MainWindow : Window
 
             // Queue the newly submitted report before scanning any older
             // backlog. This keeps user-initiated reports ahead of legacy RAW.
-            var queued = uploadClient.Enqueue(path);
-            uploadClient.EnqueueExisting();
+            var queued = await Task.Run(() =>
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var accepted = uploadClient.Enqueue(path);
+                cancellationToken.ThrowIfCancellationRequested();
+                uploadClient.EnqueueExisting();
+                return accepted;
+            });
             if (queued)
             {
                 SetUploadStatus("BugReport.Queued");
@@ -2170,7 +2200,7 @@ public partial class MainWindow : Window
         }
         catch (Exception exception)
         {
-            if (path != null && System.IO.File.Exists(path))
+            if (path != null && await Task.Run(() => System.IO.File.Exists(path)))
             {
                 _lastLandingBugReport.MarkSubmitted(candidate.EpisodeId);
                 SetUploadStatus("BugReport.SavedForRetryFormat", System.IO.Path.GetFileName(path));
@@ -2205,14 +2235,9 @@ public partial class MainWindow : Window
         return path;
     }
 
-    internal static void DrainBugReportPersistence(Task persistenceTask)
-    {
-        persistenceTask.GetAwaiter().GetResult();
-    }
-
     private void RefreshBugReportButton()
     {
-        if (ReportBugButton == null)
+        if (_isClosed || ReportBugButton == null)
         {
             return;
         }
@@ -2272,8 +2297,10 @@ public partial class MainWindow : Window
 
     private void OnTelemetryUploadStatusChanged(object? sender, TelemetryUploadStatusEventArgs eventArgs)
     {
+        if (_isClosed || Dispatcher.HasShutdownStarted || Dispatcher.HasShutdownFinished) return;
         Dispatcher.BeginInvoke(new Action(() =>
         {
+            if (_isClosed) return;
             if (_lastLandingBugReport.Available() != null)
             {
                 SetUploadStatus("Footer.ReportReady");
@@ -2297,6 +2324,7 @@ public partial class MainWindow : Window
 
     private void SetUploadStatusCore(string key, object[]? arguments, bool isError)
     {
+        if (_isClosed) return;
         _uploadStatusKey = key;
         _uploadStatusArguments = arguments ?? Array.Empty<object>();
         _uploadStatusIsError = isError;
@@ -2377,90 +2405,7 @@ public partial class MainWindow : Window
     private void OnWindowClosed(object? sender, EventArgs eventArgs)
     {
         _isClosed = true;
-        _lifetimeCancellation.Cancel();
-        _releaseUpdater.Dispose();
-        Loaded -= OnWindowLoaded;
-        foreach (var chart in _charts)
-        {
-            chart.HoverTimeChanged -= OnChartHoverTimeChanged;
-            chart.ZoomRangeSelected -= OnChartZoomRangeSelected;
-        }
-
-        if (_recorder != null)
-        {
-            _recorder.SimulatorExited -= OnSimulatorExited;
-            _recorder.Dispose();
-            _recorder.StatusChanged -= OnRecorderStatusChanged;
-            _recorder.EpisodeStarted -= OnEpisodeStarted;
-            _recorder.EpisodeCompleted -= OnEpisodeCompleted;
-            _recorder.AirportFacilitiesUpdated -= OnAirportFacilitiesUpdated;
-            _recorder.RunwayFacilitiesUpdated -= OnRunwayFacilitiesUpdated;
-            _recorder = null;
-        }
-
-        Task pendingEpisodePersistence;
-        lock (_episodeProcessingGate)
-        {
-            pendingEpisodePersistence = _episodePersistenceTask;
-        }
-
-        try
-        {
-            // Recorder.Dispose can complete an active rollout and enqueue its
-            // landing here. Persistence runs off the dispatcher, so draining it
-            // cannot deadlock UI shutdown and prevents losing that landing.
-            pendingEpisodePersistence.GetAwaiter().GetResult();
-        }
-        catch
-        {
-            // The normal episode handler already owns diagnostics. Shutdown
-            // must continue even if disk I/O or analysis failed.
-        }
-
-        Task pendingBugReportPersistence;
-        lock (_bugReportPersistenceGate)
-        {
-            pendingBugReportPersistence = _bugReportPersistenceTask;
-        }
-        try
-        {
-            // The ZIP write is the durability boundary for a user-initiated
-            // report. Network retry stays asynchronous, but closing the app
-            // cannot terminate the atomic local write halfway through.
-            DrainBugReportPersistence(pendingBugReportPersistence);
-        }
-        catch
-        {
-            // The click handler owns user-facing diagnostics. Shutdown must
-            // continue after a genuine storage failure.
-        }
-
-        TelemetryUploadClient? telemetryUploadClient;
-        lock (_telemetryUploadClientGate)
-        {
-            telemetryUploadClient = _telemetryUploadClient;
-            _telemetryUploadClient = null;
-        }
-        if (telemetryUploadClient != null)
-        {
-            telemetryUploadClient.StatusChanged -= OnTelemetryUploadStatusChanged;
-            telemetryUploadClient.Dispose();
-        }
-
-        if (_messageSource != null)
-        {
-            _messageSource.RemoveHook(WindowProcedure);
-            _messageSource = null;
-        }
-
-        if (!GoogleDriveBusy && _googleDriveSyncTask.IsCompleted && _googleDriveDeleteTask.IsCompleted)
-        {
-            _googleDriveBackupService.Dispose();
-            _googleDriveApiClient.Dispose();
-            _googleOAuthClient.Dispose();
-        }
-
-        _lifetimeCancellation.Dispose();
+        DisposeShutdownResources();
     }
 
     private sealed class ProcessedEpisode

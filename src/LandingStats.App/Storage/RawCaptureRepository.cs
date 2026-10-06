@@ -16,13 +16,17 @@ public sealed class RawCaptureRepository
     public const int ChunkMaximumSamples = 30000;
     private static readonly TimeSpan AbandonedTemporaryFileAge = TimeSpan.FromHours(24);
 
-    public RawCaptureRepository(string? rootPath = null)
+    public RawCaptureRepository(string? rootPath = null) : this(rootPath, true)
+    {
+    }
+
+    internal RawCaptureRepository(string? rootPath, bool cleanup)
     {
         RootPath = rootPath ?? Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "MSFS Landing Stats",
             "Telemetry Queue");
-        CleanupAbandonedTemporaryFiles();
+        if (cleanup) CleanupAbandonedTemporaryFiles();
     }
 
     public string RootPath { get; }
@@ -73,7 +77,7 @@ public sealed class RawCaptureRepository
             : value!.Trim().Replace("\r", " ").Replace("\n", " ");
     }
 
-    private void CleanupAbandonedTemporaryFiles()
+    internal void CleanupAbandonedTemporaryFiles()
     {
         if (!Directory.Exists(RootPath))
         {

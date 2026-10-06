@@ -43,6 +43,8 @@ public sealed class LandingReplayView : Grid
     private LandingReplayTrack? _track;
     private LandingReplayPose _pose;
     private bool _hasPose;
+    private bool _visualUpdatePending;
+    private bool _resetCameraPending;
     private bool _settingSlider;
     private bool _playing;
     private double _time;
@@ -102,7 +104,11 @@ public sealed class LandingReplayView : Grid
         _slider.ValueChanged += (_, __) => { if (_settingSlider) return; StopPlayback(); SetTimeCore(_slider.Value, true); };
         _timer.Interval = TimeSpan.FromMilliseconds(33); _timer.Tick += OnTick;
         Unloaded += (_, __) => StopPlayback();
-        IsVisibleChanged += (_, __) => { if (!IsVisible) StopPlayback(); };
+        IsVisibleChanged += (_, __) =>
+        {
+            if (!IsVisible) StopPlayback();
+            else ApplyPendingTime();
+        };
         foreach (var button in new[] { _play, _reset }) { button.Background = Brush("#25231F"); button.Foreground = Ink; button.BorderBrush = Brush("#4A433B"); }
         var transform = new Transform3DGroup(); transform.Children.Add(_poseVisibility); transform.Children.Add(new RotateTransform3D(_rotation)); transform.Children.Add(_translation); _aircraft.Transform = transform;
         _aircraft.Children.Add(ReplayAircraftModel.CreateAirframe()); _aircraft.Children.Add(_gear.Model); RefreshLocalization(); ShowUnavailable();
@@ -120,6 +126,7 @@ public sealed class LandingReplayView : Grid
     public void SetRecord(LandingRecord? value, IEnumerable<LandingRecord>? contacts = null)
     {
         StopPlayback(); _record = value; _hasPose = false; _gearRegistration = null; _offset = null;
+        _visualUpdatePending = false; _resetCameraPending = true;
         _contacts = value == null ? Array.Empty<LandingRecord>() : LandingReplayContacts.ForEpisode(value, contacts ?? Array.Empty<LandingRecord>());
         if (!LandingReplayTrack.TryCreate(value, out _track)) { _scene.Content = null; ShowUnavailable(); return; }
         LandingReplayRunwayOffset.TryCreate(value!, _track!, out _offset);
@@ -135,7 +142,8 @@ public sealed class LandingReplayView : Grid
         _footer.Visibility = Visibility.Visible;
         _hint.Visibility = _viewport.ActualWidth >= 1000 ? Visibility.Visible : Visibility.Collapsed;
         _metrics.Visibility = _controls.Visibility = _runwayOffset.Visibility = Visibility.Visible;
-        BuildScene(); SetTimeCore(Math.Max(_track.StartSeconds, Math.Min(_track.EndSeconds, 0)), false); ResetCamera(); RefreshLocalization();
+        BuildScene(); _visualUpdatePending = true;
+        SetTimeCore(Math.Max(_track.StartSeconds, Math.Min(_track.EndSeconds, 0)), false); RefreshLocalization();
     }
 
     public void SetTime(double timeSeconds) => SetTimeCore(timeSeconds, false);
@@ -148,13 +156,35 @@ public sealed class LandingReplayView : Grid
         _metrics.InvalidateVisual(); _controls.RefreshLocalization(); _runwayOffset.RefreshLocalization();
         if (_track == null) _message.Text = LocalizationManager.Text("Replay.Unavailable");
         else if (!_hasPose) _message.Text = LocalizationManager.Text("Replay.Gap");
-        else UpdateReadouts();
+        else if (!_visualUpdatePending) UpdateReadouts();
     }
 
     private void SetTimeCore(double timeSeconds, bool notify)
     {
         if (_track == null || !LandingReplayTrack.Finite(timeSeconds)) return;
-        _time = Math.Max(_track.StartSeconds, Math.Min(_track.EndSeconds, timeSeconds));
+        var time = Math.Max(_track.StartSeconds, Math.Min(_track.EndSeconds, timeSeconds));
+        if (_time != time) _visualUpdatePending = true;
+        _time = time;
+        // Chart hover also selects replay time while its tab is collapsed.
+        // Retain that selection without running suspension or touching visuals.
+        if (!HasHiddenVisualAncestor()) ApplyPendingTime();
+        if (notify) TimeChanged?.Invoke(this, new LandingChartHoverEventArgs(_time));
+    }
+
+    private bool HasHiddenVisualAncestor()
+    {
+        if (IsVisible) return false;
+        // Detached visible controls are also used by offscreen rendering/tests;
+        // only an explicitly hidden/collapsed presentation defers its updates.
+        for (DependencyObject? current = this; current != null; current = VisualTreeHelper.GetParent(current))
+            if (current is UIElement element && element.Visibility != Visibility.Visible) return true;
+        return false;
+    }
+
+    private void ApplyPendingTime()
+    {
+        if (!_visualUpdatePending || _track == null) return;
+        _visualUpdatePending = false;
         _settingSlider = true; _slider.Value = _time; _settingSlider = false;
         _clock.Text = _time.ToString("+0.00;-0.00;0.00", CultureInfo.CurrentCulture) + "s";
         _hasPose = _track.TrySample(_time, out _pose);
@@ -164,13 +194,13 @@ public sealed class LandingReplayView : Grid
             _rotation.Quaternion = _pose.Orientation;
             _translation.OffsetX = _pose.Position.X; _translation.OffsetY = _pose.Position.Y + _visualOffset; _translation.OffsetZ = _pose.Position.Z;
             _gearRegistration?.Update(_pose);
-            UpdateCamera();
+            if (_resetCameraPending) ResetCamera();
+            else UpdateCamera();
         }
         else _message.Text = LocalizationManager.Text("Replay.Gap");
         UpdateReadouts();
         // Hide stale pose across gaps while keeping the full recorded trail.
         _poseVisibility.ScaleX = _poseVisibility.ScaleY = _poseVisibility.ScaleZ = _hasPose ? 1 : 0;
-        if (notify) TimeChanged?.Invoke(this, new LandingChartHoverEventArgs(_time));
     }
 
     private void ShowUnavailable()
@@ -199,6 +229,7 @@ public sealed class LandingReplayView : Grid
         _playing = true; _lastTicks = Stopwatch.GetTimestamp(); _timer.Start(); RefreshLocalization();
     }
 
+    internal void PausePlayback() => StopPlayback();
     private void StopPlayback() { _playing = false; _timer.Stop(); _play.Content = LocalizationManager.Text("Replay.Play"); }
     private void OnTick(object? sender, EventArgs e)
     {
@@ -210,6 +241,7 @@ public sealed class LandingReplayView : Grid
     private void ResetCamera()
     {
         if (!_hasPose) return;
+        _resetCameraPending = false;
         _distance = 150; _elevation = 27;
         var offset = LandingReplayTrack.FrontLeftCameraOffset(_pose.HeadingDegrees, _distance, _elevation);
         _azimuth = Math.Atan2(offset.X, offset.Z); UpdateCamera();

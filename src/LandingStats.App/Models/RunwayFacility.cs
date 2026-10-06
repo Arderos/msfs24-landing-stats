@@ -6,6 +6,15 @@ namespace LandingStats.App.Models;
 [DataContract]
 public sealed class RunwayFacility
 {
+    internal RunwayFacility Snapshot()
+    {
+        var copy = (RunwayFacility)MemberwiseClone();
+        copy.PrimaryPapi = PrimaryPapi?.Snapshot();
+        copy.SecondaryPapi = SecondaryPapi?.Snapshot();
+        copy.PrimaryIlsGlideSlope = PrimaryIlsGlideSlope?.Snapshot();
+        copy.SecondaryIlsGlideSlope = SecondaryIlsGlideSlope?.Snapshot();
+        return copy;
+    }
     [DataMember(Order = 1)] public string AirportIdent { get; set; } = string.Empty;
     [DataMember(Order = 2)] public string AirportRegion { get; set; } = string.Empty;
     [DataMember(Order = 3)] public double LatitudeDegrees { get; set; }
@@ -62,6 +71,7 @@ public sealed class RunwayFacility
 [DataContract]
 public sealed class RunwayPapi
 {
+    internal RunwayPapi Snapshot() => (RunwayPapi)MemberwiseClone();
     // LENGTH / 2 - BIAS_Z, measured along the landing direction from the
     // physical end. Rendering may use a nominal coplanar approximation only.
     [DataMember(Order = 1)] public double StationFromEndMeters { get; set; }
@@ -74,6 +84,7 @@ public sealed class RunwayPapi
 [DataContract]
 public sealed class RunwayGlideSlope
 {
+    internal RunwayGlideSlope Snapshot() => (RunwayGlideSlope)MemberwiseClone();
     [DataMember(Order = 1)] public string Ident { get; set; } = string.Empty;
     [DataMember(Order = 2)] public string Region { get; set; } = string.Empty;
     [DataMember(Order = 3)] public double LatitudeDegrees { get; set; }

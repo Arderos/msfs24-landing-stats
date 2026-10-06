@@ -10,6 +10,13 @@
     <system:String x:Key="Top.Close">Close</system:String>
 
     <system:String x:Key="History.Title">LANDINGS</system:String>
+    <system:String x:Key="History.Loading">Loading landing history…</system:String>
+    <system:String x:Key="History.DetailLoading">Loading landing details…</system:String>
+    <system:String x:Key="History.LoadingRunway">Loading runway details…</system:String>
+    <system:String x:Key="History.LoadFailed">Landing history could not be loaded.</system:String>
+    <system:String x:Key="History.DetailLoadFailed">Landing details could not be loaded.</system:String>
+    <system:String x:Key="History.RetryLoad">Retry</system:String>
+    <system:String x:Key="Lifecycle.Closing">Saving local changes and closing…</system:String>
     <system:String x:Key="History.Filter">Filter by aircraft or airport</system:String>
     <system:String x:Key="History.Delete">Delete landing</system:String>
     <system:String x:Key="History.AverageRate">Average vertical rate this month</system:String>
@@ -147,6 +154,8 @@
     <system:String x:Key="Settings.Russian">РУССКИЙ</system:String>
     <system:String x:Key="Settings.AutomaticResolvedFormat">Automatic currently selects {0}.</system:String>
     <system:String x:Key="Settings.SaveErrorFormat">Could not save settings. {0}</system:String>
+    <system:String x:Key="Settings.Applying">Applying settings…</system:String>
+    <system:String x:Key="Settings.Loading">Loading settings…</system:String>
     <system:String x:Key="Settings.FileFormat">Stored in {0}</system:String>
     <system:String x:Key="Settings.AutoStart">SIMULATOR AUTO-START</system:String>
     <system:String x:Key="Settings.AutoStartBody">Opens Landing Stats automatically when Microsoft Flight Simulator 2024 starts. Steam and Microsoft Store installations are supported.</system:String>

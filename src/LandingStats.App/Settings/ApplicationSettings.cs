@@ -21,6 +21,26 @@ internal sealed class ApplicationSettings : IExtensibleDataObject
 
     public ExtensionDataObject? ExtensionData { get; set; }
 
+    public ApplicationSettings Clone() => new ApplicationSettings
+    {
+        SchemaVersion = SchemaVersion,
+        Language = Language,
+        StartWithSimulator = StartWithSimulator,
+        GoogleDrivePromptAnswered = GoogleDrivePromptAnswered,
+        // Extension data is opaque and never mutated by the application. Keep
+        // it on detached save snapshots so future-version options survive.
+        ExtensionData = ExtensionData,
+    };
+
+    public void CopyFrom(ApplicationSettings source)
+    {
+        SchemaVersion = source.SchemaVersion;
+        Language = source.Language;
+        StartWithSimulator = source.StartWithSimulator;
+        GoogleDrivePromptAnswered = source.GoogleDrivePromptAnswered;
+        ExtensionData = source.ExtensionData;
+    }
+
     public void Normalize()
     {
         if (SchemaVersion < CurrentSchemaVersion)

@@ -90,8 +90,16 @@ internal sealed class FlightModelGeometryResolver
     private DateTime _lastCatalogBuildUtc;
 
     public FlightModelGeometryResolver()
-        : this(FindInstalledPackagesPaths(), true, FindInstalledPackagesPaths)
     {
+        _installedPackagesPathProvider = FindInstalledPackagesPaths;
+        _installedPackagesPaths = Array.Empty<string>();
+        _lastCatalogBuildUtc = DateTime.UtcNow;
+        _catalogTask = Task.Run(() =>
+        {
+            var paths = FindInstalledPackagesPaths().ToArray();
+            lock (_catalogGate) _installedPackagesPaths = paths;
+            return BuildCatalog(paths);
+        });
     }
 
     internal FlightModelGeometryResolver(IEnumerable<string> installedPackagesPaths, bool buildAsync)

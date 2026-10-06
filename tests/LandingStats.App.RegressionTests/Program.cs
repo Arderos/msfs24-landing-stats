@@ -42,6 +42,15 @@ internal static class Program
         LocalizationManager.Apply("en");
 
         Run("deduplicator keeps the last same-time frame", DeduplicatorKeepsLastFrame);
+        Run("recorder connection retries never block the UI dispatcher", RecorderConnectionRegressionTests.RunAll);
+        Run("hidden replay defers visual work and restores the latest selection", ReplayVisibilityRegressionTests.RunAll);
+        Run("airport metadata persistence is asynchronous, ordered, and deletion safe", AirportMetadataPersistenceRegressionTests.RunAll);
+        Run("settings mutations stay asynchronous, serialized and drain on close", SettingsOperationsRegressionTests.RunAll);
+        Run("history loads stay asynchronous and reject stale selections", AsyncHistoryRegressionTests.RunAll);
+        Run("history retry and loading resources remain accessible", Review089UiRegressionTests.RunAll);
+        Run("busy placeholders appear only after sustained waiting", DelayedBusyIndicatorRegressionTests.RunAll);
+        Run("window close stays responsive while accepted writes drain", AsyncShutdownRegressionTests.RunAll);
+        Run("runway metadata saves stay asynchronous and preserve newer records", RunwayMetadataPersistenceRegressionTests.RunAll);
         Run("adaptive impact segmentation and classification", TouchdownImpactRegressionTests.RunAll);
         Run("matched runway corrects the nearest airport guess", RunwayAirportMetadataRegressionTests.RunwayIdentityOverridesNearestAirportGuess);
         Run("full-axis bindings do not depend on axis names", ReplayControlAxisProvenanceTests.FullAxisBindingsDoNotDependOnAxisNames);
@@ -1028,20 +1037,12 @@ internal static class Program
 
     private static void WindowShutdownDrainsBugReportPersistence()
     {
-        using var releaseWrite = new ManualResetEventSlim(false);
-        var persistence = Task.Run(() => releaseWrite.Wait());
-        var drainReturned = false;
-        var drain = Task.Run(() =>
-        {
-            MainWindow.DrainBugReportPersistence(persistence);
-            drainReturned = true;
-        });
-
-        Thread.Sleep(50);
-        Equal(false, drainReturned, "shutdown waits while local report write is incomplete");
-        releaseWrite.Set();
-        Equal(true, drain.Wait(TimeSpan.FromSeconds(5)), "shutdown drain completes after local write");
-        Equal(true, drainReturned, "shutdown resumes only after report durability boundary");
+        var persistence = new TaskCompletionSource<bool>();
+        var drain = Task.Run(() => AsyncWindowShutdown.DrainAcceptedWorkAsync(persistence.Task));
+        Equal(false, drain.IsCompleted, "shutdown asynchronously waits while local report write is incomplete");
+        persistence.SetResult(true);
+        Equal(true, drain.Wait(TimeSpan.FromSeconds(5)), "shutdown resumes only after report durability boundary");
+        drain.GetAwaiter().GetResult();
     }
 
     private static BugReportCandidate BugReportFixture(long episodeId, string landingId)

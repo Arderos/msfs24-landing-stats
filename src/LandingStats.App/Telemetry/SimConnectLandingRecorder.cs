@@ -2,6 +2,8 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.Threading;
+using System.Threading.Tasks;
 using System.Windows.Threading;
 using LandingStats.App.Models;
 using LandingStats.App.Settings;
@@ -176,6 +178,10 @@ internal sealed partial class SimConnectLandingRecorder : IDisposable
     private Dictionary<string, AirportFacility>? _pendingAirportFacilities;
     private readonly Dictionary<uint, string> _simConnectOperations = new Dictionary<uint, string>();
     private readonly WindowsJoystickReader _windowsJoystickReader = new WindowsJoystickReader();
+    private readonly Func<SimConnect> _openConnection;
+    private readonly CancellationTokenSource _connectionCancellation = new CancellationTokenSource();
+    private Task _connectionTask = Task.CompletedTask;
+    private int _pendingConnectionMessages;
 
     private SimConnect? _simConnect;
     private List<TelemetrySample>? _episodeSamples;
@@ -205,9 +211,15 @@ internal sealed partial class SimConnectLandingRecorder : IDisposable
     private bool? _aircraftOnGround;
     private bool _disposed;
 
-    public SimConnectLandingRecorder(IntPtr windowHandle)
+    public SimConnectLandingRecorder(IntPtr windowHandle) : this(windowHandle, null)
+    {
+    }
+
+    internal SimConnectLandingRecorder(IntPtr windowHandle, Func<SimConnect>? openConnection)
     {
         _windowHandle = windowHandle;
+        _openConnection = openConnection ?? (() => new SimConnect(
+            "MSFS Landing Stats", _windowHandle, WindowMessage, null, 0));
         _retryTimer.Tick += OnRetryTimerTick;
     }
 
@@ -291,8 +303,20 @@ internal sealed partial class SimConnectLandingRecorder : IDisposable
 
     public IntPtr HandleWindowMessage(int message, ref bool handled)
     {
-        if (message != WindowMessage || _simConnect == null)
+        if (message != WindowMessage)
         {
+            return IntPtr.Zero;
+        }
+
+        if (_simConnect == null)
+        {
+            // The native connection can post notifications before the worker
+            // hands it to this dispatcher. Replay each notification after adoption.
+            if (!_disposed && !_connectionTask.IsCompleted)
+            {
+                _pendingConnectionMessages++;
+                handled = true;
+            }
             return IntPtr.Zero;
         }
 
@@ -319,6 +343,9 @@ internal sealed partial class SimConnectLandingRecorder : IDisposable
 
         _disposed = true;
         _retryTimer.Stop();
+        // Do not wait for a native connection attempt on the window's dispatcher.
+        _connectionCancellation.Cancel();
+        _connectionCancellation.Dispose();
         if (_lastContactTime.HasValue)
         {
             CompleteEpisode(false);
@@ -357,40 +384,79 @@ internal sealed partial class SimConnectLandingRecorder : IDisposable
 
     private void TryConnect()
     {
-        if (_simConnect != null || _disposed)
+        if (_simConnect != null || _disposed || !_connectionTask.IsCompleted)
         {
             return;
         }
 
         _lastConnectAttemptUtc = DateTime.UtcNow;
+        _pendingConnectionMessages = 0;
         SetStatus(RecorderState.Waiting, "Recorder.WaitingRetry");
+        _connectionTask = ConnectAsync(_connectionCancellation.Token);
+    }
+
+    private async Task ConnectAsync(CancellationToken cancellationToken)
+    {
+        var dispatcher = _retryTimer.Dispatcher;
         try
         {
-            var connection = new SimConnect(
-                "MSFS Landing Stats",
-                _windowHandle,
-                WindowMessage,
-                null,
-                0);
-            connection.OnRecvOpen += OnRecvOpen;
-            connection.OnRecvQuit += OnRecvQuit;
-            connection.OnRecvException += OnRecvException;
-            connection.OnRecvSimobjectData += OnRecvSimobjectData;
-            connection.OnRecvAirportList += OnRecvAirportList;
-            connection.OnRecvFacilityData += OnRecvRunwayFacilityData;
-            connection.OnRecvFacilityDataEnd += OnRecvRunwayFacilityDataEnd;
-            connection.OnRecvEvent += OnRecvEvent;
-            connection.OnRecvEventEx1 += OnRecvEventEx1;
-            connection.OnRecvFlowEvent += OnRecvFlowEvent;
-            _simConnect = connection;
-        }
-        catch (COMException)
-        {
-            SetStatus(RecorderState.Waiting, "Recorder.WaitingRetry");
+            await Task.Run(async () =>
+            {
+                // SimConnect_Open can take hundreds of milliseconds with no simulator.
+                // Only construction runs in the worker; all SDK calls and callbacks after
+                // the hand-off remain serialized on the window's dispatcher.
+                SimConnect? connection = _openConnection();
+                try
+                {
+                    await dispatcher.InvokeAsync(() =>
+                    {
+                        if (_disposed) return;
+                        connection.OnRecvOpen += OnRecvOpen;
+                        connection.OnRecvQuit += OnRecvQuit;
+                        connection.OnRecvException += OnRecvException;
+                        connection.OnRecvSimobjectData += OnRecvSimobjectData;
+                        connection.OnRecvAirportList += OnRecvAirportList;
+                        connection.OnRecvFacilityData += OnRecvRunwayFacilityData;
+                        connection.OnRecvFacilityDataEnd += OnRecvRunwayFacilityDataEnd;
+                        connection.OnRecvEvent += OnRecvEvent;
+                        connection.OnRecvEventEx1 += OnRecvEventEx1;
+                        connection.OnRecvFlowEvent += OnRecvFlowEvent;
+                        _simConnect = connection;
+                        connection = null;
+                        // Recover early OPEN/QUIT notifications, not just the first
+                        // message. A callback can close the connection while draining.
+                        var pendingMessages = _pendingConnectionMessages;
+                        _pendingConnectionMessages = 0;
+                        for (var index = 0; index < pendingMessages && _simConnect != null; index++)
+                        {
+                            var handled = false;
+                            HandleWindowMessage(WindowMessage, ref handled);
+                        }
+                    }, DispatcherPriority.Normal, cancellationToken).Task.ConfigureAwait(false);
+                }
+                finally
+                {
+                    // Cancellation or dispatcher shutdown must not leak a late connection.
+                    try { connection?.Dispose(); }
+                    catch { /* A dead connection must not prevent shutdown. */ }
+                }
+            }, cancellationToken).ConfigureAwait(false);
         }
         catch (Exception exception)
         {
-            SetStatus(RecorderState.Error, "Recorder.ConnectionFailedFormat", exception.Message);
+            if (cancellationToken.IsCancellationRequested || dispatcher.HasShutdownStarted) return;
+            try
+            {
+                await dispatcher.InvokeAsync(() =>
+                {
+                    if (_disposed) return;
+                    if (exception is COMException)
+                        SetStatus(RecorderState.Waiting, "Recorder.WaitingRetry");
+                    else
+                        SetStatus(RecorderState.Error, "Recorder.ConnectionFailedFormat", exception.Message);
+                }, DispatcherPriority.Normal, cancellationToken).Task.ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) { /* The window closed before reporting. */ }
         }
     }
 

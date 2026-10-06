@@ -4,6 +4,7 @@ using System.Runtime.Serialization;
 using System.Runtime.Serialization.Json;
 using System.Security.Cryptography;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using Google.Apis.Auth.OAuth2.Responses;
 using Google.Apis.Util.Store;
@@ -16,7 +17,7 @@ internal sealed class GoogleOAuthTokenStore : IDataStore
         "MSFS Landing Stats Google Drive OAuth token v1");
     private readonly object _gate = new object();
     private readonly string _path;
-    private bool? _hasRefreshToken;
+    private int _hasRefreshToken = -1;
 
     public GoogleOAuthTokenStore(string? path = null)
     {
@@ -30,10 +31,15 @@ internal sealed class GoogleOAuthTokenStore : IDataStore
 
     public bool HasRefreshToken()
     {
+        // Presentation only needs the last committed token state. A background
+        // DPAPI/write/flush operation must not make the dispatcher wait on _gate.
+        var cached = Volatile.Read(ref _hasRefreshToken);
+        if (cached >= 0) return cached == 1;
         lock (_gate)
         {
-            _hasRefreshToken ??= LoadCore() != null;
-            return _hasRefreshToken.Value;
+            if (_hasRefreshToken < 0)
+                Volatile.Write(ref _hasRefreshToken, LoadCore() != null ? 1 : 0);
+            return _hasRefreshToken == 1;
         }
     }
 
@@ -42,7 +48,7 @@ internal sealed class GoogleOAuthTokenStore : IDataStore
         lock (_gate)
         {
             var value = LoadCore();
-            _hasRefreshToken = value != null;
+            Volatile.Write(ref _hasRefreshToken, value != null ? 1 : 0);
             return value;
         }
     }
@@ -67,7 +73,7 @@ internal sealed class GoogleOAuthTokenStore : IDataStore
                     AccountEmail = string.IsNullOrWhiteSpace(accountEmail) ? null : accountEmail,
                 };
                 WriteAtomic(value);
-                _hasRefreshToken = true;
+                Volatile.Write(ref _hasRefreshToken, 1);
             }
             finally
             {
@@ -84,7 +90,7 @@ internal sealed class GoogleOAuthTokenStore : IDataStore
             {
                 File.Delete(_path);
             }
-            _hasRefreshToken = false;
+            Volatile.Write(ref _hasRefreshToken, 0);
         }
     }
 

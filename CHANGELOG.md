@@ -2,6 +2,22 @@
 
 All notable changes to MSFS Landing Stats are documented in this file.
 
+## [0.8.9] - 2026-10-06
+
+### Fixed
+
+- Fixed periodic interface freezes while browsing charts or playing a landing,
+  including when the simulator is not running.
+- Keep the interface responsive while loading history, applying settings,
+  updating simulator auto-start, saving runway information, and preparing bug reports.
+- Finish pending local saves when closing without blocking the interface.
+
+### Improved
+
+- Avoid updating hidden 3D replay visuals while viewing ordinary charts.
+- Show loading and saving indicators only after 500 ms, keeping quick operations
+  free of flashing placeholders.
+
 ## [0.8.8] - 2026-10-05
 
 ### Added
