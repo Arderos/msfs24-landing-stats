@@ -18,7 +18,7 @@ internal static class ReplayDecisionJournalTests
         // No WPF window or 3D tab exists. Production finalization runs on this same worker path.
         Task.Run(() => LandingReplayDiagnostics.Record(record, new[] { record }, journal)).GetAwaiter().GetResult();
         var entries = journal.Snapshot().Entries;
-        foreach (var code in new[] { "track_created", "axis_candidate", "axis_selected", "pair_ranking",
+        foreach (var code in new[] { "track_created", "axis_candidate", "axis_selected", "joint_assignment",
                      "named_end_selected", "observed_runway_profile", "papi_coplanar_fallback", "threshold_reconstructed",
                      "tdz_pattern", "layout_created", "visual_datum_registered", "contact_registered", "frame_decision_counts", "marker_selected" })
             Require(entries.Any(e => e.Code == code), "Missing replay decision " + code);

@@ -12,7 +12,7 @@ internal static class ReplayControlEvidenceRegressionTests
     {
         // Only relative time, command channels and physical axes from real
         // reports. No aircraft/device identity or geographic data is needed.
-        foreach (var fixture in new[] { "physical-input-1.csv", "physical-input-2.csv", "physical-input-3.csv", "physical-input-4.csv" })
+        foreach (var fixture in new[] { "physical-input-1.csv", "physical-input-2.csv", "physical-input-3.csv", "physical-input-4.csv", "physical-input-5.csv", "physical-input-6.csv" })
         foreach (var shifted in new[] { false, true })
         {
             var record = Read(fixture);
@@ -70,15 +70,87 @@ internal static class ReplayControlEvidenceRegressionTests
             var reference = (from column in Enumerable.Range(0, 8) from lag in Enumerable.Range(0, 17)
                              let x = noise.Series.Take(800 - lag).Select(p => p.RawControllerAxesPercent[column]).ToArray()
                              let y = noise.Series.Skip(lag).Select(p => p.PilotPitchPercent).ToArray()
-                             let mx = x.Average() let my = y.Average()
-                             let score = Math.Abs(x.Zip(y, (a, b) => (a - mx) * (b - my)).Sum() /
-                                 Math.Sqrt(x.Sum(a => (a - mx) * (a - mx)) * y.Sum(b => (b - my) * (b - my))))
+                             let dx = x.Skip(1).Zip(x, (next, previous) => next - previous).ToArray()
+                             let dy = y.Skip(1).Zip(y, (next, previous) => next - previous).ToArray()
+                             let score = Math.Abs(dx.Zip(dy, (a, b) => a * b).Sum() /
+                                 Math.Sqrt(dx.Sum(a => a * a) * dy.Sum(b => b * b)))
                              orderby score descending select new { Source = column * 6 + 1, Score = score }).First();
             Require(mapped.Pitch?.SourceIndex == reference.Source && Math.Abs(mapped.Pitch.Correlation) < .75,
-                "even weak input ranks follow the independent whole-record reference, without a confidence veto; seed=" + seed);
+                "even weak input ranks follow the independent whole-record movement reference, without a confidence veto; seed=" + seed);
         }
 
         PairEvidence();
+        JointRoles();
+        LinearRamps();
+    }
+
+    private static void JointRoles()
+    {
+        var random = new Random(73);
+        var record = new LandingRecord();
+        record.RawControllerAxesSourceIndices.AddRange(new[] { 0, 1, 2 });
+        for (var i = 0; i < 4000; i++)
+        {
+            var pitch = random.NextDouble() - .5;
+            var roll = random.NextDouble() - .5;
+            var yaw = random.NextDouble() - .5;
+            var noise = random.NextDouble() - .5;
+            record.Series.Add(new LandingSeriesPoint { TimeSeconds = i * .05,
+                PilotPitchPercent = pitch * 20, PilotRollPercent = (roll * .2 + yaw * .3 + noise) * 20,
+                PilotYawPercent = yaw * 20, RawControllerAxesPercent = new[] { pitch * 20, roll * 20, yaw * 20 },
+                RawControllerAxesValid = new[] { true, true, true }, RawControllerAxesAgeSeconds = new double[3] });
+        }
+        var inputs = ReplayControlInputs.Resolve(record);
+        Require(inputs.Pitch?.SourceIndex == 0 && inputs.Roll?.SourceIndex == 1 && inputs.Yaw?.SourceIndex == 2,
+            "a weak roll association cannot consume the axis with decisive yaw evidence before yaw is ranked");
+
+        // Belonging to the stick must not break a tie between pedal candidates.
+        record.RawControllerAxesSourceIndices.Add(6);
+        foreach (var point in record.Series)
+        {
+            point.PilotRollPercent = point.RawControllerAxesPercent[1];
+            point.RawControllerAxesPercent = point.RawControllerAxesPercent.Concat(new[] { point.PilotYawPercent }).ToArray();
+            point.RawControllerAxesValid = new[] { true, true, true, true };
+            point.RawControllerAxesAgeSeconds = new double[4];
+        }
+        inputs = ReplayControlInputs.Resolve(record);
+        Require(inputs.Pitch?.SourceIndex == 0 && inputs.Roll?.SourceIndex == 1 && inputs.Yaw == null,
+            "same-device evidence favours pitch/roll only, not a stick twist over equally correlated separate pedals");
+        foreach (var point in record.Series)
+            point.RawControllerAxesPercent[2] += (random.NextDouble() - .5) * 10;
+        Require(ReplayControlInputs.Resolve(record).Yaw?.SourceIndex == 6,
+            "stronger separate pedal evidence wins without a device preference");
+
+        record.RawControllerAxesSourceIndices.RemoveRange(2, 2);
+        foreach (var point in record.Series)
+        {
+            point.PilotRollPercent = .1 * point.RawControllerAxesPercent[1] + (random.NextDouble() - .5) * 20;
+            point.PilotYawPercent = point.RawControllerAxesPercent[1];
+            point.RawControllerAxesPercent = point.RawControllerAxesPercent.Take(2).ToArray();
+            point.RawControllerAxesValid = new[] { true, true };
+            point.RawControllerAxesAgeSeconds = new double[2];
+        }
+        inputs = ReplayControlInputs.Resolve(record);
+        Require(inputs.Pitch?.SourceIndex == 0 && inputs.Roll == null && inputs.Yaw?.SourceIndex == 1,
+            "with two available axes the strongest two roles win, not the roles visited first");
+    }
+
+    private static void LinearRamps()
+    {
+        var record = new LandingRecord(); record.RawControllerAxesSourceIndices.Add(19);
+        for (var i = 0; i < 80; i++)
+            record.Series.Add(new LandingSeriesPoint { TimeSeconds = i * .05, PilotPitchPercent = i * -.0003,
+                RawControllerAxesPercent = new[] { 43 + i * .0001 },
+                RawControllerAxesValid = new[] { true }, RawControllerAxesAgeSeconds = new[] { 0d } });
+        var selected = ReplayControlInputs.Resolve(record).Pitch;
+        Require(selected?.SourceIndex == 19 && selected.Correlation < -.999999,
+            "steady, tiny, offset and inverted movement remains identifiable without variance or amplitude cutoffs");
+        for (var i = 0; i < record.Series.Count; i++) record.Series[i].TimeSeconds = i * 1e-12;
+        Require(ReplayControlInputs.Resolve(record).Pitch?.Correlation < -.999999,
+            "near-zero sample intervals cannot amplify motion because correlation never divides by dt");
+        for (var i = 0; i < record.Series.Count; i++) record.Series[i].RawControllerAxesValid[0] = i % 2 == 0;
+        Require(ReplayControlInputs.Resolve(record).Pitch == null,
+            "missing intermediate samples cannot be bridged into invented matching movements");
     }
 
     private static void PairEvidence()

@@ -12,7 +12,7 @@ internal static class LandingReplayDiagnostics
         var replay = new TelemetryDecisionJournal();
         try
         {
-            ReplayControlInputs.Resolve(record, replay);
+            ReplayControlInputs.Resolve(record, contacts, replay);
             if (!LandingReplayTrack.TryCreate(record, out var track, replay)) return;
             LandingReplayRunwayOffset.TryCreate(record, track!, out _, replay);
             var offset = ReplayGearRegistration.VisualOffset(track!, replay);

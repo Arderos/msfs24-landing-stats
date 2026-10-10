@@ -8,6 +8,7 @@
 
   <ItemGroup>
     <None Update="Fixtures\physical-input-*.csv" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="Fixtures\physical-legacy-a350.csv" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\..\server\telemetry-ingest\schema-v5.header" Link="schema-v5.header" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\..\server\telemetry-ingest\schema-v6.header" Link="schema-v6.header" CopyToOutputDirectory="PreserveNewest" />
     <ProjectReference Include="..\..\src\LandingStats.App\LandingStats.App.csproj" />

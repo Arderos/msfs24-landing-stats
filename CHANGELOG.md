@@ -2,6 +2,12 @@
 
 All notable changes to MSFS Landing Stats are documented in this file.
 
+## [0.9.1] - 2026-10-10
+
+### Fixed
+
+- Fixed incorrect physical control-axis matching and inconsistent controller assignments between contacts in bounced landings.
+
 ## [0.9.0] - 2026-10-10
 
 ### Added

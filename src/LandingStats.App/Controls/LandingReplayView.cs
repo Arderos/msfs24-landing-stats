@@ -130,7 +130,7 @@ public sealed class LandingReplayView : Grid
         _contacts = value == null ? Array.Empty<LandingRecord>() : LandingReplayContacts.ForEpisode(value, contacts ?? Array.Empty<LandingRecord>());
         if (!LandingReplayTrack.TryCreate(value, out _track)) { _scene.Content = null; ShowUnavailable(); return; }
         LandingReplayRunwayOffset.TryCreate(value!, _track!, out _offset);
-        _metrics.SetTrack(_track, _offset?.HeadingTrueDegrees); _controls.SetInputs(ReplayControlInputs.Resolve(value));
+        _metrics.SetTrack(_track, _offset?.HeadingTrueDegrees); _controls.SetInputs(ReplayControlInputs.Resolve(value, _contacts));
         _runwayOffset.SetRunway(value!.RunwayGeometry);
         // A generic mesh has no measured datum/gear geometry. Register its
         // rest height ONCE; never clamp individual frames (which erases bounces).

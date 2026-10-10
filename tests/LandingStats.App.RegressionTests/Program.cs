@@ -126,7 +126,10 @@ internal static class Program
         Run("physical controller axes preserve capability and schema contracts", PhysicalControllerAxesRegressionTests.RunAll);
         Run("physical input display supports legacy channels and localization", PhysicalInputStripRegressionTests.RunAll);
         Run("physical replay controls preserve source, polarity and gaps", ReplayControlInputsRegressionTests.RunAll);
+        Run("physical bindings stay consistent across contacts of one landing episode", ReplayControlEpisodeRegressionTests.RunAll);
         Run("physical axes rank the complete approach with soft device-pair evidence", ReplayControlEvidenceRegressionTests.RunAll);
+        Run("historical Y-only input matching preserves published selections", ReplayControlLegacyCompatibilityTests.RunAll);
+        Run("binary and diagnostic versions follow the release version", BuildVersionRegressionTests.RunAll);
         Run("replay runway offset follows the selected runway direction", LandingReplayRunwayOffsetTests.RunAll);
         Run("replay overlays preserve controls, chart gaps and localization", ReplayOverlayRegressionTests.RunAll);
         Run("legacy Controls and 3D tabs follow recorded data and preserve selection", ReplayTabRegressionTests.RunAll);
