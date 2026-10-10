@@ -155,10 +155,13 @@ internal static class RunwayFacilityRegressionTests
         void Complete(long id)
         {
             Set(recorder, "_activeEpisodeId", id);
+            Set(recorder, "_lastContactTime", 13.0);
             // Two contacts are still one completed recording / one refresh.
             Set(recorder, "_episodeSamples", new List<TelemetrySample> {
-                new TelemetrySample { OnGround = false }, new TelemetrySample { OnGround = true },
-                new TelemetrySample { OnGround = false }, new TelemetrySample { OnGround = true } });
+                new TelemetrySample { SimulationTimeSeconds = 10, MotionSimulation = true, OnGround = false },
+                new TelemetrySample { SimulationTimeSeconds = 11, MotionSimulation = true, OnGround = true },
+                new TelemetrySample { SimulationTimeSeconds = 12, MotionSimulation = true, OnGround = false },
+                new TelemetrySample { SimulationTimeSeconds = 13, MotionSimulation = true, OnGround = true } });
             recorder.GetType().GetMethod("CompleteEpisode", PrivateInstance)!.Invoke(recorder, new object[] { false });
         }
         Complete(102);

@@ -2,6 +2,12 @@
 
 All notable changes to MSFS Landing Stats are documented in this file.
 
+## [0.9.2] - 2026-10-11
+
+### Fixed
+
+- Fixed false landings and incorrect measurements caused by paused or interrupted simulator physics.
+
 ## [0.9.1] - 2026-10-10
 
 ### Fixed

@@ -353,6 +353,7 @@ public static class TouchdownAnalysis
             for (var index = contactIndex + 1; index < samples.Count; index++)
             {
                 var next = samples[index];
+                if (!next.MotionSimulation) break;
                 var nextTime = TimeOf(next);
                 var duration = nextTime - firstGroundTime;
                 if (duration <= 0)
@@ -419,7 +420,7 @@ public static class TouchdownAnalysis
         var continuousAirStartIndex = lastAirborneIndex;
         for (var index = lastAirborneIndex - 1; index >= 0; index--)
         {
-            if (samples[index].OnGround)
+            if (!samples[index].MotionSimulation || samples[index].OnGround)
             {
                 break;
             }
@@ -479,7 +480,7 @@ public static class TouchdownAnalysis
         var fitStartIndex = lastAirborneIndex;
         for (var index = lastAirborneIndex - 1; index >= 0; index--)
         {
-            if (samples[index].OnGround || TimeOf(samples[index]) < fitStartTime)
+            if (!samples[index].MotionSimulation || samples[index].OnGround || TimeOf(samples[index]) < fitStartTime)
             {
                 break;
             }
@@ -522,7 +523,11 @@ public static class TouchdownAnalysis
         }
 
         var values = new List<double>(5);
-        for (var index = Math.Max(0, targetIndex - 2); index <= Math.Min(samples.Count - 1, targetIndex + 2); index++)
+        var first = targetIndex;
+        var last = targetIndex;
+        while (first > Math.Max(0, targetIndex - 2) && samples[first - 1].MotionSimulation) first--;
+        while (last < Math.Min(samples.Count - 1, targetIndex + 2) && samples[last + 1].MotionSimulation) last++;
+        for (var index = first; index <= last; index++)
         {
             values.Add(samples[index].GroundAltitudeFeet);
         }
@@ -530,7 +535,7 @@ public static class TouchdownAnalysis
         values.Sort();
         var median = values[values.Count / 2];
         if (Math.Abs(target.GroundAltitudeFeet - median) <= GroundOutlierThresholdFeet ||
-            targetIndex == 0 || targetIndex == samples.Count - 1)
+            targetIndex == first || targetIndex == last)
         {
             return target.GroundAltitudeFeet;
         }
@@ -596,6 +601,7 @@ public static class TouchdownAnalysis
         var contactTime = TimeOf(samples[contactIndex]);
         for (var index = contactIndex + 1; index < samples.Count; index++)
         {
+            if (!samples[index].MotionSimulation) break;
             var duration = TimeOf(samples[index]) - contactTime;
             if (duration > 0.000001)
             {
@@ -621,7 +627,7 @@ public static class TouchdownAnalysis
         {
             var sample = samples[index];
             var sampleTime = TimeOf(sample);
-            if (sampleTime >= exclusiveEndTime || sampleTime - contactTime > LatchUpdateWindowSeconds)
+            if (!sample.MotionSimulation || sampleTime >= exclusiveEndTime || sampleTime - contactTime > LatchUpdateWindowSeconds)
             {
                 break;
             }
@@ -653,7 +659,7 @@ public static class TouchdownAnalysis
         {
             var sample = samples[index];
             var sampleTime = TimeOf(sample);
-            if (sampleTime >= exclusiveEndTime || sampleTime - contactTime > windowAfterSeconds)
+            if (!sample.MotionSimulation || sampleTime >= exclusiveEndTime || sampleTime - contactTime > windowAfterSeconds)
             {
                 break;
             }
@@ -677,7 +683,7 @@ public static class TouchdownAnalysis
         for (var index = lastAirborneIndex - 1; index >= 0; index--)
         {
             var sample = samples[index];
-            if (sample.OnGround || contactTime - TimeOf(sample) > 0.25)
+            if (!sample.MotionSimulation || sample.OnGround || contactTime - TimeOf(sample) > 0.25)
             {
                 break;
             }

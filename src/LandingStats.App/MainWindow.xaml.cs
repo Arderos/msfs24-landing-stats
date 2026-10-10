@@ -1800,7 +1800,7 @@ public partial class MainWindow : Window
         try
         {
             var processed = await processingTask;
-            if (_isClosed)
+            if (_isClosed || eventArgs.IsDiagnosticOnly)
             {
                 return;
             }
@@ -1883,7 +1883,7 @@ public partial class MainWindow : Window
         }
         catch (Exception exception)
         {
-            if (_isClosed)
+            if (_isClosed || eventArgs.IsDiagnosticOnly)
             {
                 return;
             }
@@ -1923,8 +1923,15 @@ public partial class MainWindow : Window
         var samples = TelemetryDeduplicator.Deduplicate(eventArgs.Samples);
         var journal = eventArgs.DecisionJournal ?? new TelemetryDecisionJournal();
         var time = samples.Count == 0 ? 0 : samples[samples.Count - 1].SimulationTimeSeconds;
-        journal.Record(time, "analysis", "frames_deduplicated", "Kept the last frame for each simulation timestamp.",
+        journal.Record(time, "analysis", "frames_deduplicated", "Kept the last frame per simulation timestamp and physics state, preserving pause/resume boundaries.",
             new Dictionary<string, double> { ["received"] = eventArgs.Samples.Count, ["retained"] = samples.Count });
+        if (eventArgs.IsDiagnosticOnly)
+        {
+            // Record the rejection without loading aircraft configuration or touching landing history.
+            TouchdownAnalysis.Analyze(samples, new TouchdownAnalysisOptions { DecisionJournal = journal });
+            journal.Record(time, "analysis", "diagnostic_only", "Retained raw and decisions; no landing is saved.");
+            return ProcessedEpisode.Completed(knownFacilities, Array.Empty<LandingRecord>(), journal.Snapshot());
+        }
         if (ReplayTelemetryDetector.IsReplayLike(samples))
         {
             journal.Record(time, "analysis", "replay_rejected", "Kinematic consistency check rejected this episode as replay-like.");

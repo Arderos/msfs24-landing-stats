@@ -58,8 +58,12 @@ public static class ReplayTelemetryDetector
         var derivedAltitudeRate = new List<double>();
         var reportedVerticalRate = new List<double>();
 
-        var nextIndex = 0;
-        for (var index = 0; index < contactIndex; index++)
+        // Relocation/loading observations before the latest physics restart do not
+        // describe the flight that produced this accepted contact.
+        var segmentStart = contactIndex;
+        while (segmentStart > 0 && unique[segmentStart - 1].MotionSimulation) segmentStart--;
+        var nextIndex = segmentStart;
+        for (var index = segmentStart; index < contactIndex; index++)
         {
             var first = unique[index];
             if (first.OnGround || first.SimulationTimeSeconds < windowStart ||

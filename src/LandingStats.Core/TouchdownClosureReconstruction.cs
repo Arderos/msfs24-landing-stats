@@ -64,7 +64,7 @@ internal static class TouchdownClosureReconstruction
         while (firstIndex > 0)
         {
             var previous = samples[firstIndex - 1];
-            if (previous.OnGround || TouchdownAnalysis.TimeOf(previous) < fitStartTime)
+            if (!previous.MotionSimulation || previous.OnGround || TouchdownAnalysis.TimeOf(previous) < fitStartTime)
             {
                 break;
             }
@@ -77,7 +77,7 @@ internal static class TouchdownClosureReconstruction
         {
             var sample = samples[index];
             var time = TouchdownAnalysis.TimeOf(sample);
-            if (!sample.OnGround && time >= fitStartTime && time <= estimatedContactTime)
+            if (sample.MotionSimulation && !sample.OnGround && time >= fitStartTime && time <= estimatedContactTime)
             {
                 indices.Add(index);
             }
@@ -263,19 +263,28 @@ internal static class TouchdownClosureReconstruction
         var original = new double[samples.Count];
         var outliers = new bool[samples.Count];
         var localMedians = new double[samples.Count];
+        // A ground-height repair must not interpolate across a physics restart
+        // either, even when its target sample belongs to a valid fitting window.
+        var segmentStarts = new int[samples.Count];
+        var segmentEnds = new int[samples.Count];
         for (var index = 0; index < samples.Count; index++)
         {
             result[index] = samples[index].GroundAltitudeFeet;
             original[index] = result[index];
             localMedians[index] = double.NaN;
+            segmentStarts[index] = index == 0 || !samples[index - 1].MotionSimulation || !samples[index].MotionSimulation
+                ? index : segmentStarts[index - 1];
         }
+        for (var index = samples.Count - 1; index >= 0; index--)
+            segmentEnds[index] = index == samples.Count - 1 || !samples[index + 1].MotionSimulation || !samples[index].MotionSimulation
+                ? index : segmentEnds[index + 1];
 
         for (var index = 0; index < samples.Count; index++)
         {
             var local = new List<double>(5);
-            var first = Math.Max(0, Math.Min(index - 2, samples.Count - 5));
-            var last = Math.Min(samples.Count - 1, first + 4);
-            first = Math.Max(0, last - 4);
+            var first = Math.Max(segmentStarts[index], Math.Min(index - 2, segmentEnds[index] - 4));
+            var last = Math.Min(segmentEnds[index], first + 4);
+            first = Math.Max(segmentStarts[index], last - 4);
             for (var neighbor = first; neighbor <= last; neighbor++)
             {
                 if (IsFinite(original[neighbor]))
@@ -303,18 +312,18 @@ internal static class TouchdownClosureReconstruction
             }
 
             var previousIndex = index - 1;
-            while (previousIndex >= 0 && (outliers[previousIndex] || !IsFinite(result[previousIndex])))
+            while (previousIndex >= segmentStarts[index] && (outliers[previousIndex] || !IsFinite(result[previousIndex])))
             {
                 previousIndex--;
             }
 
             var nextIndex = index + 1;
-            while (nextIndex < samples.Count && (outliers[nextIndex] || !IsFinite(original[nextIndex])))
+            while (nextIndex <= segmentEnds[index] && (outliers[nextIndex] || !IsFinite(original[nextIndex])))
             {
                 nextIndex++;
             }
 
-            if (previousIndex >= 0 && nextIndex < samples.Count)
+            if (previousIndex >= segmentStarts[index] && nextIndex <= segmentEnds[index])
             {
                 var previousTime = TouchdownAnalysis.TimeOf(samples[previousIndex]);
                 var targetTime = TouchdownAnalysis.TimeOf(samples[index]);
@@ -331,11 +340,11 @@ internal static class TouchdownClosureReconstruction
                     result[index] = localMedians[index];
                 }
             }
-            else if (previousIndex >= 0)
+            else if (previousIndex >= segmentStarts[index])
             {
                 result[index] = result[previousIndex];
             }
-            else if (nextIndex < samples.Count)
+            else if (nextIndex <= segmentEnds[index])
             {
                 result[index] = original[nextIndex];
             }

@@ -24,6 +24,7 @@ internal static class EpisodeReportLifecycleRegressionTests
         ShutdownStillPersistsRawAndDecisionsWithoutWaitingForFacilities();
         OptOutWhileAwaitingFacilitiesPreventsAutomaticArchive();
         FailedAnalysisStillProducesDiagnosticArchive();
+        DiagnosticOnlyAnalysisSkipsConfigurationAndHistoryButArchivesRawAndDecisions();
         ReportChainKeepsEveryAcceptedCaptureInTheShutdownBoundary();
         LateAirportDecisionsAreArchivedExactlyOnce();
     }
@@ -93,6 +94,53 @@ internal static class EpisodeReportLifecycleRegressionTests
             Complete(second);
             Assert(first.IsCompleted && Directory.GetFiles(directory, "*_auto_raw.zip").Length == 2,
                 "draining the latest task did not retain both accepted captures");
+        });
+    }
+
+    private static void DiagnosticOnlyAnalysisSkipsConfigurationAndHistoryButArchivesRawAndDecisions()
+    {
+        WithWindow((window, directory, lifetime) =>
+        {
+            // These uninitialized services would throw if the diagnostic path touched configuration or history.
+            Assert(Get(window, "_flightModelGeometryResolver") == null && Get(window, "_repository") == null,
+                "diagnostic isolation fixture unexpectedly initialized real analysis services");
+            var samples = new[]
+            {
+                new TelemetrySample { Sequence = 1, SimulationTimeSeconds = 10, MotionSimulation = true, OnGround = false },
+                new TelemetrySample { Sequence = 2, SimulationTimeSeconds = 11, MotionSimulation = false, OnGround = false },
+                new TelemetrySample { Sequence = 3, SimulationTimeSeconds = 11, MotionSimulation = true, OnGround = true }
+            };
+            var episode = new LandingEpisodeEventArgs(7, samples, "MSFS", "Test aircraft", "TEST", "TEST",
+                Array.Empty<AirportFacility>(), Array.Empty<string>(), decisionJournal: new TelemetryDecisionJournal(),
+                isDiagnosticOnly: true);
+            var processing = (Task)typeof(MainWindow).GetMethod("ProcessEpisodeAsync", PrivateInstance)!
+                .Invoke(window, new object[] { episode, Array.Empty<AirportFacility>(), DateTime.UtcNow })!;
+            Complete(processing);
+            var processed = processing.GetType().GetProperty("Result")!.GetValue(processing)!;
+            var records = (IReadOnlyList<LandingRecord>)Processed.GetProperty("Records")!.GetValue(processed)!;
+            Assert(records.Count == 0, "diagnostic-only analysis created a landing record");
+            Complete(Queue(window, processing, episode));
+
+            using var archive = ZipFile.OpenRead(Directory.GetFiles(directory, "*_auto_raw.zip").Single());
+            using (var reader = new StreamReader(archive.GetEntry("telemetry.csv")!.Open()))
+            {
+                Assert(reader.ReadLine() == TelemetryCsv.Header, "automatic diagnostic raw header changed");
+                foreach (var expected in samples)
+                {
+                    Assert(TelemetryCsv.TryParse(reader.ReadLine()!, out var actual) && actual.Sequence == expected.Sequence &&
+                           actual.MotionSimulation == expected.MotionSimulation && actual.OnGround == expected.OnGround,
+                        "automatic diagnostic archive dropped or changed a physics transition");
+                }
+                Assert(reader.ReadLine() == null, "automatic diagnostic archive duplicated raw observations");
+            }
+            using (var reader = new StreamReader(archive.GetEntry("landing-results.json")!.Open()))
+                Assert(reader.ReadToEnd().Contains("\"records\":[]"), "automatic diagnostic archive contains a false landing");
+            using (var reader = new StreamReader(archive.GetEntry("decisions.json")!.Open()))
+            {
+                var json = reader.ReadToEnd();
+                Assert(json.Contains("physics_discontinuity_rejected") && json.Contains("diagnostic_only") &&
+                       !json.Contains("analysis_failed"), "diagnostic fast path lost its actual rejection decisions");
+            }
         });
     }
 

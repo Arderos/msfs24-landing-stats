@@ -44,6 +44,9 @@ internal static class Program
         Run("automatic report lifetime preserves shutdown captures and honors later opt-out", EpisodeReportLifecycleRegressionTests.RunAll);
         Run("telemetry decisions record actual branches and stay capture-local and bounded", TelemetryDecisionJournalRegressionTests.RunAll);
         Run("deduplicator keeps the last same-time frame", DeduplicatorKeepsLastFrame);
+        Run("physics continuity rejects paused contacts and preserves real landings and bounces", PhysicsContinuityRegressionTests.RunAll);
+        Run("geometry calibration rejects disabled simulator physics", SingleNoseGeometryRegressionTests.CalibrationRejectsNonMotionTelemetry);
+        Run("non-motion gear samples cannot make a real contact sustained", NonMotionGearCannotMakeContactSustained);
         Run("automatic telemetry defaults migrate and serialize correctly", AutomaticTelemetrySettingsRegressionTests.RunAll);
         Run("3D reconstruction decisions are captured without opening its view", ReplayDecisionJournalTests.RunAll);
         Run("recorder connection retries never block the UI dispatcher", RecorderConnectionRegressionTests.RunAll);
@@ -3412,6 +3415,7 @@ internal static class Program
                 SimulationTimeSeconds = time,
                 OnGround = onGround,
                 VelocityWorldYFps = worldY,
+                MotionSimulation = true,
                 RotationVelocityBodyXRadiansPerSecond = omegaX,
                 PitchDegrees = pitch * 180.0 / Math.PI,
                 GroundAltitudeFeet = groundAltitudeFeet,
@@ -3899,6 +3903,24 @@ internal static class Program
         Equal<TouchdownAnalysisOptions?>(null, options, "optional geometry failure did not fall back");
     }
 
+    private static void NonMotionGearCannotMakeContactSustained()
+    {
+        var samples = ReconstructionSamples(.010, 280);
+        var options = new TouchdownAnalysisOptions
+        {
+            LongitudinalMainGearArmFeet = -8,
+            RecoverLongitudinalMainGearArmFromTelemetry = false,
+            MainGearContactPoints = new[] { new TouchdownMainGearContactPoint(1, -8), new TouchdownMainGearContactPoint(2, -8) },
+            NoseGearContactPointIndices = new[] { 0 }
+        };
+        Equal(true, TouchdownAnalysis.Analyze(samples, options).Single().ClosureReconstructionAvailable,
+            "active sustained-contact reconstruction fixture");
+        var contactIndex = samples.FindIndex(sample => sample.OnGround);
+        for (var index = contactIndex + 1; index < samples.Count; index++) samples[index].MotionSimulation = false;
+        var contact = TouchdownAnalysis.Analyze(samples, options).Single();
+        Equal(false, contact.ClosureReconstructionAvailable, "non-motion samples certified a sustained main contact");
+    }
+
     private static List<TelemetrySample> ReconstructionSamples(
         double contactTime,
         double rawLatchFpm,
@@ -3928,6 +3950,7 @@ internal static class Program
                 SimulationTimeSeconds = time,
                 OnGround = onGround,
                 TouchdownNormalVelocityFps = onGround ? rawLatchFpm / 60.0 : 0.0,
+                MotionSimulation = true,
                 VelocityWorldYFps = Velocity(x),
                 GroundAltitudeFeet = GroundAltitude(x),
                 PlaneAltitudeFeet = GroundAltitude(x) + 10.0,
@@ -3973,6 +3996,7 @@ internal static class Program
                 SimulationTimeSeconds = time,
                 OnGround = false,
                 VelocityWorldYFps = Velocity(x),
+                MotionSimulation = true,
                 GroundAltitudeFeet = GroundAltitude(x),
                 PlaneAltitudeFeet = GroundAltitude(x) + 10.0,
                 RotationVelocityBodyXRadiansPerSecond = PitchRate(x),
@@ -3994,6 +4018,7 @@ internal static class Program
             HostElapsedSeconds = source.HostElapsedSeconds,
             SimulationTimeSeconds = source.SimulationTimeSeconds,
             OnGround = source.OnGround,
+            MotionSimulation = source.MotionSimulation,
             VelocityWorldYFps = source.VelocityWorldYFps,
             GroundAltitudeFeet = source.GroundAltitudeFeet,
             PlaneAltitudeFeet = source.PlaneAltitudeFeet,

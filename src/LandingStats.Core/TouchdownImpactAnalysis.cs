@@ -110,14 +110,15 @@ public static class TouchdownImpactAnalysis
         if (samples == null) throw new ArgumentNullException(nameof(samples));
         if (contactIndex < 0 || contactIndex >= samples.Count) return new TouchdownImpactResult();
 
-        // Latest delivery owns a simulator instant, including its final on-ground
-        // state. Remap the caller's contact index rather than selecting a later TD.
+        // Latest delivery owns an instant within one physics state. Preserve pause/resume
+        // boundaries and remap the caller's contact index rather than selecting a later TD.
         var unique = new List<TouchdownImpactSample>(samples.Count);
         var contact = -1;
         for (var i = 0; i < samples.Count; i++)
         {
             var s = samples[i];
-            if (unique.Count > 0 && Math.Abs(s.TimeSeconds - unique[unique.Count - 1].TimeSeconds) <= DuplicateTolerance)
+            if (unique.Count > 0 && s.MotionSimulation == unique[unique.Count - 1].MotionSimulation &&
+                Math.Abs(s.TimeSeconds - unique[unique.Count - 1].TimeSeconds) <= DuplicateTolerance)
                 unique[unique.Count - 1] = s;
             else
                 unique.Add(s);

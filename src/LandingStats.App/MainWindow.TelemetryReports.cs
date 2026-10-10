@@ -123,7 +123,8 @@ public partial class MainWindow
                 foreach (var entry in episode.DecisionJournal.Snapshot().Entries.Where(entry =>
                     entry.Component == "runway.airports" && analysisDecisions?.Entries.Contains(entry) != true))
                     journal.Record(entry.TimeSeconds, entry.Component, entry.Code, entry.Reason, entry.Details);
-            journal.Record(time, "runway", facilities.Length > 0 ? "facilities_received" : "facilities_unavailable",
+            journal.Record(time, "runway", episode.IsDiagnosticOnly ? "lookup_not_required" : facilities.Length > 0 ? "facilities_received" : "facilities_unavailable",
+                episode.IsDiagnosticOnly ? "Rejected ground transition retained for diagnostics only; no landing or runway lookup." :
                 facilities.Length > 0 ? "Used this episode's simulator facility snapshot." :
                 _lifetimeCancellation.IsCancellationRequested ? "Application closed before runway geometry became available." :
                 "Simulator returned no usable geometry or the facility lookup expired.",

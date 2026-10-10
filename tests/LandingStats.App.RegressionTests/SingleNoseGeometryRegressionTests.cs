@@ -123,6 +123,15 @@ internal static class SingleNoseGeometryRegressionTests
         Near(original.ReconstructedClosureFpm, result.ReconstructedClosureFpm, "latch not used as reconstruction target");
     }
 
+    public static void CalibrationRejectsNonMotionTelemetry()
+    {
+        var samples = Trace();
+        Assert(TelemetryGeometryCalibration.TryRecoverDatumOffset(samples, out _), "active datum calibration fixture");
+        foreach (var sample in samples) sample.MotionSimulation = false;
+        Assert(!TelemetryGeometryCalibration.TryRecoverDatumOffset(samples, out _), "non-motion telemetry calibrated a datum offset");
+        Assert(!TelemetryGeometryCalibration.TryCalibrate(samples, out _), "non-motion telemetry calibrated landing gear geometry");
+    }
+
     private static List<TelemetrySample> Trace(bool drift = false, bool degenerateSubset = false)
     {
         var samples = new List<TelemetrySample>();

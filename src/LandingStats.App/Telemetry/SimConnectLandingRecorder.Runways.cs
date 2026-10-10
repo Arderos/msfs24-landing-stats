@@ -66,8 +66,9 @@ internal sealed partial class SimConnectLandingRecorder
     {
         // The episode may contain several bounces, all near the same landing site.
         TelemetrySample? contact = null;
-        for (var index = 1; index < samples.Count; index++)
-            if (samples[index].OnGround && !samples[index - 1].OnGround) contact = samples[index];
+        var continuity = new TelemetryContactContinuity();
+        foreach (var sample in samples)
+            if (continuity.Observe(sample)) contact = sample;
         if (contact == null || !RunwayNumber.IsFinite(contact.LatitudeDegrees) ||
             !RunwayNumber.IsFinite(contact.LongitudeDegrees) || Math.Abs(contact.LatitudeDegrees) > 90 ||
             Math.Abs(contact.LongitudeDegrees) > 180) return;

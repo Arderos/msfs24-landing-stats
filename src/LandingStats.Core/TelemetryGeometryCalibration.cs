@@ -178,8 +178,8 @@ public static class TelemetryGeometryCalibration
             return false;
         }
 
-        // CSV schema 5 can contain repeated simulation times. The research pipeline
-        // keeps the last row at a time and sorts by simulation time; do the same here.
+        // CSV schema 5 can contain repeated simulation times. Keep the latest
+        // state at each time without erasing intervening physics boundaries.
         var ordered = Normalize(samples);
         if (ordered.Count < MinimumPitchRegressionRows)
         {
@@ -197,8 +197,8 @@ public static class TelemetryGeometryCalibration
         for (var index = 0; index < ordered.Count; index++)
         {
             times[index] = ordered[index].SimulationTimeSeconds;
-            planeAltitude[index] = ordered[index].PlaneAltitudeFeet;
-            groundAltitude[index] = ordered[index].GroundAltitudeFeet;
+            planeAltitude[index] = ordered[index].MotionSimulation ? ordered[index].PlaneAltitudeFeet : double.NaN;
+            groundAltitude[index] = ordered[index].MotionSimulation ? ordered[index].GroundAltitudeFeet : double.NaN;
         }
 
         SanitizeIsolatedSpikes(planeAltitude);
@@ -286,7 +286,7 @@ public static class TelemetryGeometryCalibration
         for (var index = 0; index < ordered.Count; index++)
         {
             times[index] = ordered[index].SimulationTimeSeconds;
-            planeAltitude[index] = ordered[index].PlaneAltitudeFeet;
+            planeAltitude[index] = ordered[index].MotionSimulation ? ordered[index].PlaneAltitudeFeet : double.NaN;
         }
 
         SanitizeIsolatedSpikes(planeAltitude);
@@ -428,6 +428,7 @@ public static class TelemetryGeometryCalibration
             var sampleCount = 1;
             for (var index = contactIndex + 1; index < samples.Count; index++)
             {
+                if (!samples[index].MotionSimulation) break;
                 var time = TouchdownAnalysis.TimeOf(samples[index]);
                 foreach (var nosePoint in topology.NoseContactPointIndices)
                 {
@@ -1108,7 +1109,7 @@ public static class TelemetryGeometryCalibration
 
         for (var index = start; index <= end; index++)
         {
-            if (samples[index].OnGround ||
+            if (!samples[index].MotionSimulation || samples[index].OnGround ||
                 !IsFinite(samples[index].VelocityWorldYFps) ||
                 !IsFinite(rigidVerticalPerFoot[index]))
             {
@@ -1258,7 +1259,7 @@ public static class TelemetryGeometryCalibration
 
     internal static bool HasContactEvidence(TelemetrySample sample, int point)
     {
-        return HasOnGroundEvidence(sample, point) || HasCompressionEvidence(sample, point);
+        return sample.MotionSimulation && (HasOnGroundEvidence(sample, point) || HasCompressionEvidence(sample, point));
     }
 
     internal static bool HasContactTransition(
@@ -1266,8 +1267,9 @@ public static class TelemetryGeometryCalibration
         TelemetrySample current,
         int point)
     {
-        return (!HasOnGroundEvidence(previous, point) && HasOnGroundEvidence(current, point)) ||
-            (!HasCompressionEvidence(previous, point) && HasCompressionEvidence(current, point));
+        return previous.MotionSimulation && current.MotionSimulation &&
+            ((!HasOnGroundEvidence(previous, point) && HasOnGroundEvidence(current, point)) ||
+             (!HasCompressionEvidence(previous, point) && HasCompressionEvidence(current, point)));
     }
 
     private static bool HasOnGroundEvidence(TelemetrySample sample, int point)

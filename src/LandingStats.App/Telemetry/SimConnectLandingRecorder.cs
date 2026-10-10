@@ -50,7 +50,8 @@ internal sealed class LandingEpisodeEventArgs : EventArgs
         IReadOnlyList<AirportFacility> airportFacilities,
         IReadOnlyList<string> controlInputSources,
         TelemetryDecisionJournal? decisionJournal = null,
-        Task<IReadOnlyList<RunwayFacility>>? runwayFacilitiesTask = null)
+        Task<IReadOnlyList<RunwayFacility>>? runwayFacilitiesTask = null,
+        bool isDiagnosticOnly = false)
     {
         EpisodeId = episodeId;
         Samples = samples;
@@ -61,6 +62,7 @@ internal sealed class LandingEpisodeEventArgs : EventArgs
         AirportFacilities = airportFacilities;
         ControlInputSources = controlInputSources;
         DecisionJournal = decisionJournal;
+        IsDiagnosticOnly = isDiagnosticOnly;
         RunwayFacilitiesTask = runwayFacilitiesTask ?? Task.FromResult<IReadOnlyList<RunwayFacility>>(Array.Empty<RunwayFacility>());
     }
 
@@ -81,6 +83,8 @@ internal sealed class LandingEpisodeEventArgs : EventArgs
     public IReadOnlyList<string> ControlInputSources { get; }
 
     public TelemetryDecisionJournal? DecisionJournal { get; }
+
+    public bool IsDiagnosticOnly { get; }
 
     public Task<IReadOnlyList<RunwayFacility>> RunwayFacilitiesTask { get; }
 }
@@ -205,7 +209,7 @@ internal sealed partial class SimConnectLandingRecorder : IDisposable
     private double _lastGuardAglFeet = double.NaN;
     private double _episodeStartTime;
     private double? _lastContactTime;
-    private bool _hasBeenAirborne;
+    private readonly TelemetryContactContinuity _contactContinuity = new TelemetryContactContinuity();
     private bool _previousOnGround = true;
     private bool _armed = true;
     private string _simulator = "MSFS";
@@ -727,20 +731,21 @@ internal sealed partial class SimConnectLandingRecorder : IDisposable
         _lastSimulationTime = sample.SimulationTimeSeconds;
         AddToPreRoll(sample);
 
-        if (!sample.OnGround)
+        if (sample.MotionSimulation && !sample.OnGround)
         {
-            _hasBeenAirborne = true;
             if (sample.AboveGroundLevelFeet >= GoAroundResetAglFeet)
             {
                 _armed = true;
             }
         }
 
-        var isContact = _hasBeenAirborne && sample.OnGround && !_previousOnGround;
+        var isContact = _contactContinuity.Observe(sample);
+        var rejectedContact = sample.OnGround && !_previousOnGround && !isContact;
+        var wasRecording = _episodeSamples != null;
         var startedNow = false;
-        if (_episodeSamples == null && _armed && (ShouldStartEpisode(sample) || isContact))
+        if (_episodeSamples == null && _armed && (ShouldStartEpisode(sample) || isContact || rejectedContact))
         {
-            StartEpisode(sample, isContact);
+            StartEpisode(sample, isContact, rejectedContact);
             startedNow = true;
         }
 
@@ -763,6 +768,18 @@ internal sealed partial class SimConnectLandingRecorder : IDisposable
         }
 
         _previousOnGround = sample.OnGround;
+
+        if (rejectedContact)
+        {
+            _episodeDecisionJournal?.Record(sampleTime, "recorder", "physics_discontinuity_rejected",
+                "Ground transition has no airborne evidence in the current active-physics segment; retain raw diagnostics, not a landing.");
+            if (!_lastContactTime.HasValue)
+            {
+                CompleteEpisodeWithReason("rejected_contact_diagnostics", false);
+                if (wasRecording) SetStatus(RecorderState.Connected, "Recorder.ConnectedGate");
+                return;
+            }
+        }
 
         if (_episodeSamples != null && _episodeSamples.Count >= EpisodeMaximumSamples)
         {
@@ -809,7 +826,7 @@ internal sealed partial class SimConnectLandingRecorder : IDisposable
         AircraftGroundStateChanged?.Invoke(this, new AircraftGroundStateEventArgs(onGround));
     }
 
-    private void StartEpisode(TelemetrySample trigger, bool contactTriggered)
+    private void StartEpisode(TelemetrySample trigger, bool contactTriggered, bool diagnosticOnly = false)
     {
         _activeEpisodeId = checked(_nextEpisodeId + 1);
         _nextEpisodeId = _activeEpisodeId;
@@ -826,8 +843,9 @@ internal sealed partial class SimConnectLandingRecorder : IDisposable
         _episodeCoalescedFrameCount = 0;
         _episodeNonMotionFrameCount = trigger.MotionSimulation ? 0 : 1;
         _episodeDecisionJournal.Record(_episodeStartTime, "recorder",
-            contactTriggered ? "capture_started_at_contact" : "capture_started_at_approach_gate",
-            contactTriggered ? "Started capture from an observed contact, retaining the available pre-roll."
+            diagnosticOnly ? "capture_started_for_rejected_contact" : contactTriggered ? "capture_started_at_contact" : "capture_started_at_approach_gate",
+            diagnosticOnly ? "Retain pre-roll and the rejected ground transition for diagnostics only."
+                : contactTriggered ? "Started capture from an observed contact, retaining the available pre-roll."
                 : "Started capture on the descending, airborne approach gate, retaining the available pre-roll.",
             new Dictionary<string, double>
             {
@@ -837,6 +855,7 @@ internal sealed partial class SimConnectLandingRecorder : IDisposable
                 ["gate_agl_feet"] = CaptureStartAglFeet,
                 ["gate_descent_fps"] = CaptureStartDescentFps
             });
+        if (diagnosticOnly) return;
         EpisodeStarted?.Invoke(this, new LandingEpisodeStartedEventArgs(_activeEpisodeId));
         if (_simConnect != null)
         {
@@ -858,11 +877,11 @@ internal sealed partial class SimConnectLandingRecorder : IDisposable
         if (!sample.MotionSimulation && _episodeNonMotionFrameCount < int.MaxValue) _episodeNonMotionFrameCount++;
 
         if (_episodeSamples.Count > 0 &&
+            _episodeSamples[_episodeSamples.Count - 1].MotionSimulation == sample.MotionSimulation &&
             Math.Abs(TimeOf(_episodeSamples[_episodeSamples.Count - 1]) - TimeOf(sample)) <= 0.000000001)
         {
             // SIM_FRAME can continue while the simulator clock is paused. Keep the
-            // newest state for that instant instead of retaining an unbounded run
-            // of physically identical timestamps.
+            // newest state within each physics state, preserving pause/resume boundaries.
             _episodeSamples[_episodeSamples.Count - 1] = sample;
             if (_episodeCoalescedFrameCount < int.MaxValue) _episodeCoalescedFrameCount++;
             return;
@@ -876,6 +895,7 @@ internal sealed partial class SimConnectLandingRecorder : IDisposable
         var samples = _episodeSamples;
         var episodeId = _activeEpisodeId;
         var decisionJournal = _episodeDecisionJournal;
+        var diagnosticOnly = !_lastContactTime.HasValue;
         _episodeSamples = null;
         _episodeDecisionJournal = null;
         _activeEpisodeId = 0;
@@ -888,7 +908,7 @@ internal sealed partial class SimConnectLandingRecorder : IDisposable
         }
 
         decisionJournal?.Record(TimeOf(samples[samples.Count - 1]), "recorder", "capture_completed",
-            "Completed capture; same-time deliveries kept only their latest state. Non-motion observations are counted, not silently discarded.",
+            "Completed capture; same-time deliveries kept their latest state without erasing physics boundaries. Non-motion observations are retained for diagnostics.",
             new Dictionary<string, double>
             {
                 ["retained_sample_count"] = samples.Count,
@@ -898,9 +918,12 @@ internal sealed partial class SimConnectLandingRecorder : IDisposable
 
         // Clear the previous scenery snapshot before an analysis callback can
         // observe it; even a disconnect-completed episode must not inherit it.
-        BeginRunwayEpisode(episodeId);
-        _runwayDecisionJournal = decisionJournal;
-        _runwayDecisionTime = TimeOf(samples[samples.Count - 1]);
+        if (!diagnosticOnly)
+        {
+            BeginRunwayEpisode(episodeId);
+            _runwayDecisionJournal = decisionJournal;
+            _runwayDecisionTime = TimeOf(samples[samples.Count - 1]);
+        }
         EpisodeCompleted?.Invoke(
             this,
             new LandingEpisodeEventArgs(
@@ -913,9 +936,10 @@ internal sealed partial class SimConnectLandingRecorder : IDisposable
                 new List<AirportFacility>(_airportFacilities.Values),
                 ControlInputSources(),
                 decisionJournal: decisionJournal,
-                runwayFacilitiesTask: _runwaySnapshotCompletion?.Task));
+                runwayFacilitiesTask: diagnosticOnly ? null : _runwaySnapshotCompletion?.Task,
+                isDiagnosticOnly: diagnosticOnly));
 
-        if (refreshAirportFacilities && _simConnect != null && !_disposed) RequestEpisodeRunways(samples);
+        if (!diagnosticOnly && refreshAirportFacilities && _simConnect != null && !_disposed) RequestEpisodeRunways(samples);
     }
 
     private void DiscardEpisode()
@@ -1023,7 +1047,7 @@ internal sealed partial class SimConnectLandingRecorder : IDisposable
     private void ResetFlightDetection()
     {
         _preRoll.Clear();
-        _hasBeenAirborne = false;
+        _contactContinuity.Reset();
         _previousOnGround = true;
         _armed = true;
         _lastSimulationTime = double.NaN;
