@@ -9,6 +9,10 @@ from pathlib import Path
 
 EXPECTED_RAW_ENTRIES = {"telemetry.csv", "session.txt"}
 EXPECTED_BUG_REPORT_ENTRIES = {"telemetry.csv", "session.txt", "landing-results.json"}
+CAPTURE_KINDS = ("raw_debug", "bug_report", "automatic_landing")
+DECISION_JOURNAL_FORMAT_VERSION = 1
+MAXIMUM_DECISION_JOURNAL_BYTES = 1024 * 1024
+MAXIMUM_DECISION_ENTRIES = 2048
 BOOLEAN_COLUMNS = {
     "on_ground",
     "motion_simulation",
@@ -156,6 +160,63 @@ def _session_values(content: bytes) -> dict[str, str]:
     return result
 
 
+def _unique_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("decision journal contains duplicate fields")
+        result[key] = value
+    return result
+
+
+def _finite_number(value: object) -> bool:
+    try:
+        return type(value) in (int, float) and math.isfinite(value)
+    except OverflowError:
+        return False
+
+
+def _bounded_text(value: object, maximum: int) -> bool:
+    return isinstance(value, str) and 0 < len(value) <= maximum
+
+
+def _validate_decision_journal(content: bytes, episode_id: int) -> None:
+    if len(content) > MAXIMUM_DECISION_JOURNAL_BYTES:
+        raise ValueError("decision journal is too large")
+    try:
+        journal = json.loads(content.decode("utf-8"), object_pairs_hook=_unique_json_object)
+    except (ValueError, UnicodeDecodeError, RecursionError) as exc:
+        raise ValueError("decision journal JSON is invalid") from exc
+    if (
+        not isinstance(journal, dict)
+        or set(journal) != {"format_version", "episode_id", "truncated", "entries"}
+        or type(journal["format_version"]) is not int
+        or journal["format_version"] != DECISION_JOURNAL_FORMAT_VERSION
+        or type(journal["episode_id"]) is not int
+        or journal["episode_id"] != episode_id
+        or type(journal["truncated"]) is not bool
+        or not isinstance(journal["entries"], list)
+        or len(journal["entries"]) > MAXIMUM_DECISION_ENTRIES
+    ):
+        raise ValueError("decision journal envelope is malformed")
+    for entry in journal["entries"]:
+        if (
+            not isinstance(entry, dict)
+            or set(entry) != {"time_seconds", "component", "code", "reason", "details"}
+            or not _finite_number(entry["time_seconds"])
+            or not _bounded_text(entry["component"], 64)
+            or not _bounded_text(entry["code"], 96)
+            or not _bounded_text(entry["reason"], 1024)
+            or not isinstance(entry["details"], dict)
+            or len(entry["details"]) > 32
+            or any(
+                not _bounded_text(key, 64) or not _finite_number(value)
+                for key, value in entry["details"].items()
+            )
+        ):
+            raise ValueError("decision journal entry is malformed")
+
+
 def validate_capture(path: Path, expected_header: str, maximum_uncompressed: int, expected_schema: int = 5) -> CaptureFacts:
     try:
         return _validate_capture_archive(path, expected_header, maximum_uncompressed, expected_schema)
@@ -167,8 +228,8 @@ def _validate_capture_archive(path: Path, expected_header: str, maximum_uncompre
     with zipfile.ZipFile(path, "r") as archive:
         infos = archive.infolist()
         names = [info.filename for info in infos]
-        allowed_entries = EXPECTED_RAW_ENTRIES | EXPECTED_BUG_REPORT_ENTRIES
-        if len(infos) not in {2, 3} or len(set(names)) != len(names) or not set(names) <= allowed_entries:
+        allowed_entries = EXPECTED_BUG_REPORT_ENTRIES | {"decisions.json"}
+        if len(infos) not in {2, 3, 4} or len(set(names)) != len(names) or not set(names) <= allowed_entries:
             raise ValueError("archive contains unexpected or duplicate entries")
         if "session.txt" not in names:
             raise ValueError("archive is missing session metadata")
@@ -182,33 +243,42 @@ def _validate_capture_archive(path: Path, expected_header: str, maximum_uncompre
             total_uncompressed += info.file_size
             if total_uncompressed > maximum_uncompressed:
                 raise ValueError("archive expands beyond the configured limit")
+            if info.filename == "decisions.json" and info.file_size > MAXIMUM_DECISION_JOURNAL_BYTES:
+                raise ValueError("decision journal is too large")
             maximum_ratio = 100 if info.filename == "landing-results.json" else 25
-            if info.compress_size == 0 or info.file_size / info.compress_size > maximum_ratio:
+            # Repeated decisions legitimately compress very well. Their strict
+            # 1 MiB expanded bound above limits allocation independently of ratio.
+            if info.compress_size == 0 or (
+                info.filename != "decisions.json" and info.file_size / info.compress_size > maximum_ratio
+            ):
                 raise ValueError("archive compression ratio exceeds policy")
 
         session = _session_values(archive.read("session.txt"))
         capture_kind = session.get("capture_kind", "raw_debug")
+        is_landing_report = capture_kind in {"bug_report", "automatic_landing"}
         expected_entries = (
             EXPECTED_BUG_REPORT_ENTRIES
-            if capture_kind == "bug_report"
+            if is_landing_report
             else EXPECTED_RAW_ENTRIES
         )
+        if is_landing_report and "decisions.json" in names:
+            expected_entries = expected_entries | {"decisions.json"}
         if set(names) != expected_entries or len(names) != len(expected_entries):
             raise ValueError(f"archive entries do not match capture kind {capture_kind}")
-        if capture_kind not in {"raw_debug", "bug_report"}:
+        if capture_kind not in CAPTURE_KINDS:
             raise ValueError("unsupported capture kind")
         if expected_schema not in {5, 6} or session.get("telemetry_schema") != str(expected_schema):
             raise ValueError("unsupported telemetry schema")
         if session.get("source_period") != "SIM_FRAME":
             raise ValueError("telemetry is not a SIM_FRAME capture")
 
-        if capture_kind == "bug_report":
+        if is_landing_report:
             try:
                 declared_landing_count = int(session["landing_count"])
                 declared_episode_id = int(session["episode_id"])
                 report_format = int(session["bug_report_format"])
                 results = json.loads(archive.read("landing-results.json").decode("utf-8"))
-            except (KeyError, ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            except (KeyError, ValueError, UnicodeDecodeError, RecursionError) as exc:
                 raise ValueError("bug report result metadata is invalid") from exc
             result_format = results.get("format_version") if isinstance(results, dict) else None
             records = results.get("records") if isinstance(results, dict) else None
@@ -217,11 +287,13 @@ def _validate_capture_archive(path: Path, expected_header: str, maximum_uncompre
                 or result_format != 1
                 or results.get("episode_id") != declared_episode_id
                 or not isinstance(records, list)
-                or not records
+                or (not records and capture_kind == "bug_report")
                 or declared_landing_count != len(records)
                 or any(not isinstance(record, dict) for record in records)
             ):
                 raise ValueError("bug report results are malformed")
+            if "decisions.json" in names:
+                _validate_decision_journal(archive.read("decisions.json"), declared_episode_id)
 
         expected_columns = expected_header.split(",")
         index = {name: position for position, name in enumerate(expected_columns)}
@@ -240,7 +312,7 @@ def _validate_capture_archive(path: Path, expected_header: str, maximum_uncompre
 
             for row in reader:
                 sample_count += 1
-                maximum_samples = 65536 if capture_kind == "bug_report" else 30000
+                maximum_samples = 65536 if is_landing_report else 30000
                 if sample_count > maximum_samples:
                     raise ValueError(f"capture contains more than {maximum_samples} samples")
                 if len(row) != len(expected_columns):
@@ -288,7 +360,11 @@ def _validate_capture_archive(path: Path, expected_header: str, maximum_uncompre
             raise ValueError("session sample_count is missing or invalid") from exc
         if declared_count != sample_count:
             raise ValueError("session sample_count does not match telemetry.csv")
-        if _is_replay_like(replay_samples):
+        # Rejected automatic episodes are diagnostics, not claimed landing results.
+        # Keep their raw evidence/journal available without admitting replay-like
+        # telemetry as a calculated landing or a legacy/manual capture.
+        diagnostic_only = capture_kind == "automatic_landing" and not records
+        if _is_replay_like(replay_samples) and not diagnostic_only:
             raise ValueError("replay-like telemetry is not accepted")
 
         return CaptureFacts(

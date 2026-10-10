@@ -52,6 +52,8 @@ public partial class MainWindow : Window
     private Task _episodePersistenceTask = Task.CompletedTask;
     private Task _airportMetadataPersistenceTask = Task.CompletedTask;
     private Task _bugReportRetryTask = Task.CompletedTask;
+    private bool _bugReportRetryRunning;
+    private bool _bugReportRetryRequested;
     private Task _bugReportPersistenceTask = Task.CompletedTask;
     private Task _googleDriveSyncTask = Task.CompletedTask;
     private Task _googleDriveDeleteTask = Task.CompletedTask;
@@ -177,6 +179,7 @@ public partial class MainWindow : Window
         var state = await initialState;
         if (_isClosed) return;
         _settings = state.Settings;
+        ApplyTelemetryPreference(_settings.AutomaticTelemetryUpload);
         _settingsPersistedAndReadable = state.SettingsReadable;
         LocalizationManager.Apply(_settings.Language);
         await InitializeHistoryAsync();
@@ -638,6 +641,14 @@ public partial class MainWindow : Window
         HideSettings();
     }
 
+    private void OnSettingsOverlayMouseDown(object sender, MouseButtonEventArgs eventArgs)
+    {
+        if (!ReferenceEquals(eventArgs.OriginalSource, SettingsOverlay)) return;
+
+        eventArgs.Handled = true;
+        HideSettings();
+    }
+
     private void HideSettings()
     {
         SettingsOverlay.Visibility = Visibility.Collapsed;
@@ -922,6 +933,7 @@ public partial class MainWindow : Window
             "%LOCALAPPDATA%\\MSFS Landing Stats\\settings.json");
         SettingsFileText.ToolTip = _settingsRepository.Path;
         SetAutoStartSelection(_settings.StartWithSimulator == true);
+        RefreshTelemetrySettingsPresentation();
         SettingsAutoStartStateText.Text = !_autoStartInitialized
             ? (showLoading ? LocalizationManager.Text("Settings.Loading") : string.Empty)
             : _settings.StartWithSimulator == true
@@ -1783,6 +1795,7 @@ public partial class MainWindow : Window
                 episodeTimestampUtc);
             _episodePersistenceTask = processingTask;
         }
+        var reportTask = QueueEpisodeReport(processingTask, eventArgs, episodeTimestampUtc);
 
         try
         {
@@ -1845,20 +1858,6 @@ public partial class MainWindow : Window
                 return;
             }
 
-            if (_lastLandingBugReport.TryRetain(new BugReportCandidate(
-                eventArgs.EpisodeId,
-                eventArgs.Samples,
-                eventArgs.Simulator,
-                eventArgs.AircraftTitle,
-                eventArgs.AircraftType,
-                eventArgs.AircraftModel,
-                eventArgs.ControlInputSources,
-                processed.Records)))
-            {
-                SetUploadStatus("Footer.ReportReady");
-            }
-            RefreshBugReportButton();
-
             foreach (var record in processed.Records.Where(record => !_locallyRemovedHistoryIds.Contains(record.Id)))
             {
                 _loadedDetails[record.Id] = record;
@@ -1875,6 +1874,12 @@ public partial class MainWindow : Window
                 SetConnectionStatus("Recorder.ContactsSavedFormat", processed.Records.Count);
             }
             UpdateRecorderPresentation(RecorderState.Connected);
+            var candidate = await reportTask;
+            if (!_isClosed && candidate != null && _lastLandingBugReport.TryRetain(candidate))
+            {
+                SetUploadStatus("Footer.ReportReady");
+                RefreshBugReportButton();
+            }
         }
         catch (Exception exception)
         {
@@ -1916,9 +1921,14 @@ public partial class MainWindow : Window
         DateTime episodeTimestampUtc)
     {
         var samples = TelemetryDeduplicator.Deduplicate(eventArgs.Samples);
+        var journal = eventArgs.DecisionJournal ?? new TelemetryDecisionJournal();
+        var time = samples.Count == 0 ? 0 : samples[samples.Count - 1].SimulationTimeSeconds;
+        journal.Record(time, "analysis", "frames_deduplicated", "Kept the last frame for each simulation timestamp.",
+            new Dictionary<string, double> { ["received"] = eventArgs.Samples.Count, ["retained"] = samples.Count });
         if (ReplayTelemetryDetector.IsReplayLike(samples))
         {
-            return ProcessedEpisode.Replay();
+            journal.Record(time, "analysis", "replay_rejected", "Kinematic consistency check rejected this episode as replay-like.");
+            return ProcessedEpisode.Replay(journal.Snapshot());
         }
 
         // The episode carries a point-in-time copy of the recorder's facility
@@ -1933,6 +1943,8 @@ public partial class MainWindow : Window
                 eventArgs.AircraftModel,
                 samples)
             .ConfigureAwait(false);
+        analysisOptions ??= new TouchdownAnalysisOptions();
+        analysisOptions.DecisionJournal = journal;
         var touchdowns = TouchdownAnalysis.Analyze(samples, analysisOptions);
         var savedRecords = new List<LandingRecord>(touchdowns.Count);
         foreach (var touchdown in touchdowns)
@@ -1958,7 +1970,10 @@ public partial class MainWindow : Window
             savedRecords.Add(record);
         }
 
-        return ProcessedEpisode.Completed(facilities, savedRecords);
+        journal.Record(time, "analysis", "episode_analyzed", "Finished analysis of the retained landing episode.",
+            new Dictionary<string, double> { ["contacts"] = savedRecords.Count });
+        var decisions = journal.Snapshot();
+        return ProcessedEpisode.Completed(facilities, savedRecords, decisions);
     }
 
     private void SetConnectionStatus(string key, params object[] arguments)
@@ -2121,7 +2136,7 @@ public partial class MainWindow : Window
 
     private async void OnReportBugClick(object sender, RoutedEventArgs eventArgs)
     {
-        if (_isClosed) return;
+        if (_isClosed || AutomaticTelemetryUploadEnabled) return;
         var cancellationToken = _lifetimeCancellation.Token;
         var candidate = _lastLandingBugReport.Available();
         if (candidate == null || _bugReportSubmitting)
@@ -2146,7 +2161,7 @@ public partial class MainWindow : Window
                     _lastLandingBugReport,
                     candidate,
                     DateTime.UtcNow));
-                _bugReportPersistenceTask = persistenceTask;
+                _bugReportPersistenceTask = Task.WhenAll(_bugReportPersistenceTask, persistenceTask);
             }
             path = await persistenceTask;
             if (cancellationToken.IsCancellationRequested)
@@ -2242,7 +2257,8 @@ public partial class MainWindow : Window
             return;
         }
 
-        var available = _lastLandingBugReport.Available() != null;
+        var available = _startupReady && !AutomaticTelemetryUploadEnabled && _lastLandingBugReport.Available() != null;
+        UploadStatusText.Visibility = _startupReady && !AutomaticTelemetryUploadEnabled ? Visibility.Visible : Visibility.Collapsed;
         ReportBugButton.Visibility = available ? Visibility.Visible : Visibility.Collapsed;
         var enabled = !_bugReportSubmitting && available;
         ReportBugButton.IsEnabled = enabled;
@@ -2265,6 +2281,7 @@ public partial class MainWindow : Window
             var client = new TelemetryUploadClient(_rawCaptureRepository.RootPath);
             client.StatusChanged += OnTelemetryUploadStatusChanged;
             _telemetryUploadClient = client;
+            client.SetAutomaticUploadEnabled(AutomaticTelemetryUploadEnabled);
             return client;
         }
     }
@@ -2274,24 +2291,38 @@ public partial class MainWindow : Window
         var cancellationToken = _lifetimeCancellation.Token;
         lock (_bugReportRetryGate)
         {
-            if (!_bugReportRetryTask.IsCompleted || cancellationToken.IsCancellationRequested)
-            {
-                return;
-            }
+            if (cancellationToken.IsCancellationRequested) return;
+            _bugReportRetryRequested = true;
+            if (_bugReportRetryRunning) return;
+            _bugReportRetryRunning = true;
 
             _bugReportRetryTask = Task.Run(async () =>
             {
-                try
+                while (true)
                 {
-                    var client = existingClient ?? EnsureTelemetryUploadClient();
-                    await client.PreparePendingReportsUntilReadyAsync(cancellationToken)
-                        .ConfigureAwait(false);
+                    lock (_bugReportRetryGate) _bugReportRetryRequested = false;
+                    try
+                    {
+                        var client = existingClient ?? EnsureTelemetryUploadClient();
+                        await client.PreparePendingReportsUntilReadyAsync(cancellationToken)
+                            .ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                    {
+                        // Normal application shutdown.
+                    }
+                    catch (Exception exception) { System.Diagnostics.Debug.WriteLine(exception); }
+                    lock (_bugReportRetryGate)
+                    {
+                        // A rapid opt-out/opt-in can request a new scan while the
+                        // cancelled enrollment is still unwinding. Coalesce it,
+                        // and publish idle atomically with the decision to exit.
+                        if (_bugReportRetryRequested && !cancellationToken.IsCancellationRequested) continue;
+                        _bugReportRetryRunning = false;
+                        return;
+                    }
                 }
-                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-                {
-                    // Normal application shutdown.
-                }
-            }, cancellationToken);
+            });
         }
     }
 
@@ -2413,11 +2444,14 @@ public partial class MainWindow : Window
         private ProcessedEpisode(
             bool replayLike,
             IReadOnlyList<AirportFacility> airportFacilities,
-            IReadOnlyList<LandingRecord> records)
+            IReadOnlyList<LandingRecord> records,
+            TelemetryDecisionSnapshot? decisions = null)
         {
             ReplayLike = replayLike;
             AirportFacilities = airportFacilities;
             Records = records;
+            ReportRecords = records.Select(record => LandingRecordFile.FromRecord(record).ToRecord()).ToArray();
+            Decisions = decisions;
         }
 
         public bool ReplayLike { get; }
@@ -2425,16 +2459,19 @@ public partial class MainWindow : Window
         public IReadOnlyList<AirportFacility> AirportFacilities { get; }
 
         public IReadOnlyList<LandingRecord> Records { get; }
+        public TelemetryDecisionSnapshot? Decisions { get; }
+        public IReadOnlyList<LandingRecord> ReportRecords { get; }
 
-        public static ProcessedEpisode Replay() => new ProcessedEpisode(
+        public static ProcessedEpisode Replay(TelemetryDecisionSnapshot decisions) => new ProcessedEpisode(
             true,
             Array.Empty<AirportFacility>(),
-            Array.Empty<LandingRecord>());
+            Array.Empty<LandingRecord>(), decisions);
 
         public static ProcessedEpisode Completed(
             IReadOnlyList<AirportFacility> airportFacilities,
-            IReadOnlyList<LandingRecord> records) =>
-            new ProcessedEpisode(false, airportFacilities, records);
+            IReadOnlyList<LandingRecord> records,
+            TelemetryDecisionSnapshot decisions) =>
+            new ProcessedEpisode(false, airportFacilities, records, decisions);
     }
 
     private static Brush Brush(string color)

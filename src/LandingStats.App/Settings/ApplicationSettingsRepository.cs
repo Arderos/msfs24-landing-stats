@@ -32,25 +32,27 @@ internal sealed class ApplicationSettingsRepository
 
     public bool TryLoad(out ApplicationSettings settings)
     {
-        if (!File.Exists(Path))
-        {
-            settings = new ApplicationSettings();
-            return false;
-        }
-
         try
         {
             using var input = new FileStream(Path, FileMode.Open, FileAccess.Read, FileShare.Read);
-            settings = _serializer.ReadObject(input) as ApplicationSettings ?? new ApplicationSettings();
+            settings = _serializer.ReadObject(input) as ApplicationSettings ??
+                throw new SerializationException("The settings file does not contain a settings object.");
             settings.Normalize();
             return true;
+        }
+        catch (Exception exception) when (exception is FileNotFoundException || exception is DirectoryNotFoundException)
+        {
+            settings = new ApplicationSettings();
+            return false;
         }
         catch (Exception exception) when (
             exception is IOException ||
             exception is UnauthorizedAccessException ||
             exception is SerializationException)
         {
-            settings = new ApplicationSettings();
+            // An unreadable existing file may contain an explicit opt-out.
+            // Only a genuinely absent file may use the default-on preference.
+            settings = new ApplicationSettings { AutomaticTelemetryUpload = false };
             return false;
         }
     }

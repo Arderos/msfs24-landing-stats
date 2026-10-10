@@ -1,6 +1,6 @@
 # Privacy policy
 
-Last updated: August 29, 2026
+Last updated: October 10, 2026
 
 MSFS Landing Stats is a local Windows application. Landing analysis and storage
 happen on the user's computer.
@@ -39,12 +39,34 @@ Deleting a synchronized landing in MSFS Landing Stats moves its corresponding
 Drive backup file to the Drive trash during synchronization. The user can also
 remove the application folder or individual files directly in Google Drive.
 
-## Bug reports
+## Diagnostic telemetry
 
-The separate **Report bug** action is optional and requires an explicit click.
-It uploads the retained telemetry for the latest landing together with its
-calculated result and technical metadata needed to investigate the report. This
-data is not uploaded merely by enabling Google Drive backup.
+Automatic diagnostic uploads are enabled by default, including after an update.
+They can be disabled in Settings. This preference applies to this installation
+and is not changed by Google Drive synchronization. When disabled, automatic
+uploads stop, including queued retries; already received server data is not
+deleted. Pending automatic reports remain local and resume if re-enabled.
+
+Each report contains the raw recorded landing episode, including aircraft state,
+exact simulator position, physical controller axes and device labels, calculated
+landing results, and a bounded journal of analysis and 3D reconstruction decisions.
+The journal includes selected methods, fallback/rejection reasons and diagnostic
+measurements. It does not contain account credentials or a hardware UUID.
+Reports go to the Landing Stats diagnostic server over HTTPS, authenticated with
+a random installation ID and a Windows-protected per-installation signing key.
+
+Automatic reporting runs in the background without interface notifications.
+When it is off, **Report bug** is available for explicit submission of the latest
+retained landing. Automatic uploads and manual reports are separate from Google
+Drive backup. Existing legacy RAW captures still require their previous upload
+consent as well as the current automatic-upload setting; the new default does
+not authorize those older files. Turning automatic uploads off also pauses
+previously consented legacy RAW uploads. Explicit manual bug reports are unaffected.
+
+Automatic reports waiting locally are bounded to 128 archives and 256 MiB,
+including quarantined reports. When full, no new automatic diagnostic copy is
+created; saved landing history is unaffected. Disabling automatic reporting does
+not disable local landing analysis or storage.
 
 ## Other network access
 

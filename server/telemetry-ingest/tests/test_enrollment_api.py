@@ -1,6 +1,7 @@
 import base64
 import hashlib
 import io
+import json
 import os
 import secrets
 import tempfile
@@ -110,7 +111,8 @@ class EnrollmentApiTests(unittest.TestCase):
         self.assertEqual(507, response.status_code)
         self.assertIsNone(self.store.installation("a" * 32))
 
-    def _signed_capture(self, schema: int, session_schema: int | None = None):
+    def _signed_capture(self, schema: int, session_schema: int | None = None,
+                        automatic: bool = False, invalid_journal: bool = False):
         private = rsa.generate_private_key(public_exponent=65537, key_size=2048)
         numbers = private.public_key().public_numbers()
         install_id = secrets.token_hex(16)
@@ -125,8 +127,22 @@ class EnrollmentApiTests(unittest.TestCase):
         content = io.BytesIO()
         with zipfile.ZipFile(content, "w", compression=zipfile.ZIP_DEFLATED) as archive:
             archive.writestr("telemetry.csv", header + "\n" + ",".join(values) + "\n")
-            archive.writestr("session.txt", f"telemetry_schema={schema if session_schema is None else session_schema}\n"
-                             "source_period=SIM_FRAME\nsample_count=1\n")
+            session = f"telemetry_schema={schema if session_schema is None else session_schema}\n" \
+                      "source_period=SIM_FRAME\nsample_count=1\n"
+            if automatic:
+                session += "capture_kind=automatic_landing\nbug_report_format=1\nepisode_id=42\nlanding_count=0\n"
+                archive.writestr("landing-results.json", json.dumps({
+                    "format_version": 1, "episode_id": 42, "records": [],
+                }))
+                archive.writestr("decisions.json", json.dumps({
+                    "format_version": 1, "episode_id": 42, "truncated": False,
+                    "entries": [{
+                        "time_seconds": float("nan") if invalid_journal else 1.5,
+                        "component": "recorder", "code": "rejected_contact",
+                        "reason": "No contact qualified", "details": {},
+                    }],
+                }))
+            archive.writestr("session.txt", session)
         body = content.getvalue()
         digest = hashlib.sha256(body).hexdigest()
         sent = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
@@ -146,6 +162,8 @@ class EnrollmentApiTests(unittest.TestCase):
             config = client.get("/v1/config").json()
             self.assertEqual(5, config["telemetry_schema"])
             self.assertEqual([5, 6], config["telemetry_schemas"])
+            self.assertEqual(["raw_debug", "bug_report", "automatic_landing"], config["capture_kinds"])
+            self.assertEqual([1], config["decision_journal_formats"])
             for schema in (5, 6):
                 body, headers = self._signed_capture(schema)
                 response = client.post("/v1/captures", content=body, headers=headers)
@@ -155,6 +173,28 @@ class EnrollmentApiTests(unittest.TestCase):
                     capture = connection.execute("SELECT schema_version FROM captures WHERE sha256=?",
                                                  (headers["X-Capture-SHA256"],)).fetchone()
                 self.assertEqual(schema, capture["schema_version"])
+
+    def test_signed_automatic_report_persists_kind_and_journal(self):
+        with TestClient(service.app) as client:
+            body, headers = self._signed_capture(6, automatic=True)
+            response = client.post("/v1/captures", content=body, headers=headers)
+            self.assertEqual(201, response.status_code, response.text)
+            with self.store.connect() as connection:
+                capture = connection.execute("SELECT capture_kind, relative_path FROM captures WHERE sha256=?",
+                                             (headers["X-Capture-SHA256"],)).fetchone()
+            self.assertEqual("automatic_landing", capture["capture_kind"])
+            with zipfile.ZipFile(Path(self.root.name) / capture["relative_path"]) as archive:
+                journal = json.loads(archive.read("decisions.json"))
+            self.assertEqual("rejected_contact", journal["entries"][0]["code"])
+
+    def test_invalid_signed_journal_is_rejected_and_temporary_upload_removed(self):
+        with TestClient(service.app) as client:
+            body, headers = self._signed_capture(6, automatic=True, invalid_journal=True)
+            response = client.post("/v1/captures", content=body, headers=headers)
+            self.assertEqual(422, response.status_code, response.text)
+            self.assertIn("decision journal entry is malformed", response.text)
+            self.assertIsNone(self.store.capture_by_hash(headers["X-Capture-SHA256"]))
+            self.assertEqual([], list((Path(self.root.name) / "incoming").iterdir()))
 
     def test_signed_new_schema_cannot_relabel_old_session(self):
         with TestClient(service.app) as client:

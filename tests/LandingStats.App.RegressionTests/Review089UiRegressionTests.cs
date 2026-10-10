@@ -8,6 +8,8 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
+using System.Windows.Input;
 using System.Windows.Markup;
 using System.Windows.Threading;
 using System.Xml.Linq;
@@ -37,6 +39,7 @@ internal static class Review089UiRegressionTests
             // Never show this window: no simulator, application startup, cloud,
             // updater or real user settings may run in this isolated fixture.
             window = new MainWindow(new FlightModelGeometryResolver(Array.Empty<string>(), false));
+            VerifySettingsOverlay(window);
             var repository = new LandingRepository(directory);
             var record = new LandingRecord { AircraftTitle = "Synthetic review landing" };
             repository.Save(record);
@@ -133,6 +136,33 @@ internal static class Review089UiRegressionTests
              current = current.Parent as FrameworkElement)
             if (current.Visibility != Visibility.Visible) return false;
         return true;
+    }
+
+    private static void VerifySettingsOverlay(MainWindow window)
+    {
+        var overlay = Get<Grid>(window, "SettingsOverlay");
+        var panel = (Border)overlay.Children[0];
+        var scrollViewer = (ScrollViewer)panel.Child;
+        var scrollbarStyle = scrollViewer.Resources[typeof(ScrollBar)] as Style;
+        Assert(scrollbarStyle != null && ReferenceEquals(scrollbarStyle.BasedOn,
+            window.FindResource("HistoryScrollBarStyle")),
+            "Settings use the same dark scrollbar style as landing history.");
+
+        overlay.Visibility = Visibility.Visible;
+        foreach (var inside in new UIElement[] { panel, scrollViewer,
+            Get<CheckBox>(window, "SettingsTelemetryCheckBox") })
+        {
+            inside.RaiseEvent(new MouseButtonEventArgs(Mouse.PrimaryDevice, 0, MouseButton.Left)
+                { RoutedEvent = UIElement.PreviewMouseDownEvent });
+            Assert(overlay.Visibility == Visibility.Visible,
+                "Clicks in settings, its padding and its scroll viewer must not dismiss it.");
+        }
+
+        var outside = new MouseButtonEventArgs(Mouse.PrimaryDevice, 0, MouseButton.Left)
+            { RoutedEvent = UIElement.PreviewMouseDownEvent };
+        overlay.RaiseEvent(outside);
+        Assert(overlay.Visibility == Visibility.Collapsed && outside.Handled,
+            "A backdrop click closes settings and is consumed rather than passed to the underlying view.");
     }
 
     private static ResourceDictionary LoadApplicationResources()

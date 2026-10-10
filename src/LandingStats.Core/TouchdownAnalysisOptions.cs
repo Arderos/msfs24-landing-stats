@@ -32,6 +32,9 @@ public sealed class TouchdownMainGearContactPoint
 /// </summary>
 public sealed class TouchdownAnalysisOptions
 {
+    /// <summary>Optional diagnostic sink; it does not affect any analysis decision.</summary>
+    public TelemetryDecisionJournal? DecisionJournal { get; set; }
+
     /// <summary>
     /// Longitudinal main-gear arm from the velocity reference point, in feet.
     /// Negative values place the main gear behind the reference point.

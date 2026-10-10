@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading.Tasks;
 using LandingStats.App.Models;
 using LandingStats.Core;
 using Microsoft.FlightSimulator.SimConnect;
@@ -28,8 +29,12 @@ internal sealed partial class SimConnectLandingRecorder
     private string[] _runwayBatchKeys = Array.Empty<string>();
     private bool _runwayBatchActive, _runwayBatchFailed;
     private bool _runwayLookupStarted;
+    private bool _runwayAwaitingAirportFacilities;
+    private TelemetryDecisionJournal? _runwayDecisionJournal;
+    private double _runwayDecisionTime;
     private long _runwayEpisodeId;
     private IReadOnlyList<RunwayFacility> _publishedRunways = Array.Empty<RunwayFacility>();
+    private TaskCompletionSource<IReadOnlyList<RunwayFacility>>? _runwaySnapshotCompletion;
 
     public event EventHandler<RunwayFacilitiesEventArgs>? RunwayFacilitiesUpdated;
     public IReadOnlyList<RunwayFacility> RunwayFacilities => _publishedRunways;
@@ -38,6 +43,10 @@ internal sealed partial class SimConnectLandingRecorder
 
     private void BeginRunwayEpisode(long episodeId)
     {
+        if (_runwayAwaitingAirportFacilities) CompleteAirportLookupFailure("A new episode superseded the pending airport-list lookup.");
+        _runwaySnapshotCompletion?.TrySetResult(Array.Empty<RunwayFacility>());
+        _runwaySnapshotCompletion = new TaskCompletionSource<IReadOnlyList<RunwayFacility>>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
         // Keep definitions for this connection, but never reuse scenery data
         // from a previous landing (including successful replies without thresholds).
         foreach (var id in _runwayRequests.Keys.ToArray()) RemoveRunwayRequest(id);
@@ -47,6 +56,8 @@ internal sealed partial class SimConnectLandingRecorder
         _publishedRunways = Array.Empty<RunwayFacility>();
         _runwayBatchKeys = Array.Empty<string>();
         _runwayBatchActive = _runwayBatchFailed = _runwayLookupStarted = false;
+        _runwayAwaitingAirportFacilities = false;
+        _runwayDecisionJournal = null;
         _runwayLookupExpires = 0;
         _runwayEpisodeId = episodeId;
     }
@@ -66,7 +77,33 @@ internal sealed partial class SimConnectLandingRecorder
         foreach (var id in _runwayRequests.Keys.ToArray()) RemoveRunwayRequest(id);
         foreach (var id in _ilsRequests.Keys.ToArray()) RemoveRunwayRequest(id);
         _runwayBatchActive = false;
-        RequestNearbyRunways();
+        // A nearby persisted ARP says nothing about whether this airport/scenery
+        // is missing from that cache. Refresh every landing before ranking candidates.
+        _runwayAwaitingAirportFacilities = true;
+        _runwayDecisionJournal?.Record(_runwayDecisionTime, "runway.airports", "fresh_list_wait",
+            "Refresh simulator airport facilities before this episode's runway candidate selection.");
+        _airportFacilityRequestPending = false; // Supersede older requests; IDs reject their late replies.
+        try
+        {
+            if (_simConnect == null || _disposed) { CompleteAirportLookupFailure("Simulator is disconnected."); return; }
+            RequestAirportFacilities(_simConnect);
+        }
+        catch (Exception exception)
+        {
+            CompleteAirportLookupFailure("Fresh airport-list request failed: " + exception.GetType().Name);
+        }
+    }
+
+    private void CompleteAirportLookupFailure(string reason)
+    {
+        _airportFacilityRequestPending = false;
+        _pendingAirportFacilities = null;
+        _airportFacilityRequestPacket = null;
+        if (!_runwayAwaitingAirportFacilities) return;
+        _runwayAwaitingAirportFacilities = false;
+        _runwayLookupStarted = true;
+        _runwayDecisionJournal?.Record(_runwayDecisionTime, "runway.airports", "fresh_list_unavailable", reason);
+        _runwaySnapshotCompletion?.TrySetResult(Array.Empty<RunwayFacility>());
     }
 
     private void RequestNearbyRunways()
@@ -74,7 +111,7 @@ internal sealed partial class SimConnectLandingRecorder
         var connection = _simConnect;
         if (connection == null || _disposed || _hostClock.Elapsed.TotalSeconds >= _runwayLookupExpires) return;
         ExpireRunwayRequests();
-        if (_runwayLookupStarted || _runwayRequests.Count > 0 || _ilsRequests.Count > 0) return;
+        if (_runwayAwaitingAirportFacilities || _runwayLookupStarted || _runwayRequests.Count > 0 || _ilsRequests.Count > 0) return;
         var candidates = _airportFacilities.Values
             .Select(airport => new { Airport = airport, Distance = GeoDistance.GreatCircleNauticalMiles(
                 _runwayLookupLatitude, _runwayLookupLongitude, airport.LatitudeDegrees, airport.LongitudeDegrees) })
@@ -84,6 +121,12 @@ internal sealed partial class SimConnectLandingRecorder
         _runwayBatchActive = candidates.Length > 0;
         _runwayLookupStarted = _runwayBatchActive;
         _runwayBatchFailed = false;
+        if (candidates.Length == 0)
+        {
+            _runwayLookupStarted = true;
+            _runwaySnapshotCompletion?.TrySetResult(Array.Empty<RunwayFacility>());
+            return;
+        }
         foreach (var candidate in candidates)
         {
             var airport = candidate.Airport;
@@ -391,6 +434,8 @@ internal sealed partial class SimConnectLandingRecorder
 
     private void ExpireRunwayRequests()
     {
+        if (_airportFacilityRequestPending && _hostClock.Elapsed.TotalSeconds >= _airportFacilityRequestDeadline)
+            CompleteAirportLookupFailure("Fresh airport-list lookup timed out; cached facilities are not substituted.");
         foreach (var id in _runwayRequests.Where(item => item.Value.DeadlineSeconds <= _hostClock.Elapsed.TotalSeconds).Select(item => item.Key).ToArray())
         {
             if (!_runwayRequests[id].IsOptional) _runwayBatchFailed = true;
@@ -404,8 +449,13 @@ internal sealed partial class SimConnectLandingRecorder
     {
         if (!_runwayBatchActive || _runwayRequests.Count != 0 || _ilsRequests.Count != 0) return;
         _runwayBatchActive = false;
-        if (_runwayBatchFailed || _runwayBatchKeys.Any(key => !_runways.ContainsKey(key))) return;
+        if (_runwayBatchFailed || _runwayBatchKeys.Any(key => !_runways.ContainsKey(key)))
+        {
+            _runwaySnapshotCompletion?.TrySetResult(Array.Empty<RunwayFacility>());
+            return;
+        }
         _publishedRunways = _runwayBatchKeys.SelectMany(key => _runways[key]).ToArray();
+        _runwaySnapshotCompletion?.TrySetResult(_publishedRunways.Select(value => value.Snapshot()).ToArray());
         RunwayFacilitiesUpdated?.Invoke(this, new RunwayFacilitiesEventArgs(_publishedRunways, _runwayEpisodeId));
     }
 
@@ -418,6 +468,8 @@ internal sealed partial class SimConnectLandingRecorder
 
     private void ResetRunwayConnection()
     {
+        if (_runwayAwaitingAirportFacilities) CompleteAirportLookupFailure("Simulator connection closed before fresh airport facilities arrived.");
+        _runwaySnapshotCompletion?.TrySetResult(Array.Empty<RunwayFacility>());
         _runwayRequests.Clear();
         _ilsRequests.Clear();
         _runwayPackets.Clear();
@@ -432,6 +484,8 @@ internal sealed partial class SimConnectLandingRecorder
         Array.Clear(_papiDefinitionReady, 0, 4);
         _runwayLookupExpires = 0;
         _runwayLookupStarted = false;
+        _runwayAwaitingAirportFacilities = false;
+        _runwayDecisionJournal = null;
         _runwayEpisodeId = 0;
         _runwayBatchActive = false;
         _runwayBatchFailed = false;

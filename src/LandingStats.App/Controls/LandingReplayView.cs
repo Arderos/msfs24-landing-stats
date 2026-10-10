@@ -132,12 +132,10 @@ public sealed class LandingReplayView : Grid
         LandingReplayRunwayOffset.TryCreate(value!, _track!, out _offset);
         _metrics.SetTrack(_track, _offset?.HeadingTrueDegrees); _controls.SetInputs(ReplayControlInputs.Resolve(value));
         _runwayOffset.SetRunway(value!.RunwayGeometry);
-        var grounded = _track!.Frames.Where(f => f.Sample.OnGround && Math.Abs(f.Sample.PitchDegrees) < 2)
-            .Select(f => f.Position.Y - f.Ground.Y).OrderBy(h => h).ToArray();
         // A generic mesh has no measured datum/gear geometry. Register its
         // rest height ONCE; never clamp individual frames (which erases bounces).
-        _visualOffset = grounded.Length > 0 ? ReplayAircraftModel.RestHeight - grounded[grounded.Length / 2] : 0;
-        _settingSlider = true; _slider.Minimum = _track.StartSeconds; _slider.Maximum = _track.EndSeconds; _settingSlider = false;
+        _visualOffset = ReplayGearRegistration.VisualOffset(_track!);
+        _settingSlider = true; _slider.Minimum = _track!.StartSeconds; _slider.Maximum = _track.EndSeconds; _settingSlider = false;
         _slider.IsEnabled = true; _play.IsEnabled = true; _reset.IsEnabled = true; _viewport.Visibility = Visibility.Visible;
         _footer.Visibility = Visibility.Visible;
         _hint.Visibility = _viewport.ActualWidth >= 1000 ? Visibility.Visible : Visibility.Collapsed;
@@ -269,7 +267,8 @@ public sealed class LandingReplayView : Grid
             Ribbon(trail, a.Position + new Vector3D(0, _visualOffset, 0), b.Position + new Vector3D(0, _visualOffset, 0), .28);
         }
         var surface = LandingReplaySurface.Build(_track, _record?.RunwayGeometry);
-        _gearRegistration = new ReplayGearRegistration(_gear, _track, surface, _visualOffset);
+        _gearRegistration = new ReplayGearRegistration(_gear, _track, surface, _visualOffset,
+            contactTimesSeconds: LandingReplayContacts.ContactTimes(_record!, _track, _contacts));
         AddFrozen(scene, surface.Terrain, Material("#191D1C"));
         AddFrozen(scene, surface.Pavement, Material("#36383A"));
         AddFrozen(scene, surface.Markings, Material("#C2BFB5", true));

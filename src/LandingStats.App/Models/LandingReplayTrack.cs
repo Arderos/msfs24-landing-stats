@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Windows.Media.Media3D;
+using LandingStats.Core;
 
 namespace LandingStats.App.Models;
 
@@ -36,27 +37,38 @@ public sealed class LandingReplayTrack
     public double StartSeconds => _frames[0].TimeSeconds;
     public double EndSeconds => _frames[_frames.Length - 1].TimeSeconds;
 
-    public static bool TryCreate(LandingRecord? record, out LandingReplayTrack? track)
+    public static bool TryCreate(LandingRecord? record, out LandingReplayTrack? track, TelemetryDecisionJournal? journal = null)
     {
         track = null;
-        if (record?.Series == null || record.Series.Count < 2) return false;
+        if (record?.Series == null || record.Series.Count < 2)
+        { journal?.Record(0, "replay.track", "insufficient_samples", "3D replay requires at least two recorded positions."); return false; }
         var points = new List<LandingSeriesPoint>(record.Series.Count);
+        var duplicates = 0;
         foreach (var p in record.Series)
         {
             if (!Finite(p.TimeSeconds) || !Finite(p.PitchDegrees) || !Finite(p.BankDegrees) ||
                 !Present(p.LatitudeDegrees) || Math.Abs(p.LatitudeDegrees!.Value) > 90 ||
                 !Present(p.LongitudeDegrees) || Math.Abs(p.LongitudeDegrees!.Value) > 180 ||
-                !Present(p.PlaneAltitudeFeet) || !Present(p.GroundAltitudeFeet) || !Present(p.HeadingTrueDegrees)) return false;
+                !Present(p.PlaneAltitudeFeet) || !Present(p.GroundAltitudeFeet) || !Present(p.HeadingTrueDegrees))
+            { journal?.Record(p.TimeSeconds, "replay.track", "invalid_pose", "Missing or invalid position, altitude, heading or attitude prevents 3D replay."); return false; }
             if (points.Count > 0)
             {
                 var previous = points[points.Count - 1];
-                if (p.TimeSeconds < previous.TimeSeconds) return false;
-                if (p.TimeSeconds == previous.TimeSeconds) { points[points.Count - 1] = p; continue; }
+                if (p.TimeSeconds < previous.TimeSeconds)
+                { journal?.Record(p.TimeSeconds, "replay.track", "clock_reversed", "Recorded time went backwards; no replay track is created."); return false; }
+                if (p.TimeSeconds == previous.TimeSeconds) { points[points.Count - 1] = p; duplicates++; continue; }
+                if (p.TimeSeconds - previous.TimeSeconds > MaximumInterpolationGapSeconds)
+                    journal?.Record(p.TimeSeconds, "replay.track", "interpolation_gap", "Recorded endpoints remain available but no motion or trail is invented across this gap.",
+                        new Dictionary<string, double> { ["from_seconds"] = previous.TimeSeconds, ["to_seconds"] = p.TimeSeconds });
             }
             points.Add(p);
         }
-        if (points.Count < 2) return false;
+        if (points.Count < 2)
+        { journal?.Record(0, "replay.track", "insufficient_unique_times", "Duplicate simulator times leave fewer than two recorded positions."); return false; }
         track = new LandingReplayTrack(points.ToArray());
+        journal?.Record(0, "replay.track", "track_created", "Recorded geodetic positions projected east/up/south; recorded attitudes retained without dynamics reconstruction.",
+            new Dictionary<string, double> { ["frames"] = points.Count, ["duplicates_replaced"] = duplicates,
+                ["start_seconds"] = track.StartSeconds, ["end_seconds"] = track.EndSeconds });
         return true;
     }
 

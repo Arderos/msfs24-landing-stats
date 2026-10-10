@@ -1,9 +1,15 @@
 using System;
+using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Runtime.Serialization.Json;
+using System.Text;
 using System.Windows.Media.Media3D;
 using LandingStats.App.Controls;
 using LandingStats.App.Models;
+using LandingStats.App.Storage;
+using LandingStats.Core;
 
 namespace LandingStats.App.RegressionTests;
 
@@ -100,6 +106,121 @@ internal static class ReplayGearRegistrationTests
             shallowTrack.TrySample(.15, out var nextContact); shallowRegistration.Update(nextContact);
             Near(shallowGear.Legs.Min(leg => shallowRegistration.ClearanceAt(leg, nextContact)), 0, .00001, "shallow bounce returns to surface at next contact");
         }
+
+        EveryEpisodeContactUsesItsAnalysedTime();
+        MissingMotionCannotAcquireAnEpisodeContact();
+        EpisodeContactClocksUseSharedSamples();
+        FactoryContactClocksSurviveIndependentSampling();
+        ContactClockSerializationAndInvalidValues();
+    }
+
+    private static void EveryEpisodeContactUsesItsAnalysedTime()
+    {
+        // Either contact can be selected. The other contact's analysed time is
+        // still authoritative, not the later downsampled OnGround transition.
+        foreach (var selectedTime in new[] { 0d, 3d })
+        {
+            var record = TwoContacts(selectedTime);
+            Require(LandingReplayTrack.TryCreate(record, out var track), "two-contact episode fixture");
+            var originals = track!.Frames.Select(f => (f.Position, f.Orientation, f.TimeSeconds)).ToArray();
+            var gear = new ReplayLandingGear();
+            var registration = new ReplayGearRegistration(gear, track, LandingReplaySurface.Build(track, null), 0,
+                journal: null, contactTimesSeconds: new[] { -selectedTime, 3 - selectedTime });
+            Require(registration.IsCalibrated, "each selected contact retains supported gear registration");
+
+            foreach (var absoluteTime in new[] { 0d, 3d })
+            {
+                var time = absoluteTime - selectedTime;
+                Require(track.TrySample(time - .005, out var before), "motion immediately before each analysed contact exists");
+                registration.Update(before);
+                Require(gear.Legs.Min(leg => registration.ClearanceAt(leg, before)) > 0,
+                    "episode anchors must not ground the tyres before either analysed contact");
+
+                Require(track.TrySample(time, out var contact), "each analysed contact has an interpolated pose");
+                registration.Update(contact);
+                Near(gear.Legs.Min(leg => registration.ClearanceAt(leg, contact)), 0, .00001,
+                    "both contacts touch at their analysed time regardless of which contact is selected");
+                Require(registration.ClearanceAt(gear.Legs[2], contact) > .5,
+                    "episode contact anchors do not force the raised nose onto the surface");
+            }
+
+            Require(track.TrySample(2 - selectedTime, out var bounce), "intermediate bounce pose exists");
+            registration.Update(bounce);
+            Require(gear.Legs.Min(leg => registration.ClearanceAt(leg, bounce)) > .5,
+                "calibrating all contacts does not flatten the intermediate airborne arc");
+            for (var i = 0; i < originals.Length; i++)
+                Require(originals[i].Position == track.Frames[i].Position && originals[i].Orientation == track.Frames[i].Orientation &&
+                        originals[i].TimeSeconds == track.Frames[i].TimeSeconds,
+                    "episode registration never changes recorded position, attitude or time");
+        }
+    }
+
+    private static void MissingMotionCannotAcquireAnEpisodeContact()
+    {
+        var record = TwoContacts(0);
+        record.Series.RemoveAll(p => p.TimeSeconds > 2.4 && p.TimeSeconds < 3.2);
+        Require(LandingReplayTrack.TryCreate(record, out var track), "gapped episode endpoints remain usable");
+        Require(!track!.TrySample(3, out _), "the second analysed contact falls inside a motion gap");
+        var surface = LandingReplaySurface.Build(track, null);
+        var baselineGear = new ReplayLandingGear();
+        var baseline = new ReplayGearRegistration(baselineGear, track, surface, 0);
+        var episodeGear = new ReplayLandingGear();
+        var episode = new ReplayGearRegistration(episodeGear, track, surface, 0,
+            journal: null, contactTimesSeconds: new[] { 0d, 3d });
+        Require(track.TrySample(2.4, out var beforeGap), "last recorded airborne endpoint remains available");
+        baseline.Update(beforeGap); episode.Update(beforeGap);
+        for (var i = 0; i < episodeGear.Legs.Count; i++)
+            Near(episodeGear.Legs[i].Extension, baselineGear.Legs[i].Extension, 1e-8,
+                "a supplied contact inside missing motion cannot introduce a suspension anchor before the gap");
+        Require(episodeGear.Legs.Min(leg => episode.ClearanceAt(leg, beforeGap)) > .5,
+            "a missing future contact does not invent support under an airborne endpoint");
+    }
+
+    private static LandingRecord TwoContacts(double selectedTime)
+    {
+        var record = new LandingRecord();
+        foreach (var time in new[] { -1d, -.5, -.1, .04, .2, .6, 1, 1.2, 1.5, 2, 2.4, 2.9, 3.04, 3.2, 3.6, 4 })
+        {
+            var height = time < .04 ? 5.2 - time * 1.5 : time <= 1 ? 5.14 + (3.2 - 5.14) * (time - .04) / .96 :
+                time <= 2.4 ? 6 : time < 3.2 ? 4.802 - (time - 3) * 1.2 : 3.2;
+            record.Series.Add(new LandingSeriesPoint
+            {
+                TimeSeconds = time - selectedTime, LatitudeDegrees = 42 + time * .0005, LongitudeDegrees = 23,
+                PlaneAltitudeFeet = 1000 + height / .3048, GroundAltitudeFeet = 1000, HeadingTrueDegrees = 0,
+                PitchDegrees = time < 1 ? -5 : time < 3.2 ? -4 : 0,
+                BankDegrees = time < 3.2 ? -1 : 0,
+                OnGround = (time >= .04 && time <= 1) || time >= 3.04,
+            });
+        }
+        return record;
+    }
+
+    private static void EpisodeContactClocksUseSharedSamples()
+    {
+        var first = TwoContacts(0);
+        var second = TwoContacts(3);
+        first.ContactCount = second.ContactCount = 2;
+        second.ContactNumber = 2;
+        second.TimestampUtc = first.TimestampUtc;
+        Near(first.ApproachGateSeconds, second.ApproachGateSeconds, 0,
+            "fixture deliberately shares the default gate instead of using it as an episode clock");
+        LandingReplayTrack.TryCreate(first, out var firstTrack);
+        LandingReplayTrack.TryCreate(second, out var secondTrack);
+        var firstTimes = LandingReplayContacts.ContactTimes(first, firstTrack!, new[] { first, second });
+        var secondTimes = LandingReplayContacts.ContactTimes(second, secondTrack!, new[] { first, second });
+        Require(firstTimes.Count == 2 && secondTimes.Count == 2, "both contact clocks map into either selected scene");
+        Near(firstTimes[0], 0, 1e-10, "selected first contact zero");
+        Near(firstTimes[1], 3, 1e-10, "second contact mapped from identical bracketing pose samples");
+        Near(secondTimes[0], -3, 1e-10, "first contact mapped backwards from the selected second contact");
+        Near(secondTimes[1], 0, 1e-10, "selected second contact zero");
+
+        second.TimestampUtc = first.TimestampUtc.AddMinutes(1);
+        Require(LandingReplayContacts.ContactTimes(first, firstTrack!, new[] { second }).Count == 1,
+            "identical poses from a different episode must not add a contact");
+        second.TimestampUtc = first.TimestampUtc;
+        second.Series.RemoveAll(p => p.TimeSeconds > -.6 && p.TimeSeconds < .2);
+        Require(LandingReplayContacts.ContactTimes(first, firstTrack!, new[] { second }).Count == 1,
+            "a contact zero inside missing motion has no usable clock anchor");
     }
 
     private static LandingRecord Record()
@@ -114,6 +235,124 @@ internal static class ReplayGearRegistrationTests
                 PitchDegrees = t < 2 ? -5 : 0, BankDegrees = t < 2 ? -1 : 0, OnGround = t >= .05 && t <= 2 });
         }
         return record;
+    }
+
+    private static void FactoryContactClocksSurviveIndependentSampling()
+    {
+        var records = FactoryContacts().Select(RoundTrip).ToArray();
+        foreach (var selected in records)
+        {
+            Near(selected.ApproachGateSeconds, -15, 0, "native fixture uses each contact's fallback window");
+            Require(LandingReplayTrack.TryCreate(selected, out var track), "native factory contact track");
+            var clocks = records.Select(record => record.EstimatedContactTimeSeconds).ToArray();
+            foreach (var record in records) record.EstimatedContactTimeSeconds = null;
+            Require(LandingReplayContacts.ContactTimes(selected, track!, records).Count == 1,
+                "fixture must reproduce independently downsampled contacts with no shared bracketing poses");
+            for (var i = 0; i < records.Length; i++) records[i].EstimatedContactTimeSeconds = clocks[i];
+
+            var times = LandingReplayContacts.ContactTimes(selected, track!, records);
+            Require(times.Count == 2, "original clocks map both native contacts despite downsampling phase mismatch");
+            var gear = new ReplayLandingGear();
+            var registration = new ReplayGearRegistration(gear, track!, LandingReplaySurface.Build(track!, null), 0,
+                contactTimesSeconds: times);
+            foreach (var record in records)
+            {
+                var time = record.EstimatedContactTimeSeconds!.Value - selected.EstimatedContactTimeSeconds!.Value;
+                Require(times.Any(value => Math.Abs(value - time) < 1e-10), "mapped time is the original clock difference");
+                Require(track!.TrySample(time, out var pose), "mapped native contact pose");
+                registration.Update(pose);
+                Near(gear.Legs.Min(leg => registration.ClearanceAt(leg, pose)), 0, 1e-8,
+                    "lowest tyre touches at either native analysed contact");
+            }
+            var bounceTime = 101.8 - selected.EstimatedContactTimeSeconds!.Value;
+            Require(track!.TrySample(bounceTime, out var bounce), "native bounce remains recorded");
+            registration.Update(bounce);
+            Require(gear.Legs.Min(leg => registration.ClearanceAt(leg, bounce)) > .5,
+                "clock mapping does not flatten the recorded bounce");
+        }
+
+        var first = records[0];
+        var second = records[1];
+        LandingReplayTrack.TryCreate(first, out var firstTrack);
+        second.TimestampUtc = first.TimestampUtc.AddMinutes(1);
+        Require(LandingReplayContacts.ContactTimes(first, firstTrack!, records).Count == 1,
+            "clocks do not bypass episode identity");
+        second.TimestampUtc = first.TimestampUtc;
+        second.EstimatedContactTimeSeconds = 10000;
+        Require(LandingReplayContacts.ContactTimes(first, firstTrack!, records).Count == 1,
+            "out-of-track contact clocks must not clamp to an endpoint");
+        second.EstimatedContactTimeSeconds = 103.2;
+        first.Series.RemoveAll(point => point.TimeSeconds > 2.8 && point.TimeSeconds < 3.6);
+        LandingReplayTrack.TryCreate(first, out firstTrack);
+        Require(LandingReplayContacts.ContactTimes(first, firstTrack!, records).Count == 1,
+            "recorded clocks do not bridge missing selected-scene motion");
+    }
+
+    private static void ContactClockSerializationAndInvalidValues()
+    {
+        var legacy = FactoryContacts()[0];
+        legacy.EstimatedContactTimeSeconds = null;
+        var serializer = new DataContractJsonSerializer(typeof(LandingRecordFile));
+        using (var stream = new MemoryStream())
+        {
+            serializer.WriteObject(stream, LandingRecordFile.FromRecord(legacy));
+            Require(!Encoding.UTF8.GetString(stream.ToArray()).Contains("EstimatedContactTimeSeconds"),
+                "older records omit the optional contact clock without migration");
+            stream.Position = 0;
+            Require(((LandingRecordFile)serializer.ReadObject(stream)!).ToRecord().EstimatedContactTimeSeconds == null,
+                "absent legacy contact clock must not become a fabricated zero");
+        }
+        legacy.EstimatedContactTimeSeconds = 0;
+        Require(RoundTrip(legacy).EstimatedContactTimeSeconds == 0, "a real telemetry-clock zero survives serialization");
+
+        var records = FactoryContacts();
+        Require(LandingRepository.CreateSummary(records[0]).EstimatedContactTimeSeconds == 100,
+            "summary copy preserves original contact clock");
+        foreach (var invalid in new[] { double.NaN, double.PositiveInfinity, double.NegativeInfinity, LandingRecord.NonFiniteStorageSentinel })
+        {
+            records[1].EstimatedContactTimeSeconds = invalid;
+            var restored = new[] { records[0], RoundTrip(records[1]) };
+            LandingReplayTrack.TryCreate(restored[0], out var track);
+            Require(LandingReplayContacts.ContactTimes(restored[0], track!, restored).Count == 1,
+                "nonfinite or sentinel contact clocks cannot become scene anchors");
+            var invalidFactory = LandingRecordFactory.Create(new TouchdownResult { EstimatedContactTimeSeconds = invalid },
+                Array.Empty<TelemetrySample>(), "Fixture", "Airplane");
+            if (invalid != LandingRecord.NonFiniteStorageSentinel)
+                Require(invalidFactory.EstimatedContactTimeSeconds == null, "factory does not persist nonfinite contact clocks");
+        }
+    }
+
+    private static LandingRecord RoundTrip(LandingRecord record)
+    {
+        var serializer = new DataContractJsonSerializer(typeof(LandingRecordFile));
+        using var stream = new MemoryStream();
+        serializer.WriteObject(stream, LandingRecordFile.FromRecord(record));
+        stream.Position = 0;
+        var restored = ((LandingRecordFile)serializer.ReadObject(stream)!).ToRecord();
+        Require(restored.FormatVersion == 7, "contact clock remains an optional compatible v7 field");
+        return restored;
+    }
+
+    private static LandingRecord[] FactoryContacts()
+    {
+        var samples = new List<TelemetrySample>();
+        for (var i = 0; i <= 1200; i++)
+        {
+            var time = 80 + i * .02;
+            var height = time < 100 ? 5.2 + (100 - time) * .2 : time < 101 ? 5.2 :
+                time < 102 ? 6.2 : time < 103.20 ? 5.2 + (103.20 - time) * .4 : 5.2;
+            samples.Add(new TelemetrySample
+            {
+                SimulationTimeSeconds = time, LatitudeDegrees = 42 + (time - 80) * .0005, LongitudeDegrees = 23,
+                GroundAltitudeFeet = 1000, PlaneAltitudeFeet = 1000 + height / .3048, AboveGroundLevelFeet = height / .3048,
+                HeadingTrueDegrees = 0, PitchDegrees = -5, BankDegrees = -1, GForce = 1,
+                OnGround = time >= 100 && time <= 101 || time >= 103.20,
+            });
+        }
+        var timestamp = new DateTime(2026, 10, 10, 18, 0, 0, DateTimeKind.Utc);
+        return new[] { 100d, 103.20 }.Select((time, index) => LandingRecordFactory.Create(
+            new TouchdownResult { ContactNumber = index + 1, EstimatedContactTimeSeconds = time, SimulationTimeSeconds = time },
+            samples, "Fixture", "Airplane", contactCount: 2, timestampUtc: timestamp, episodeEndSimulationTimeSeconds: 104)).ToArray();
     }
     private static void Near(double actual, double expected, double tolerance, string message) => Require(Math.Abs(actual - expected) <= tolerance, message + ": " + actual);
     private static void Require(bool value, string message) { if (!value) throw new InvalidOperationException(message); }

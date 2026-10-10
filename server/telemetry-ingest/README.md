@@ -1,7 +1,7 @@
 # Telemetry ingress
 
-The service accepts signed schema-v5/v6 DEBUG RAW captures and explicit
-last-landing bug-report bundles. It is intended to run
+The service accepts signed schema-v5/v6 DEBUG RAW captures, explicit
+last-landing bug-report bundles, and automatic landing telemetry. It is intended to run
 from `/opt/msfs-landing-telemetry` with capture data bind-mounted from
 `/srv/msfs-landing-telemetry/data`.
 
@@ -28,6 +28,30 @@ the conservative compound desktop detector: position must move at flight speed
 while reported horizontal, air, and vertical velocities remain inert.
 Bug-report bundles additionally contain a bounded, validated JSON result for
 the calculated landing, and are marked as `bug_report` in the capture index.
+Automatic landing bundles use the same result format and are marked as
+`automatic_landing`; they may contain no calculated landings so rejected
+contacts remain diagnosable. Both kinds may include `decisions.json`: a
+versioned decision journal tied to the same episode ID. Its envelope and entry
+fields are validated, numerical details must be finite and flat, and it is
+limited to 2,048 entries and 1 MiB expanded. Legacy bundles without a journal
+remain supported.
+
+Journal entries contain `time_seconds`, `component`, `code`, `reason`, and a flat
+numeric `details` object. Analysis/recorder timestamps use the simulator clock.
+Per-contact runway and replay decisions explicitly set
+`details.relative_contact_time=1` and `details.contact_number`; their timestamps
+are relative to that contact. Repeated visual-suspension decisions are aggregated
+over the recorded frames instead of emitting one entry per frame. The top-level
+`truncated` flag indicates the journal's count/size bound was reached. Decision
+logging does not change landing measurements or overwrite historical records.
+Replay-like automatic episodes are retained only when they claim zero
+calculated landings, so the rejection decision can be inspected; replay-like
+archives that claim a landing, and legacy/manual captures, remain rejected.
+
+`/v1/config` advertises `capture_kinds` and `decision_journal_formats` in
+addition to telemetry schemas. Deploy this receiver before enabling the new
+client upload format; clients retain unsupported bundles locally until the
+receiver advertises the required capabilities.
 
 Schema v6 appends five physical controller axes (X/Z/R/U/V) to the v5 prefix;
 the existing Y columns are unchanged. The legacy `telemetry_schema: 5` config

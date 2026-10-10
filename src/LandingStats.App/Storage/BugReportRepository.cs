@@ -22,7 +22,8 @@ internal sealed class BugReportCandidate
         string aircraftType,
         string aircraftModel,
         IReadOnlyList<string> controlInputSources,
-        IReadOnlyList<LandingRecord> records)
+        IReadOnlyList<LandingRecord> records,
+        TelemetryDecisionSnapshot? decisions = null)
     {
         EpisodeId = episodeId;
         Samples = (samples ?? Array.Empty<TelemetrySample>()).ToArray();
@@ -32,6 +33,7 @@ internal sealed class BugReportCandidate
         AircraftModel = aircraftModel ?? string.Empty;
         ControlInputSources = (controlInputSources ?? Array.Empty<string>()).ToArray();
         Records = (records ?? Array.Empty<LandingRecord>()).ToArray();
+        Decisions = decisions;
     }
 
     public long EpisodeId { get; }
@@ -42,6 +44,7 @@ internal sealed class BugReportCandidate
     public string AircraftModel { get; }
     public IReadOnlyList<string> ControlInputSources { get; }
     public IReadOnlyList<LandingRecord> Records { get; }
+    public TelemetryDecisionSnapshot? Decisions { get; }
 }
 
 internal sealed class LastLandingBugReportBuffer
@@ -115,8 +118,6 @@ internal sealed class BugReportRepository
 {
     public const int FormatVersion = 1;
     private readonly string _rootPath;
-    private readonly DataContractJsonSerializer _serializer =
-        new DataContractJsonSerializer(typeof(BugReportPayload));
 
     public BugReportRepository(string rootPath)
     {
@@ -125,20 +126,29 @@ internal sealed class BugReportRepository
             : rootPath;
     }
 
-    public string Create(BugReportCandidate candidate, DateTime timestampUtc)
+    public string RootPath => _rootPath;
+
+    public string Create(BugReportCandidate candidate, DateTime timestampUtc, bool automatic = false) =>
+        CreateCore(candidate, timestampUtc, automatic, long.MaxValue)!;
+
+    internal string? TryCreateAutomatic(BugReportCandidate candidate, DateTime timestampUtc, long maximumArchiveBytes) =>
+        CreateCore(candidate, timestampUtc, true, maximumArchiveBytes);
+
+    private string? CreateCore(BugReportCandidate candidate, DateTime timestampUtc, bool automatic, long maximumArchiveBytes)
     {
         if (candidate == null)
         {
             throw new ArgumentNullException(nameof(candidate));
         }
-        if (candidate.Samples.Count == 0 || candidate.Records.Count == 0)
+        if (candidate.Samples.Count == 0 || (!automatic && candidate.Records.Count == 0))
         {
             throw new InvalidOperationException("A bug report requires telemetry and at least one calculated landing.");
         }
 
         Directory.CreateDirectory(_rootPath);
         var safeTimestamp = timestampUtc.ToUniversalTime().ToString("yyyyMMdd_HHmmss'Z'", CultureInfo.InvariantCulture);
-        var path = Path.Combine(_rootPath, $"{safeTimestamp}_{Guid.NewGuid():N}_bug_raw.zip");
+        var kind = automatic ? "auto" : "bug";
+        var path = Path.Combine(_rootPath, $"{safeTimestamp}_{Guid.NewGuid():N}_{kind}_raw.zip");
         var temporaryPath = path + ".tmp";
         try
         {
@@ -146,10 +156,19 @@ internal sealed class BugReportRepository
             using (var archive = new ZipArchive(file, ZipArchiveMode.Create, false))
             {
                 WriteTelemetry(archive, candidate.Samples);
-                WriteSession(archive, candidate, timestampUtc);
+                WriteSession(archive, candidate, timestampUtc, automatic);
                 WriteResults(archive, candidate, timestampUtc);
+                if (candidate.Decisions != null)
+                    TelemetryDecisionArchive.Write(archive, candidate.EpisodeId, candidate.Decisions);
             }
 
+            if (new FileInfo(temporaryPath).Length > maximumArchiveBytes)
+            {
+                // This diagnostic copy has not been published to the durable
+                // queue. Never remove existing reports to make space for it.
+                File.Delete(temporaryPath);
+                return null;
+            }
             File.Move(temporaryPath, path);
             return path;
         }
@@ -174,7 +193,7 @@ internal sealed class BugReportRepository
         }
     }
 
-    private static void WriteSession(ZipArchive archive, BugReportCandidate candidate, DateTime timestampUtc)
+    private static void WriteSession(ZipArchive archive, BugReportCandidate candidate, DateTime timestampUtc, bool automatic)
     {
         var entry = archive.CreateEntry("session.txt", CompressionLevel.Optimal);
         using var writer = new StreamWriter(entry.Open(), new UTF8Encoding(false), 4096, false);
@@ -184,7 +203,7 @@ internal sealed class BugReportRepository
         writer.WriteLine("source_period=SIM_FRAME");
         writer.WriteLine("sample_policy=retained_landing_episode");
         writer.WriteLine($"sample_count={candidate.Samples.Count.ToString(CultureInfo.InvariantCulture)}");
-        writer.WriteLine("capture_kind=bug_report");
+        writer.WriteLine(automatic ? "capture_kind=automatic_landing" : "capture_kind=bug_report");
         writer.WriteLine($"bug_report_format={FormatVersion.ToString(CultureInfo.InvariantCulture)}");
         writer.WriteLine($"episode_id={candidate.EpisodeId.ToString(CultureInfo.InvariantCulture)}");
         writer.WriteLine($"landing_count={candidate.Records.Count.ToString(CultureInfo.InvariantCulture)}");
@@ -209,7 +228,7 @@ internal sealed class BugReportRepository
         };
         var entry = archive.CreateEntry("landing-results.json", CompressionLevel.Optimal);
         using var output = entry.Open();
-        _serializer.WriteObject(output, payload);
+        new DataContractJsonSerializer(typeof(BugReportPayload)).WriteObject(output, payload);
     }
 
     [DataContract(Name = "bug-report")]

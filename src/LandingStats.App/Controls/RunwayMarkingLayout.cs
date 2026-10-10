@@ -6,6 +6,7 @@ using System.Windows;
 using System.Windows.Media;
 using LandingStats.App.Models;
 using LandingStats.App.Telemetry;
+using LandingStats.Core;
 
 namespace LandingStats.App.Controls;
 
@@ -36,11 +37,13 @@ internal sealed class RunwayMarkingLayout
     internal static readonly double ReferenceApproachDistance = 15.24 / Math.Tan(3 * Math.PI / 180);
     public List<Paint> Shapes { get; } = new List<Paint>();
     public bool UsesFaa { get; private set; }
+    private TelemetryDecisionJournal? _journal;
     public static bool UsesFaaConvention(RunwayFacility runway) => RunwayMarkingConvention.UsesFaa(runway);
 
-    internal static Approach? ResolveApproach(RunwayFacility runway, bool secondary)
+    internal static Approach? ResolveApproach(RunwayFacility runway, bool secondary, TelemetryDecisionJournal? journal = null)
     {
-        if (!runway.HasValidGeometry) return null;
+        if (!runway.HasValidGeometry)
+        { journal?.Record(0, "replay.markings", "invalid_runway", "Guidance cannot be projected without valid runway geometry."); return null; }
         var ils = secondary ? runway.SecondaryIlsGlideSlope : runway.PrimaryIlsGlideSlope;
         if (ils != null && ils.HasValidGeometry)
         {
@@ -55,23 +58,40 @@ internal sealed class RunwayMarkingLayout
                 (ils.AltitudeMeters - runway.AltitudeMeters) / Math.Tan(ils.AngleDegrees * Math.PI / 180);
             if (RunwayNumber.IsFinite(intersection) && intersection >= 0 && intersection < runway.LengthMeters &&
                 Math.Abs(across) <= runway.LengthMeters)
+            {
+                journal?.Record(0, "replay.markings", "ils_selected", "ILS nominal line intersects the runway-altitude plane; this sets aiming-mark start, not the observed touchdown.",
+                    new Dictionary<string, double> { ["secondary"] = secondary ? 1 : 0, ["aiming_from_end_m"] = intersection,
+                        ["angle_deg"] = ils.AngleDegrees, ["altitude_delta_m"] = ils.AltitudeMeters - runway.AltitudeMeters });
                 return new Approach(intersection, true);
+            }
+            journal?.Record(0, "replay.markings", "ils_intersection_rejected", "ILS intersection lies outside the supported runway bounds; trying PAPI.",
+                new Dictionary<string, double> { ["secondary"] = secondary ? 1 : 0, ["intersection_m"] = intersection, ["across_m"] = across });
         }
+        else if (ils != null) journal?.Record(0, "replay.markings", "invalid_ils", "ILS geometry is invalid; trying PAPI.", new Dictionary<string, double> { ["secondary"] = secondary ? 1 : 0 });
         var papi = secondary ? runway.SecondaryPapi : runway.PrimaryPapi;
         if ((secondary ? runway.SecondaryPapiQueried : runway.PrimaryPapiQueried) &&
             papi != null && papi.HasValidGeometry(runway.LengthMeters))
+        {
             // The API has no optical elevation. The explicit PAPI fallback is
             // nominal/coplanar, NOT a measured intersection or an invented lamp height.
+            journal?.Record(0, "replay.markings", "papi_coplanar_fallback", "Optical elevation is unavailable; approved coplanar approximation uses PAPI station as aiming-mark start.",
+                new Dictionary<string, double> { ["secondary"] = secondary ? 1 : 0, ["aiming_from_end_m"] = papi.StationFromEndMeters });
             return new Approach(papi.StationFromEndMeters, false);
+        }
+        journal?.Record(0, "replay.markings", "no_usable_guidance", "No usable ILS or queried valid PAPI; omit threshold, aiming and touchdown-zone markings for this end.",
+            new Dictionary<string, double> { ["secondary"] = secondary ? 1 : 0 });
         return null;
     }
 
-    public static RunwayMarkingLayout Build(RunwayFacility runway)
+    public static RunwayMarkingLayout Build(RunwayFacility runway, TelemetryDecisionJournal? journal = null)
     {
-        var result = new RunwayMarkingLayout { UsesFaa = UsesFaaConvention(runway) };
-        if (!runway.HasValidGeometry || !runway.HasPaintedSurface || runway.WidthMeters <= 6 || runway.LengthMeters < 180) return result;
-        var primary = ResolveApproach(runway, false);
-        var secondary = ResolveApproach(runway, true);
+        var result = new RunwayMarkingLayout { UsesFaa = UsesFaaConvention(runway), _journal = journal };
+        journal?.Record(0, "replay.markings", "regional_convention", result.UsesFaa ? "FAA dimensions and glyphs selected from facility region/ICAO family." : "ICAO dimensions and glyphs selected from facility region/ICAO family.",
+            new Dictionary<string, double> { ["faa"] = result.UsesFaa ? 1 : 0, ["length_m"] = runway.LengthMeters, ["width_m"] = runway.WidthMeters });
+        if (!runway.HasValidGeometry || !runway.HasPaintedSurface || runway.WidthMeters <= 6 || runway.LengthMeters < 180)
+        { journal?.Record(0, "replay.markings", "paint_unavailable", "Runway geometry, surface or dimensions do not support painted markings."); return result; }
+        var primary = ResolveApproach(runway, false, journal);
+        var secondary = ResolveApproach(runway, true, journal);
         var half = runway.LengthMeters / 2;
         result.Designation(runway, primary, secondary, false);
         result.Designation(runway, secondary, primary, true);
@@ -88,6 +108,10 @@ internal sealed class RunwayMarkingLayout
                 result.Rectangle("Centerline", start, start + centerlineLength, -centerlineWidth / 2, centerlineWidth / 2, false);
         if (primary != null) result.End(runway, primary, secondary, false);
         if (secondary != null) result.End(runway, secondary, primary, true);
+        journal?.Record(0, "replay.markings", "layout_created", "Runway paint is schematic and independent of recorded touchdown positions.",
+            new Dictionary<string, double> { ["shapes"] = result.Shapes.Count, ["centerline"] = result.Shapes.Count(p => p.Kind == "Centerline"),
+                ["designation"] = result.Shapes.Count(p => p.Kind == "Designation"), ["threshold"] = result.Shapes.Count(p => p.Kind == "Threshold"),
+                ["aiming"] = result.Shapes.Count(p => p.Kind == "Aiming"), ["touchdown_zone"] = result.Shapes.Count(p => p.Kind == "TouchdownZone") });
         return result;
     }
 
@@ -96,7 +120,8 @@ internal sealed class RunwayMarkingLayout
         var name = (secondary ? runway.SecondaryName : runway.PrimaryName)?.Trim().ToUpperInvariant();
         if (name == null || (name.Length != 2 && name.Length != 3) ||
             !int.TryParse(name.Substring(0, 2), NumberStyles.None, CultureInfo.InvariantCulture, out var number) ||
-            number < 1 || number > 36 || (name.Length == 3 && "LRC".IndexOf(name[2]) < 0)) return;
+            number < 1 || number > 36 || (name.Length == 3 && "LRC".IndexOf(name[2]) < 0))
+        { _journal?.Record(0, "replay.markings", "designation_invalid", "Runway designation is missing or not a supported number/suffix.", new Dictionary<string, double> { ["secondary"] = secondary ? 1 : 0 }); return; }
         var half = runway.LengthMeters / 2;
         var threshold = -half + (approach?.ThresholdFromEndMeters ??
             (secondary ? runway.SecondaryThresholdOffsetMeters : runway.PrimaryThresholdOffsetMeters) ?? 0);
@@ -127,7 +152,8 @@ internal sealed class RunwayMarkingLayout
             var from = nominalStart + (nominalHeight - bounds.Bottom) * scale;
             var length = bounds.Height * scale;
             var width = bounds.Width * scale;
-            if (from < -half || from + length > Math.Min(half, (threshold + farThreshold) / 2)) return;
+            if (from < -half || from + length > Math.Min(half, (threshold + farThreshold) / 2))
+            { _journal?.Record(0, "replay.markings", "designation_clipped", "Designation would cross pavement or reciprocal-end limits.", new Dictionary<string, double> { ["secondary"] = secondary ? 1 : 0 }); return; }
             Rectangle("Designation", from, from + length, -width / 2, width / 2, secondary);
             Shapes[Shapes.Count - 1].Text = text;
             Shapes[Shapes.Count - 1].Glyph = outline;
@@ -143,7 +169,11 @@ internal sealed class RunwayMarkingLayout
         var threshold = -half + approach.ThresholdFromEndMeters;
         var oppositeThreshold = half - (opposite?.ThresholdFromEndMeters ?? 0);
         var between = oppositeThreshold - threshold;
-        if (between <= 0) return;
+        if (between <= 0)
+        { _journal?.Record(0, "replay.markings", "thresholds_overlap", "No positive usable distance remains between reconstructed thresholds.", new Dictionary<string, double> { ["secondary"] = secondary ? 1 : 0 }); return; }
+        _journal?.Record(0, "replay.markings", "threshold_reconstructed", "Product convention: subtract the distance corresponding to 50 ft at 3 degrees from aiming-mark start.",
+            new Dictionary<string, double> { ["secondary"] = secondary ? 1 : 0, ["aiming_from_end_m"] = approach.AimingFromEndMeters,
+                ["threshold_from_end_m"] = approach.ThresholdFromEndMeters, ["reference_distance_m"] = ReferenceApproachDistance });
         // Geometric usable pavement, not declared LDA. Retain the inferred
         // threshold coordinate even if it is outside the footprint; never shift
         // the lattice to make a questionable scenery reference appear correct.
@@ -208,9 +238,17 @@ internal sealed class RunwayMarkingLayout
             var from = threshold + slots[i];
             var to = from + barLength;
             var clear = Math.Max(aiming - slots[i] - barLength, slots[i] - aiming - aimingLength);
-            if (clear <= (UsesFaa ? 48.768 : 50) || from < -half || to > tdzLimit) continue;
+            if (clear <= (UsesFaa ? 48.768 : 50) || from < -half || to > tdzLimit)
+            {
+                _journal?.Record(0, "replay.markings", "tdz_row_omitted", clear <= (UsesFaa ? 48.768 : 50) ? "Touchdown-zone row overlaps aiming-mark exclusion clearance." : "Touchdown-zone row crosses runway or reciprocal-pattern limits.",
+                    new Dictionary<string, double> { ["secondary"] = secondary ? 1 : 0, ["distance_from_threshold_m"] = slots[i] });
+                continue;
+            }
             rows.Add(i);
         }
+        _journal?.Record(0, "replay.markings", "tdz_pattern", "Touchdown-zone rows selected using regional spacing, usable runway length and reciprocal clearance.",
+            new Dictionary<string, double> { ["secondary"] = secondary ? 1 : 0, ["pattern_b"] = patternB ? 1 : 0,
+                ["length_for_count_m"] = lengthForCount, ["candidate_rows"] = pairCount, ["retained_rows"] = rows.Count });
         foreach (var i in rows)
         {
             // EASA GM1 L.545(a): the last retained pair is one stripe per side.

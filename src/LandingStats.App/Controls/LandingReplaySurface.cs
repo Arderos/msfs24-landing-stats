@@ -5,6 +5,7 @@ using System.Windows;
 using System.Windows.Media;
 using System.Windows.Media.Media3D;
 using LandingStats.App.Models;
+using LandingStats.Core;
 
 namespace LandingStats.App.Controls;
 
@@ -26,11 +27,12 @@ internal sealed class LandingReplaySurface
     public MeshGeometry3D Markings { get; } = new MeshGeometry3D();
     public List<GeometryModel3D> Designations { get; } = new List<GeometryModel3D>();
 
-    public static LandingReplaySurface Build(LandingReplayTrack track, RunwayFacility? runway)
+    public static LandingReplaySurface Build(LandingReplayTrack track, RunwayFacility? runway, TelemetryDecisionJournal? journal = null)
     {
         var result = new LandingReplaySurface();
         var profile = runway != null && runway.HasValidGeometry && !runway.IsWater
-            ? new RunwayProfile(track, runway) : null;
+            ? new RunwayProfile(track, runway, journal) : null;
+        if (profile == null) journal?.Record(0, "replay.surface", "observed_ground_only", "No valid non-water runway geometry; render only the neutral observed-ground strip.");
         result._profile = profile;
         var sides = new Vector3D[track.Frames.Count];
         for (var i = 0; i < sides.Length; i++)
@@ -60,7 +62,7 @@ internal sealed class LandingReplaySurface
             var stations = new[] { -profile.HalfLength, profile.HalfLength }.Concat(profile.Stations).Distinct().OrderBy(s => s).ToArray();
             for (var i = 1; i < stations.Length; i++)
                 Strip(result.Pavement, profile, stations[i - 1], stations[i], profile.HalfWidth, 0);
-            foreach (var paint in RunwayMarkingLayout.Build(runway!).Shapes)
+            foreach (var paint in RunwayMarkingLayout.Build(runway!, journal).Shapes)
             {
                 var start = paint.Points.Min(p => p.Y); var end = paint.Points.Max(p => p.Y);
                 var left = paint.Points.Min(p => p.X); var right = paint.Points.Max(p => p.X);
@@ -92,6 +94,9 @@ internal sealed class LandingReplaySurface
             }
         }
         result.IndexTerrainHeights();
+        journal?.Record(0, "replay.surface", "surface_created", "Terrain is clipped around the runway footprint; paint shares the observed pavement profile with a small visual lift.",
+            new Dictionary<string, double> { ["terrain_triangles"] = result.Terrain.TriangleIndices.Count / 3,
+                ["pavement_triangles"] = result.Pavement.TriangleIndices.Count / 3, ["marking_lift_m"] = MarkingLiftMeters });
         return result;
     }
 
@@ -247,7 +252,7 @@ internal sealed class LandingReplaySurface
         public double HalfWidth { get; }
         public IEnumerable<double> Stations => _samples.Select(p => p.Station);
 
-        public RunwayProfile(LandingReplayTrack track, RunwayFacility runway)
+        public RunwayProfile(LandingReplayTrack track, RunwayFacility runway, TelemetryDecisionJournal? journal)
         {
             _center = track.ProjectGeo(runway.LatitudeDegrees, runway.LongitudeDegrees, runway.AltitudeMeters / LandingReplayTrack.FeetToMeters);
             var angle = runway.HeadingTrueDegrees * Math.PI / 180;
@@ -262,6 +267,9 @@ internal sealed class LandingReplaySurface
                 .GroupBy(p => Math.Round(p.Station, 3))
                 .Select(g => (Station: g.Average(p => p.Station), Height: g.Select(p => p.Height).OrderBy(h => h).ElementAt(g.Count() / 2)))
                 .OrderBy(p => p.Station).ToArray();
+            journal?.Record(0, "replay.surface", _samples.Length == 0 ? "facility_altitude_fallback" : "observed_runway_profile",
+                _samples.Length == 0 ? "No ground samples lie inside the runway footprint; use facility altitude." : "Runway height follows observed ground stations; unobserved ends keep endpoint height, without lateral slope inference.",
+                new Dictionary<string, double> { ["stations"] = _samples.Length, ["width_m"] = runway.WidthMeters, ["length_m"] = runway.LengthMeters });
         }
 
         public Point3D At(double station, double lateral, double lift)

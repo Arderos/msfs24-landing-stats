@@ -48,7 +48,9 @@ internal sealed class LandingEpisodeEventArgs : EventArgs
         string aircraftType,
         string aircraftModel,
         IReadOnlyList<AirportFacility> airportFacilities,
-        IReadOnlyList<string> controlInputSources)
+        IReadOnlyList<string> controlInputSources,
+        TelemetryDecisionJournal? decisionJournal = null,
+        Task<IReadOnlyList<RunwayFacility>>? runwayFacilitiesTask = null)
     {
         EpisodeId = episodeId;
         Samples = samples;
@@ -58,6 +60,8 @@ internal sealed class LandingEpisodeEventArgs : EventArgs
         AircraftModel = aircraftModel;
         AirportFacilities = airportFacilities;
         ControlInputSources = controlInputSources;
+        DecisionJournal = decisionJournal;
+        RunwayFacilitiesTask = runwayFacilitiesTask ?? Task.FromResult<IReadOnlyList<RunwayFacility>>(Array.Empty<RunwayFacility>());
     }
 
     public long EpisodeId { get; }
@@ -75,6 +79,10 @@ internal sealed class LandingEpisodeEventArgs : EventArgs
     public IReadOnlyList<AirportFacility> AirportFacilities { get; }
 
     public IReadOnlyList<string> ControlInputSources { get; }
+
+    public TelemetryDecisionJournal? DecisionJournal { get; }
+
+    public Task<IReadOnlyList<RunwayFacility>> RunwayFacilitiesTask { get; }
 }
 
 internal sealed class LandingEpisodeStartedEventArgs : EventArgs
@@ -164,7 +172,6 @@ internal sealed partial class SimConnectLandingRecorder : IDisposable
     private const double MaximumApproachSeconds = 300.0;
     private const double FullTelemetryEnableAglFeet = 3000.0;
     private const double FullTelemetryDisableAglFeet = 3500.0;
-    private const double AirportCacheMaximumDistanceNauticalMiles = 20.0;
     private const int PreRollMaximumSamples = 4096;
     private const int EpisodeMaximumSamples = 65536;
     private static readonly TimeSpan JoystickRefreshInterval = TimeSpan.FromSeconds(5);
@@ -185,6 +192,9 @@ internal sealed partial class SimConnectLandingRecorder : IDisposable
 
     private SimConnect? _simConnect;
     private List<TelemetrySample>? _episodeSamples;
+    private TelemetryDecisionJournal? _episodeDecisionJournal;
+    private int _episodeCoalescedFrameCount;
+    private int _episodeNonMotionFrameCount;
     private bool _rawDebugEnabled;
     private DateTime _lastConnectAttemptUtc = DateTime.MinValue;
     private DateTime _nextJoystickRefreshUtc = DateTime.MinValue;
@@ -207,6 +217,10 @@ internal sealed partial class SimConnectLandingRecorder : IDisposable
     private bool _recoverStatusAfterFrame;
     private bool _fullTelemetryEnabled;
     private bool _airportFacilityRequestPending;
+    private uint _nextAirportFacilityRequestId = 0x30000000;
+    private uint _airportFacilityRequestId;
+    private uint? _airportFacilityRequestPacket;
+    private double _airportFacilityRequestDeadline;
     private bool _replayActive;
     private bool? _aircraftOnGround;
     private bool _disposed;
@@ -348,7 +362,7 @@ internal sealed partial class SimConnectLandingRecorder : IDisposable
         _connectionCancellation.Dispose();
         if (_lastContactTime.HasValue)
         {
-            CompleteEpisode(false);
+            CompleteEpisodeWithReason("recorder_disposed", false);
         }
 
         if (_rawDebugEnabled)
@@ -513,12 +527,19 @@ internal sealed partial class SimConnectLandingRecorder : IDisposable
 
     private void OnRecvQuit(SimConnect sender, SIMCONNECT_RECV data)
     {
+        _episodeDecisionJournal?.Record(_lastSimulationTime, "recorder", "simulator_exit",
+            "Simulator exit notification received; finish the recorded contact before disconnecting.");
         Disconnect();
         SimulatorExited?.Invoke(this, EventArgs.Empty);
     }
 
     private void OnRecvException(SimConnect sender, SIMCONNECT_RECV_EXCEPTION data)
     {
+        if (ReferenceEquals(sender, _simConnect) && _airportFacilityRequestPending && data.dwSendID == _airportFacilityRequestPacket)
+        {
+            CompleteAirportLookupFailure("Simulator rejected the fresh airport-list request.");
+            return;
+        }
         if (HandleRunwayException(sender, data.dwSendID)) return;
         var operation = _simConnectOperations.TryGetValue(data.dwSendID, out var value)
             ? $" · {value}"
@@ -549,7 +570,7 @@ internal sealed partial class SimConnectLandingRecorder : IDisposable
         {
             if (_lastContactTime.HasValue)
             {
-                CompleteEpisode(false);
+                CompleteEpisodeWithReason("replay_started", false);
             }
             else
             {
@@ -583,7 +604,7 @@ internal sealed partial class SimConnectLandingRecorder : IDisposable
 
     private void OnRecvAirportList(SimConnect sender, SIMCONNECT_RECV_AIRPORT_LIST data)
     {
-        if ((Requests)data.dwRequestID != Requests.Airports)
+        if (!ReferenceEquals(sender, _simConnect) || !_airportFacilityRequestPending || data.dwRequestID != _airportFacilityRequestId)
         {
             return;
         }
@@ -627,6 +648,11 @@ internal sealed partial class SimConnectLandingRecorder : IDisposable
 
             _pendingAirportFacilities = null;
             _airportFacilityRequestPending = false;
+            _airportFacilityRequestPacket = null;
+            _runwayAwaitingAirportFacilities = false;
+            _runwayDecisionJournal?.Record(_runwayDecisionTime, "runway.airports", "fresh_list_ready",
+                "This episode's runway lookup uses a freshly completed simulator airport list, not the persisted cache.",
+                new Dictionary<string, double> { ["airports"] = _airportFacilities.Count });
             AirportFacilitiesUpdated?.Invoke(
                 this,
                 new AirportFacilitiesEventArgs(new List<AirportFacility>(_airportFacilities.Values)));
@@ -688,7 +714,7 @@ internal sealed partial class SimConnectLandingRecorder : IDisposable
         {
             if (_lastContactTime.HasValue)
             {
-                CompleteEpisode();
+                CompleteEpisodeWithReason("simulation_time_reversed");
             }
             else
             {
@@ -726,6 +752,13 @@ internal sealed partial class SimConnectLandingRecorder : IDisposable
         if (isContact)
         {
             _lastContactTime = sampleTime;
+            _episodeDecisionJournal?.Record(sampleTime, "recorder", "contact_flag_transition",
+                "Observed an airborne-to-ground flag transition; restart post-contact capture from this contact.",
+                new Dictionary<string, double>
+                {
+                    ["post_contact_seconds"] = PostContactSeconds,
+                    ["vertical_velocity_fps"] = sample.VelocityWorldYFps
+                });
             SetStatus(RecorderState.Recording, "Recorder.ContactRollout");
         }
 
@@ -735,7 +768,7 @@ internal sealed partial class SimConnectLandingRecorder : IDisposable
         {
             if (_lastContactTime.HasValue)
             {
-                CompleteEpisode();
+                CompleteEpisodeWithReason("episode_sample_limit");
             }
             else
             {
@@ -748,7 +781,7 @@ internal sealed partial class SimConnectLandingRecorder : IDisposable
 
         if (_episodeSamples != null && _lastContactTime.HasValue && sampleTime - _lastContactTime.Value >= PostContactSeconds)
         {
-            CompleteEpisode();
+            CompleteEpisodeWithReason("post_contact_capture_complete");
         }
         else if (_episodeSamples != null && !_lastContactTime.HasValue &&
                  sample.AboveGroundLevelFeet >= GoAroundResetAglFeet && sample.VelocityWorldYFps > 0)
@@ -789,6 +822,21 @@ internal sealed partial class SimConnectLandingRecorder : IDisposable
         _episodeStartTime = TimeOf(trigger);
         _lastContactTime = null;
         _armed = false;
+        _episodeDecisionJournal = new TelemetryDecisionJournal();
+        _episodeCoalescedFrameCount = 0;
+        _episodeNonMotionFrameCount = trigger.MotionSimulation ? 0 : 1;
+        _episodeDecisionJournal.Record(_episodeStartTime, "recorder",
+            contactTriggered ? "capture_started_at_contact" : "capture_started_at_approach_gate",
+            contactTriggered ? "Started capture from an observed contact, retaining the available pre-roll."
+                : "Started capture on the descending, airborne approach gate, retaining the available pre-roll.",
+            new Dictionary<string, double>
+            {
+                ["pre_roll_sample_count"] = _episodeSamples.Count,
+                ["agl_feet"] = trigger.AboveGroundLevelFeet,
+                ["vertical_velocity_fps"] = trigger.VelocityWorldYFps,
+                ["gate_agl_feet"] = CaptureStartAglFeet,
+                ["gate_descent_fps"] = CaptureStartDescentFps
+            });
         EpisodeStarted?.Invoke(this, new LandingEpisodeStartedEventArgs(_activeEpisodeId));
         if (_simConnect != null)
         {
@@ -807,6 +855,8 @@ internal sealed partial class SimConnectLandingRecorder : IDisposable
             return;
         }
 
+        if (!sample.MotionSimulation && _episodeNonMotionFrameCount < int.MaxValue) _episodeNonMotionFrameCount++;
+
         if (_episodeSamples.Count > 0 &&
             Math.Abs(TimeOf(_episodeSamples[_episodeSamples.Count - 1]) - TimeOf(sample)) <= 0.000000001)
         {
@@ -814,6 +864,7 @@ internal sealed partial class SimConnectLandingRecorder : IDisposable
             // newest state for that instant instead of retaining an unbounded run
             // of physically identical timestamps.
             _episodeSamples[_episodeSamples.Count - 1] = sample;
+            if (_episodeCoalescedFrameCount < int.MaxValue) _episodeCoalescedFrameCount++;
             return;
         }
 
@@ -824,7 +875,9 @@ internal sealed partial class SimConnectLandingRecorder : IDisposable
     {
         var samples = _episodeSamples;
         var episodeId = _activeEpisodeId;
+        var decisionJournal = _episodeDecisionJournal;
         _episodeSamples = null;
+        _episodeDecisionJournal = null;
         _activeEpisodeId = 0;
         _lastContactTime = null;
         _armed = true;
@@ -834,9 +887,20 @@ internal sealed partial class SimConnectLandingRecorder : IDisposable
             return;
         }
 
+        decisionJournal?.Record(TimeOf(samples[samples.Count - 1]), "recorder", "capture_completed",
+            "Completed capture; same-time deliveries kept only their latest state. Non-motion observations are counted, not silently discarded.",
+            new Dictionary<string, double>
+            {
+                ["retained_sample_count"] = samples.Count,
+                ["same_time_frames_coalesced"] = _episodeCoalescedFrameCount,
+                ["non_motion_frames_observed_after_start"] = _episodeNonMotionFrameCount
+            });
+
         // Clear the previous scenery snapshot before an analysis callback can
         // observe it; even a disconnect-completed episode must not inherit it.
         BeginRunwayEpisode(episodeId);
+        _runwayDecisionJournal = decisionJournal;
+        _runwayDecisionTime = TimeOf(samples[samples.Count - 1]);
         EpisodeCompleted?.Invoke(
             this,
             new LandingEpisodeEventArgs(
@@ -847,20 +911,26 @@ internal sealed partial class SimConnectLandingRecorder : IDisposable
                 _aircraftType,
                 _aircraftModel,
                 new List<AirportFacility>(_airportFacilities.Values),
-                ControlInputSources()));
+                ControlInputSources(),
+                decisionJournal: decisionJournal,
+                runwayFacilitiesTask: _runwaySnapshotCompletion?.Task));
 
-        if (refreshAirportFacilities && _simConnect != null && !_disposed && ShouldRefreshAirportFacilities(samples))
-        {
-            RequestAirportFacilities(_simConnect);
-        }
         if (refreshAirportFacilities && _simConnect != null && !_disposed) RequestEpisodeRunways(samples);
     }
 
     private void DiscardEpisode()
     {
         _episodeSamples = null;
+        _episodeDecisionJournal = null;
         _activeEpisodeId = 0;
         _lastContactTime = null;
+    }
+
+    private void CompleteEpisodeWithReason(string reason, bool refreshAirportFacilities = true)
+    {
+        _episodeDecisionJournal?.Record(_lastSimulationTime, "recorder", reason,
+            "This condition ended the capture; existing samples are passed to landing analysis.");
+        CompleteEpisode(refreshAirportFacilities);
     }
 
     private void AddToPreRoll(TelemetrySample sample)
@@ -917,33 +987,6 @@ internal sealed partial class SimConnectLandingRecorder : IDisposable
         }
     }
 
-    private bool ShouldRefreshAirportFacilities(IReadOnlyList<TelemetrySample> samples)
-    {
-        if (_airportFacilityRequestPending || _airportFacilities.Count == 0)
-        {
-            return !_airportFacilityRequestPending;
-        }
-
-        for (var index = samples.Count - 1; index >= 0; index--)
-        {
-            var sample = samples[index];
-            if (double.IsNaN(sample.LatitudeDegrees) || double.IsInfinity(sample.LatitudeDegrees) ||
-                double.IsNaN(sample.LongitudeDegrees) || double.IsInfinity(sample.LongitudeDegrees))
-            {
-                continue;
-            }
-
-            var nearest = AirportResolver.FindNearest(
-                sample.LatitudeDegrees,
-                sample.LongitudeDegrees,
-                new List<AirportFacility>(_airportFacilities.Values),
-                out var distanceNauticalMiles);
-            return nearest == null || distanceNauticalMiles > AirportCacheMaximumDistanceNauticalMiles;
-        }
-
-        return false;
-    }
-
     private static bool ShouldStartEpisode(TelemetrySample sample)
     {
         return sample.MotionSimulation &&
@@ -957,7 +1000,7 @@ internal sealed partial class SimConnectLandingRecorder : IDisposable
     {
         if (_lastContactTime.HasValue)
         {
-            CompleteEpisode(false);
+            CompleteEpisodeWithReason("connection_closed", false);
         }
         else
         {
@@ -1283,11 +1326,16 @@ internal sealed partial class SimConnectLandingRecorder : IDisposable
         }
 
         _airportFacilityRequestPending = true;
+        _pendingAirportFacilities = null;
+        _airportFacilityRequestId = _nextAirportFacilityRequestId++;
+        _airportFacilityRequestPacket = null;
+        _airportFacilityRequestDeadline = _hostClock.Elapsed.TotalSeconds + 10;
         try
         {
             connection.RequestFacilitiesList_EX1(
                 SIMCONNECT_FACILITY_LIST_TYPE.AIRPORT,
-                Requests.Airports);
+                (Requests)_airportFacilityRequestId);
+            _airportFacilityRequestPacket = connection.GetLastSentPacketID();
         }
         catch
         {

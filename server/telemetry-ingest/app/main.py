@@ -24,7 +24,7 @@ from .security import (
     verify_signature,
 )
 from .store import InstallationRegistryFullError, Store
-from .validation import validate_capture
+from .validation import CAPTURE_KINDS, DECISION_JOURNAL_FORMAT_VERSION, validate_capture
 
 
 DATA_ROOT = Path(os.environ.get("DATA_ROOT", "/data"))
@@ -137,6 +137,8 @@ def config() -> dict[str, object]:
         "registration_mode": REGISTRATION_MODE,
         "telemetry_schema": 5,
         "telemetry_schemas": list(EXPECTED_HEADERS),
+        "capture_kinds": list(CAPTURE_KINDS),
+        "decision_journal_formats": [DECISION_JOURNAL_FORMAT_VERSION],
         "max_upload_bytes": MAX_UPLOAD_BYTES,
     }
 

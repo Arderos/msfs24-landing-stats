@@ -148,6 +148,8 @@
 
     <system:String x:Key="Settings.Title">НАСТРОЙКИ</system:String>
     <system:String x:Key="Settings.Language">ЯЗЫК</system:String>
+    <system:String x:Key="Settings.TelemetryToggle">Автоматически отправлять диагностическую телеметрию</system:String>
+    <system:String x:Key="Settings.TelemetryBody">Отправляет исходные данные посадки, положение самолёта, ввод контроллеров и решения алгоритмов на сервер Landing Stats для диагностики. Включено по умолчанию; здесь можно отключить.</system:String>
     <system:String x:Key="Settings.LanguageBody">Изменяет язык всего интерфейса, формат дат и чисел. Автоматический режим следует пользовательской локали Windows; для неподдерживаемых локалей используется английский.</system:String>
     <system:String x:Key="Settings.Automatic">АВТОМАТИЧЕСКИ</system:String>
     <system:String x:Key="Settings.English">ENGLISH</system:String>

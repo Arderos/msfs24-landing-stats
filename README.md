@@ -63,7 +63,7 @@ data handling.
 - All available physical joystick axes, including separate pedal devices, shown
   independently from simulator commands. Legacy raw pitch-source matching is
   retained; an axis name never implies a particular simulator binding.
-- One-click bug reports that securely bundle the last landing telemetry with
+- Automatic diagnostic reports (switchable in Settings) that securely bundle landing telemetry with
   its calculated results; no full-flight recording mode is exposed in the UI.
 - Compact local landing history containing only the data used by the dashboard.
 - Optional Google Drive backup for saved landings, language, and the MSFS 2024
@@ -147,15 +147,16 @@ Landing records are stored under:
 %LOCALAPPDATA%\MSFS Landing Stats\Landings
 ```
 
-Ordinary landing records are never uploaded automatically. Removing a landing
-from the local history removes its compact stored record.
+Saved history stays local unless Google Drive backup is enabled. Removing a
+landing from the local history removes its compact stored record.
 
-After a landing is analyzed, the app retains that one episode's telemetry in
-memory until the next landing sequence starts. A **Report bug** button appears
-only while that telemetry and its calculated landing result are available.
-Pressing it explicitly creates and securely queues a ZIP containing both; no
-background bug report is created, and beginning the next approach discards the
-unsubmitted in-memory telemetry.
+Diagnostic telemetry is uploaded automatically by default. Settings can disable
+it; automatic uploads are silent and the **Report bug** button is hidden while
+they are enabled. Each archive contains `telemetry.csv`, `session.txt`,
+`landing-results.json`, and `decisions.json`: raw recorded samples, calculated
+results, and a bounded journal of the analyzer and 3D reconstruction decisions.
+With automatic reporting disabled, the latest episode is retained in memory
+until the next approach and can be submitted explicitly with **Report bug**.
 
 Bug reporting registers an anonymous random installation ID and
 Windows-protected public key automatically. No hardware UUID is collected.
@@ -170,8 +171,12 @@ and deletes a queue copy only after the server accepts it. Failed reports remain
 local for automatic retry. Existing RAW diagnostic captures left by older builds
 use the same retry queue only when that user had previously consented to
 diagnostic uploads, and may resume automatically at startup. A previous refusal
-remains in force and causes no network request. On a new installation, the
-uploader stays inactive until **Report bug** is pressed.
+remains in force for those legacy files. New automatic capture applies to new
+landing episodes. Opting out stops both new automatic reports and previously
+consented legacy RAW retries; explicit manual bug reports remain independent.
+Opting back in resumes eligible reports. The automatic queue is bounded to 128 archives / 256 MiB (including
+quarantined files); a full queue skips new diagnostic copies, not saved landings.
+New-format reports remain queued until the server advertises support.
 
 The receiver accepts signed, automatically enrolled installations and exact
 schema-v5/v6 archives, including user-initiated bug-report bundles with calculated

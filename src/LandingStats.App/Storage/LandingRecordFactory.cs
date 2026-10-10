@@ -45,6 +45,7 @@ public static class LandingRecordFactory
             Runway = runway,
             ContactNumber = result.ContactNumber,
             ContactCount = contactCount,
+            EstimatedContactTimeSeconds = FiniteImpactValue(result.EstimatedContactTimeSeconds),
             InertialFpm = result.InertialVerticalFpm,
             SurfaceFpm = result.LatchedNormalFpm,
             SurfaceDeltaFpm = result.SurfaceRelativeDeltaFpm,

@@ -2,6 +2,21 @@
 
 All notable changes to MSFS Landing Stats are documented in this file.
 
+## [0.9.0] - 2026-10-10
+
+### Added
+
+- Automatic diagnostic reports with raw landing telemetry and an analysis and 3D reconstruction decision log. Enabled by default; can be disabled in Settings to use manual bug reporting instead.
+
+### Improved
+
+- Settings now use the application's scrollbar style and close when clicking outside the panel.
+
+### Fixed
+
+- Align the replay aircraft's landing gear with every contact in a multi-contact landing, preserving the recorded trajectory and bounces.
+- Prevent stale airport data from assigning a nearby airport and leaving the runway missing in 3D reconstruction.
+
 ## [0.8.9] - 2026-10-06
 
 ### Fixed

@@ -41,7 +41,11 @@ internal static class Program
         _ = new System.Windows.Application();
         LocalizationManager.Apply("en");
 
+        Run("automatic report lifetime preserves shutdown captures and honors later opt-out", EpisodeReportLifecycleRegressionTests.RunAll);
+        Run("telemetry decisions record actual branches and stay capture-local and bounded", TelemetryDecisionJournalRegressionTests.RunAll);
         Run("deduplicator keeps the last same-time frame", DeduplicatorKeepsLastFrame);
+        Run("automatic telemetry defaults migrate and serialize correctly", AutomaticTelemetrySettingsRegressionTests.RunAll);
+        Run("3D reconstruction decisions are captured without opening its view", ReplayDecisionJournalTests.RunAll);
         Run("recorder connection retries never block the UI dispatcher", RecorderConnectionRegressionTests.RunAll);
         Run("hidden replay defers visual work and restores the latest selection", ReplayVisibilityRegressionTests.RunAll);
         Run("airport metadata persistence is asynchronous, ordered, and deletion safe", AirportMetadataPersistenceRegressionTests.RunAll);
@@ -81,6 +85,15 @@ internal static class Program
         Run("corrupt telemetry identity does not fault the upload worker", CorruptTelemetryIdentityDoesNotFaultWorker);
         Run("telemetry enqueue is safe during disposal", TelemetryEnqueueIsSafeDuringDisposal);
         Run("permanently rejected telemetry is quarantined once", PermanentlyRejectedTelemetryIsQuarantined);
+        Run("automatic reports are silent and do not consent to legacy captures", AutomaticTelemetryUploadRegressionTests.AutomaticReportsAreSilentAndDoNotConsentToLegacy);
+        Run("automatic opt-out overrides legacy consent without blocking manual reports", AutomaticTelemetryUploadRegressionTests.DisabledAutomaticReportsRemainSeparateFromConsentedLegacyAndManual);
+        Run("automatic opt-out cancels upload and preserves manual reporting", AutomaticTelemetryUploadRegressionTests.OptOutCancelsAutomaticUploadButNotManualReports);
+        Run("automatic opt-out cancels consented legacy RAW but preserves manual reporting", AutomaticTelemetryUploadRegressionTests.OptOutCancelsConsentedLegacyUploadButNotManualReports);
+        Run("automatic opt-out cancels automatic-only enrollment", AutomaticTelemetryUploadRegressionTests.OptOutCancelsAutomaticEnrollment);
+        Run("rapid automatic opt-out and opt-in cannot lose a pending retry", AutomaticTelemetryUploadRegressionTests.RapidOptOutAndInPreservesRequestedRetry);
+        Run("old receivers defer new report formats until capability is deployed", AutomaticTelemetryUploadRegressionTests.OldReceiverDefersNewArchivesUntilCapabilityIsAvailable);
+        Run("automatic request timeouts retry silently without terminating uploader", AutomaticTelemetryUploadRegressionTests.AutomaticTimeoutRetriesSilently);
+        Run("offline automatic archive queue is bounded without deleting reports", AutomaticTelemetryArchiveRegressionTests.RunAll);
         Run("updater accepts a signed manifest and rejects tampering", UpdaterVerifiesSignedManifest);
         Run("updater accepts the issued format-2 manifest shape", UpdaterAcceptsIssuedManifestShape);
         Run("updater accepts the format-3 single executable manifest shape", UpdaterAcceptsSingleExecutableManifestShape);
@@ -125,6 +138,7 @@ internal static class Program
         Run("landing index reconciles committed details after an interrupted save", LandingIndexReconcilesCommittedDetails);
         Run("landing filenames are culture invariant", LandingFilenamesAreCultureInvariant);
         Run("airport cache is never overwritten after a transient read failure", AirportCacheSurvivesTransientReadFailure);
+        Run("landing runway lookup waits for fresh airports and rejects stale replies", FreshAirportLookupRegressionTests.RunAll);
         Run("corrupt airport cache is quarantined and rebuilt", CorruptAirportCacheIsRebuilt);
         Run("episode airport snapshots cannot roll back a newer refresh", EpisodeAirportSnapshotKeepsNewerRefresh);
         Run("runway facilities require complete replies and unambiguous recorded track", RunwayFacilityRegressionTests.RunAll);
@@ -1243,6 +1257,7 @@ internal static class Program
             Equal(1, handler.CaptureCount, "only bug report uploaded without legacy consent");
 
             client.AcceptConsent();
+            client.SetAutomaticUploadEnabled(true);
             client.EnqueueExisting();
             Equal(
                 true,
@@ -1274,6 +1289,7 @@ internal static class Program
             var acceptedHandler = new TelemetryEnrollmentFixtureHandler();
             using (var client = new TelemetryUploadClient(acceptedQueue, acceptedHandler, acceptedIdentity))
             {
+                client.SetAutomaticUploadEnabled(true);
                 Equal(true, client.HasEligiblePendingReports(), "consented legacy RAW is startup-eligible");
                 client.PreparePendingReportsUntilReadyAsync(CancellationToken.None).GetAwaiter().GetResult();
                 Equal(
@@ -1291,6 +1307,7 @@ internal static class Program
             var refusedHandler = new TelemetryEnrollmentFixtureHandler();
             using (var client = new TelemetryUploadClient(refusedQueue, refusedHandler, refusedIdentity))
             {
+                client.SetAutomaticUploadEnabled(true);
                 Equal(false, client.HasEligiblePendingReports(), "legacy RAW refusal remains startup-ineligible");
                 client.PreparePendingReportsUntilReadyAsync(CancellationToken.None).GetAwaiter().GetResult();
                 Thread.Sleep(50);
@@ -1564,6 +1581,8 @@ internal static class Program
             WriteTelemetryUploadFixture(capture);
             Environment.SetEnvironmentVariable("MSFS_LANDING_STATS_TELEMETRY_URL", "https://telemetry.example.test/");
             var client = new TelemetryUploadClient(queue, new TelemetryEnrollmentFixtureHandler(), Path.Combine(root, "identity"));
+            client.AcceptConsent();
+            client.SetAutomaticUploadEnabled(true);
             Exception? producerFailure = null;
             var producer = new Thread(() =>
             {
@@ -1603,6 +1622,8 @@ internal static class Program
             Environment.SetEnvironmentVariable("MSFS_LANDING_STATS_TELEMETRY_URL", "https://telemetry.example.test/");
             var handler = new TelemetryRejectingFixtureHandler();
             using var client = new TelemetryUploadClient(queue, handler, Path.Combine(root, "identity"));
+            client.AcceptConsent();
+            client.SetAutomaticUploadEnabled(true);
             var preparation = client.PrepareAsync(CancellationToken.None).GetAwaiter().GetResult();
             Equal(TelemetryPreparationState.Ready, preparation.State, "rejection fixture enrollment");
 

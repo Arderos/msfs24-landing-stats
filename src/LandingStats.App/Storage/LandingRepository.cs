@@ -561,6 +561,7 @@ public sealed class LandingRepository
             Runway = source.Runway,
             ContactNumber = source.ContactNumber,
             ContactCount = source.ContactCount,
+            EstimatedContactTimeSeconds = source.EstimatedContactTimeSeconds,
             InertialFpm = source.InertialFpm,
             SurfaceFpm = source.SurfaceFpm,
             SurfaceDeltaFpm = source.SurfaceDeltaFpm,

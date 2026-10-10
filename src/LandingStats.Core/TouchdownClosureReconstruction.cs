@@ -41,8 +41,18 @@ internal static class TouchdownClosureReconstruction
         double estimatedContactTime,
         double longitudinalArmFeet,
         out TouchdownClosureEstimate estimate)
+        => TryEstimate(samples, lastAirborneIndex, estimatedContactTime, longitudinalArmFeet, out estimate, out _);
+
+    public static bool TryEstimate(
+        IReadOnlyList<TelemetrySample> samples,
+        int lastAirborneIndex,
+        double estimatedContactTime,
+        double longitudinalArmFeet,
+        out TouchdownClosureEstimate estimate,
+        out string decision)
     {
         estimate = new TouchdownClosureEstimate();
+        decision = "invalid_contact_time_or_arm";
         if (!IsFinite(estimatedContactTime) || !IsFinite(longitudinalArmFeet) ||
             lastAirborneIndex < 0 || lastAirborneIndex >= samples.Count)
         {
@@ -79,6 +89,7 @@ internal static class TouchdownClosureReconstruction
         // at least five distinct pre-contact samples and has no linear fallback.
         if (indices.Count < 5 || CountDistinctTimes(samples, indices) < 5)
         {
+            decision = "insufficient_distinct_precontact_samples";
             return false;
         }
 
@@ -91,6 +102,7 @@ internal static class TouchdownClosureReconstruction
         if (evaluationTime < firstFitTime - TimeToleranceSeconds ||
             evaluationTime > lastFitTime + TimeToleranceSeconds)
         {
+            decision = "evaluation_outside_precontact_history";
             return false;
         }
 
@@ -101,6 +113,7 @@ internal static class TouchdownClosureReconstruction
             !TryQuadraticFit(samples, indices, estimatedContactTime, sample => DegreesToRadians(sample.PitchDegrees), null, out var pitch) ||
             !TryQuadraticFit(samples, indices, estimatedContactTime, sample => DegreesToRadians(sample.BankDegrees), null, out var bank))
         {
+            decision = "quadratic_fit_unavailable";
             return false;
         }
 
@@ -119,6 +132,7 @@ internal static class TouchdownClosureReconstruction
         if (!IsFinite(inertialFpm) || !IsFinite(terrainFpm) ||
             !IsFinite(pitchFpm) || !IsFinite(closureFpm))
         {
+            decision = "nonfinite_reconstructed_velocity";
             return false;
         }
 
@@ -130,6 +144,7 @@ internal static class TouchdownClosureReconstruction
             PitchFpm = pitchFpm,
             FitPointCount = indices.Count,
         };
+        decision = "quadratic_fit_accepted";
         return true;
     }
 

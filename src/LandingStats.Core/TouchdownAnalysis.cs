@@ -20,7 +20,9 @@ public static class TouchdownAnalysis
         IReadOnlyList<TelemetrySample> samples,
         TouchdownAnalysisOptions? options)
     {
-        var candidates = TelemetryContactDetector.Find(samples, EpisodeGapSeconds);
+        var journal = options?.DecisionJournal;
+        var candidates = TelemetryContactDetector.Find(samples, EpisodeGapSeconds, journal);
+        var analysisTime = samples.Count > 0 ? TimeOf(samples[samples.Count - 1]) : 0;
 
         var longitudinalArmFeet = double.NaN;
         var geometryQuality = double.NaN;
@@ -56,12 +58,25 @@ public static class TouchdownAnalysis
                 configuredMainPoints = options.MainGearContactPoints;
                 break;
             }
+
+            journal?.Record(analysisTime, "geometry",
+                gearTopology != null ? "configured_topology_accepted" : "configured_topology_rejected",
+                gearTopology != null
+                    ? "Configured main and nose roles explain a sustained main-gear contact."
+                    : "Configured contact-point roles do not explain a sustained main-gear contact; trying telemetry inference.");
         }
 
         if (gearTopology == null && candidates.Count > 0 &&
             TelemetryGeometryCalibration.TryDetectConventionalTopology(samples, out var detectedTopology))
         {
             gearTopology = detectedTopology;
+            journal?.Record(analysisTime, "geometry", "telemetry_topology_accepted",
+                "Recovered conventional gear roles from contact-point telemetry.",
+                new Dictionary<string, double>
+                {
+                    ["main_contact_point_count"] = gearTopology.MainContactPointCount,
+                    ["clustered_wheel_inference"] = gearTopology.UsesClusteredWheelInference ? 1 : 0
+                });
         }
 
         if (gearTopology != null &&
@@ -86,6 +101,19 @@ public static class TouchdownAnalysis
             geometrySource = TouchdownGeometrySource.Telemetry;
         }
 
+        journal?.Record(analysisTime, "geometry", IsFinite(longitudinalArmFeet) ? "arm_selected" : "arm_unavailable",
+            IsFinite(longitudinalArmFeet) ? "Selected longitudinal arm source: " + geometrySource + "." :
+                gearTopology == null ? "No supported gear topology; reconstruction has no validated contact geometry." :
+                options != null && !options.RecoverLongitudinalMainGearArmFromTelemetry
+                    ? "No finite supplied arm and recovery from telemetry is disabled."
+                    : "No finite supplied arm and telemetry calibration did not produce a validated arm.",
+            new Dictionary<string, double>
+            {
+                ["longitudinal_arm_feet"] = longitudinalArmFeet,
+                ["quality"] = geometryQuality,
+                ["source"] = (int)geometrySource
+            });
+
         var results = new List<TouchdownResult>(candidates.Count);
         for (var index = 0; index < candidates.Count; index++)
         {
@@ -108,7 +136,8 @@ public static class TouchdownAnalysis
                 armRecoveredFromTelemetry,
                 geometrySource,
                 gearTopology,
-                configuredMainPoints));
+                configuredMainPoints,
+                journal));
         }
 
         return results;
@@ -126,7 +155,8 @@ public static class TouchdownAnalysis
         bool armRecoveredFromTelemetry,
         TouchdownGeometrySource geometrySource,
         TelemetryGearTopology? gearTopology,
-        IReadOnlyList<TouchdownMainGearContactPoint>? configuredMainPoints)
+        IReadOnlyList<TouchdownMainGearContactPoint>? configuredMainPoints,
+        TelemetryDecisionJournal? journal)
     {
         var contact = samples[contactIndex];
         var lastAirborne = samples[previousAirborneIndex];
@@ -149,7 +179,8 @@ public static class TouchdownAnalysis
             estimatedContactTime,
             contactTimeEstimatedFromCompression,
             out var inertialVerticalExtrapolated,
-            out var inertialFitDurationSeconds);
+            out var inertialFitDurationSeconds,
+            out var inertialDecision);
         var latchedVelocity = FindUpdatedLatch(
             samples,
             contactIndex,
@@ -164,23 +195,62 @@ public static class TouchdownAnalysis
         var terrainContributionFpm = EstimateTerrainContributionFpm(samples, previousAirborneIndex);
         var peakG = FindPeakG(samples, contactIndex, GWindowAfterSeconds, exclusiveEndTime, out var peakGTime);
         var reconstruction = new TouchdownClosureEstimate();
-        var reconstructed = gearTopology != null &&
-                            TelemetryGeometryCalibration.IsSustainedMainContact(
-                                samples,
-                                contactIndex,
-                                previousAirborneIndex,
-                                gearTopology) &&
-                            IsFinite(contactArmFeet) &&
-                            TouchdownClosureReconstruction.TryEstimate(
-                                samples,
-                                previousAirborneIndex,
-                                estimatedContactTime,
-                                contactArmFeet,
-                                out reconstruction);
+        var reconstructed = false;
+        string reconstructionDecision;
+        if (gearTopology == null)
+            reconstructionDecision = "unsupported_gear_topology";
+        else if (!TelemetryGeometryCalibration.IsSustainedMainContact(samples, contactIndex, previousAirborneIndex, gearTopology))
+            reconstructionDecision = "main_contact_not_sustained";
+        else if (!IsFinite(contactArmFeet))
+            reconstructionDecision = "longitudinal_arm_unavailable";
+        else
+            reconstructed = TouchdownClosureReconstruction.TryEstimate(
+                samples, previousAirborneIndex, estimatedContactTime, contactArmFeet,
+                out reconstruction, out reconstructionDecision);
+
+        var impact = TouchdownImpactAnalysis.Analyze(samples, contactIndex);
+        if (journal != null)
+        {
+            Record("contact_time", contactTimeEstimatedFromCompression ? "compression_interpolation" : "last_airborne_sample",
+                contactTimeEstimatedFromCompression
+                    ? "Estimated contact time from the median of bounded compression-onset estimates."
+                    : "No usable compression-onset estimate; using the last airborne sample time.",
+                new Dictionary<string, double>
+                {
+                    ["estimated_time_seconds"] = estimatedContactTime,
+                    ["offset_seconds"] = estimatedContactTime - contactTime,
+                    ["point_count"] = contactTimeEstimatePointCount,
+                    ["spread_seconds"] = contactTimeEstimateSpreadSeconds
+                });
+            Record("inertial_velocity", inertialDecision,
+                inertialVerticalExtrapolated ? "Extrapolated the pre-contact velocity fit to the estimated contact time."
+                    : "Using the last airborne world-vertical velocity; contact detection itself is unchanged.",
+                new Dictionary<string, double> { ["vertical_fpm"] = inertialVerticalFpm, ["fit_duration_seconds"] = inertialFitDurationSeconds });
+            Record("touchdown_latch", latchUpdateDetected ? "fresh_update" : "no_fresh_update",
+                latchUpdateDetected ? "Found a changed simulator touchdown latch before the next contact boundary."
+                    : "No fresh touchdown latch in this contact's ownership window; the earlier value is not reused.",
+                new Dictionary<string, double> { ["normal_fpm"] = latchedNormalFpm, ["update_offset_seconds"] = latchTime - contactTime });
+            Record("reconstruction", reconstructionDecision,
+                reconstructed ? "Accepted the pre-contact quadratic closure reconstruction."
+                    : "Closure reconstruction is unavailable for the stated reason; no reconstructed value is substituted.",
+                new Dictionary<string, double>
+                {
+                    ["longitudinal_arm_feet"] = contactArmFeet,
+                    ["fit_point_count"] = reconstructed ? reconstruction.FitPointCount : 0,
+                    ["closure_fpm"] = reconstructed ? reconstruction.ClosureFpm : double.NaN
+                });
+            Record("impact_window", impact.Status.ToString(),
+                "Adaptive initial-contact response: " + impact.Status + "; classification: " + impact.Category + ".",
+                new Dictionary<string, double>
+                {
+                    ["peak_g"] = impact.PeakG, ["peak_offset_seconds"] = impact.PeakOffsetSeconds,
+                    ["end_offset_seconds"] = impact.EndOffsetSeconds, ["complete"] = impact.IsComplete ? 1 : 0
+                });
+        }
 
         return new TouchdownResult
         {
-            Impact = TouchdownImpactAnalysis.Analyze(samples, contactIndex),
+            Impact = impact,
             ClosureReconstructionModel = TouchdownClosureReconstruction.ModelName,
             EpisodeNumber = episodeNumber,
             ContactNumber = contactNumber,
@@ -250,6 +320,14 @@ public static class TouchdownAnalysis
             IndicatedAirspeedKnots = contact.IndicatedAirspeedKnots,
             GroundSpeedKnots = contact.GroundSpeedKnots,
         };
+
+        void Record(string component, string code, string reason, Dictionary<string, double> details)
+        {
+            if (journal == null) return;
+            details["episode_number"] = episodeNumber;
+            details["contact_number"] = contactNumber;
+            journal.Record(contactTime, component, code, reason, details);
+        }
     }
 
     private static double EstimateContactTime(
@@ -326,11 +404,13 @@ public static class TouchdownAnalysis
         double estimatedContactTime,
         bool extrapolateToContact,
         out bool extrapolated,
-        out double fitDurationSeconds)
+        out double fitDurationSeconds,
+        out string decision)
     {
         var last = samples[lastAirborneIndex];
         extrapolated = false;
         fitDurationSeconds = 0;
+        decision = "no_compression_time_estimate";
         if (!extrapolateToContact)
         {
             return ToDescentFpm(last.VelocityWorldYFps);
@@ -350,6 +430,7 @@ public static class TouchdownAnalysis
         var continuousAirDuration = TimeOf(last) - TimeOf(samples[continuousAirStartIndex]);
         if (continuousAirDuration < MinimumAirborneFitSeconds)
         {
+            decision = "insufficient_continuous_airborne_history";
             return ToDescentFpm(last.VelocityWorldYFps);
         }
 
@@ -374,11 +455,13 @@ public static class TouchdownAnalysis
                 out var slope,
                 out fitDurationSeconds))
         {
+            decision = "precontact_linear_fit_unavailable";
             return ToDescentFpm(last.VelocityWorldYFps);
         }
 
         var estimatedVelocity = interceptAtLast + slope * (estimatedContactTime - TimeOf(last));
         extrapolated = true;
+        decision = "precontact_linear_fit_extrapolated";
         return ToDescentFpm(estimatedVelocity);
     }
 

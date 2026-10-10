@@ -76,6 +76,12 @@ true heading, end designations, surface type, provenance, and retrieval UTC. It 
 not an airport reference point or a heading inferred from the aircraft's nose.
 Missing or ambiguous geometry does not prevent replay of the actual flight track.
 
+Optional `summary.EstimatedContactTimeSeconds` records the original simulator
+clock used as the contact's series zero. It aligns contacts from the same episode
+even when their stored samples have different downsampling phases. Older files
+omit it; zero is a valid clock value, not a missing-data marker. No historical
+measurements or series are recalculated when this field is absent.
+
 Two additive nullable members, `PrimaryThresholdOffsetMeters` and
 `SecondaryThresholdOffsetMeters`, store the displacement inward from each
 physical pavement end. Zero is a verified undisplaced threshold; absent/null

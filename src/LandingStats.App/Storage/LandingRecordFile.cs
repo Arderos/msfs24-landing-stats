@@ -104,6 +104,7 @@ internal sealed class LandingRecordFile
         summary.WeightPounds = Store(summary.WeightPounds);
         summary.CgPercent = Store(summary.CgPercent);
         summary.ApproachGateSeconds = Store(summary.ApproachGateSeconds);
+        summary.EstimatedContactTimeSeconds = Store(summary.EstimatedContactTimeSeconds);
         summary.TouchdownLatitudeDegrees = Store(summary.TouchdownLatitudeDegrees);
         summary.TouchdownLongitudeDegrees = Store(summary.TouchdownLongitudeDegrees);
         summary.AirportDistanceNauticalMiles = Store(summary.AirportDistanceNauticalMiles);
@@ -146,6 +147,7 @@ internal sealed class LandingRecordFile
         summary.WeightPounds = Restore(summary.WeightPounds);
         summary.CgPercent = Restore(summary.CgPercent);
         summary.ApproachGateSeconds = Restore(summary.ApproachGateSeconds);
+        summary.EstimatedContactTimeSeconds = Restore(summary.EstimatedContactTimeSeconds);
         summary.TouchdownLatitudeDegrees = Restore(summary.TouchdownLatitudeDegrees);
         summary.TouchdownLongitudeDegrees = Restore(summary.TouchdownLongitudeDegrees);
         summary.AirportDistanceNauticalMiles = Restore(summary.AirportDistanceNauticalMiles);

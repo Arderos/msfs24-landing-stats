@@ -12,7 +12,7 @@ from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
 from app.security import canonical_capture, public_key, verify_signature
 from app.store import InstallationRegistryFullError, Store
-from app.validation import validate_capture
+from app.validation import MAXIMUM_DECISION_ENTRIES, MAXIMUM_DECISION_JOURNAL_BYTES, validate_capture
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -100,7 +100,24 @@ class CaptureValidationTests(unittest.TestCase):
             )
         return path
 
-    def _bug_report_archive(self, directory: Path) -> Path:
+    @staticmethod
+    def _journal():
+        return {
+            "format_version": 1,
+            "episode_id": 42,
+            "truncated": False,
+            "entries": [{
+                "time_seconds": 1234.5,
+                "component": "touchdown",
+                "code": "inertial_fallback",
+                "reason": "Last measured vertical velocity selected",
+                "details": {"airborne_seconds": 0.1, "velocity_fpm": -12.5},
+            }],
+        }
+
+    def _bug_report_archive(self, directory: Path, capture_kind="bug_report", journal=None, records=None) -> Path:
+        if records is None:
+            records = [{"summary": {"id": "landing"}}]
         values = ["0"] * len(HEADER.split(","))
         values[0] = "1"
         path = directory / "bug-report.zip"
@@ -112,10 +129,10 @@ class CaptureValidationTests(unittest.TestCase):
                 "telemetry_schema=5\n"
                 "source_period=SIM_FRAME\n"
                 "sample_count=1\n"
-                "capture_kind=bug_report\n"
+                f"capture_kind={capture_kind}\n"
                 "bug_report_format=1\n"
                 "episode_id=42\n"
-                "landing_count=1\n",
+                f"landing_count={len(records)}\n",
             )
             archive.writestr(
                 "landing-results.json",
@@ -123,10 +140,12 @@ class CaptureValidationTests(unittest.TestCase):
                     {
                         "format_version": 1,
                         "episode_id": 42,
-                        "records": [{"summary": {"id": "landing"}}],
+                        "records": records,
                     }
                 ),
             )
+            if journal is not None:
+                archive.writestr("decisions.json", journal if isinstance(journal, str) else json.dumps(journal))
         return path
 
     def test_accepts_current_schema_archive(self):
@@ -143,6 +162,122 @@ class CaptureValidationTests(unittest.TestCase):
             )
             self.assertEqual(1, facts.sample_count)
             self.assertEqual("bug_report", facts.capture_kind)
+
+    def test_accepts_optional_journal_for_manual_and_automatic_reports(self):
+        with tempfile.TemporaryDirectory() as value:
+            for kind in ("bug_report", "automatic_landing"):
+                for journal in (None, self._journal()):
+                    with self.subTest(kind=kind, journal=journal is not None):
+                        facts = validate_capture(self._bug_report_archive(Path(value), kind, journal),
+                                                 HEADER, 64 * 1024 * 1024)
+                        self.assertEqual(kind, facts.capture_kind)
+
+    def test_zero_result_automatic_episode_retains_decisions_but_manual_requires_result(self):
+        with tempfile.TemporaryDirectory() as value:
+            directory = Path(value)
+            facts = validate_capture(self._bug_report_archive(directory, "automatic_landing", self._journal(), []),
+                                     HEADER, 64 * 1024 * 1024)
+            self.assertEqual("automatic_landing", facts.capture_kind)
+            with self.assertRaisesRegex(ValueError, "results are malformed"):
+                validate_capture(self._bug_report_archive(directory, "bug_report", self._journal(), []),
+                                 HEADER, 64 * 1024 * 1024)
+
+    def test_decision_journal_requires_a_landing_report(self):
+        with tempfile.TemporaryDirectory() as value:
+            path = self._archive(Path(value))
+            with zipfile.ZipFile(path, "a", compression=zipfile.ZIP_STORED) as archive:
+                archive.writestr("decisions.json", json.dumps(self._journal()))
+            with self.assertRaisesRegex(ValueError, "capture kind"):
+                validate_capture(path, HEADER, 64 * 1024 * 1024)
+
+    def test_rejects_invalid_decision_journal_envelope(self):
+        cases = [
+            ("format_version", 2), ("format_version", True), ("episode_id", 43),
+            ("episode_id", "42"), ("truncated", 1), ("entries", {}), ("unexpected", 1),
+        ]
+        with tempfile.TemporaryDirectory() as value:
+            for field, invalid in cases:
+                with self.subTest(field=field, value=invalid):
+                    journal = self._journal()
+                    journal[field] = invalid
+                    with self.assertRaisesRegex(ValueError, "envelope is malformed"):
+                        validate_capture(self._bug_report_archive(Path(value), journal=journal),
+                                         HEADER, 64 * 1024 * 1024)
+
+    def test_rejects_invalid_or_nested_decision_entries(self):
+        cases = [
+            ("time_seconds", float("nan")), ("time_seconds", float("inf")),
+            ("time_seconds", True), ("time_seconds", 10 ** 400),
+            ("component", ""), ("component", "x" * 65), ("code", "x" * 97),
+            ("reason", "x" * 1025), ("details", {"value": float("inf")}),
+            ("details", {"value": True}), ("details", {"value": {"nested": 1}}),
+            ("details", {"value": "text"}), ("details", {"x" * 65: 1}),
+            ("details", {f"value_{index}": index for index in range(33)}),
+            ("unexpected", "field"),
+        ]
+        with tempfile.TemporaryDirectory() as value:
+            for field, invalid in cases:
+                with self.subTest(field=field, value=invalid):
+                    journal = self._journal()
+                    journal["entries"][0][field] = invalid
+                    with self.assertRaisesRegex(ValueError, "entry is malformed"):
+                        validate_capture(self._bug_report_archive(Path(value), journal=journal),
+                                         HEADER, 64 * 1024 * 1024)
+
+    def test_rejects_missing_decision_entry_fields(self):
+        with tempfile.TemporaryDirectory() as value:
+            for field in self._journal()["entries"][0]:
+                journal = self._journal()
+                del journal["entries"][0][field]
+                with self.subTest(field=field), self.assertRaisesRegex(ValueError, "entry is malformed"):
+                    validate_capture(self._bug_report_archive(Path(value), journal=journal),
+                                     HEADER, 64 * 1024 * 1024)
+
+    def test_rejects_malformed_duplicate_and_deep_decision_json(self):
+        cases = ["not json", '{"format_version":1,"format_version":1}', "[" * 2000 + "]" * 2000]
+        with tempfile.TemporaryDirectory() as value:
+            for journal in cases:
+                with self.subTest(journal=journal[:50]), self.assertRaisesRegex(ValueError, "decision journal"):
+                    validate_capture(self._bug_report_archive(Path(value), journal=journal),
+                                     HEADER, 64 * 1024 * 1024)
+
+    def test_accepts_bounded_truncated_journal_and_rejects_extra_entries(self):
+        with tempfile.TemporaryDirectory() as value:
+            journal = self._journal()
+            journal["truncated"] = True
+            journal["entries"] *= MAXIMUM_DECISION_ENTRIES
+            validate_capture(self._bug_report_archive(Path(value), journal=journal), HEADER, 64 * 1024 * 1024)
+            journal["entries"].append(journal["entries"][0])
+            with self.assertRaisesRegex(ValueError, "envelope is malformed"):
+                validate_capture(self._bug_report_archive(Path(value), journal=journal),
+                                 HEADER, 64 * 1024 * 1024)
+
+    def test_accepts_highly_compressible_bounded_decisions(self):
+        with tempfile.TemporaryDirectory() as value:
+            journal = self._journal()
+            journal["truncated"] = True
+            journal["entries"] *= 600
+            path = self._bug_report_archive(Path(value), "automatic_landing", journal)
+            with zipfile.ZipFile(path) as archive:
+                entry = archive.getinfo("decisions.json")
+                self.assertEqual(zipfile.ZIP_DEFLATED, entry.compress_type)
+                self.assertGreater(entry.file_size / entry.compress_size, 100)
+                self.assertLess(entry.file_size, MAXIMUM_DECISION_JOURNAL_BYTES)
+            facts = validate_capture(path, HEADER, 64 * 1024 * 1024)
+            self.assertEqual("automatic_landing", facts.capture_kind)
+
+    def test_decision_ratio_exception_does_not_relax_result_ratio_limit(self):
+        with tempfile.TemporaryDirectory() as value:
+            records = [{"summary": {"id": "landing", "padding": "x" * 100000}}]
+            path = self._bug_report_archive(Path(value), journal=self._journal(), records=records)
+            with self.assertRaisesRegex(ValueError, "compression ratio exceeds policy"):
+                validate_capture(path, HEADER, 64 * 1024 * 1024)
+
+    def test_rejects_oversized_decision_journal_before_json_decoding(self):
+        with tempfile.TemporaryDirectory() as value:
+            with self.assertRaisesRegex(ValueError, "decision journal is too large"):
+                validate_capture(self._bug_report_archive(Path(value), journal=" " * (MAXIMUM_DECISION_JOURNAL_BYTES + 1)),
+                                 HEADER, 64 * 1024 * 1024)
 
     def test_rejects_non_finite_value(self):
         with tempfile.TemporaryDirectory() as value:
@@ -224,6 +359,26 @@ class CaptureValidationTests(unittest.TestCase):
                 validate_capture(
                     self._flight_archive(directory, replay=True), HEADER, 64 * 1024 * 1024
                 )
+
+    def test_replay_like_automatic_diagnostics_require_zero_calculated_landings(self):
+        with tempfile.TemporaryDirectory() as value:
+            directory = Path(value)
+            with zipfile.ZipFile(self._flight_archive(directory, replay=True)) as source:
+                telemetry = source.read("telemetry.csv")
+            for kind, records in (("automatic_landing", []), ("automatic_landing", [{}]), ("bug_report", [{}])):
+                path = directory / "rejected-episode.zip"
+                with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_STORED) as archive:
+                    archive.writestr("telemetry.csv", telemetry)
+                    archive.writestr("session.txt", "telemetry_schema=5\nsource_period=SIM_FRAME\nsample_count=18\n"
+                                     f"capture_kind={kind}\nbug_report_format=1\nepisode_id=42\nlanding_count={len(records)}\n")
+                    archive.writestr("landing-results.json", json.dumps({"format_version": 1, "episode_id": 42, "records": records}))
+                    archive.writestr("decisions.json", json.dumps(self._journal()))
+                with self.subTest(kind=kind, record_count=len(records)):
+                    if kind == "automatic_landing" and not records:
+                        self.assertEqual(18, validate_capture(path, HEADER, 64 * 1024 * 1024).sample_count)
+                    else:
+                        with self.assertRaisesRegex(ValueError, "replay-like"):
+                            validate_capture(path, HEADER, 64 * 1024 * 1024)
 
 
 class SignatureTests(unittest.TestCase):

@@ -30,24 +30,26 @@ public sealed class ReplayControlInputs
     public ReplayControlAxis? Roll { get; private set; }
     public ReplayControlAxis? Yaw { get; private set; }
 
-    public static ReplayControlInputs Resolve(LandingRecord? record)
+    public static ReplayControlInputs Resolve(LandingRecord? record, TelemetryDecisionJournal? journal = null)
     {
         var points = new List<LandingSeriesPoint>();
         if (record != null)
             foreach (var point in record.Series)
             {
                 if (!Finite(point.TimeSeconds) || (points.Count > 0 && point.TimeSeconds < points[points.Count - 1].TimeSeconds))
-                    return new ReplayControlInputs(Array.Empty<LandingSeriesPoint>());
+                { journal?.Record(point.TimeSeconds, "replay.inputs", "invalid_clock", "Input matching is unavailable for invalid or reversed recorded time."); return new ReplayControlInputs(Array.Empty<LandingSeriesPoint>()); }
                 if (points.Count > 0 && point.TimeSeconds == points[points.Count - 1].TimeSeconds) points[points.Count - 1] = point;
                 else points.Add(point);
             }
         var result = new ReplayControlInputs(points.ToArray());
-        if (record == null || points.Count < 2) return result;
+        if (record == null || points.Count < 2)
+        { journal?.Record(0, "replay.inputs", "insufficient_samples", "Input matching requires at least two recorded samples."); return result; }
         var legacy = record.RawControllerAxesSourceIndices.Count == 0;
         var sources = legacy
             ? record.RawControllerSourceIndices.Count > 0 ? record.RawControllerSourceIndices.ToArray() : Enumerable.Range(0, TelemetrySample.CapturedControllerCount).ToArray()
             : record.RawControllerAxesSourceIndices.ToArray();
-        if (sources.Distinct().Count() != sources.Length) return result; // Malformed column provenance.
+        if (sources.Distinct().Count() != sources.Length)
+        { journal?.Record(0, "replay.inputs", "duplicate_source_indices", "Malformed column provenance prevents physical axis matching."); return result; }
         // Historical recordings have their own Y-only layout. A full-axis
         // recording can legitimately contain only Y axes from separate devices;
         // physical axis names do not determine their simulator bindings.
@@ -60,17 +62,22 @@ public sealed class ReplayControlInputs
             if (points[i].OnGround && !points[i - 1].OnGround) { contact = i; break; }
         var approach = Enumerable.Range(0, contact).Where(i => !points[i].OnGround).ToArray();
         var ground = Enumerable.Range(0, points.Count).Where(i => points[i].OnGround).ToArray();
+        journal?.Record(0, "replay.inputs", "matching_windows", "Pitch and roll rank the complete airborne approach before first contact; yaw uses the complete recorded sequence.",
+            new Dictionary<string, double> { ["legacy_y_only"] = legacy ? 1 : 0, ["approach_samples"] = approach.Length, ["ground_samples"] = ground.Length, ["sources"] = sources.Length });
         var ranked = new List<ReplayControlAxis>[3];
         for (var role = 0; role < 3; role++)
         {
             // Unlike flare controls, directional steering often first moves on
             // the runway; rank yaw over the complete recorded sequence.
             var indices = role == 2 ? Enumerable.Range(0, points.Count).ToArray() : approach;
-            ranked[role] = pitchOnly && role != 0 ? new List<ReplayControlAxis>() : result.Rank(record, sources, legacy, role, indices);
+            ranked[role] = pitchOnly && role != 0 ? new List<ReplayControlAxis>() : result.Rank(record, sources, legacy, role, indices, journal);
             // Rudder may first move during rollout. Fallback requires absence of
             // a computable approach correlation, never a low score.
             if (ranked[role].Count == 0 && (!pitchOnly || role == 0))
-                ranked[role] = result.Rank(record, sources, legacy, role, ground);
+            {
+                journal?.Record(0, "replay.inputs", "ground_fallback", "No computable primary-window correlation; trying ground samples without an acceptance cutoff.", new Dictionary<string, double> { ["role"] = role });
+                ranked[role] = result.Rank(record, sources, legacy, role, ground, journal);
+            }
         }
         var pairs = (from pitch in ranked[0] from roll in ranked[1]
                      where pitch.SourceIndex != roll.SourceIndex
@@ -82,6 +89,8 @@ public sealed class ReplayControlInputs
         {
             var best = pairs.Max(pair => pair.Score);
             var winners = pairs.Where(pair => pair.Score == best).ToArray();
+            journal?.Record(0, "replay.inputs", "pair_ranking", "Highest joint pitch/roll evidence wins; same-device evidence adds a soft preference, exact ties remain ambiguous.",
+                new Dictionary<string, double> { ["pairs"] = pairs.Length, ["best_score"] = best, ["winning_pairs"] = winners.Length, ["same_device_weight"] = SameDevicePreference });
             result.Pitch = Unique(winners.Select(pair => pair.Pitch));
             result.Roll = Unique(winners.Select(pair => pair.Roll));
         }
@@ -93,6 +102,7 @@ public sealed class ReplayControlInputs
                 var p = Math.Abs(result.Pitch.Correlation); var r = Math.Abs(result.Roll.Correlation);
                 if (p <= r) result.Pitch = null;
                 if (r <= p) result.Roll = null;
+                journal?.Record(0, "replay.inputs", "shared_axis_conflict", "A single physical axis cannot fill both pitch and roll; only the stronger role is retained.", new Dictionary<string, double> { ["pitch_score"] = p, ["roll_score"] = r });
             }
         }
         // Preserve already recorded Y-only selections. These are historical
@@ -105,15 +115,28 @@ public sealed class ReplayControlInputs
             var stored = legacy ? record.RawPitchInputSourceIndex : source;
             var column = Array.IndexOf(sources, stored);
             if (column >= 0 && sources.Count(value => value == stored) == 1 && points.Count(point => Raw(point, column, legacy, out _)) >= 2)
+            {
                 result.Pitch = new ReplayControlAxis(source, column,
                     (record.RawPitchInputSourceIndex < record.ControlInputSources.Count ? record.ControlInputSources[record.RawPitchInputSourceIndex] : "Controller " + (record.RawPitchInputSourceIndex + 1)) + " · Y",
                     record.RawPitchInputCorrelation, record.RawPitchInputLagSeconds, legacy);
+                journal?.Record(0, "replay.inputs", "legacy_selection_retained", "Historical Y-axis source metadata retained.", new Dictionary<string, double> { ["source_index"] = source });
+            }
         }
         result.Yaw = Best(ranked[2].Where(axis => axis.SourceIndex != result.Pitch?.SourceIndex && axis.SourceIndex != result.Roll?.SourceIndex));
+        var selected = new[] { result.Pitch, result.Roll, result.Yaw };
+        for (var role = 0; role < selected.Length; role++)
+        {
+            var axis = selected[role];
+            journal?.Record(0, "replay.inputs", axis == null ? "role_unavailable" : "axis_selected",
+                axis == null ? "No unique eligible physical axis remains for this role." : "Selected physical axis; only polarity is aligned, amplitude and sample time are unchanged.",
+                new Dictionary<string, double> { ["role"] = role, ["source_index"] = axis?.SourceIndex ?? -1,
+                    ["correlation"] = axis?.Correlation ?? 0, ["lag_seconds"] = axis?.LagSeconds ?? 0,
+                    ["candidate_count"] = ranked[role].Count });
+        }
         return result;
     }
 
-    private List<ReplayControlAxis> Rank(LandingRecord record, int[] sources, bool legacy, int role, int[] indices)
+    private List<ReplayControlAxis> Rank(LandingRecord record, int[] sources, bool legacy, int role, int[] indices, TelemetryDecisionJournal? journal)
     {
         var candidates = new List<ReplayControlAxis>();
         if (indices.Length < 2) return candidates;
@@ -130,7 +153,8 @@ public sealed class ReplayControlInputs
                     if (observed && value != first) { varies = true; break; }
                     first = value; observed = true;
                 }
-            if (!varies) continue;
+            if (!varies)
+            { journal?.Record(0, "replay.inputs", observed ? "constant_axis" : "missing_axis", "No usable variation exists in this candidate window.", new Dictionary<string, double> { ["role"] = role, ["source_index"] = source, ["samples"] = indices.Length }); continue; }
             double? best = null; var delay = 0.0;
             for (var step = 0; step <= 16; step++)
             {
@@ -141,11 +165,14 @@ public sealed class ReplayControlInputs
             }
             // Constant channels have undefined Pearson correlation. Exactly zero
             // covariance supplies no polarity; neither is a quality threshold.
-            if (!best.HasValue || best.Value == 0) continue;
+            if (!best.HasValue || best.Value == 0)
+            { journal?.Record(0, "replay.inputs", "undefined_correlation", "No computable nonzero covariance supplies a physical-axis polarity.", new Dictionary<string, double> { ["role"] = role, ["source_index"] = source }); continue; }
             var device = source / TelemetrySample.CapturedControllerAxisCount;
             var label = (device < record.ControlInputSources.Count ? record.ControlInputSources[device] : "Controller " + (device + 1)) +
                         " · " + new[] { "X", "Y", "Z", "R", "U", "V" }[source % TelemetrySample.CapturedControllerAxisCount];
             candidates.Add(new ReplayControlAxis(source, column, label, best.Value, delay, legacy));
+            journal?.Record(0, "replay.inputs", "axis_candidate", label,
+                new Dictionary<string, double> { ["role"] = role, ["source_index"] = source, ["correlation"] = best.Value, ["score"] = Math.Abs(best.Value), ["lag_seconds"] = delay, ["samples"] = indices.Length });
         }
         return candidates.OrderByDescending(axis => Math.Abs(axis.Correlation)).ToList();
     }

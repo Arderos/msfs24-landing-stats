@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Windows.Media.Media3D;
 using LandingStats.App.Models;
+using LandingStats.Core;
 
 namespace LandingStats.App.Controls;
 
@@ -20,24 +21,62 @@ internal sealed class ReplayGearRegistration
     private readonly LandingReplaySurface _surface;
     private readonly double _visualOffset;
     private readonly double _contactGroundTime;
+    private readonly List<KeyValuePair<double, double>> _contactSupports = new List<KeyValuePair<double, double>>();
     private readonly List<AirSpan> _airSpans = new List<AirSpan>();
+    private readonly TelemetryDecisionJournal? _journal;
+    private readonly Dictionary<string, double>? _frameDecisions;
 
     internal double UnloadedExtension { get; }
     internal bool IsCalibrated { get; }
 
-    internal ReplayGearRegistration(ReplayLandingGear gear, LandingReplayTrack track, LandingReplaySurface surface, double visualOffset)
+    internal static double VisualOffset(LandingReplayTrack track, TelemetryDecisionJournal? journal = null)
     {
-        _gear = gear; _track = track; _surface = surface; _visualOffset = visualOffset;
+        var grounded = track.Frames.Where(f => f.Sample.OnGround && Math.Abs(f.Sample.PitchDegrees) < 2)
+            .Select(f => f.Position.Y - f.Ground.Y).OrderBy(h => h).ToArray();
+        var offset = grounded.Length > 0 ? ReplayAircraftModel.RestHeight - grounded[grounded.Length / 2] : 0;
+        journal?.Record(0, "replay.gear", grounded.Length > 0 ? "visual_datum_registered" : "visual_datum_unavailable",
+            "Generic-model rest-height registration is constant for the whole replay; it never clamps recorded motion or erases bounces.",
+            new Dictionary<string, double> { ["grounded_samples"] = grounded.Length, ["visual_offset_m"] = offset });
+        return offset;
+    }
+
+    internal ReplayGearRegistration(ReplayLandingGear gear, LandingReplayTrack track, LandingReplaySurface surface, double visualOffset,
+        TelemetryDecisionJournal? journal = null, IEnumerable<double>? contactTimesSeconds = null)
+    {
+        _gear = gear; _track = track; _surface = surface; _visualOffset = visualOffset; _journal = journal;
+        if (journal != null) _frameDecisions = new Dictionary<string, double>();
         // The analysed contact may precede the first stored OnGround frame by a
         // fraction of the sampling interval. That known interval belongs to this
         // contact; do not shift the contact to the delayed boolean transition.
         _contactGroundTime = track.Frames.Where(f => f.TimeSeconds >= 0 && f.TimeSeconds <= LandingReplayTrack.MaximumInterpolationGapSeconds && f.Sample.OnGround)
             .Select(f => f.TimeSeconds).DefaultIfEmpty(double.NaN).First();
-        if (!LandingReplayTrack.Finite(_contactGroundTime) || track.StartSeconds > 0 || track.EndSeconds < 0 || !track.TrySample(0, out var contact)) return;
+        if (!LandingReplayTrack.Finite(_contactGroundTime) || track.StartSeconds > 0 || track.EndSeconds < 0 || !track.TrySample(0, out var contact))
+        { journal?.Record(0, "replay.gear", "contact_registration_unavailable", "Exact analysed contact or nearby recorded ground support is unavailable; generic gear remains uncalibrated."); return; }
         var matrix = Matrix(contact);
         double Clearance(double extension) => gear.Legs.Min(leg => ClearanceAt(leg, matrix, contact, extension));
-        if (!TrySolve(Clearance, MinimumExtension, MaximumExtension, out var unloaded)) return;
+        if (!TrySolve(Clearance, MinimumExtension, MaximumExtension, out var unloaded))
+        { journal?.Record(0, "replay.gear", "extension_outside_bounds", "No supported symbolic strut extension can place the lowest tyre on the displayed surface."); return; }
         UnloadedExtension = unloaded; IsCalibrated = true;
+        journal?.Record(0, "replay.gear", "contact_registered", "Only generic symbolic suspension is fitted; aircraft position, attitude and analysed contact time stay unchanged.",
+            new Dictionary<string, double> { ["unloaded_extension_m"] = unloaded, ["ground_flag_delay_seconds"] = _contactGroundTime });
+        foreach (var time in (contactTimesSeconds ?? Array.Empty<double>()).Append(0).Where(LandingReplayTrack.Finite).Distinct().OrderBy(t => t))
+        {
+            if (time < track.StartSeconds || time > track.EndSeconds || !track.TrySample(time, out _)) continue;
+            var previous = time;
+            foreach (var frame in track.Frames.Where(f => f.TimeSeconds >= time))
+            {
+                if (frame.TimeSeconds - time > LandingReplayTrack.MaximumInterpolationGapSeconds ||
+                    frame.TimeSeconds - previous > LandingReplayTrack.MaximumInterpolationGapSeconds) break;
+                if (frame.Sample.OnGround)
+                {
+                    _contactSupports.Add(new KeyValuePair<double, double>(time, frame.TimeSeconds));
+                    journal?.Record(time, "replay.gear", "contact_support_registered", "Analysed contact starts visual ground support before its delayed stored ground flag.",
+                        new Dictionary<string, double> { ["ground_flag_delay_seconds"] = frame.TimeSeconds - time });
+                    break;
+                }
+                previous = frame.TimeSeconds;
+            }
+        }
         BuildAirSpans();
     }
 
@@ -46,6 +85,7 @@ internal sealed class ReplayGearRegistration
         var matrix = Matrix(pose);
         var grounded = IsGrounded(pose.TimeSeconds);
         var baseline = AirExtension(pose.TimeSeconds);
+        CountDecision(IsCalibrated ? grounded ? "grounded_frames" : "airborne_frames" : "uncalibrated_frames");
         if (IsCalibrated && !grounded)
         {
             // A generic wheelbase is not the recorded aircraft (especially a
@@ -53,21 +93,47 @@ internal sealed class ReplayGearRegistration
             // contact. Adjust only the strut datum, with sub-centimetre clearance
             // tending to zero at the phase boundary; the body/bounce arc is intact.
             var margin = AirMargin(pose.TimeSeconds);
-            if (_gear.Legs.Min(leg => ClearanceAt(leg, matrix, pose, baseline)) < margin &&
-                TrySolve(e => _gear.Legs.Min(leg => ClearanceAt(leg, matrix, pose, e)) - margin,
-                    MinimumExtension, baseline, out var raised)) baseline = raised;
+            if (_gear.Legs.Min(leg => ClearanceAt(leg, matrix, pose, baseline)) < margin)
+            {
+                if (TrySolve(e => _gear.Legs.Min(leg => ClearanceAt(leg, matrix, pose, e)) - margin,
+                    MinimumExtension, baseline, out var raised)) { baseline = raised; CountDecision("air_clearance_adjusted"); }
+                else CountDecision("air_clearance_unresolved");
+            }
         }
-        if (IsCalibrated && grounded && _gear.Legs.Min(leg => ClearanceAt(leg, matrix, pose, baseline)) > .00001 &&
-            TrySolve(e => _gear.Legs.Min(leg => ClearanceAt(leg, matrix, pose, e)), baseline, MaximumExtension, out var extended)) baseline = extended;
-        foreach (var leg in _gear.Legs)
+        if (IsCalibrated && grounded && _gear.Legs.Min(leg => ClearanceAt(leg, matrix, pose, baseline)) > .00001)
         {
+            if (TrySolve(e => _gear.Legs.Min(leg => ClearanceAt(leg, matrix, pose, e)), baseline, MaximumExtension, out var extended))
+            { baseline = extended; CountDecision("ground_extension_adjusted"); }
+            else CountDecision("ground_extension_unresolved");
+        }
+        for (var index = 0; index < _gear.Legs.Count; index++)
+        {
+            var leg = _gear.Legs[index];
             var extension = baseline;
             // A banked touchdown does not force the high main or the nose down.
             // Only compress a leg whose extended tyre would penetrate the surface.
-            if (IsCalibrated && grounded && ClearanceAt(leg, matrix, pose, extension) < 0 &&
-                TrySolve(e => ClearanceAt(leg, matrix, pose, e), MinimumExtension, extension, out var compressed)) extension = compressed;
+            if (IsCalibrated && grounded && ClearanceAt(leg, matrix, pose, extension) < 0)
+            {
+                if (TrySolve(e => ClearanceAt(leg, matrix, pose, e), MinimumExtension, extension, out var compressed))
+                { extension = compressed; CountDecision(index == 0 ? "left_main_compressed" : index == 1 ? "right_main_compressed" : "nose_compressed"); }
+                else CountDecision("compression_unresolved");
+            }
             leg.SetExtension(extension);
         }
+    }
+
+    private void CountDecision(string code)
+    {
+        if (_frameDecisions == null) return;
+        _frameDecisions.TryGetValue(code, out var count);
+        _frameDecisions[code] = count + 1;
+    }
+
+    internal void RecordFrameDecisions()
+    {
+        _journal?.Record(0, "replay.gear", "frame_decision_counts",
+            "Actual suspension update decisions aggregated over recorded frames: airborne clearance, ground extension and independent leg compression; recorded pose is never changed.",
+            _frameDecisions);
     }
 
     private void BuildAirSpans()
@@ -78,14 +144,17 @@ internal sealed class ReplayGearRegistration
             if (frames[i].Sample.OnGround) continue;
             var first = i;
             while (i + 1 < frames.Count && !frames[i + 1].Sample.OnGround) i++;
-            if (i + 1 == frames.Count) continue; // No later contact: keep the unloaded flight gear.
+            if (i + 1 == frames.Count)
+            { _journal?.Record(frames[first].TimeSeconds, "replay.gear", "air_span_open", "No later contact; keep unloaded flight gear."); continue; }
             var continuous = true;
             for (var j = Math.Max(1, first); j <= i + 1; j++)
                 if (frames[j].TimeSeconds - frames[j - 1].TimeSeconds > LandingReplayTrack.MaximumInterpolationGapSeconds) { continuous = false; break; }
-            if (!continuous) continue; // Never infer suspension across missing motion.
+            if (!continuous)
+            { _journal?.Record(frames[first].TimeSeconds, "replay.gear", "air_span_gap", "Do not infer visual suspension across missing motion."); continue; }
             var from = first > 0 ? frames[first - 1].TimeSeconds : frames[first].TimeSeconds;
             var to = i + 1 < frames.Count ? frames[i + 1].TimeSeconds : frames[i].TimeSeconds;
-            if (to == _contactGroundTime && from <= 0) to = 0;
+            foreach (var support in _contactSupports)
+                if (to == support.Value && from <= support.Key) { to = support.Key; break; }
             if (to <= from) continue;
             double ExtensionAt(double time)
             {
@@ -97,6 +166,8 @@ internal sealed class ReplayGearRegistration
             var end = ExtensionAt(to);
             var start = first > 0 ? ExtensionAt(from) : end;
             _airSpans.Add(new AirSpan(from, to, start, end));
+            _journal?.Record(from, "replay.gear", "air_span_registered", "Interpolate symbolic strut datum between support phases while preserving recorded airborne motion.",
+                new Dictionary<string, double> { ["from_seconds"] = from, ["to_seconds"] = to, ["start_extension_m"] = start, ["end_extension_m"] = end });
         }
     }
 
@@ -150,7 +221,8 @@ internal sealed class ReplayGearRegistration
 
     private bool IsGrounded(double time)
     {
-        if (time >= 0 && time <= _contactGroundTime) return true;
+        foreach (var support in _contactSupports)
+            if (time >= support.Key && time <= support.Value) return true;
         var frames = _track.Frames; var lo = 0; var hi = frames.Count - 1;
         while (lo < hi) { var middle = lo + (hi - lo + 1) / 2; if (frames[middle].TimeSeconds <= time) lo = middle; else hi = middle - 1; }
         return frames[lo].Sample.OnGround;

@@ -148,6 +148,8 @@
 
     <system:String x:Key="Settings.Title">SETTINGS</system:String>
     <system:String x:Key="Settings.Language">LANGUAGE</system:String>
+    <system:String x:Key="Settings.TelemetryToggle">Automatically send diagnostic telemetry</system:String>
+    <system:String x:Key="Settings.TelemetryBody">Sends raw landing data, aircraft position, controller inputs and algorithm decisions to the Landing Stats server for diagnostics. Enabled by default; you can turn it off here.</system:String>
     <system:String x:Key="Settings.LanguageBody">Changes the complete interface language, dates and number formatting. Automatic follows the Windows user locale; unsupported locales use English.</system:String>
     <system:String x:Key="Settings.Automatic">AUTOMATIC</system:String>
     <system:String x:Key="Settings.English">ENGLISH</system:String>

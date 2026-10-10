@@ -52,6 +52,7 @@ public partial class MainWindow
         SettingsLanguageAuto.IsEnabled = enabled;
         SettingsLanguageEnglish.IsEnabled = enabled;
         SettingsLanguageRussian.IsEnabled = enabled;
+        SettingsTelemetryCheckBox.IsEnabled = enabled;
         SettingsAutoStartCheckBox.IsEnabled = enabled && _autoStartInitialized && !_autoStartPromptBusy;
         DeclineAutoStartButton.IsEnabled = enabled && !_autoStartPromptBusy;
         EnableAutoStartButton.IsEnabled = enabled && !_autoStartPromptBusy;

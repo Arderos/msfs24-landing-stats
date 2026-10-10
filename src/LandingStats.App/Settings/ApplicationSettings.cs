@@ -5,7 +5,7 @@ namespace LandingStats.App.Settings;
 [DataContract]
 internal sealed class ApplicationSettings : IExtensibleDataObject
 {
-    internal const int CurrentSchemaVersion = 3;
+    internal const int CurrentSchemaVersion = 4;
 
     [DataMember(Name = "schemaVersion", Order = 1)]
     public int SchemaVersion { get; set; } = CurrentSchemaVersion;
@@ -19,6 +19,13 @@ internal sealed class ApplicationSettings : IExtensibleDataObject
     [DataMember(Name = "googleDrivePromptAnswered", Order = 4, EmitDefaultValue = false)]
     public bool GoogleDrivePromptAnswered { get; set; }
 
+    [DataMember(Name = "automaticTelemetryUpload", Order = 5)]
+    public bool AutomaticTelemetryUpload { get; set; } = true;
+
+    // DataContractSerializer does not run property initializers for old files.
+    [OnDeserializing]
+    private void InitializeDefaults(StreamingContext context) => AutomaticTelemetryUpload = true;
+
     public ExtensionDataObject? ExtensionData { get; set; }
 
     public ApplicationSettings Clone() => new ApplicationSettings
@@ -27,6 +34,7 @@ internal sealed class ApplicationSettings : IExtensibleDataObject
         Language = Language,
         StartWithSimulator = StartWithSimulator,
         GoogleDrivePromptAnswered = GoogleDrivePromptAnswered,
+        AutomaticTelemetryUpload = AutomaticTelemetryUpload,
         // Extension data is opaque and never mutated by the application. Keep
         // it on detached save snapshots so future-version options survive.
         ExtensionData = ExtensionData,
@@ -38,6 +46,7 @@ internal sealed class ApplicationSettings : IExtensibleDataObject
         Language = source.Language;
         StartWithSimulator = source.StartWithSimulator;
         GoogleDrivePromptAnswered = source.GoogleDrivePromptAnswered;
+        AutomaticTelemetryUpload = source.AutomaticTelemetryUpload;
         ExtensionData = source.ExtensionData;
     }
 

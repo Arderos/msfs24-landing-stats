@@ -208,6 +208,10 @@ public sealed class LandingRecord
     [DataMember(Order = 65, EmitDefaultValue = false)]
     public RunwayFacility? RunwayGeometry { get; set; }
 
+    /// <summary>Original telemetry clock used as this contact's series zero; absent in older records.</summary>
+    [DataMember(Order = 66, EmitDefaultValue = false)]
+    public double? EstimatedContactTimeSeconds { get; set; }
+
     [IgnoreDataMember]
     public bool IsSummaryOnly { get; set; }
 
