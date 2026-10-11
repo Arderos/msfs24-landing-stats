@@ -727,7 +727,7 @@ internal sealed class TelemetryUploadClient : IDisposable
             const string prefix = "telemetry_schema=";
             if (!line.StartsWith(prefix, StringComparison.Ordinal)) continue;
             if (schema.HasValue || !int.TryParse(line.Substring(prefix.Length), NumberStyles.None,
-                    CultureInfo.InvariantCulture, out var value) || (value != 5 && value != TelemetryCsv.SchemaVersion))
+                    CultureInfo.InvariantCulture, out var value) || (value != 5 && value != 6 && value != TelemetryCsv.SchemaVersion))
                 throw new InvalidDataException("Capture telemetry schema is unsupported.");
             schema = value;
         }

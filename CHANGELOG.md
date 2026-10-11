@@ -2,6 +2,14 @@
 
 All notable changes to MSFS Landing Stats are documented in this file.
 
+## [0.9.3] - 2026-10-11
+
+### Fixed
+
+- Preserve landing recordings across Pause, Active Pause and the Esc menu, including available landing data when leaving the flight.
+- Resolve airports and runways more reliably, including when leaving the flight shortly after touchdown.
+- Prevent simulator loading, repositioning and clock resets from mixing separate flights in landing measurements and 3D replay.
+
 ## [0.9.2] - 2026-10-11
 
 ### Fixed

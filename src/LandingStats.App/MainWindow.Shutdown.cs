@@ -54,7 +54,6 @@ public partial class MainWindow
 
     private async Task DrainWindowShutdownAsync()
     {
-        _lifetimeCancellation.Cancel();
         _googleDriveAuthorizationCancellation?.Cancel();
         Loaded -= OnWindowLoaded;
         SourceInitialized -= OnSourceInitialized;
@@ -91,6 +90,11 @@ public partial class MainWindow
                 _recorder = null;
             }
         }
+        // Recorder disposal first freezes this episode's terminal facilities,
+        // including complete final base geometry with optional replies pending.
+        // Canceling the report wait earlier could race that snapshot and archive
+        // its older preliminary fallback permanently. This adds no native wait.
+        _lifetimeCancellation.Cancel();
         if (_messageSource != null)
         {
             _messageSource.RemoveHook(WindowProcedure);

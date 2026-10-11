@@ -35,12 +35,20 @@ internal static class TelemetryContactDetector
         var previousOnGround = samples.Count > 0 && samples[0].OnGround;
         var previousAirborneIndex = -1;
         var previousContactTime = double.NegativeInfinity;
+        long? previousFlightSegment = null;
         var episodeNumber = 0;
         var contactNumber = 0;
 
         for (var index = 0; index < samples.Count; index++)
         {
             var current = samples[index];
+            if (current.SimulatorState != TelemetrySimulatorState.Legacy)
+            {
+                if (current.SimulatorState == TelemetrySimulatorState.Inactive ||
+                    (previousFlightSegment.HasValue && previousFlightSegment.Value != current.FlightSegment))
+                    previousContactTime = double.NegativeInfinity;
+                previousFlightSegment = current.FlightSegment;
+            }
             var isContact = continuity.Observe(current);
             if (!current.MotionSimulation) previousAirborneIndex = -1;
             else if (!current.OnGround)

@@ -3,7 +3,7 @@ import io
 import json
 import math
 import zipfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 
@@ -19,6 +19,11 @@ BOOLEAN_COLUMNS = {
     "axis_elevator_set_valid",
     *(f"contact_{index}_on_ground" for index in range(20)),
     *(f"controller_{index}_raw_{axis}_valid" for index in range(8) for axis in "xyzruv"),
+}
+STATE_INTEGER_LIMITS = {
+    "simulator_state": (0, 3),
+    "pause_flags": (-1, 2**31 - 1),
+    "flight_segment": (0, 2**63 - 1),
 }
 
 
@@ -39,6 +44,8 @@ class _ReplaySample:
     ground_speed: float
     airspeed: float
     world_y: float
+    motion: bool
+    flight_segment: int
 
 
 def _median(values: list[float]) -> float:
@@ -68,22 +75,35 @@ def _great_circle_nautical_miles(first: _ReplaySample, second: _ReplaySample) ->
 
 
 def _is_replay_like(samples: list[_ReplaySample]) -> bool:
-    # Keep the last row for repeated simulator times, matching the desktop
-    # analyzer. The compound thresholds intentionally mirror ReplayTelemetryDetector.
-    unique = sorted({sample.time: sample for sample in samples}.values(), key=lambda sample: sample.time)
+    # Keep physics/lifecycle boundaries at repeated simulator times. A pause has
+    # already been removed using SDK state; an unexplained stop remains a barrier.
+    unique: list[_ReplaySample] = []
+    for sample in samples:
+        if (unique and abs(sample.time - unique[-1].time) <= 1e-9
+                and sample.flight_segment == unique[-1].flight_segment
+                and sample.motion == unique[-1].motion):
+            unique[-1] = sample
+        else:
+            unique.append(sample)
     if len(unique) < 9:
         return False
 
     has_been_airborne = False
-    previous_on_ground = unique[0].on_ground
     contact_index = -1
+    segment_start = 0
     for position, sample in enumerate(unique):
-        if not sample.on_ground:
-            has_been_airborne = True
-        if has_been_airborne and sample.on_ground and not previous_on_ground:
+        if position and sample.flight_segment != unique[position - 1].flight_segment:
+            has_been_airborne = False
+            segment_start = position
+        if not sample.motion:
+            has_been_airborne = False
+            segment_start = position + 1
+            continue
+        if has_been_airborne and sample.on_ground:
             contact_index = position
             break
-        previous_on_ground = sample.on_ground
+        if not sample.on_ground:
+            has_been_airborne = True
     if contact_index <= 0:
         return False
 
@@ -96,7 +116,7 @@ def _is_replay_like(samples: list[_ReplaySample]) -> bool:
     altitude_rates: list[float] = []
     vertical_rate_errors: list[float] = []
     next_index = 0
-    for position in range(contact_index):
+    for position in range(segment_start, contact_index):
         first = unique[position]
         if first.on_ground or first.time < window_start or first.time > window_end:
             continue
@@ -267,7 +287,7 @@ def _validate_capture_archive(path: Path, expected_header: str, maximum_uncompre
             raise ValueError(f"archive entries do not match capture kind {capture_kind}")
         if capture_kind not in CAPTURE_KINDS:
             raise ValueError("unsupported capture kind")
-        if expected_schema not in {5, 6} or session.get("telemetry_schema") != str(expected_schema):
+        if expected_schema not in {5, 6, 7} or session.get("telemetry_schema") != str(expected_schema):
             raise ValueError("unsupported telemetry schema")
         if session.get("source_period") != "SIM_FRAME":
             raise ValueError("telemetry is not a SIM_FRAME capture")
@@ -300,6 +320,7 @@ def _validate_capture_archive(path: Path, expected_header: str, maximum_uncompre
         sample_count = 0
         previous_sequence: int | None = None
         replay_samples: list[_ReplaySample] = []
+        paused = False
         with archive.open("telemetry.csv", "r") as raw:
             text = io.TextIOWrapper(raw, encoding="utf-8", errors="strict", newline="")
             reader = csv.reader(text)
@@ -332,16 +353,29 @@ def _validate_capture_archive(path: Path, expected_header: str, maximum_uncompre
                         if value not in {"0", "1"}:
                             raise ValueError(f"{column} is not boolean")
                         continue
+                    if column in STATE_INTEGER_LIMITS:
+                        minimum, maximum = STATE_INTEGER_LIMITS[column]
+                        try:
+                            integer = int(value)
+                        except ValueError as exc:
+                            raise ValueError(f"{column} is not an integer") from exc
+                        if not minimum <= integer <= maximum:
+                            raise ValueError(f"{column} is outside the supported range")
+                        continue
                     try:
                         numeric = float(value)
                     except ValueError as exc:
                         raise ValueError(f"{column} is not numeric") from exc
-                    if not math.isfinite(numeric):
+                    if not math.isfinite(numeric) and not (column == "analysis_time_s" and math.isnan(numeric)):
                         raise ValueError(f"{column} is not finite")
 
-                replay_samples.append(
-                    _ReplaySample(
-                        time=float(row[index["simulation_time_s"]]),
+                simulator_state = int(row[index["simulator_state"]]) if expected_schema >= 7 else 0
+                if simulator_state == 2:
+                    paused = True
+                    continue
+                analysis_time = float(row[index["analysis_time_s"]]) if expected_schema >= 7 else math.nan
+                replay_sample = _ReplaySample(
+                        time=analysis_time if math.isfinite(analysis_time) else float(row[index["simulation_time_s"]]),
                         on_ground=row[index["on_ground"]] == "1",
                         latitude=float(row[index["latitude_deg"]]),
                         longitude=float(row[index["longitude_deg"]]),
@@ -349,8 +383,19 @@ def _validate_capture_archive(path: Path, expected_header: str, maximum_uncompre
                         ground_speed=float(row[index["ground_speed_kt"]]),
                         airspeed=float(row[index["airspeed_indicated_kt"]]),
                         world_y=float(row[index["velocity_world_y_fps"]]),
-                    )
+                        motion=row[index["motion_simulation"]] == "1" and simulator_state != 3,
+                        flight_segment=int(row[index["flight_segment"]]) if expected_schema >= 7 else 0,
                 )
+                if paused and simulator_state == 1 and replay_samples:
+                    previous = replay_samples[-1]
+                    if (previous.motion and replay_sample.motion
+                            and previous.flight_segment == replay_sample.flight_segment
+                            and abs(previous.time - replay_sample.time) <= 1e-9):
+                        if previous.on_ground == replay_sample.on_ground:
+                            continue
+                        replay_samples.append(replace(replay_sample, motion=False))
+                replay_samples.append(replay_sample)
+                paused = False
 
         if sample_count == 0:
             raise ValueError("capture contains no samples")

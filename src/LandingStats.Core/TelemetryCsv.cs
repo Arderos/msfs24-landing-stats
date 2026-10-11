@@ -7,7 +7,7 @@ namespace LandingStats.Core;
 
 public static class TelemetryCsv
 {
-    public const int SchemaVersion = 6;
+    public const int SchemaVersion = 7;
 
     private const int LegacyContactPointCount = 64;
 
@@ -27,7 +27,9 @@ public static class TelemetryCsv
 
     public static readonly string V5Header = BuildCompactHeader(includeAllControllerAxes: false);
 
-    public static readonly string Header = BuildCompactHeader(includeAllControllerAxes: true);
+    public static readonly string V6Header = BuildCompactHeader(includeAllControllerAxes: true);
+
+    public static readonly string Header = V6Header + ",analysis_time_s,simulator_state,pause_flags,flight_segment";
 
     private static readonly CultureInfo Invariant = CultureInfo.InvariantCulture;
     private static readonly int LegacyColumnCount = ColumnCount(LegacyHeader);
@@ -36,6 +38,7 @@ public static class TelemetryCsv
     private static readonly int BlackBoxV3ColumnCount = ColumnCount(BlackBoxV3Header);
     private static readonly int V4ColumnCount = ColumnCount(V4Header);
     private static readonly int V5ColumnCount = ColumnCount(V5Header);
+    private static readonly int V6ColumnCount = ColumnCount(V6Header);
     private static readonly int CurrentColumnCount = ColumnCount(Header);
 
     public static string Format(TelemetrySample sample)
@@ -152,6 +155,10 @@ public static class TelemetryCsv
             }
         }
 
+        values.Add(Number(sample.AnalysisTimeSeconds));
+        values.Add(((int)sample.SimulatorState).ToString(Invariant));
+        values.Add(sample.PauseFlags.ToString(Invariant));
+        values.Add(sample.FlightSegment.ToString(Invariant));
         return string.Join(",", values);
     }
 
@@ -161,6 +168,7 @@ public static class TelemetryCsv
         using var reader = new StreamReader(path);
         var header = reader.ReadLine();
         if (!string.Equals(header, Header, StringComparison.Ordinal) &&
+            !string.Equals(header, V6Header, StringComparison.Ordinal) &&
             !string.Equals(header, V5Header, StringComparison.Ordinal) &&
             !string.Equals(header, V4Header, StringComparison.Ordinal) &&
             !string.Equals(header, BlackBoxV3Header, StringComparison.Ordinal) &&
@@ -209,7 +217,7 @@ public static class TelemetryCsv
         var isBlackBoxV3 = values.Length == BlackBoxV3ColumnCount;
         var isV4 = values.Length == V4ColumnCount;
         var isCurrent = values.Length == CurrentColumnCount;
-        if (isCurrent || values.Length == V5ColumnCount)
+        if (isCurrent || values.Length == V6ColumnCount || values.Length == V5ColumnCount)
         {
             return TryParseCompact(values, out sample);
         }
@@ -704,10 +712,10 @@ public static class TelemetryCsv
             // Keep historical Y-only captures in their original layout. Making
             // up full-axis columns here would erase the source-schema provenance
             // and make replay confuse old captures with real Y-only devices.
-            if (values.Length == CurrentColumnCount) CopyYAxisToAxes(sample, controllerIndex);
+            if (values.Length >= V6ColumnCount) CopyYAxisToAxes(sample, controllerIndex);
         }
 
-        if (values.Length == CurrentColumnCount)
+        if (values.Length >= V6ColumnCount)
         {
             for (var controller = 0; controller < TelemetrySample.CapturedControllerCount; controller++)
             {
@@ -723,6 +731,19 @@ public static class TelemetryCsv
                     sample.RawControllerAxesAgeSeconds[offset] = age;
                 }
             }
+        }
+
+        if (values.Length == CurrentColumnCount)
+        {
+            if (!TryNumber(values[index++], out var analysisTime) || double.IsInfinity(analysisTime) ||
+                !int.TryParse(values[index++], NumberStyles.Integer, Invariant, out var state) || state < 0 || state > 3 ||
+                !int.TryParse(values[index++], NumberStyles.Integer, Invariant, out var pauseFlags) || pauseFlags < -1 ||
+                !long.TryParse(values[index++], NumberStyles.Integer, Invariant, out var segment) || segment < 0)
+                return false;
+            sample.AnalysisTimeSeconds = analysisTime;
+            sample.SimulatorState = (TelemetrySimulatorState)state;
+            sample.PauseFlags = pauseFlags;
+            sample.FlightSegment = segment;
         }
 
         return index == values.Length;

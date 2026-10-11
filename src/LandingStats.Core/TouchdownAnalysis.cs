@@ -20,6 +20,56 @@ public static class TouchdownAnalysis
         IReadOnlyList<TelemetrySample> samples,
         TouchdownAnalysisOptions? options)
     {
+        samples = TelemetryAnalysisFrames.Prepare(samples, options?.DecisionJournal);
+        var starts = TelemetryKinematicDiscontinuity.FindSegmentStarts(samples);
+        if (starts.Count == 1) return AnalyzeSegment(samples, options);
+
+        // A raw-debug archive may span several flights and even reset clocks.
+        // Calibrate each independently, not merely its contact transitions.
+        starts.Add(samples.Count);
+        var combined = new List<TouchdownResult>();
+        var episodeOffset = 0;
+        for (var segment = 0; segment + 1 < starts.Count; segment++)
+        {
+            var part = new List<TelemetrySample>(starts[segment + 1] - starts[segment]);
+            for (var index = starts[segment]; index < starts[segment + 1]; index++) part.Add(samples[index]);
+            options?.DecisionJournal?.Record(TimeOf(part[0]), "analysis", "flight_segment_isolated",
+                "Analyze and calibrate this physical segment without borrowing telemetry across SDK flight changes, unexplained physics stops or clock/position replacements.",
+                new Dictionary<string, double>
+                {
+                    ["flight_segment"] = part[0].FlightSegment,
+                    ["episode_number_offset"] = episodeOffset,
+                    ["sample_count"] = part.Count,
+                });
+            if (segment > 0)
+            {
+                foreach (var entry in part)
+                {
+                    if (!entry.MotionSimulation || entry.SimulatorState == TelemetrySimulatorState.Inactive) continue;
+                    if (entry.OnGround)
+                        options?.DecisionJournal?.Record(TimeOf(entry), "contact", "physics_discontinuity_rejected",
+                            "The replacement physical segment starts on the ground without an airborne witness; do not create a contact from the preceding segment.",
+                            new Dictionary<string, double> { ["sample_index"] = starts[segment] });
+                    break;
+                }
+            }
+            var results = AnalyzeSegment(part, options);
+            var maximumEpisode = episodeOffset;
+            foreach (var result in results)
+            {
+                result.EpisodeNumber += episodeOffset;
+                maximumEpisode = Math.Max(maximumEpisode, result.EpisodeNumber);
+                combined.Add(result);
+            }
+            episodeOffset = maximumEpisode;
+        }
+        return combined;
+    }
+
+    private static IReadOnlyList<TouchdownResult> AnalyzeSegment(
+        IReadOnlyList<TelemetrySample> samples,
+        TouchdownAnalysisOptions? options)
+    {
         var journal = options?.DecisionJournal;
         var candidates = TelemetryContactDetector.Find(samples, EpisodeGapSeconds, journal);
         var analysisTime = samples.Count > 0 ? TimeOf(samples[samples.Count - 1]) : 0;
@@ -728,9 +778,7 @@ public static class TouchdownAnalysis
 
     internal static double TimeOf(TelemetrySample sample)
     {
-        return double.IsNaN(sample.SimulationTimeSeconds) || double.IsInfinity(sample.SimulationTimeSeconds)
-            ? sample.HostElapsedSeconds
-            : sample.SimulationTimeSeconds;
+        return TelemetryAnalysisFrames.TimeOf(sample);
     }
 
     private static double SelectContactArm(

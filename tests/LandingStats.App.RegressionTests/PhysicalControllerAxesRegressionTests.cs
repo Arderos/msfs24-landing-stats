@@ -107,7 +107,7 @@ internal static class PhysicalControllerAxesRegressionTests
 
         var row = TelemetryCsv.Format(sample);
         Require(TelemetryCsv.TryParse(row, out var current), "v6 parses");
-        Require(TelemetryCsv.Header.Split(',').Length == TelemetryCsv.V5Header.Split(',').Length + 120, "compact schema adds only five missing axes");
+        Require(TelemetryCsv.V6Header.Split(',').Length == TelemetryCsv.V5Header.Split(',').Length + 120, "v6 schema adds only five missing axes");
         Require(TelemetryCsv.Header.Split(',').Distinct().Count() == TelemetryCsv.Header.Split(',').Length, "unique column names");
         for (var index = 0; index < 48; index++)
         {
@@ -149,7 +149,7 @@ internal static class PhysicalControllerAxesRegressionTests
         var path = Path.GetTempFileName();
         try
         {
-            foreach (var version in new[] { 5, 6 })
+            foreach (var version in new[] { 5, 6, 7 })
             {
                 using (var file = new FileStream(path, FileMode.Create))
                 using (var zip = new ZipArchive(file, ZipArchiveMode.Create))

@@ -562,6 +562,7 @@ public sealed class LandingRepository
             ContactNumber = source.ContactNumber,
             ContactCount = source.ContactCount,
             EstimatedContactTimeSeconds = source.EstimatedContactTimeSeconds,
+            RecordingEpisodeId = source.RecordingEpisodeId,
             InertialFpm = source.InertialFpm,
             SurfaceFpm = source.SurfaceFpm,
             SurfaceDeltaFpm = source.SurfaceDeltaFpm,

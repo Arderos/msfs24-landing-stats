@@ -1,0 +1,367 @@
+import hashlib
+import io
+import json
+import os
+import sqlite3
+import tempfile
+import time
+import unittest
+import zipfile
+from pathlib import Path
+from unittest.mock import patch
+
+from app.dashboard_index import DashboardIndex, NONFINITE_STORAGE_SENTINEL, _distribution, _index_archive, _number
+
+
+class DashboardIndexTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        base = Path(self.temp.name)
+        self.root = base / "data"
+        (self.root / "accepted").mkdir(parents=True)
+        self.cache = base / "cache"
+        self.db = sqlite3.connect(self.root / "telemetry.sqlite3")
+        self.db.execute("PRAGMA journal_mode=WAL")
+        self.db.execute("CREATE TABLE captures (capture_id TEXT PRIMARY KEY,install_id TEXT,sha256 TEXT,relative_path TEXT,received_at INTEGER,compressed_bytes INTEGER,uncompressed_bytes INTEGER,sample_count INTEGER,schema_version INTEGER,app_version TEXT,capture_kind TEXT)")
+        self.db.commit()
+        self.index = DashboardIndex(self.root, self.cache)
+        self.index._initialize_cache()
+
+    def tearDown(self):
+        self.index.stop()
+        self.db.close()
+        self.temp.cleanup()
+
+    def archive(self, capture_id="one", landing_id="landing-one", *, airport="LMML", journal=True, times=(0, .05, .05, .1, 1.2), offset=0, malformed=False, legacy=False, sentinel=False,
+                records=None, results_present=True, motion=None, entries=None, summary_updates=None):
+        summary = {"Id": landing_id, "Airport": airport, "Runway": "31", "AircraftTitle": "A320", "ContactNumber": 1, "ContactCount": 1,
+                   "InertialFpm": 196.7, "ImpactPeakG": 1.2, "PeakG2Seconds": 1.4, "ImpactWindowSeconds": 3.08, "ImpactStatus": "Settled", "ClosureReconstructionAvailable": True,
+                   "PitchDegrees": -6.9, "BankDegrees": -.3, "GroundSpeedKnots": 110.7, "AirspeedKnots": 121.4,
+                   "RunwayGeometry": {"WidthMeters": 58}, "ClosureReconstructionGeometrySource": "FlightModelConfig"}
+        if malformed:
+            summary["ImpactPeakG"] = float("nan")
+            summary["InertialFpm"] = True
+        if legacy:
+            summary.pop("ImpactPeakG")
+        if sentinel:
+            summary.update(InertialFpm=NONFINITE_STORAGE_SENTINEL, ClosureReconstructionResidualFpm=NONFINITE_STORAGE_SENTINEL, ClosureReconstructionUncertaintyFpm=NONFINITE_STORAGE_SENTINEL)
+        summary.update(summary_updates or {})
+        record = {"summary": summary, "pose": {"lat": [35, 35.1], "lon": [14, 14.1], "headingTrueDeg": [310, 310]}}
+        content = io.BytesIO()
+        with zipfile.ZipFile(content, "w", zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr("session.txt", "aircraft_title=A320\nsimulator=SunRise\ncapture_kind=automatic_landing\n")
+            suffix = ",motion_simulation" if motion is not None else ""
+            archive.writestr("telemetry.csv", "sequence,simulation_time_s,host_elapsed_s,g_force,controller_0_raw_y_valid" + suffix + "\n" + "".join(f"{n},{t},{n * .01},1,1" + (f",{motion[n]}" if motion is not None else "") + "\n" for n, t in enumerate(times)))
+            if results_present:
+                archive.writestr("landing-results.json", json.dumps({"records": [record] if records is None else records}))
+            if journal:
+                archive.writestr("decisions.json", json.dumps({"truncated": False, "entries": entries if entries is not None else [{"component": "replay.inputs", "code": "axis_selected", "reason": "selected", "time_seconds": 0, "details": {"role": 0, "source_index": 1, "correlation": .71}}, {"component": "replay.track", "code": "track_created", "reason": "created", "time_seconds": 0, "details": {"frames": 2}}]}))
+            archive.comment = capture_id.encode()
+        data = content.getvalue()
+        path = self.root / "accepted" / f"{capture_id}.zip"
+        path.write_bytes(data)
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            expanded = sum(info.file_size for info in archive.infolist())
+        row = (capture_id, "anonymous-installation", hashlib.sha256(data).hexdigest(), f"accepted/{capture_id}.zip", int(time.time()) + offset, len(data), expanded, len(times), 6, "0.9.1", "automatic_landing")
+        self.db.execute("INSERT INTO captures VALUES(?,?,?,?,?,?,?,?,?,?,?)", row)
+        self.db.commit()
+        return path
+
+    def test_uploads_are_distinct_but_saved_landings_are_deduplicated(self):
+        self.archive("one")
+        self.archive("two")
+        self.index._refresh()
+        summary = self.index.summary()
+        self.assertEqual(summary["totals"]["captures"], 2)
+        self.assertEqual(summary["totals"]["unique_landings"], 1)
+        self.assertEqual(summary["totals"]["duplicate_landing_records"], 1)
+        self.assertEqual(summary["breakdowns"]["airports"], [{"name": "LMML", "count": 1}])
+        self.assertEqual(summary["totals"]["installations"], 1)
+        self.assertEqual(summary["journals"]["entries"], 4)
+        self.assertEqual(summary["axis"]["selected_roles"], [{"name": "pitch", "count": 2}])
+        self.assertEqual(summary["metrics"]["peak_g"]["count"], 1)
+        self.assertEqual(self.index.capture("one")["axis_bindings"][0]["role"], "pitch")
+
+    def test_stream_timing_uses_sim_clock_and_reports_duplicates_gaps(self):
+        self.archive()
+        self.index._refresh()
+        detail = self.index.capture("one")
+        data = detail["telemetry"]
+        self.assertEqual(data["rows"], 5)
+        self.assertEqual(data["unique_timestamps"], 4)
+        self.assertEqual(data["duplicate_timestamps"], 1)
+        self.assertEqual(data["gaps_over_1s"], 1)
+        self.assertAlmostEqual(data["sample_rate_hz"], 2.5)
+        self.assertAlmostEqual(data["max_gap_s"], 1.1)
+        self.assertAlmostEqual(data["delivery_delta_s"]["max"], .01)
+        self.assertEqual(data["physical_axis_channels"], ["controller_0_raw_y"])
+
+    def test_cached_archive_is_not_reopened(self):
+        self.archive()
+        self.index._refresh()
+        with patch("app.dashboard_index._index_archive", side_effect=AssertionError("should use cache")):
+            self.index._refresh()
+        self.assertEqual(self.index.summary()["index"]["indexed"], 1)
+
+    def test_refresh_preserves_complete_previous_view_until_atomic_swap(self):
+        self.archive("one")
+        self.archive("two", "two")
+        self.index._refresh()
+        self.archive("three", "three")
+        old_index = _index_archive
+        def checked_index(path, row):
+            self.assertEqual(self.index.summary()["totals"]["captures"], 2)
+            return old_index(path, row)
+        with patch("app.dashboard_index._index_archive", side_effect=checked_index):
+            self.index._refresh()
+        self.assertEqual(self.index.summary()["totals"]["captures"], 3)
+
+    def test_finite_extreme_values_cannot_overflow_json_statistics(self):
+        for values in ([1e308, 1e308], [-1e308, 1e308]):
+            json.dumps(_distribution(values), allow_nan=False)
+        self.archive(times=(-1e308, 1e308))
+        self.index._refresh()
+        json.dumps(self.index.summary(), allow_nan=False)
+        json.dumps(self.index.capture("one"), allow_nan=False)
+
+    def test_live_wal_new_rows_are_visible_and_source_is_unchanged(self):
+        self.archive()
+        self.index._refresh()
+        self.archive("two", "different-landing", airport="UUEE")
+        self.index._refresh()
+        self.assertEqual(self.index.summary()["totals"]["unique_landings"], 2)
+        self.assertEqual(self.db.execute("SELECT COUNT(*) FROM captures").fetchone()[0], 2)
+        self.assertEqual(self.db.execute("SELECT COUNT(*) FROM sqlite_master WHERE name='archive_index'").fetchone()[0], 0)
+
+    def test_missing_corrupt_unsafe_archives_do_not_break_other_captures(self):
+        good = self.archive("good")
+        missing = self.archive("missing")
+        missing.unlink()
+        corrupt = self.archive("corrupt")
+        corrupt.write_bytes(b"bad")
+        self.archive("unsafe")
+        self.db.execute("UPDATE captures SET relative_path='../outside.zip' WHERE capture_id='unsafe'")
+        self.db.commit()
+        self.index._refresh()
+        status = self.index.summary()["index"]
+        self.assertEqual(status["indexed"], 1)
+        self.assertEqual(status["errors"], 3)
+        self.assertTrue(good.exists())
+
+    def test_unsafe_zip_members_are_rejected_without_extraction(self):
+        path = self.archive()
+        with zipfile.ZipFile(path, "a") as archive:
+            archive.writestr("../escape.txt", "bad")
+        data = path.read_bytes()
+        self.db.execute("UPDATE captures SET sha256=?,compressed_bytes=?", (hashlib.sha256(data).hexdigest(), len(data)))
+        self.db.commit()
+        self.index._refresh()
+        self.assertEqual(self.index.summary()["index"]["errors"], 1)
+        self.assertFalse((self.root / "escape.txt").exists())
+
+    def test_nonfinite_and_boolean_metrics_are_unknown_not_zero(self):
+        self.archive(malformed=True)
+        self.index._refresh()
+        summary = self.index.summary()
+        self.assertEqual(summary["metrics"]["peak_g"]["count"], 0)
+        self.assertIsNone(summary["metrics"]["aircraft_fpm"]["mean"])
+        json.dumps(self.index.capture("one"), allow_nan=False)
+
+    def test_native_storage_sentinel_is_unknown_in_detail_and_aggregates(self):
+        self.archive(sentinel=True)
+        self.index._refresh()
+        detail = self.index.capture("one")
+        self.assertIsNone(detail["landings"][0]["summary"]["InertialFpm"])
+        self.assertIsNone(detail["landings"][0]["summary"]["ClosureReconstructionResidualFpm"])
+        summary = self.index.summary()
+        self.assertEqual(summary["metrics"]["aircraft_fpm"]["count"], 0)
+        self.assertEqual(summary["metrics"]["reconstruction_residual_fpm"]["count"], 0)
+        self.assertIsNone(summary["metrics"]["reconstruction_uncertainty_fpm"]["min"])
+        self.assertNotIn("1.7976931348623157e+308", json.dumps(detail))
+        self.assertIsNone(_number(NONFINITE_STORAGE_SENTINEL))
+        self.assertEqual(_number(-1e308), -1e308)
+        self.assertEqual(_number(1.7976931348623157e308), 1.7976931348623157e308)
+
+    def test_native_attitude_and_speed_fields_have_distributions(self):
+        self.archive()
+        self.index._refresh()
+        metrics = self.index.summary()["metrics"]
+        for key, expected in (("pitch_deg", -6.9), ("bank_deg", -.3), ("ground_speed_kt", 110.7), ("airspeed_kt", 121.4)):
+            self.assertEqual(metrics[key]["count"], 1)
+            self.assertEqual(metrics[key]["mean"], expected)
+
+    def test_explicit_unknown_airport_is_not_counted_as_a_real_airport(self):
+        self.archive(airport="Unknown airport")
+        self.index._refresh()
+        summary = self.index.summary()
+        self.assertEqual(summary["totals"]["airports"], 0)
+        self.assertEqual(summary["breakdowns"]["airports"], [{"name": "Unknown", "count": 1}])
+        self.assertEqual(self.index.capture("one")["landings"][0]["airport"], None)
+        self.assertEqual(self.index.list_captures(airport="Unknown")["total"], 1)
+
+    def test_empty_diagnostics_missing_results_and_unreadable_are_not_unknown_airports(self):
+        self.archive("diagnostic", records=[], entries=[{"component": "analysis", "code": "diagnostic_only"}])
+        self.archive("empty", records=[])
+        self.archive("missing-results", results_present=False)
+        self.archive("unreadable").unlink()
+        self.archive("unknown-contact", "unknown", airport="Unknown airport")
+        self.index._refresh()
+        expected = {"diagnostic": "diagnostic", "empty": "no_contacts", "missing-results": "results_unavailable", "unreadable": "unreadable", "unknown-contact": "contacts"}
+        for capture_id, outcome in expected.items():
+            self.assertEqual(self.index.capture(capture_id)["capture_outcome"], outcome)
+            self.assertEqual(self.index.list_captures(outcome=outcome)["items"][0]["capture_id"], capture_id)
+        self.assertEqual([x["capture_id"] for x in self.index.list_captures(airport="Unknown")["items"]], ["unknown-contact"])
+        self.assertEqual(self.index.summary()["totals"]["captures"], 5)
+        self.assertEqual(sum(x["count"] for x in self.index.summary()["breakdowns"]["outcomes"]), 5)
+
+    def test_mixed_known_unknown_contacts_are_visible_and_filterable(self):
+        records = [{"summary": {"Id": "known", "Airport": " lmml ", "ContactNumber": 1}},
+                   {"summary": {"Id": "unresolved", "Airport": " UNKNOWN ", "ContactNumber": 2}}]
+        self.archive(records=records)
+        self.index._refresh()
+        item = self.index.list_captures(airport="unknown airport")["items"][0]
+        self.assertEqual(item["airports"], ["LMML"])
+        self.assertEqual(item["known_contact_count"], 1)
+        self.assertEqual(item["unresolved_contact_count"], 1)
+        self.assertEqual(self.index.list_captures(airport=" lmml ")["total"], 1)
+        self.assertEqual(self.index.summary()["totals"]["unresolved_airport_contacts"], 1)
+
+    def test_all_unknown_spellings_and_legacy_records_are_normalized(self):
+        airports = [None, "", "  ", "Unknown", " UNKNOWN airport ", "unknown", " lmx43 "]
+        self.archive(records=[{"Id": str(n), "Airport": value} for n, value in enumerate(airports)])
+        self.index._refresh()
+        item = self.index.list_captures()["items"][0]
+        self.assertEqual(item["airports"], ["LMX43"])
+        self.assertEqual(item["unresolved_contact_count"], 6)
+
+    def test_confirmed_inactive_physics_records_stay_visible_but_leave_landing_stats(self):
+        self.archive("invalid", "old", airport="Unknown airport", motion=[0] * 5,
+                     summary_updates={"InertialFpm": 0, "ImpactStatus": "InvalidTelemetry", "TouchdownLatitudeDegrees": 0, "TouchdownLongitudeDegrees": 0})
+        self.archive("duplicate", "old", airport="Unknown airport", motion=[0] * 5)
+        self.archive("valid", "valid", motion=[1] * 5)
+        self.index._refresh()
+        summary = self.index.summary()
+        self.assertEqual(summary["totals"]["captures"], 3)
+        self.assertEqual(summary["totals"]["unique_saved_records"], 2)
+        self.assertEqual(summary["totals"]["unique_landings"], 1)
+        self.assertEqual(summary["totals"]["invalid_historical_contacts"], 1)
+        self.assertEqual(summary["totals"]["invalid_historical_records"], 2)
+        self.assertEqual(summary["totals"]["duplicate_landing_records"], 1)
+        self.assertEqual(summary["metrics"]["aircraft_fpm"]["count"], 1)
+        self.assertEqual(sum(x["landings"] for x in summary["daily"]), 1)
+        self.assertEqual(self.index.list_captures(airport="Unknown")["total"], 0)
+        self.assertEqual(self.index.list_captures(outcome="invalid_contacts")["total"], 2)
+        self.assertEqual(len(self.index.capture("invalid")["landings"]), 1)
+        self.assertFalse(self.index.capture("invalid")["landings"][0]["statistics_eligible"])
+
+    def test_missing_ambiguous_or_partly_active_motion_never_means_no_physics(self):
+        for n, motion in enumerate((None, [0, 0, 1, 0, 0], [0, 0, "NaN", 0, 0], [0, 0, 2, 0, 0])):
+            self.archive(str(n), str(n), motion=motion, airport="Unknown airport",
+                         summary_updates={"ImpactStatus": "InvalidTelemetry", "TouchdownLatitudeDegrees": 0, "TouchdownLongitudeDegrees": 0})
+        self.index._refresh()
+        self.assertEqual(self.index.summary()["totals"]["unique_landings"], 4)
+        self.assertEqual(self.index.summary()["totals"]["invalid_historical_contacts"], 0)
+        self.assertIsNone(self.index.capture("0")["telemetry"]["active_motion_frames"])
+        self.assertEqual(self.index.list_captures(airport="Unknown")["total"], 4)
+
+    def test_replay_decisions_belong_to_each_contact_not_to_all_position_arrays(self):
+        records = [{"summary": {"Id": str(n), "Airport": "LMML", "ContactNumber": n}, "pose": {"lat": [0, 0]}} for n in (1, 2, 3)]
+        entries = [{"component": "replay.track", "code": "track_created", "details": {"contact_number": 1}},
+                   {"component": "replay.track", "code": "invalid_pose", "details": {"contact_number": 2}}]
+        self.archive(records=records, entries=entries)
+        self.index._refresh()
+        self.assertEqual([r["replay_track_available"] for r in self.index.capture("one")["landings"]], [True, False, None])
+        replay = self.index.summary()["replay"]
+        self.assertEqual(replay["pose_landings"], 3)
+        self.assertEqual(replay["confirmed_track_landings"], 1)
+        self.assertEqual(replay["track_availability_unknown"], 1)
+
+    def test_interruption_is_reported_without_rejecting_the_preserved_landing(self):
+        self.archive(entries=[{"component": "recorder.lifecycle", "code": "teleport_started", "reason": "SDK event"}])
+        self.index._refresh()
+        detail = self.index.capture("one")
+        self.assertEqual(detail["capture_outcome"], "contacts")
+        self.assertEqual(detail["interruptions"][0]["code"], "teleport_started")
+        self.assertEqual(self.index.summary()["totals"]["unique_landings"], 1)
+
+    def test_legacy_peak_is_not_claimed_to_be_adaptive_impact(self):
+        self.archive(legacy=True, journal=False)
+        self.index._refresh()
+        summary = self.index.summary()
+        self.assertEqual(summary["metrics"]["peak_g"]["count"], 0)
+        self.assertEqual(summary["metrics"]["legacy_peak_2s_g"]["mean"], 1.4)
+        self.assertEqual(summary["journals"]["missing"], 1)
+
+    def test_list_filter_pagination_and_no_secret_source_fields(self):
+        self.archive()
+        self.archive("two", "two", airport="UUEE", offset=-86400 * 10)
+        self.index._refresh()
+        self.assertEqual(self.index.list_captures(airport="LMML")["total"], 1)
+        self.assertEqual(self.index.list_captures(q="uuee")["total"], 1)
+        self.assertEqual(self.index.list_captures(days=7)["total"], 1)
+        self.assertEqual(len(self.index.list_captures(page=2, page_size=1)["items"]), 1)
+        self.assertEqual(self.index.list_captures(page=3, page_size=1)["items"], [])
+        output = json.dumps(self.index.capture("one"))
+        self.assertNotIn("anonymous-installation", output)
+        self.assertNotIn("relative_path", output)
+        self.assertIsNone(self.index.capture("absent"))
+
+    def test_pruned_source_rows_leave_summary_and_private_cache(self):
+        self.archive()
+        self.index._refresh()
+        self.db.execute("DELETE FROM captures")
+        self.db.commit()
+        self.index._refresh()
+        self.assertEqual(self.index.summary()["totals"]["captures"], 0)
+        self.assertEqual(self.index.summary()["index"]["progress"], 1)
+        with self.index._connect_cache() as connection:
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM archive_index").fetchone()[0], 0)
+
+    def test_snapshot_source_staleness_and_storage(self):
+        self.archive()
+        self.db.row_factory = sqlite3.Row
+        rows = [dict(row) for row in self.db.execute("SELECT * FROM captures")]
+        snapshot = Path(self.temp.name) / "snapshot.json"
+        snapshot.write_text(json.dumps({"generated_at": int(time.time()) - 180, "captures": rows, "storage": {"quota_bytes": 1234567, "retention_days": 30}}), encoding="utf-8")
+        with patch.dict(os.environ, {"DASHBOARD_SNAPSHOT_PATH": str(snapshot)}):
+            self.index._refresh()
+        summary = self.index.summary()
+        self.assertTrue(summary["index"]["stale"])
+        self.assertEqual(summary["storage"]["quota_bytes"], 1234567)
+        self.assertEqual(summary["totals"]["captures"], 1)
+
+    def test_missing_snapshot_fails_without_database_fallback(self):
+        self.archive()
+        with patch.dict(os.environ, {"DASHBOARD_SNAPSHOT_PATH": str(Path(self.temp.name) / "absent.json")}):
+            with self.assertRaises(FileNotFoundError):
+                self.index._refresh()
+
+    def test_no_id_record_not_invented_as_unique_landing(self):
+        self.archive(landing_id=None)
+        self.index._refresh()
+        summary = self.index.summary()
+        self.assertEqual(summary["totals"]["landings_without_id"], 1)
+        self.assertEqual(summary["totals"]["unique_landings"], 0)
+
+    def test_cache_cannot_be_inside_production_data(self):
+        with self.assertRaises(ValueError):
+            DashboardIndex(self.root, self.root / "dashboard")
+
+    def test_real_latest_lmml_archive(self):
+        fixture = Path(__file__).resolve().parents[3] / "artifacts/release-091-preflight/1a42b8468b4f66e994fad1510614684d.zip"
+        if not fixture.is_file():
+            self.skipTest("local telemetry fixture is intentionally not committed")
+        raw = fixture.read_bytes()
+        data = _index_archive(fixture, {"compressed_bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest(), "sample_count": 3315})
+        self.assertEqual(data["telemetry"]["rows"], 3315)
+        self.assertEqual(data["telemetry"]["unique_timestamps"], 3301)
+        self.assertEqual(data["landings"][0]["airport"], "LMML")
+        self.assertEqual(data["landings"][0]["runway"], "31")
+        self.assertEqual(data["landings"][0]["pose_frames"], 859)
+        self.assertEqual(len(data["journal"]["entries"]), 121)
+        self.assertEqual(data["roles"], {"pitch": 1, "roll": 1, "yaw": 1})
+        self.assertFalse(data["warnings"])
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -35,10 +35,12 @@ public static class ReplayTelemetryDetector
             return false;
         }
 
-        var ordered = samples
-            .Where(sample => sample is not null && IsFinite(sample.SimulationTimeSeconds))
-            .OrderBy(sample => sample.SimulationTimeSeconds)
-            .ToArray();
+        var sdkAware = samples.Any(sample => sample != null && sample.SimulatorState != TelemetrySimulatorState.Legacy);
+        var prepared = sdkAware ? TelemetryAnalysisFrames.Prepare(samples) : samples;
+        var finite = prepared.Where(sample => sample is not null && IsFinite(sample.SimulationTimeSeconds));
+        // A new flight can restart the simulator clock. Sorting those frames would
+        // move lifecycle barriers and mix evidence from unrelated flight segments.
+        var ordered = sdkAware ? finite.ToArray() : finite.OrderBy(sample => sample.SimulationTimeSeconds).ToArray();
         var unique = TelemetryDeduplicator.Deduplicate(ordered);
         var contactIndex = TelemetryContactDetector.Find(unique, EpisodeGapSeconds)
             .Select(candidate => candidate.ContactIndex)

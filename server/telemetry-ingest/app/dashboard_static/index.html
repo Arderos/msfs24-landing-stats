@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Landing Stats · Telemetry</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="#overview" aria-label="Landing Stats — overview">
+      <svg class="brand-mark" viewBox="0 0 40 40" aria-hidden="true"><path d="M5 11 16 26 35 30"/><path d="m8 12 11 10 14 3"/></svg>
+      <span>Landing Stats<span class="brand-divider">/</span><span class="brand-section">Telemetry</span></span>
+    </a>
+    <div class="topbar-right"><a href="#captures">Archives <span aria-hidden="true">↗</span></a><span class="network-label"><span class="status-dot"></span> Internal network</span></div>
+  </header>
+  <main id="overview">
+    <section class="page-heading">
+      <div><p class="eyebrow">OBSERVABILITY / ASTR-SCAD-01</p><h1>Telemetry hub</h1><p class="subtitle">Uploads, landings and algorithm decisions — all in one place.</p></div>
+      <div class="page-actions">
+        <fieldset class="period-control"><legend class="sr-only">Upload time range</legend><button type="button" data-days="1">24 hours</button><button type="button" data-days="7">7 days</button><button type="button" data-days="30">30 days</button><button type="button" data-days="0" class="selected" aria-pressed="true">All time</button></fieldset>
+        <button class="icon-button" id="refresh" aria-label="Refresh data" title="Refresh data"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5"/><path d="M6 7a7 7 0 0 1 12-1l2 6M4 12l2 6a7 7 0 0 0 12-1"/></svg></button>
+      </div>
+    </section>
+    <div class="status-line"><p id="sync-status" role="status" aria-live="polite"><span class="status-dot pending"></span> Loading data…</p><p>Filtered by upload time · local timestamps · refreshes every 30 s</p></div>
+    <div id="error-banner" class="notice error" role="alert" hidden></div>
+    <div id="index-banner" class="notice" role="status" hidden></div>
+    <section id="kpis" class="kpi-grid" aria-label="Key metrics" aria-busy="true"></section>
+    <section class="overview-grid">
+      <article class="panel timeline-panel"><div class="panel-heading"><div><p class="eyebrow">INGESTION</p><h2>Upload activity</h2></div><span id="timeline-total" class="panel-meta"></span></div><div id="timeline" class="timeline" aria-label="Daily upload counts"></div><div id="timeline-legend" class="chart-legend"></div></article>
+      <article class="panel health-panel"><div class="panel-heading"><div><p class="eyebrow">STORAGE & INDEX</p><h2>Data health</h2></div><span class="tag">Current</span></div><div id="health" class="health-content"></div></article>
+    </section>
+    <section class="section-heading"><div><p class="eyebrow">EXPLORER</p><h2>Telemetry breakdown</h2></div><p>Select a row to filter archives</p></section>
+    <section id="breakdowns" class="breakdown-grid" aria-label="Telemetry breakdown"></section>
+    <section class="section-heading"><div><p class="eyebrow">ALGORITHM INSIGHT</p><h2>Inside the recordings</h2></div><p>Indexed archives in the selected period</p></section>
+    <section id="diagnostics" class="diagnostic-grid" aria-label="Technical metrics"></section>
+    <section id="captures" class="panel captures-panel">
+      <div class="panel-heading captures-heading"><div><p class="eyebrow">CAPTURE LIBRARY</p><h2>Telemetry archives <span id="capture-count" class="heading-count"></span></h2></div><button id="clear-filters" class="text-button" hidden>Clear filters</button></div>
+      <form id="search-form" class="search-form" role="search"><label class="search-field"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/></svg><span class="sr-only">Search archives</span><input id="search" type="search" placeholder="Airport, aircraft, version or archive ID…" autocomplete="off" maxlength="160"></label><button class="button" type="submit">Search</button></form>
+      <div id="active-filters" class="active-filters"></div>
+      <div class="table-scroll"><table><thead><tr><th>Uploaded</th><th>Airport / aircraft</th><th>Type</th><th>Version</th><th class="numeric">Frames</th><th class="numeric">Size</th><th>Diagnostics</th><th><span class="sr-only">Open</span></th></tr></thead><tbody id="capture-rows"></tbody></table></div>
+      <div id="table-state" class="table-state" role="status">Loading archives…</div>
+      <div class="pagination"><span id="page-description"></span><div><button id="page-prev" class="button secondary" disabled>← Previous</button><span id="page-number"></span><button id="page-next" class="button secondary" disabled>Next →</button></div></div>
+    </section>
+    <footer><span>MSFS Landing Stats <span class="muted">/</span> Telemetry Console</span><p>Shows retained archives, not lifetime totals. Expired data and rejected upload history are not included.</p></footer>
+  </main>
+  <dialog id="capture-dialog" aria-labelledby="detail-title"><div class="drawer-header"><div><p class="eyebrow">CAPTURE DETAILS</p><h2 id="detail-title">Telemetry archive</h2></div><button id="close-detail" class="icon-button" aria-label="Close details">×</button></div><div id="detail-content" class="drawer-content"></div></dialog>
+</body>
+</html>

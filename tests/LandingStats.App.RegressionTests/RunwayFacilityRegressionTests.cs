@@ -151,6 +151,8 @@ internal static class RunwayFacilityRegressionTests
                 "Previous snapshot and pending replies must be cleared before analysis observes completion.");
             Assert(recorder.GetRunwayFacilities(args.EpisodeId - 1).Count == 0,
                 "Delayed previous analysis must not see another episode's snapshot.");
+            Assert(args.RunwayFacilitiesTask.IsCompleted && args.RunwayFacilitiesTask.Result.Count == 0,
+                "A disconnected capture must settle immediately without old scenery.");
         };
         void Complete(long id)
         {
@@ -168,7 +170,12 @@ internal static class RunwayFacilityRegressionTests
         Assert(completions == 1 && !packets.ContainsKey(7) && packets.ContainsKey(8), "Cancel old requests, not connection definitions.");
         Assert((bool)Field(recorder, "_runwayDefinitionReady") && ready[0] && ready[1] &&
             (uint)Field(recorder, "_nextRunwayRequestId") == 1000, "Keep valid definitions and never recycle native request IDs.");
-        Assert(!(bool)Field(recorder, "_runwayLookupStarted"), "Next landing gets a fresh batch, even at the same airport.");
+        Assert((bool)Field(recorder, "_runwayLookupStarted"), "Disconnected salvage must not leave a deferred lookup behind.");
+        // Start the refresh transaction independently: this fixture has no native
+        // connection, so completion above deliberately settled the unavailable
+        // lookup. A live episode starts a fresh transaction before requesting replies.
+        recorder.GetType().GetMethod("BeginRunwayEpisode", PrivateInstance)!.Invoke(recorder, new object[] { 102L });
+        Assert(!(bool)Field(recorder, "_runwayLookupStarted"), "A fresh batch is allowed even at the same airport.");
 
         // A fresh base reply with a timed-out optional query must not borrow
         // the previous landing's threshold, and must allow a retry next time.
@@ -189,7 +196,9 @@ internal static class RunwayFacilityRegressionTests
         Assert(publications == 1 && (bool)Field(recorder, "_runwayLookupStarted"), "One completed batch, not a query per contact or airport-list callback.");
 
         Complete(103);
-        Assert(completions == 2 && !(bool)Field(recorder, "_runwayLookupStarted"), "Optional failure does not suppress the next landing's query.");
+        Assert(completions == 2 && (bool)Field(recorder, "_runwayLookupStarted"), "Second disconnected capture must also settle its lookup.");
+        recorder.GetType().GetMethod("BeginRunwayEpisode", PrivateInstance)!.Invoke(recorder, new object[] { 103L });
+        Assert(!(bool)Field(recorder, "_runwayLookupStarted"), "Optional failure does not suppress the next landing's query.");
         var newest = Runway(); newest.WidthMeters = 60;
         cache[Airport().Key] = new[] { newest };
         var threshold = Runway(); threshold.WidthMeters = 60; threshold.PrimaryThresholdOffsetMeters = 100;

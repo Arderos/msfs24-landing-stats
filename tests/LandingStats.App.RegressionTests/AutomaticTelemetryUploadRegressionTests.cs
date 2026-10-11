@@ -269,7 +269,7 @@ internal static class AutomaticTelemetryUploadRegressionTests
             {
                 if (Interlocked.Increment(ref _configRequests) == 1 && BlockFirstConfig)
                     await Block(cancellationToken).ConfigureAwait(false);
-                return Json("{\"protocol\":1,\"registration_mode\":\"open\",\"telemetry_schema\":6" +
+                return Json("{\"protocol\":1,\"registration_mode\":\"open\",\"telemetry_schema\":" + TelemetryCsv.SchemaVersion +
                     (SupportsNewReports ? ",\"capture_kinds\":[\"raw_debug\",\"bug_report\",\"automatic_landing\"],\"decision_journal_formats\":[1]" : "") + "}");
             }
             if (route.EndsWith("/v1/enroll", StringComparison.Ordinal))

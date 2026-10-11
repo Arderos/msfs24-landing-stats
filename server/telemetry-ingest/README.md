@@ -1,6 +1,6 @@
 # Telemetry ingress
 
-The service accepts signed schema-v5/v6 DEBUG RAW captures, explicit
+The service accepts signed schema-v5/v6/v7 DEBUG RAW captures, explicit
 last-landing bug-report bundles, and automatic landing telemetry. It is intended to run
 from `/opt/msfs-landing-telemetry` with capture data bind-mounted from
 `/srv/msfs-landing-telemetry/data`.
@@ -55,8 +55,18 @@ receiver advertises the required capabilities.
 
 Schema v6 appends five physical controller axes (X/Z/R/U/V) to the v5 prefix;
 the existing Y columns are unchanged. The legacy `telemetry_schema: 5` config
-field is retained for older clients; `telemetry_schemas: [5, 6]` advertises both
-accepted versions to newer clients. Deploy the receiver before a v6 client release.
+field is retained for older clients; `telemetry_schemas: [5, 6, 7]` advertises all
+accepted versions to newer clients.
+
+Schema v7 appends `analysis_time_s`, `simulator_state`, `pause_flags`, and
+`flight_segment`. The raw simulator and host clocks are unchanged. State values
+are 0 (legacy/unknown), 1 (running), 2 (confirmed pause/frozen resume), and 3
+(inactive lifecycle). Pause flags retain the SDK `Pause_EX1` bitmask, or -1 when
+unknown. Analysis time excludes confirmed pauses; flight segments prevent joining
+loads, teleports, replay, or separate flights. An unexplained `motion_simulation=0`
+remains a physical discontinuity. Recorder lifecycle decisions describe the clock
+adjustments, suspension, resumption, and partial-capture completion. Deploy this
+receiver before a v7 client; queued schema-v5/v6 uploads remain supported.
 
 Capacity is fail-closed: 16 MiB per request, 64 MiB expanded, 512 MiB per
 installation per rolling day, and the same 512 MiB fixed-day budget counts all
@@ -79,3 +89,69 @@ from the deployment directory, using `file:/data/telemetry.sqlite3?mode=ro` and
 queries can create WAL/SHM sidecars; reading as a different host user can leave
 files that prevent the service from writing. Do not delete live WAL/SHM files or
 use `immutable=1` to bypass this: it can omit transactions still in the WAL.
+
+## Private telemetry dashboard
+
+The optional `docker-compose.dashboard.yml` adds a LAN-only web dashboard at
+`http://astr-scad-01:8091` (`http://172.16.20.32:8091`). It has no connection to
+the public ingress network or Cloudflare Tunnel. No application release or code
+signing is involved. The existing API and tunnel must not be restarted to deploy it:
+
+```sh
+docker compose -f docker-compose.yml -f docker-compose.dashboard.yml build telemetry-dashboard
+docker compose -f docker-compose.yml -f docker-compose.dashboard.yml up -d --no-deps telemetry-dashboard-snapshot telemetry-dashboard
+```
+
+There are two isolated companion containers:
+
+- `telemetry-dashboard`: read-only archive and metadata mounts; its own writable
+  hash-keyed index cache; a background indexer; 0.5 CPU and 384 MiB limit. The HTTP
+  listener binds only to `172.16.20.32:8091` and accepts actual socket peers in
+  `172.16.0.0/16` plus loopback. Host validation and a self-only CSP are enabled;
+  forwarded headers are not trusted. It provides no mutation or archive download
+  endpoints and receives no ingestion secrets.
+- `telemetry-dashboard-snapshot`: no network, no HTTP server, 0.1 CPU and 128 MiB
+  limit. Every 30 seconds it reads whitelisted metadata with SQLite `mode=ro` and
+  `query_only`, then atomically replaces a separate JSON snapshot. The database
+  file and accepted archive directory are bind-mounted read-only. Only their parent
+  directory is writable so SQLite can manage WAL/SHM sidecars as receiver UID 10001.
+  It does not change SQLite locking modes, checkpoint the database, or copy live
+  database files. Registration keys and source-address hashes are never exported;
+  installation IDs are pseudonymized before export.
+
+This split is intentional: read-only access to a WAL database may need to create
+sidecars while the receiver is idle. Giving that permission to the web process is
+unnecessary. A failed snapshot refresh keeps the previous complete snapshot and
+the dashboard reports stale data after 120 seconds. Archive indexing also preserves
+the previous complete view until a refresh finishes. Bad or expired archives are
+isolated and listed as indexing errors, not silently dropped.
+
+The UI has date filters, airport/aircraft/version breakdowns, retained-upload and
+deduplicated landing counts, simulator/delivery timing diagnostics, sample rates,
+compression/storage statistics, landing metric distributions, physical-axis and
+3D reconstruction decision summaries, and searchable per-capture journals.
+Daily buckets use UTC; individual timestamps display in the browser's local time.
+A landing ID uploaded in multiple reports is
+counted once in landing statistics. Archives, samples and decision entries are
+counted per uploaded archive. The receiver's retention is currently 30 days/20 GiB:
+these are retained-data statistics, **not lifetime usage or unique-person counts**.
+Historical ingress rejection counts are not stored and are explicitly unavailable;
+indexing failures and reserved signed-attempt bytes are not labelled as rejections.
+
+Override `DASHBOARD_BIND_ADDRESS`, `DASHBOARD_ALLOWED_HOSTS`, and
+`DASHBOARD_ALLOWED_NETWORKS` together when moving hosts. Never bind the dashboard
+to a public interface or connect it to the `ingress` network. Source retention/quota
+values in the snapshot service must follow the receiver configuration if changed.
+
+Health and rollback (leave the receiver and its data running):
+
+```sh
+docker compose -f docker-compose.yml -f docker-compose.dashboard.yml ps
+docker compose -f docker-compose.yml -f docker-compose.dashboard.yml logs --tail 50 telemetry-dashboard telemetry-dashboard-snapshot
+docker compose -f docker-compose.yml -f docker-compose.dashboard.yml stop telemetry-dashboard telemetry-dashboard-snapshot
+```
+
+Do not use `compose down` for dashboard rollback. `dashboard-cache` and
+`dashboard-snapshot` are separate disposable volumes; neither contains the original
+archives or receiver database. Tests run alongside the existing service tests:
+`python -m unittest discover -s tests -p 'test_*.py' -v`.

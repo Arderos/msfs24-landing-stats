@@ -842,10 +842,10 @@ public static class TelemetryGeometryCalibration
 
     private static List<TelemetrySample> Normalize(IReadOnlyList<TelemetrySample> samples)
     {
-        var ordered = samples
-            .Where(sample => sample is not null && IsFinite(sample.SimulationTimeSeconds))
-            .OrderBy(sample => sample.SimulationTimeSeconds)
-            .ToArray();
+        var sdkAware = samples.Any(sample => sample != null && sample.SimulatorState != TelemetrySimulatorState.Legacy);
+        var prepared = sdkAware ? TelemetryAnalysisFrames.Prepare(samples) : samples;
+        var finite = prepared.Where(sample => sample is not null && IsFinite(sample.SimulationTimeSeconds));
+        var ordered = sdkAware ? finite.ToArray() : finite.OrderBy(sample => sample.SimulationTimeSeconds).ToArray();
         return new List<TelemetrySample>(TelemetryDeduplicator.Deduplicate(ordered));
     }
 

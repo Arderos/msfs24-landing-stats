@@ -1669,7 +1669,8 @@ public partial class MainWindow : Window
         _recorder.EpisodeStarted += OnEpisodeStarted;
         _recorder.EpisodeCompleted += OnEpisodeCompleted;
         _recorder.AirportFacilitiesUpdated += OnAirportFacilitiesUpdated;
-        _recorder.RunwayFacilitiesUpdated += OnRunwayFacilitiesUpdated;
+        // Episode-owned facility tasks update both history and the report using
+        // one two-stage decision. Global runway notifications cannot do that.
         _recorder.AircraftGroundStateChanged += OnAircraftGroundStateChanged;
         _recorder.SeedAirportFacilities(_airportFacilities);
         _recorder.Start();
@@ -1826,13 +1827,8 @@ public partial class MainWindow : Window
                 _runwayRecordsEpisodeId = eventArgs.EpisodeId;
                 _runwayRecords = processed.Records;
             }
-            var runwayUpdates = await PersistRunwaysAsync(processed.Records,
-                _recorder?.GetRunwayFacilities(eventArgs.EpisodeId) ?? Array.Empty<RunwayFacility>());
-            if (_isClosed) return;
             foreach (var record in processed.Records)
             {
-                var update = runwayUpdates.FirstOrDefault(value => value.Id == record.Id);
-                if (update != null) CopyRunwayMetadata(update, record);
                 if (TryResolveAirport(record, _airportFacilities))
                 {
                     airportUpdates.Add(record);
@@ -1875,6 +1871,21 @@ public partial class MainWindow : Window
             }
             UpdateRecorderPresentation(RecorderState.Connected);
             var candidate = await reportTask;
+            if (!_isClosed && candidate != null)
+            {
+                // The report worker persisted this same terminal facility choice.
+                // Update only this episode; a newer landing must not steal it.
+                foreach (var update in candidate.Records)
+                {
+                    foreach (var record in _landings.Concat(processed.Records).Where(record => record.Id == update.Id))
+                        CopyRunwayMetadata(update, record);
+                    if (_loadedDetails.TryGetValue(update.Id, out var detail)) CopyRunwayMetadata(update, detail);
+                }
+                LandingHistoryList.Items.Refresh();
+                if (LandingHistoryList.SelectedItem is LandingRecord selected && candidate.Records.Any(record => record.Id == selected.Id))
+                    SelectRecord(selected);
+                QueueGoogleDriveSync();
+            }
             if (!_isClosed && candidate != null && _lastLandingBugReport.TryRetain(candidate))
             {
                 SetUploadStatus("Footer.ReportReady");
@@ -1920,62 +1931,71 @@ public partial class MainWindow : Window
         IReadOnlyList<AirportFacility> knownFacilities,
         DateTime episodeTimestampUtc)
     {
-        var samples = TelemetryDeduplicator.Deduplicate(eventArgs.Samples);
+        // Keep the capture's raw frames untouched for diagnostics. Every consumer
+        // below (geometry, contact/G analysis, controls and 3D storage) must use
+        // the same active-time sequence with confirmed SDK pauses removed.
+        var prepared = TelemetryAnalysisFrames.Prepare(eventArgs.Samples);
+        var samples = TelemetryDeduplicator.Deduplicate(prepared);
         var journal = eventArgs.DecisionJournal ?? new TelemetryDecisionJournal();
         var time = samples.Count == 0 ? 0 : samples[samples.Count - 1].SimulationTimeSeconds;
-        journal.Record(time, "analysis", "frames_deduplicated", "Kept the last frame per simulation timestamp and physics state, preserving pause/resume boundaries.",
-            new Dictionary<string, double> { ["received"] = eventArgs.Samples.Count, ["retained"] = samples.Count });
-        if (eventArgs.IsDiagnosticOnly)
+        journal.Record(time, "analysis", "frames_deduplicated", "Excluded confirmed SDK pauses from the analysis timeline, then kept the latest same-time frame without erasing unknown physics interruptions.",
+            new Dictionary<string, double> { ["received"] = eventArgs.Samples.Count, ["analysis_frames"] = prepared.Count, ["retained"] = samples.Count });
+        if (eventArgs.IsDiagnosticOnly || samples.Count == 0)
         {
             // Record the rejection without loading aircraft configuration or touching landing history.
             TouchdownAnalysis.Analyze(samples, new TouchdownAnalysisOptions { DecisionJournal = journal });
             journal.Record(time, "analysis", "diagnostic_only", "Retained raw and decisions; no landing is saved.");
             return ProcessedEpisode.Completed(knownFacilities, Array.Empty<LandingRecord>(), journal.Snapshot());
         }
-        if (ReplayTelemetryDetector.IsReplayLike(samples))
-        {
-            journal.Record(time, "analysis", "replay_rejected", "Kinematic consistency check rejected this episode as replay-like.");
-            return ProcessedEpisode.Replay(journal.Snapshot());
-        }
-
         // The episode carries a point-in-time copy of the recorder's facility
         // list. Use it for this analysis, but never write it back to the shared
         // cache: a newer facilities event may already have been persisted while
         // geometry analysis was running, and this stale snapshot must not win.
         var facilities = MergeAirportFacilities(knownFacilities, eventArgs.AirportFacilities);
 
-        var analysisOptions = await _flightModelGeometryResolver.CreateAnalysisOptionsAsync(
-                eventArgs.AircraftTitle,
-                eventArgs.AircraftType,
-                eventArgs.AircraftModel,
-                samples)
-            .ConfigureAwait(false);
-        analysisOptions ??= new TouchdownAnalysisOptions();
-        analysisOptions.DecisionJournal = journal;
-        var touchdowns = TouchdownAnalysis.Analyze(samples, analysisOptions);
-        var savedRecords = new List<LandingRecord>(touchdowns.Count);
-        foreach (var touchdown in touchdowns)
+        var savedRecords = new List<LandingRecord>();
+        var anyReplay = false;
+        var anyAnalyzed = false;
+        foreach (var rawSegment in TelemetryKinematicDiscontinuity.SplitPhysicalSegments(eventArgs.Samples))
         {
-            var aircraftType = eventArgs.AircraftType == "unknown"
-                ? eventArgs.AircraftModel
-                : eventArgs.AircraftType;
-            var record = LandingRecordFactory.Create(
-                touchdown,
-                samples,
-                eventArgs.AircraftTitle,
-                aircraftType,
-                contactCount: touchdowns.Count,
-                timestampUtc: episodeTimestampUtc,
-                episodeEndSimulationTimeSeconds: samples[samples.Count - 1].SimulationTimeSeconds);
-            record.Simulator = eventArgs.Simulator;
-            record.ControlInputSources = eventArgs.ControlInputSources.ToList();
-            TryResolveAirport(record, facilities);
-            lock (_landingRepositoryGate)
+            var segment = TelemetryDeduplicator.Deduplicate(TelemetryAnalysisFrames.Prepare(rawSegment, journal));
+            if (segment.Count == 0) continue;
+            if (ReplayTelemetryDetector.IsReplayLike(segment))
             {
-                _repository.Save(record);
+                journal.Record(TelemetryAnalysisFrames.TimeOf(segment[0]), "analysis", "replay_rejected",
+                    "Kinematic consistency check rejected this physical segment as replay-like; other segments remain independent.");
+                anyReplay = true;
+                continue;
             }
-            savedRecords.Add(record);
+            anyAnalyzed = true;
+            // Datum recovery from telemetry is also segment-local: not just the
+            // contact detector, but the geometry options themselves must never
+            // be calibrated using another flight's positions or rotations.
+            var analysisOptions = await _flightModelGeometryResolver.CreateAnalysisOptionsAsync(
+                    eventArgs.AircraftTitle, eventArgs.AircraftType, eventArgs.AircraftModel, segment)
+                .ConfigureAwait(false);
+            analysisOptions ??= new TouchdownAnalysisOptions();
+            analysisOptions.DecisionJournal = journal;
+            var touchdowns = TouchdownAnalysis.Analyze(segment, analysisOptions);
+            var segmentIdentity = Guid.NewGuid().ToString("N");
+            foreach (var touchdown in touchdowns)
+            {
+                var aircraftType = eventArgs.AircraftType == "unknown" ? eventArgs.AircraftModel : eventArgs.AircraftType;
+                var record = LandingRecordFactory.Create(
+                    touchdown, rawSegment, eventArgs.AircraftTitle, aircraftType,
+                    contactCount: touchdowns.Count(contact => contact.EpisodeNumber == touchdown.EpisodeNumber),
+                    timestampUtc: episodeTimestampUtc,
+                    episodeEndSimulationTimeSeconds: TelemetryAnalysisFrames.TimeOf(segment[segment.Count - 1]));
+                record.RecordingEpisodeId = segmentIdentity + ":" + touchdown.EpisodeNumber.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                record.Simulator = eventArgs.Simulator;
+                record.ControlInputSources = eventArgs.ControlInputSources.ToList();
+                TryResolveAirport(record, facilities);
+                lock (_landingRepositoryGate) _repository.Save(record);
+                savedRecords.Add(record);
+            }
         }
+
+        if (anyReplay && !anyAnalyzed) return ProcessedEpisode.Replay(journal.Snapshot());
 
         journal.Record(time, "analysis", "episode_analyzed", "Finished analysis of the retained landing episode.",
             new Dictionary<string, double> { ["contacts"] = savedRecords.Count });

@@ -73,6 +73,23 @@ internal static class ReplayControlEpisodeRegressionTests
         Require(ReplayControlInputs.Resolve(stale, new[] { first }).Sample(stale.Series[17].TimeSeconds).PitchPercent == null,
             "episode reuse cannot bypass raw-axis validity and freshness");
         Legacy();
+        ExplicitIdentity(first, second, expected, independent);
+    }
+
+    private static void ExplicitIdentity(LandingRecord first, LandingRecord second,
+        ReplayControlInputs expected, ReplayControlInputs independent)
+    {
+        first.RecordingEpisodeId = second.RecordingEpisodeId = "capture:1";
+        var otherFirst = Contact(1); otherFirst.RecordingEpisodeId = "capture:2";
+        var otherSecond = Contact(2); otherSecond.RecordingEpisodeId = "capture:2";
+        var contacts = new[] { otherFirst, second, otherSecond, first };
+        Require(Sources(ReplayControlInputs.Resolve(second, contacts)).SequenceEqual(Sources(expected)),
+            "same-timestamp physical episodes do not hide each other's canonical first contact");
+        Require(Sources(ReplayControlInputs.Resolve(second, new[] { otherFirst, otherSecond })).SequenceEqual(Sources(independent)),
+            "an explicitly different physical episode cannot supply axis matching evidence");
+        var legacyFirst = Contact(1);
+        Require(Sources(ReplayControlInputs.Resolve(second, new[] { legacyFirst })).SequenceEqual(Sources(independent)),
+            "a missing identity cannot supply axis matching evidence to a new episode");
     }
 
     private static LandingRecord Contact(int number)

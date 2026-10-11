@@ -17,6 +17,7 @@ internal static class LandingReplayStorageRegressionTests
         {
             var sample = new TelemetrySample {
                 SimulationTimeSeconds = 10 + i * .1, LatitudeDegrees = 0, LongitudeDegrees = 25.1 + i * .0001,
+                MotionSimulation = true,
                 PlaneAltitudeFeet = 220 + i * .25, GroundAltitudeFeet = 210,
                 HeadingTrueDegrees = 359 + i * .1, PitchDegrees = -2, BankDegrees = 3,
                 GForce = 1.2, AboveGroundLevelFeet = 10, OnGround = i >= 2,
@@ -31,7 +32,11 @@ internal static class LandingReplayStorageRegressionTests
         }).ToArray();
         var result = new TouchdownResult { SimulationTimeSeconds = 10.2, EstimatedContactTimeSeconds = 10.2 };
         var record = LandingRecordFactory.Create(result, samples, "Test", "Test");
-        var episodeSamples = samples.Concat(new[] { new TelemetrySample { SimulationTimeSeconds = 32, AboveGroundLevelFeet = 0, OnGround = true } }).ToArray();
+        record.RecordingEpisodeId = "stable-capture-identity:2";
+        Assert(LandingRepository.CreateSummary(record).RecordingEpisodeId == record.RecordingEpisodeId,
+            "summary cloning preserves physical episode identity");
+        var episodeSamples = samples.Concat(new[] { new TelemetrySample { SimulationTimeSeconds = 32,
+            MotionSimulation = true, AboveGroundLevelFeet = 0, OnGround = true } }).ToArray();
         var episode = LandingRecordFactory.Create(result, episodeSamples, "Test", "Test", contactCount: 3, episodeEndSimulationTimeSeconds: 32);
         Assert(episode.Series.Last().TimeSeconds > 21, "first bounce contact retains final episode rollout");
         Assert(record.Series.Count == 5, "all fixture samples retained");
@@ -50,6 +55,8 @@ internal static class LandingReplayStorageRegressionTests
             repository.Save(record);
             var summary = new LandingRepository(directory).LoadAll().Single();
             var restored = repository.LoadDetail(summary)!;
+            Assert(summary.RecordingEpisodeId == record.RecordingEpisodeId && restored.RecordingEpisodeId == record.RecordingEpisodeId,
+                "index and detail round-trips preserve physical episode identity");
             Assert(summary.RunwayGeometry?.PrimaryName == "09", "runway retained in summary");
             Assert(restored.Series[4].LongitudeDegrees == samples[4].LongitudeDegrees, "GPS precision survives persistence");
             Assert(restored.Series[4].HeadingTrueDegrees == samples[4].HeadingTrueDegrees, "true heading survives persistence");
@@ -65,6 +72,16 @@ internal static class LandingReplayStorageRegressionTests
             var cloud = new LandingRepository(Path.Combine(directory, "cloud")).Import(bytes);
             Assert(cloud.RunwayGeometry?.WidthMeters == 45 && cloud.RawControllerAxesSourceIndices.SequenceEqual(record.RawControllerAxesSourceIndices), "cloud import preserves runway and mapping");
             Assert(cloud.Series[0].PlaneAltitudeFeet == 220, "cloud import preserves replay positions");
+            Assert(cloud.RecordingEpisodeId == record.RecordingEpisodeId, "cloud import preserves physical episode identity");
+
+            record.RecordingEpisodeId = null;
+            var legacyBytes = repository.SerializeForBackup(record);
+            using var legacyInput = new MemoryStream(legacyBytes);
+            using var legacyGzip = new GZipStream(legacyInput, CompressionMode.Decompress);
+            using var legacyReader = new StreamReader(legacyGzip, Encoding.UTF8);
+            Assert(!legacyReader.ReadToEnd().Contains("RecordingEpisodeId"), "legacy records do not gain fabricated identity metadata");
+            Assert(repository.DeserializeBackup(legacyBytes).RecordingEpisodeId == null,
+                "pre-identity v7 files remain readable with an absent identity");
         }
         finally { if (Directory.Exists(directory)) Directory.Delete(directory, true); }
 

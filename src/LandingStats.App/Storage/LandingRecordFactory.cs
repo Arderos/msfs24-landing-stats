@@ -28,6 +28,15 @@ public static class LandingRecordFactory
         DateTime? timestampUtc = null,
         double? episodeEndSimulationTimeSeconds = null)
     {
+        // A capture imported from an older client can contain a respawn or
+        // relocation. Keep this contact's original physical segment for every
+        // stored channel, then apply the shared pause clock and deduplication.
+        samples = TelemetryDeduplicator.Deduplicate(TelemetryAnalysisFrames.Prepare(
+            TelemetryKinematicDiscontinuity.SelectContactSegment(samples, result.Sequence, result.SimulationTimeSeconds)));
+        var activeSamples = new List<TelemetrySample>(samples.Count);
+        foreach (var sample in samples)
+            if (sample.MotionSimulation && sample.AnalysisDiscontinuity == null) activeSamples.Add(sample);
+        samples = activeSamples;
         var geometrySource = result.ClosureReconstructionGeometrySource;
         if (result.ClosureReconstructionAvailable && geometrySource == TouchdownGeometrySource.Unavailable)
         {
@@ -443,9 +452,7 @@ public static class LandingRecordFactory
 
     private static double TimeOf(TelemetrySample sample)
     {
-        return Math.Abs(sample.SimulationTimeSeconds) > 0.000000001
-            ? sample.SimulationTimeSeconds
-            : sample.HostElapsedSeconds;
+        return TelemetryAnalysisFrames.TimeOf(sample);
     }
 
     private static void AddEngineSeries(LandingRecord record, IReadOnlyList<StoredSample> samples)

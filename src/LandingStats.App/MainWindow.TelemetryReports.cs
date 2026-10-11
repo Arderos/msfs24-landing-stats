@@ -105,34 +105,27 @@ public partial class MainWindow
             records = Array.Empty<LandingRecord>();
         }
 
-        var facilities = Array.Empty<RunwayFacility>();
         try
         {
-            // Match the recorder's bounded facilities lookup, without delaying the
-            // saved landing/UI or waiting for network upload at shutdown.
-            using var deadline = CancellationTokenSource.CreateLinkedTokenSource(_lifetimeCancellation.Token);
-            var wait = Task.Delay(TimeSpan.FromSeconds(60), deadline.Token);
-            if (await Task.WhenAny(episode.RunwayFacilitiesTask, wait).ConfigureAwait(false) == episode.RunwayFacilitiesTask)
-            {
-                facilities = (await episode.RunwayFacilitiesTask.ConfigureAwait(false)).ToArray();
-                deadline.Cancel();
-            }
+            var site = await AwaitEpisodeFacilitiesAsync(episode).ConfigureAwait(false);
+            var candidateCount = site.FinalRunways.Count + site.PreliminaryRunways.Count;
             // Airport replies can arrive after the analyzer snapshot. Preserve
             // these real lookup decisions without duplicating earlier entries.
             if (episode.DecisionJournal != null && !ReferenceEquals(journal, episode.DecisionJournal))
                 foreach (var entry in episode.DecisionJournal.Snapshot().Entries.Where(entry =>
-                    entry.Component == "runway.airports" && analysisDecisions?.Entries.Contains(entry) != true))
+                    entry.Component.StartsWith("runway.", StringComparison.Ordinal) &&
+                    analysisDecisions?.Entries.Contains(entry) != true))
                     journal.Record(entry.TimeSeconds, entry.Component, entry.Code, entry.Reason, entry.Details);
-            journal.Record(time, "runway", episode.IsDiagnosticOnly ? "lookup_not_required" : facilities.Length > 0 ? "facilities_received" : "facilities_unavailable",
+            journal.Record(time, "runway", episode.IsDiagnosticOnly ? "lookup_not_required" : candidateCount > 0 ? "facilities_received" : "facilities_unavailable",
                 episode.IsDiagnosticOnly ? "Rejected ground transition retained for diagnostics only; no landing or runway lookup." :
-                facilities.Length > 0 ? "Used this episode's simulator facility snapshot." :
+                candidateCount > 0 ? "Used this episode's preliminary and final simulator facility snapshots." :
                 _lifetimeCancellation.IsCancellationRequested ? "Application closed before runway geometry became available." :
                 "Simulator returned no usable geometry or the facility lookup expired.",
-                new Dictionary<string, double> { ["candidates"] = facilities.Length });
+                new Dictionary<string, double> { ["candidates"] = candidateCount });
             foreach (var record in records)
             {
                 var runwayJournal = new TelemetryDecisionJournal();
-                RunwayResolver.TryApply(record, facilities, runwayJournal);
+                LandingSiteResolver.Apply(record, site, runwayJournal);
                 foreach (var entry in runwayJournal.Snapshot().Entries)
                 {
                     var details = entry.Details.ToDictionary(pair => pair.Key, pair => pair.Value);
@@ -140,8 +133,18 @@ public partial class MainWindow
                     details["relative_contact_time"] = 1;
                     journal.Record(entry.TimeSeconds, entry.Component, entry.Code, entry.Reason, details);
                 }
-                LandingReplayDiagnostics.Record(record, records, journal);
             }
+            // Resolve the archived copies AND durable history from the same
+            // result. A fresh ARP reply remains useful when no runway matched.
+            try
+            {
+                if (records.Count > 0) LandingSiteMetadataPersistence.Save(_repository, _landingRepositoryGate, records);
+            }
+            catch (Exception exception)
+            {
+                journal.Record(time, "storage", "site_metadata_save_failed", exception.GetType().Name);
+            }
+            foreach (var record in records) LandingReplayDiagnostics.Record(record, records, journal);
         }
         catch (Exception exception)
         {
@@ -163,5 +166,19 @@ public partial class MainWindow
             catch (Exception exception) { Debug.WriteLine(exception); }
         }
         return candidate;
+    }
+
+    private async Task<EpisodeFacilitySnapshot> AwaitEpisodeFacilitiesAsync(LandingEpisodeEventArgs episode)
+    {
+        if (episode.FacilitiesTask.IsCompleted) return await episode.FacilitiesTask.ConfigureAwait(false);
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(_lifetimeCancellation.Token);
+        var wait = Task.Delay(TimeSpan.FromSeconds(60), deadline.Token);
+        await Task.WhenAny(episode.FacilitiesTask, wait).ConfigureAwait(false);
+        if (episode.FacilitiesTask.IsCompleted)
+        {
+            deadline.Cancel();
+            return await episode.FacilitiesTask.ConfigureAwait(false);
+        }
+        return episode.InitialFacilities;
     }
 }

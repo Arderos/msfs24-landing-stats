@@ -1,0 +1,89 @@
+# Optional LAN-only companion. This does not modify or restart the ingress service.
+# docker compose -f docker-compose.yml -f docker-compose.dashboard.yml build telemetry-dashboard
+# docker compose -f docker-compose.yml -f docker-compose.dashboard.yml up -d --no-deps telemetry-dashboard-snapshot telemetry-dashboard
+services:
+  telemetry-dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile.dashboard
+    image: msfs-landing-telemetry-dashboard:local
+    restart: unless-stopped
+    environment:
+      DATA_ROOT: /data
+      CACHE_ROOT: /cache
+      DASHBOARD_SNAPSHOT_PATH: /snapshot/metadata.json
+      DASHBOARD_ALLOWED_HOSTS: "${DASHBOARD_ALLOWED_HOSTS:-astr-scad-01,172.16.20.32,localhost,127.0.0.1}"
+      DASHBOARD_ALLOWED_NETWORKS: "${DASHBOARD_ALLOWED_NETWORKS:-172.16.0.0/16,127.0.0.0/8,::1/128}"
+    ports:
+      - "${DASHBOARD_BIND_ADDRESS:-172.16.20.32}:8091:8091"
+    volumes:
+      - /srv/msfs-landing-telemetry/data/accepted:/data/accepted:ro
+      - dashboard-cache:/cache
+      - dashboard-snapshot:/snapshot:ro
+    networks:
+      - dashboard_lan
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 64
+    cpus: 0.50
+    mem_limit: 384m
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8091/health', timeout=3).read()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  telemetry-dashboard-snapshot:
+    image: msfs-landing-telemetry-dashboard:local
+    command: ["python", "-m", "app.dashboard_snapshot"]
+    restart: unless-stopped
+    environment:
+      DATA_ROOT: /data
+      DASHBOARD_SNAPSHOT_PATH: /snapshot/metadata.json
+      STORAGE_QUOTA_BYTES: "21474836480"
+      RETENTION_DAYS: "30"
+    volumes:
+      # Only this networkless helper may create SQLite's same-UID WAL/SHM files.
+      # The database and archive files themselves cannot be written even here.
+      - /srv/msfs-landing-telemetry/data:/data
+      - /srv/msfs-landing-telemetry/data/telemetry.sqlite3:/data/telemetry.sqlite3:ro
+      - /srv/msfs-landing-telemetry/data/accepted:/data/accepted:ro
+      - dashboard-snapshot:/snapshot
+    network_mode: none
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 32
+    cpus: 0.10
+    mem_limit: 128m
+    healthcheck:
+      test: ["CMD", "python", "-c", "import pathlib,time; p=pathlib.Path('/snapshot/metadata.json'); assert time.time()-p.stat().st_mtime < 100"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: "2m"
+        max-file: "2"
+
+networks:
+  # A dedicated bridge is needed for Docker's host-port publishing. It is not
+  # shared with ingress/cloudflared; exposure is constrained by host IP + HTTP ACL.
+  dashboard_lan:
+
+volumes:
+  dashboard-cache:
+  dashboard-snapshot:

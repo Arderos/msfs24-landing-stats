@@ -49,7 +49,7 @@ UNREFERENCED_INSTALLATION_RETENTION_DAYS = int(
 PEPPER_PATH = Path(os.environ.get("SERVER_PEPPER_FILE", "/run/secrets/server_pepper"))
 EXPECTED_HEADERS = {
     version: (Path(__file__).parent.parent / f"schema-v{version}.header").read_text(encoding="utf-8").strip()
-    for version in (5, 6)
+    for version in (5, 6, 7)
 }
 STORE = Store(DATA_ROOT)
 

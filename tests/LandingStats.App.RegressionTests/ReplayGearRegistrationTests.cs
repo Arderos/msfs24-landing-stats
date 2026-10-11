@@ -344,6 +344,7 @@ internal static class ReplayGearRegistrationTests
             samples.Add(new TelemetrySample
             {
                 SimulationTimeSeconds = time, LatitudeDegrees = 42 + (time - 80) * .0005, LongitudeDegrees = 23,
+                MotionSimulation = true,
                 GroundAltitudeFeet = 1000, PlaneAltitudeFeet = 1000 + height / .3048, AboveGroundLevelFeet = height / .3048,
                 HeadingTrueDegrees = 0, PitchDegrees = -5, BankDegrees = -1, GForce = 1,
                 OnGround = time >= 100 && time <= 101 || time >= 103.20,

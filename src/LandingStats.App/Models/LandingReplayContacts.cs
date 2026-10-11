@@ -10,15 +10,26 @@ internal static class LandingReplayContacts
 {
     internal static IReadOnlyList<LandingRecord> ForEpisode(LandingRecord selected, IEnumerable<LandingRecord> records)
     {
-        // Native contacts share the episode's UTC timestamp. Do not guess from
-        // proximity in time, airport names or extra OnGround transitions.
+        // A single capture may contain distinct physical episodes with the same
+        // UTC timestamp. New records must share their explicit episode identity;
+        // timestamp-based grouping remains only when both records are legacy.
+        // Never guess from proximity, airport names or extra OnGround transitions.
         return new[] { selected }.Concat(records.Where(r => selected.ContactCount > 1 &&
                 r.Id != selected.Id && r.TimestampUtc == selected.TimestampUtc &&
+                SameRecordingEpisode(selected, r) &&
                 r.Simulator == selected.Simulator && r.AircraftTitle == selected.AircraftTitle &&
                 r.AircraftType == selected.AircraftType && r.ContactCount == selected.ContactCount &&
                 r.ContactNumber >= 1 && r.ContactNumber <= selected.ContactCount && r.ContactNumber != selected.ContactNumber))
             .GroupBy(r => r.Id).Select(g => g.First()).GroupBy(r => r.ContactNumber)
             .Where(g => g.Count() == 1).Select(g => g.Single()).OrderBy(r => r.ContactNumber).ToArray();
+    }
+
+    private static bool SameRecordingEpisode(LandingRecord selected, LandingRecord candidate)
+    {
+        var selectedHasIdentity = !string.IsNullOrWhiteSpace(selected.RecordingEpisodeId);
+        var candidateHasIdentity = !string.IsNullOrWhiteSpace(candidate.RecordingEpisodeId);
+        return selectedHasIdentity == candidateHasIdentity && (!selectedHasIdentity ||
+            string.Equals(selected.RecordingEpisodeId, candidate.RecordingEpisodeId, StringComparison.Ordinal));
     }
 
     internal static IReadOnlyList<Point3D> GroundPositions(LandingRecord selected, LandingReplayTrack track, IEnumerable<LandingRecord> records, TelemetryDecisionJournal? journal = null)

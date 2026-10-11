@@ -121,9 +121,12 @@ class EnrollmentApiTests(unittest.TestCase):
         header = service.EXPECTED_HEADERS[schema]
         values = ["0"] * len(header.split(","))
         values[0] = "1"
-        if schema == 6:
+        if schema >= 6:
             values[header.split(",").index("controller_7_raw_v_percent")] = "-63.5"
             values[header.split(",").index("controller_7_raw_v_valid")] = "1"
+        if schema >= 7:
+            values[header.split(",").index("analysis_time_s")] = "NaN"
+            values[header.split(",").index("pause_flags")] = "-1"
         content = io.BytesIO()
         with zipfile.ZipFile(content, "w", compression=zipfile.ZIP_DEFLATED) as archive:
             archive.writestr("telemetry.csv", header + "\n" + ",".join(values) + "\n")
@@ -161,10 +164,10 @@ class EnrollmentApiTests(unittest.TestCase):
         with TestClient(service.app) as client:
             config = client.get("/v1/config").json()
             self.assertEqual(5, config["telemetry_schema"])
-            self.assertEqual([5, 6], config["telemetry_schemas"])
+            self.assertEqual([5, 6, 7], config["telemetry_schemas"])
             self.assertEqual(["raw_debug", "bug_report", "automatic_landing"], config["capture_kinds"])
             self.assertEqual([1], config["decision_journal_formats"])
-            for schema in (5, 6):
+            for schema in (5, 6, 7):
                 body, headers = self._signed_capture(schema)
                 response = client.post("/v1/captures", content=body, headers=headers)
                 self.assertEqual(201, response.status_code, response.text)
@@ -176,7 +179,7 @@ class EnrollmentApiTests(unittest.TestCase):
 
     def test_signed_automatic_report_persists_kind_and_journal(self):
         with TestClient(service.app) as client:
-            body, headers = self._signed_capture(6, automatic=True)
+            body, headers = self._signed_capture(7, automatic=True)
             response = client.post("/v1/captures", content=body, headers=headers)
             self.assertEqual(201, response.status_code, response.text)
             with self.store.connect() as connection:

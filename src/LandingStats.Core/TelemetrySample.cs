@@ -1,5 +1,13 @@
 namespace LandingStats.Core;
 
+public enum TelemetrySimulatorState
+{
+    Legacy = 0,
+    Running = 1,
+    Paused = 2,
+    Inactive = 3,
+}
+
 public sealed class TelemetrySample
 {
     // SimConnect documents numeric contact-point indices in the inclusive 0-19 range.
@@ -17,6 +25,29 @@ public sealed class TelemetrySample
     public double SimulationTimeSeconds { get; set; }
 
     public double SimulationDeltaSeconds { get; set; }
+
+    // Raw simulator clocks remain unchanged. The recorder supplies this clock
+    // only after removing SDK-confirmed pause time within a flight segment.
+    public double AnalysisTimeSeconds { get; set; } = double.NaN;
+
+    public TelemetrySimulatorState SimulatorState { get; set; }
+
+    public int PauseFlags { get; set; } = -1;
+
+    public long FlightSegment { get; set; }
+
+    // Only an analysis-owned inactive sentinel sets this marker. It is not a
+    // simulator observation and is deliberately absent from the raw CSV schema.
+    public TelemetryPositionDiscontinuity? AnalysisDiscontinuity { get; internal set; }
+
+    /// <summary>Analysis owns the scalar copy; its shared telemetry arrays are read-only.</summary>
+    public TelemetrySample CopyForAnalysis()
+    {
+        var copy = (TelemetrySample)MemberwiseClone();
+        if (!double.IsNaN(AnalysisTimeSeconds) && !double.IsInfinity(AnalysisTimeSeconds))
+            copy.SimulationTimeSeconds = AnalysisTimeSeconds;
+        return copy;
+    }
 
     public bool OnGround { get; set; }
 

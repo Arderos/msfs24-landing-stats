@@ -212,6 +212,10 @@ public sealed class LandingRecord
     [DataMember(Order = 66, EmitDefaultValue = false)]
     public double? EstimatedContactTimeSeconds { get; set; }
 
+    /// <summary>Stable identity shared by the contacts of one physical landing episode; absent in older records.</summary>
+    [DataMember(Order = 67, EmitDefaultValue = false)]
+    public string? RecordingEpisodeId { get; set; }
+
     [IgnoreDataMember]
     public bool IsSummaryOnly { get; set; }
 

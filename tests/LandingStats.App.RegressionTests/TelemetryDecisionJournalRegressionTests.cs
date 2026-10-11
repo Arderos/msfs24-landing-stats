@@ -151,7 +151,8 @@ internal static class TelemetryDecisionJournalRegressionTests
         Assert(end.Details["same_time_frames_coalesced"] == 99 &&
                end.Details["non_motion_frames_observed_after_start"] == 100,
             "paused deliveries were not accurately aggregated");
-        Assert(completed.Samples.Count == 5 && entries.Count < 10, "diagnostics lost physics boundaries or spammed one event per paused frame");
+        Assert(completed.Samples.Count == 5 && entries.Count(entry => entry.Component == "recorder") < 10,
+            "diagnostics lost physics boundaries or spammed one recorder event per paused frame");
         Assert(RecorderJournal(recorder) == null, "completed journal is still attached to recorder");
         Feed(recorder, Approach(18));
         Assert(RecorderJournal(recorder) != null && !ReferenceEquals(RecorderJournal(recorder), journal),

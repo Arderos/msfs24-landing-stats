@@ -47,6 +47,39 @@ internal static class ReplayContactMarkersTests
         var across = LandingReplayContacts.GroundPositions(records[0], origin!, new[] { dateLine });
         Require((across[1] - origin!.ProjectGeo(42.002, 180, 1000)).Length < .00001,
             "Longitude interpolation takes the short path across the date line.");
+        ExplicitEpisodeIdentity();
+    }
+
+    private static void ExplicitEpisodeIdentity()
+    {
+        // A capture can contain two discontinuity-separated landing episodes,
+        // each with a bounce and the same capture timestamp/aircraft metadata.
+        var first = new[] { Record(1), Record(2) };
+        var second = new[] { Record(1), Record(2) };
+        foreach (var record in first) { record.ContactCount = 2; record.RecordingEpisodeId = "capture:1"; }
+        foreach (var record in second) { record.ContactCount = 2; record.RecordingEpisodeId = "capture:2"; }
+        foreach (var episode in new[] { first, second })
+        foreach (var selected in episode)
+        {
+            var matches = LandingReplayContacts.ForEpisode(selected, first.Concat(second));
+            Require(matches.Select(r => r.Id).SequenceEqual(episode.Select(r => r.Id)),
+                "Distinct physical episodes retain both bounce contacts without merging matching contact numbers.");
+            Require(LandingReplayTrack.TryCreate(selected, out var track) &&
+                LandingReplayContacts.GroundPositions(selected, track!, first.Concat(second)).Count == 2,
+                "Every explicit episode displays exactly its own two contact markers.");
+        }
+
+        var legacy = Record(2); legacy.ContactCount = 2;
+        Require(LandingReplayContacts.ForEpisode(first[0], new[] { legacy }).Count == 1,
+            "An explicit episode never borrows a legacy contact with matching metadata.");
+        Require(LandingReplayContacts.ForEpisode(legacy, new[] { first[0] }).Count == 1,
+            "A legacy episode never borrows an explicitly identified contact.");
+        var legacyFirst = Record(1); legacyFirst.ContactCount = 2;
+        Require(LandingReplayContacts.ForEpisode(legacy, new[] { legacyFirst }).Count == 2,
+            "Two records without episode identity retain the existing legacy grouping.");
+        var caseVariant = Record(2); caseVariant.ContactCount = 2; caseVariant.RecordingEpisodeId = "CAPTURE:1";
+        Require(LandingReplayContacts.ForEpisode(first[0], new[] { caseVariant }).Count == 1,
+            "Episode identities compare ordinally rather than collapsing different strings.");
     }
 
     private static MeshGeometry3D Marker(LandingReplayView view)
