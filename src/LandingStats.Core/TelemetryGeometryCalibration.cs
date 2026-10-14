@@ -18,7 +18,8 @@ public sealed class TelemetryGeometryCalibrationResult
         int mainOnlySampleCount,
         int datumPhaseCount,
         int datumWindowCount,
-        double quality)
+        double quality,
+        int loadedWheelSampleCount = 0)
     {
         LongitudinalArmFeet = longitudinalArmFeet;
         PitchArmFeet = pitchArmFeet;
@@ -28,6 +29,7 @@ public sealed class TelemetryGeometryCalibrationResult
         DatumPhaseCount = datumPhaseCount;
         DatumWindowCount = datumWindowCount;
         Quality = quality;
+        LoadedWheelSampleCount = loadedWheelSampleCount;
     }
 
     /// <summary>
@@ -54,13 +56,19 @@ public sealed class TelemetryGeometryCalibrationResult
 
     public int MainOnlySampleCount { get; }
 
+    /// <summary>Sum of loaded main-wheel observations used by the spatial fallback;
+    /// zero for the established main-only calibration.</summary>
+    public int LoadedWheelSampleCount { get; }
+
+    public bool UsesSpatialArmInference => LoadedWheelSampleCount > 0;
+
     public int DatumPhaseCount { get; }
 
     public int DatumWindowCount { get; }
 
     /// <summary>
     /// A 0..1 identifiability score, not a statistical probability. It combines
-    /// pitch/compression separation, four-phase coverage, and agreement across
+    /// design/refit evidence, four-phase coverage, and agreement across
     /// interleaved datum-phase estimates.
     /// </summary>
     public double Quality { get; }
@@ -105,11 +113,15 @@ internal sealed class TelemetryGearTopology
     public TelemetryGearTopology(
         int[] mainContactPointIndices,
         int[] noseContactPointIndices,
-        bool usesClusteredWheelInference = false)
+        bool usesClusteredWheelInference = false,
+        bool usesSpatialInference = false,
+        TelemetrySpatialGearTopology.Evidence? spatialEvidence = null)
     {
         MainContactPointIndices = mainContactPointIndices;
         NoseContactPointIndices = noseContactPointIndices;
         UsesClusteredWheelInference = usesClusteredWheelInference;
+        UsesSpatialInference = usesSpatialInference;
+        SpatialEvidence = spatialEvidence;
     }
 
     public int[] MainContactPointIndices { get; }
@@ -119,6 +131,27 @@ internal sealed class TelemetryGearTopology
     public int[] NoseContactPointIndices { get; }
 
     public bool UsesClusteredWheelInference { get; }
+
+    public bool UsesSpatialInference { get; }
+
+    internal TelemetrySpatialGearTopology.Evidence? SpatialEvidence { get; }
+}
+
+internal enum TelemetryGeometryFailure
+{
+    None,
+    InsufficientSamples,
+    UnsupportedTopology,
+    IncompleteSettledGear,
+    InsufficientDerotation,
+    InsufficientMainOnlyEvidence,
+    AmbiguousContactRoles,
+    ConflictingSpatialRoles,
+    UnstableSpatialArm,
+    UnstablePitchArm,
+    DatumOffsetUnavailable,
+    InvalidArm,
+    LowCalibrationQuality,
 }
 
 /// <summary>
@@ -146,7 +179,7 @@ public static class TelemetryGeometryCalibration
     private const int MinimumSustainedContactSamples = 2;
     private const int MinimumClusteredSettledPointCount = 6;
     private const int MinimumPointsPerCluster = 2;
-    // Conservative operating limits for the additional single-nose fallback,
+    // Conservative limits for additional single-nose and earlier-phase inference,
     // not a confidence interval or a physical bound on reconstruction error.
     private const int MinimumStablePitchRegressionRows = 12;
     private const int ArmStabilityBlockCount = 5;
@@ -164,15 +197,25 @@ public static class TelemetryGeometryCalibration
 
     /// <summary>
     /// Attempts a target-independent calibration. Contact-point indices have no semantic
-    /// meaning here: sustained contact timing and positive pitch derotation provide
-    /// topology evidence. The multi-main/single-nose fallback also requires stable
-    /// pitch-arm estimates across temporal subsets of the main-only observations.
+    /// meaning here: contact timing/derotation and loaded-wheel spatial fits provide
+    /// topology evidence. Repeated contacts must support one consistent set of roles.
+    /// Additional multi-main/single-nose and earlier-phase hypotheses also require
+    /// stable pitch-arm estimates across temporal subsets of main-only observations.
     /// </summary>
     public static bool TryCalibrate(
         IReadOnlyList<TelemetrySample> samples,
         out TelemetryGeometryCalibrationResult result)
     {
+        return TryCalibrate(samples, out result, out _);
+    }
+
+    internal static bool TryCalibrate(
+        IReadOnlyList<TelemetrySample> samples,
+        out TelemetryGeometryCalibrationResult result,
+        out TelemetryGeometryFailure failure)
+    {
         result = null!;
+        failure = TelemetryGeometryFailure.InsufficientSamples;
         if (samples is null || samples.Count < MinimumPitchRegressionRows)
         {
             return false;
@@ -186,7 +229,7 @@ public static class TelemetryGeometryCalibration
             return false;
         }
 
-        if (!TryDetectConventionalTopology(ordered, out var topology))
+        if (!TryDetectConventionalTopology(ordered, out var topology, out failure))
         {
             return false;
         }
@@ -204,7 +247,7 @@ public static class TelemetryGeometryCalibration
         SanitizeIsolatedSpikes(planeAltitude);
         SanitizeIsolatedSpikes(groundAltitude);
 
-        if (!TryRecoverPitchArm(
+        var pitchRecovered = TryRecoverPitchArm(
                 ordered,
                 times,
                 planeAltitude,
@@ -212,9 +255,28 @@ public static class TelemetryGeometryCalibration
                 topology,
                 out var pitchArm,
                 out var mainOnlySampleCount,
-                out var designIndependence))
+                out var designIndependence);
+        failure = TelemetryGeometryFailure.InsufficientMainOnlyEvidence;
+        if (pitchRecovered && topology.UsesSpatialInference &&
+            !TryRecoverPitchArm(ordered, times, planeAltitude, groundAltitude, topology,
+                out _, out _, out _, requireStableArm: true))
         {
-            return false;
+            pitchRecovered = false;
+            failure = TelemetryGeometryFailure.UnstablePitchArm;
+        }
+        var loadedWheelSampleCount = 0;
+        if (!pitchRecovered)
+        {
+            var spatial = topology.SpatialEvidence;
+            if (spatial == null || !spatial.StableRoles) return false;
+            if (!spatial.StableMainArm)
+            {
+                failure = TelemetryGeometryFailure.UnstableSpatialArm;
+                return false;
+            }
+            pitchArm = spatial.PitchArmFeet;
+            mainOnlySampleCount = 0;
+            loadedWheelSampleCount = spatial.LoadedWheelSampleCount;
         }
 
         if (!TryRecoverDatumOffsetCore(
@@ -226,24 +288,32 @@ public static class TelemetryGeometryCalibration
                 out var datumPhaseCount,
                 out var datumWindowCount))
         {
+            failure = TelemetryGeometryFailure.DatumOffsetUnavailable;
             return false;
         }
 
         var longitudinalArm = pitchArm + datumOffset;
         if (!IsFinite(longitudinalArm) || Math.Abs(longitudinalArm) > MaximumAbsoluteArmFeet)
         {
+            failure = TelemetryGeometryFailure.InvalidArm;
             return false;
         }
 
         // 0.05 is not a fitted aircraft constant. It merely marks a comfortably
         // non-collinear two-predictor design; values below it are degraded smoothly.
-        var designQuality = Math.Sqrt(Clamp01(designIndependence / 0.05));
+        // Spatial acceptance already checks a standardized three-predictor
+        // condition number and absolute refit bounds. Its conservative score
+        // summarizes refit agreement; it is not a physical error probability.
+        var designQuality = loadedWheelSampleCount > 0
+            ? 0.8 / (1 + Square(topology.SpatialEvidence!.ArmRefitDeviationFeet))
+            : Math.Sqrt(Clamp01(designIndependence / 0.05));
         var phaseCoverage = datumPhaseCount / 4.0;
         var interleavedPhaseAgreement = 1.0 /
             (1.0 + Square(datumStandardDeviation / 0.5));
         var quality = Clamp01(designQuality * phaseCoverage * interleavedPhaseAgreement);
         if (quality < MinimumAcceptedQuality)
         {
+            failure = TelemetryGeometryFailure.LowCalibrationQuality;
             return false;
         }
 
@@ -255,7 +325,9 @@ public static class TelemetryGeometryCalibration
             mainOnlySampleCount,
             datumPhaseCount,
             datumWindowCount,
-            quality);
+            quality,
+            loadedWheelSampleCount);
+        failure = TelemetryGeometryFailure.None;
         return true;
     }
 
@@ -267,6 +339,18 @@ public static class TelemetryGeometryCalibration
     /// </summary>
     public static bool TryRecoverDatumOffset(
         IReadOnlyList<TelemetrySample> samples,
+        out TelemetryDatumOffsetCalibrationResult result) => TryRecoverDatumOffset(samples, false, out result);
+
+    // The observed-point model uses the SDK attitude matrix throughout. Its
+    // forward-axis vertical displacement is exactly -delta(sin(pitch)); the
+    // integrated native angular-rate approximation remains frozen for v1.
+    internal static bool TryRecoverDatumOffsetFromAttitude(
+        IReadOnlyList<TelemetrySample> samples,
+        out TelemetryDatumOffsetCalibrationResult result) => TryRecoverDatumOffset(samples, true, out result);
+
+    private static bool TryRecoverDatumOffset(
+        IReadOnlyList<TelemetrySample> samples,
+        bool useAttitudeDifference,
         out TelemetryDatumOffsetCalibrationResult result)
     {
         result = null!;
@@ -297,7 +381,8 @@ public static class TelemetryGeometryCalibration
                 out var datumOffset,
                 out var standardDeviation,
                 out var phaseCount,
-                out var windowCount))
+                out var windowCount,
+                useAttitudeDifference))
         {
             return false;
         }
@@ -339,13 +424,22 @@ public static class TelemetryGeometryCalibration
         IReadOnlyList<TelemetrySample> samples,
         out TelemetryGearTopology topology)
     {
+        return TryDetectConventionalTopology(samples, out topology, out _);
+    }
+
+    internal static bool TryDetectConventionalTopology(
+        IReadOnlyList<TelemetrySample> samples,
+        out TelemetryGearTopology topology,
+        out TelemetryGeometryFailure failure)
+    {
         topology = null!;
+        failure = TelemetryGeometryFailure.InsufficientSamples;
         if (samples is null)
         {
             return false;
         }
 
-        return TryDetectConventionalTopology(Normalize(samples), out topology);
+        return TryDetectConventionalTopology(Normalize(samples), out topology, out failure);
     }
 
     internal static bool TryCreateConfiguredTopology(
@@ -460,9 +554,43 @@ public static class TelemetryGeometryCalibration
 
     private static bool TryDetectConventionalTopology(
         List<TelemetrySample> samples,
-        out TelemetryGearTopology topology)
+        out TelemetryGearTopology topology,
+        out TelemetryGeometryFailure failure)
+    {
+        var timingAccepted = TryDetectTimingTopology(samples, out topology, out failure);
+        var points = Enumerable.Range(0, TelemetrySample.CapturedContactPointCount)
+            .Where(point => GetSustainedContactRuns(samples, point).Count > 0).ToArray();
+        if (!TelemetrySpatialGearTopology.TryInfer(samples, points, out var spatial)) return timingAccepted;
+        var agrees = timingAccepted && topology.NoseContactPointIndices.Length == 1 &&
+            topology.NoseContactPointIndices[0] == spatial.Nose;
+        if (agrees)
+        {
+            topology = new TelemetryGearTopology(topology.MainContactPointIndices, topology.NoseContactPointIndices,
+                topology.UsesClusteredWheelInference, spatialEvidence: spatial);
+            return true;
+        }
+        if (spatial.StableRoles)
+        {
+            topology = new TelemetryGearTopology(spatial.Mains, new[] { spatial.Nose }, usesSpatialInference: true, spatialEvidence: spatial);
+            failure = TelemetryGeometryFailure.None;
+            return true;
+        }
+        if (timingAccepted)
+        {
+            topology = null!;
+            failure = TelemetryGeometryFailure.ConflictingSpatialRoles;
+            return false;
+        }
+        return false;
+    }
+
+    private static bool TryDetectTimingTopology(
+        List<TelemetrySample> samples,
+        out TelemetryGearTopology topology,
+        out TelemetryGeometryFailure failure)
     {
         topology = null!;
+        failure = TelemetryGeometryFailure.UnsupportedTopology;
         if (samples.Count < MinimumSustainedContactSamples)
         {
             return false;
@@ -485,18 +613,36 @@ public static class TelemetryGeometryCalibration
 
         if (settledRuns.Count < 3)
         {
+            failure = TelemetryGeometryFailure.IncompleteSettledGear;
             return false;
         }
 
         settledRuns.Sort((left, right) => left.StartTime.CompareTo(right.StartTime));
+        var activePoints = runsByPoint.Count(runs => runs.Count > 0);
+        if (activePoints >= 3 && activePoints <= 5 && runsByPoint.Any(runs => runs.Count > 1))
+        {
+            // Retain the settled-gear and foreign-contact guards. Only the roles
+            // are recovered from earlier loading phases, never from index names.
+            if (settledRuns.Count != activePoints)
+            {
+                failure = TelemetryGeometryFailure.IncompleteSettledGear;
+                return false;
+            }
+
+            return TryCreateRepeatedContactTopology(samples, runsByPoint, settledRuns, out topology, out failure);
+        }
+
         if (settledRuns.Count <= 5)
         {
-            return TryCreateSinglePointNoseTopology(samples, runsByPoint, settledRuns, out topology);
+            var accepted = TryCreateSinglePointNoseTopology(samples, runsByPoint, settledRuns, out topology);
+            if (accepted) failure = TelemetryGeometryFailure.None;
+            return accepted;
         }
 
         if (settledRuns.Count >= MinimumClusteredSettledPointCount &&
             TryCreateClusteredWheelTopology(samples, runsByPoint, settledRuns, out topology))
         {
+            failure = TelemetryGeometryFailure.None;
             return true;
         }
 
@@ -515,10 +661,137 @@ public static class TelemetryGeometryCalibration
         if (TryRecoverPitchArm(samples, times, altitude, ground, topology,
                 out _, out _, out _, requireStableArm: true))
         {
+            failure = TelemetryGeometryFailure.None;
             return true;
         }
 
         topology = null!;
+        failure = TelemetryGeometryFailure.UnstablePitchArm;
+        return false;
+    }
+
+    private static bool TryCreateRepeatedContactTopology(
+        List<TelemetrySample> samples,
+        List<ContactRun>[] runsByPoint,
+        List<ContactRun> settledRuns,
+        out TelemetryGearTopology topology,
+        out TelemetryGeometryFailure failure)
+    {
+        topology = null!;
+        failure = TelemetryGeometryFailure.InsufficientDerotation;
+        TelemetryGearTopology? supported = null;
+        for (var nose = 0; nose < runsByPoint.Length; nose++)
+        {
+            foreach (var noseRun in runsByPoint[nose])
+            {
+                var end = samples.FindIndex(sample => sample.SimulationTimeSeconds == noseRun.StartTime);
+                var begin = end;
+                // Each sustained nose onset closes one loading phase. A previous
+                // nose contact (even a short one), a physics stop or a frame gap
+                // ends the evidence: derotation must not span that boundary.
+                while (begin > 0 && samples[begin - 1].MotionSimulation &&
+                       !HasContactEvidence(samples[begin - 1], nose))
+                {
+                    var gap = samples[begin].SimulationTimeSeconds - samples[begin - 1].SimulationTimeSeconds;
+                    if (gap <= 0.0 || gap > MaximumFrameGapSeconds) break;
+                    begin--;
+                }
+
+                var phaseStart = samples[begin].SimulationTimeSeconds;
+                var mains = new List<ContactRun>();
+                for (var point = 0; point < runsByPoint.Length; point++)
+                {
+                    if (point == nose) continue;
+                    var run = runsByPoint[point].FirstOrDefault(candidate =>
+                        candidate.EndTime >= phaseStart && candidate.StartTime < noseRun.StartTime);
+                    if (run == null) continue;
+                    mains.Add(new ContactRun
+                    {
+                        ContactPointIndex = point,
+                        StartTime = Math.Max(run.StartTime, phaseStart),
+                        EndTime = run.EndTime,
+                    });
+                }
+
+                if (mains.Count != settledRuns.Count - 1) continue;
+                mains.Sort((left, right) => left.StartTime.CompareTo(right.StartTime));
+                var latestMainStart = mains[mains.Count - 1].StartTime;
+                if (noseRun.StartTime - latestMainStart < MinimumMainOnlyDurationSeconds ||
+                    !HasPositiveDerotation(samples, latestMainStart, noseRun.StartTime)) continue;
+
+                var candidateTopology = new TelemetryGearTopology(ContactPointIndices(mains), new[] { nose });
+                var first = samples.FindIndex(begin, end - begin + 1,
+                    sample => sample.SimulationTimeSeconds >= latestMainStart);
+                var phase = samples.GetRange(first, end - first + 1);
+                // A delay between onsets is not evidence that the main gear was
+                // carrying the aircraft. Require actual main-only observations
+                // inside this phase; a later interval cannot justify it. Role
+                // evidence does not itself require fitting an already supplied arm.
+                if (!HasSustainedMainOnlyEvidence(phase, candidateTopology))
+                {
+                    failure = TelemetryGeometryFailure.InsufficientMainOnlyEvidence;
+                    continue;
+                }
+
+                if (supported != null)
+                {
+                    failure = TelemetryGeometryFailure.AmbiguousContactRoles;
+                    return false;
+                }
+
+                supported = candidateTopology;
+                break; // Further phases for this same nose are not conflicting roles.
+            }
+        }
+
+        if (supported == null) return false;
+        // Preserve the established fit when the final settled sequence and the
+        // independently supported loading phase agree. Additional roles recovered
+        // only from earlier phases must also survive temporal arm refits.
+        if (TryCreateSinglePointNoseTopology(samples, runsByPoint, settledRuns, out var settledTopology) &&
+            settledTopology.NoseContactPointIndices[0] == supported.NoseContactPointIndices[0])
+        {
+            topology = settledTopology;
+        }
+        else
+        {
+            var altitude = samples.Select(sample => sample.MotionSimulation ? sample.PlaneAltitudeFeet : double.NaN).ToArray();
+            var ground = samples.Select(sample => sample.MotionSimulation ? sample.GroundAltitudeFeet : double.NaN).ToArray();
+            SanitizeIsolatedSpikes(altitude);
+            SanitizeIsolatedSpikes(ground);
+            if (!TryRecoverPitchArm(samples, samples.Select(sample => sample.SimulationTimeSeconds).ToArray(),
+                    altitude, ground, supported, out _, out _, out _, requireStableArm: true))
+            {
+                failure = TelemetryGeometryFailure.UnstablePitchArm;
+                return false;
+            }
+
+            topology = supported;
+        }
+
+        failure = TelemetryGeometryFailure.None;
+        return true;
+    }
+
+    private static bool HasSustainedMainOnlyEvidence(
+        IReadOnlyList<TelemetrySample> samples,
+        TelemetryGearTopology topology)
+    {
+        var start = -1;
+        for (var index = 0; index < samples.Count; index++)
+        {
+            if (!IsMainOnly(samples[index], topology))
+            {
+                start = -1;
+                continue;
+            }
+
+            if (start < 0) start = index;
+            if (index - start + 1 >= MinimumPitchRegressionRows &&
+                samples[index].SimulationTimeSeconds - samples[start].SimulationTimeSeconds >= MinimumMainOnlyDurationSeconds)
+                return true;
+        }
+
         return false;
     }
 
@@ -989,7 +1262,8 @@ public static class TelemetryGeometryCalibration
         out double datumOffset,
         out double datumStandardDeviation,
         out int datumPhaseCount,
-        out int datumWindowCount)
+        out int datumWindowCount,
+        bool useAttitudeDifference = false)
     {
         datumOffset = double.NaN;
         datumStandardDeviation = double.NaN;
@@ -1001,6 +1275,13 @@ public static class TelemetryGeometryCalibration
         {
             var sample = samples[index];
             var pitch = DegreesToRadians(sample.PitchDegrees);
+            if (useAttitudeDifference)
+            {
+                // Only finiteness is used by IsValidAirborneWindow on this
+                // path; the actual displacement is evaluated at the endpoints.
+                rigidVerticalPerFoot[index] = IsFinite(pitch) ? 0.0 : double.NaN;
+                continue;
+            }
             var bank = DegreesToRadians(sample.BankDegrees);
             var omegaX = sample.RotationVelocityBodyXRadiansPerSecond;
             var omegaY = sample.RotationVelocityBodyYRadiansPerSecond;
@@ -1050,6 +1331,9 @@ public static class TelemetryGeometryCalibration
                     integratedRigidVertical += 0.5 * duration *
                         (rigidVerticalPerFoot[index] + rigidVerticalPerFoot[index + 1]);
                 }
+                if (useAttitudeDifference)
+                    integratedRigidVertical = Math.Sin(DegreesToRadians(samples[start].PitchDegrees)) -
+                        Math.Sin(DegreesToRadians(samples[end].PitchDegrees));
 
                 var altitudeResidual =
                     planeAltitude[end] - planeAltitude[start] - integratedVelocity;

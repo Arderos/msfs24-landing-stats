@@ -325,6 +325,7 @@ internal sealed partial class SimConnectLandingRecorder
             try
             {
                 connection.RequestFacilityData(Definitions.Runways, (Requests)id, airport.Ident, airport.Region);
+                RememberOperation(connection, "Request runway facility", true, id, (uint)Definitions.Runways);
                 _runwayPackets[connection.GetLastSentPacketID()] = id;
             }
             catch (Exception exception) when (exception is System.Runtime.InteropServices.COMException || exception is ArgumentException)
@@ -349,6 +350,7 @@ internal sealed partial class SimConnectLandingRecorder
                          "CLOSE RUNWAY", "CLOSE AIRPORT" })
             {
                 connection.AddToFacilityDefinition(Definitions.Runways, field);
+                RememberOperation(connection, "Runway definition: " + field, true, definition: (uint)Definitions.Runways);
                 _runwayPackets[connection.GetLastSentPacketID()] = 0;
             }
             connection.RegisterFacilityDataDefineStruct<RunwayAirportData>(SIMCONNECT_FACILITY_DATA_TYPE.AIRPORT);
@@ -466,6 +468,7 @@ internal sealed partial class SimConnectLandingRecorder
                         "OPEN " + child, "LENGTH", "WIDTH", "ENABLE", "CLOSE " + child, "CLOSE RUNWAY", "CLOSE AIRPORT" })
                     {
                         connection.AddToFacilityDefinition(definition, field);
+                        RememberOperation(connection, "Threshold definition: " + field, true, definition: (uint)definition);
                         _runwayPackets[connection.GetLastSentPacketID()] = uint.MaxValue - (uint)side;
                     }
                     connection.RegisterFacilityDataDefineStruct<RunwayThresholdData>(SIMCONNECT_FACILITY_DATA_TYPE.PAVEMENT);
@@ -481,6 +484,7 @@ internal sealed partial class SimConnectLandingRecorder
             try
             {
                 connection.RequestFacilityData(definition, (Requests)id, airport.Ident, airport.Region);
+                RememberOperation(connection, "Request threshold facility", true, id, (uint)definition);
                 _runwayPackets[connection.GetLastSentPacketID()] = id;
             }
             catch (Exception ex) when (ex is System.Runtime.InteropServices.COMException || ex is ArgumentException)
@@ -526,6 +530,7 @@ internal sealed partial class SimConnectLandingRecorder
                         "OPEN " + child, "TYPE", "BIAS_X", "BIAS_Z", "SPACING", "ANGLE", "CLOSE " + child, "CLOSE RUNWAY", "CLOSE AIRPORT" })
                     {
                         connection.AddToFacilityDefinition(definition, field);
+                        RememberOperation(connection, "VASI definition: " + field, true, definition: (uint)definition);
                         _runwayPackets[connection.GetLastSentPacketID()] = uint.MaxValue - 2 - (uint)side;
                     }
                     connection.RegisterFacilityDataDefineStruct<RunwayVasiData>(SIMCONNECT_FACILITY_DATA_TYPE.VASI);
@@ -541,6 +546,7 @@ internal sealed partial class SimConnectLandingRecorder
             try
             {
                 connection.RequestFacilityData(definition, (Requests)id, airport.Ident, airport.Region);
+                RememberOperation(connection, "Request VASI facility", true, id, (uint)definition);
                 _runwayPackets[connection.GetLastSentPacketID()] = id;
             }
             catch (Exception ex) when (ex is System.Runtime.InteropServices.COMException || ex is ArgumentException)
@@ -565,6 +571,7 @@ internal sealed partial class SimConnectLandingRecorder
                 foreach (var field in new[] { "OPEN VOR", "GS_LATITUDE", "GS_LONGITUDE", "GS_ALTITUDE", "HAS_GLIDE_SLOPE", "GLIDE_SLOPE", "CLOSE VOR" })
                 {
                     connection.AddToFacilityDefinition(Definitions.RunwayIlsGlideSlope, field);
+                    RememberOperation(connection, "ILS definition: " + field, true, definition: (uint)Definitions.RunwayIlsGlideSlope);
                     _runwayPackets[connection.GetLastSentPacketID()] = uint.MaxValue - 6;
                 }
                 connection.RegisterFacilityDataDefineStruct<RunwayGlideSlopeData>(SIMCONNECT_FACILITY_DATA_TYPE.VOR);
@@ -588,6 +595,7 @@ internal sealed partial class SimConnectLandingRecorder
             try
             {
                 connection.RequestFacilityData(Definitions.RunwayIlsGlideSlope, (Requests)id, request.Ident, request.Region);
+                RememberOperation(connection, "Request ILS facility", true, id, (uint)Definitions.RunwayIlsGlideSlope);
                 _runwayPackets[connection.GetLastSentPacketID()] = id;
             }
             catch (Exception ex) when (ex is System.Runtime.InteropServices.COMException || ex is ArgumentException)

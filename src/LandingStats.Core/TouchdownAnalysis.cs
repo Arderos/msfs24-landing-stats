@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 
 namespace LandingStats.Core;
 
@@ -77,6 +78,7 @@ public static class TouchdownAnalysis
         var longitudinalArmFeet = double.NaN;
         var geometryQuality = double.NaN;
         var armRecoveredFromTelemetry = false;
+        var spatialArmRecovered = false;
         var geometrySource = TouchdownGeometrySource.Unavailable;
         TelemetryGearTopology? gearTopology = null;
         IReadOnlyList<TouchdownMainGearContactPoint>? configuredMainPoints = null;
@@ -116,17 +118,28 @@ public static class TouchdownAnalysis
                     : "Configured contact-point roles do not explain a sustained main-gear contact; trying telemetry inference.");
         }
 
-        if (gearTopology == null && candidates.Count > 0 &&
-            TelemetryGeometryCalibration.TryDetectConventionalTopology(samples, out var detectedTopology))
+        if (gearTopology == null && candidates.Count > 0)
         {
-            gearTopology = detectedTopology;
-            journal?.Record(analysisTime, "geometry", "telemetry_topology_accepted",
-                "Recovered conventional gear roles from contact-point telemetry.",
-                new Dictionary<string, double>
+            if (TelemetryGeometryCalibration.TryDetectConventionalTopology(samples, out var detectedTopology, out var failure))
+            {
+                gearTopology = detectedTopology;
+                var details = new Dictionary<string, double>
                 {
                     ["main_contact_point_count"] = gearTopology.MainContactPointCount,
-                    ["clustered_wheel_inference"] = gearTopology.UsesClusteredWheelInference ? 1 : 0
-                });
+                    ["clustered_wheel_inference"] = gearTopology.UsesClusteredWheelInference ? 1 : 0,
+                    ["spatial_role_inference"] = gearTopology.UsesSpatialInference ? 1 : 0
+                };
+                for (var index = 0; index < gearTopology.MainContactPointIndices.Length; index++)
+                    details["main_contact_point_" + index] = gearTopology.MainContactPointIndices[index];
+                for (var index = 0; index < gearTopology.NoseContactPointIndices.Length; index++)
+                    details["nose_contact_point_" + index] = gearTopology.NoseContactPointIndices[index];
+                journal?.Record(analysisTime, "geometry", "telemetry_topology_accepted",
+                    "Recovered conventional gear roles from contact-point telemetry.", details);
+            }
+            else
+            {
+                RecordGeometryFailure(journal, analysisTime, failure);
+            }
         }
 
         if (gearTopology != null &&
@@ -142,13 +155,29 @@ public static class TouchdownAnalysis
             }
         }
         else if (gearTopology != null &&
-                 (options == null || options.RecoverLongitudinalMainGearArmFromTelemetry) &&
-                 TelemetryGeometryCalibration.TryCalibrate(samples, out var calibration))
+                 (options == null || options.RecoverLongitudinalMainGearArmFromTelemetry))
         {
-            longitudinalArmFeet = calibration.LongitudinalArmFeet;
-            geometryQuality = calibration.Quality;
-            armRecoveredFromTelemetry = true;
-            geometrySource = TouchdownGeometrySource.Telemetry;
+            if (TelemetryGeometryCalibration.TryCalibrate(samples, out var calibration, out var failure))
+            {
+                longitudinalArmFeet = calibration.LongitudinalArmFeet;
+                geometryQuality = calibration.Quality;
+                armRecoveredFromTelemetry = true;
+                spatialArmRecovered = calibration.UsesSpatialArmInference;
+                geometrySource = TouchdownGeometrySource.Telemetry;
+                if (spatialArmRecovered)
+                    journal?.Record(analysisTime, "geometry", "spatial_arm_calibrated",
+                        "Recovered a stable main axis from loaded-wheel height, attitude and compression, then corrected the airborne datum offset.",
+                        new Dictionary<string, double>
+                        {
+                            ["loaded_wheel_sample_count"] = calibration.LoadedWheelSampleCount,
+                            ["pitch_arm_feet"] = calibration.PitchArmFeet,
+                            ["datum_offset_feet"] = calibration.DatumOffsetFeet,
+                        });
+            }
+            else
+            {
+                RecordGeometryFailure(journal, analysisTime, failure, gearTopology.SpatialEvidence);
+            }
         }
 
         journal?.Record(analysisTime, "geometry", IsFinite(longitudinalArmFeet) ? "arm_selected" : "arm_unavailable",
@@ -165,6 +194,7 @@ public static class TouchdownAnalysis
             });
 
         var results = new List<TouchdownResult>(candidates.Count);
+        TelemetryContactPointReconstruction? pointModel = null;
         for (var index = 0; index < candidates.Count; index++)
         {
             var candidate = candidates[index];
@@ -174,7 +204,7 @@ public static class TouchdownAnalysis
                 exclusiveEndTime = TimeOf(samples[candidates[index + 1].ContactIndex]);
             }
 
-            results.Add(CreateResult(
+            var result = CreateResult(
                 samples,
                 candidate.ContactIndex,
                 candidate.PreviousAirborneIndex,
@@ -184,13 +214,105 @@ public static class TouchdownAnalysis
                 longitudinalArmFeet,
                 geometryQuality,
                 armRecoveredFromTelemetry,
+                spatialArmRecovered,
                 geometrySource,
                 gearTopology,
                 configuredMainPoints,
-                journal));
+                journal);
+            // Prefer the observed point at contact time when its geometry and
+            // motion pass validation. Retain the longitudinal reconstruction if
+            // that evidence is insufficient, and never replace supplied geometry.
+            if ((options == null || options.RecoverLongitudinalMainGearArmFromTelemetry) &&
+                !(options?.LongitudinalMainGearArmFeet is double externalArm && IsFinite(externalArm)))
+            {
+                pointModel ??= new TelemetryContactPointReconstruction(samples,
+                    TimeOf(samples[candidates[0].ContactIndex]));
+                var accepted = pointModel.TryEstimate(result.SimulationTimeSeconds, result.EstimatedContactTimeSeconds,
+                    out var pointEstimate, out var pointDecision);
+                var details = new Dictionary<string, double>
+                {
+                    ["episode_number"] = result.EpisodeNumber, ["contact_number"] = result.ContactNumber,
+                    ["calibration_duration_seconds"] = pointModel.CalibrationDurationSeconds,
+                    ["calibration_loaded_rows"] = pointModel.CalibrationRowCounts.Values.Sum()
+                };
+                if (pointEstimate != null)
+                {
+                    details["candidate_closure_fpm"] = pointEstimate.Closure;
+                    details["candidate_uncertainty_fpm"] = pointEstimate.Uncertainty;
+                }
+                if (accepted && pointEstimate != null)
+                {
+                    result.ClosureReconstructionAvailable = true;
+                    result.ClosureReconstructionModel = pointEstimate.KinematicMotion ? TelemetryContactPointReconstruction.KinematicModelName :
+                        pointEstimate.BoundedGeometry ? TelemetryContactPointReconstruction.BoundedModelName : TelemetryContactPointReconstruction.ModelName;
+                    result.ReconstructedClosureFpm = pointEstimate.Closure;
+                    result.ReconstructedInertialFpm = pointEstimate.Inertial;
+                    result.ReconstructedTerrainFpm = pointEstimate.Terrain;
+                    result.ReconstructedPitchFpm = double.NaN;
+                    result.ReconstructedRotationFpm = pointEstimate.Rotation;
+                    result.ClosureReconstructionContactPointIndices = pointEstimate.Points;
+                    result.ClosureReconstructionUncertaintyFpm = pointEstimate.Uncertainty;
+                    result.ClosureReconstructionLongitudinalArmFeet = pointEstimate.Arm;
+                    result.ClosureReconstructionGeometryQuality = pointEstimate.Quality;
+                    result.ClosureReconstructionFitPointCount = pointEstimate.FitPointCount;
+                    result.ClosureReconstructionGeometrySource = TouchdownGeometrySource.Telemetry;
+                    result.ClosureReconstructionArmRecoveredFromTelemetry = true;
+                    result.ClosureReconstructionResidualFpm = result.LatchUpdateDetected
+                        ? result.LatchedNormalFpm - pointEstimate.Closure : double.NaN;
+                    details["closure_fpm"] = pointEstimate.Closure;
+                    details["uncertainty_fpm"] = pointEstimate.Uncertainty;
+                    details["geometry_sensitivity_fpm"] = pointEstimate.GeometryUncertainty;
+                    details["precontact_sensitivity_fpm"] = pointEstimate.TemporalUncertainty;
+                    details["altitude_velocity_disagreement_fpm"] = pointEstimate.AltitudeDisagreement;
+                    for (var p = 0; p < pointEstimate.Points.Length; p++) details["contact_point_" + p] = pointEstimate.Points[p];
+                }
+                journal?.Record(result.SimulationTimeSeconds, "reconstruction", pointDecision,
+                    accepted ? "Recovered surface-relative vertical closure at the observed contact points; the reporting band includes geometry, pre-contact fit and contact-time sensitivity."
+                        : "The contact-point model does not have sufficient stable evidence; calibration boundary: " + pointModel.CalibrationStopReason + ".", details);
+                if (!accepted && result.ClosureReconstructionAvailable)
+                    journal?.Record(result.SimulationTimeSeconds, "reconstruction", "longitudinal_fallback_selected",
+                        "The observed-point model was unavailable; retained the validated longitudinal reconstruction at contact time minus 75 ms.",
+                        new Dictionary<string, double>
+                        {
+                            ["episode_number"] = result.EpisodeNumber, ["contact_number"] = result.ContactNumber,
+                            ["closure_fpm"] = result.ReconstructedClosureFpm,
+                            ["uncertainty_fpm"] = result.ClosureReconstructionUncertaintyFpm
+                        });
+            }
+            results.Add(result);
         }
 
         return results;
+    }
+
+    private static void RecordGeometryFailure(
+        TelemetryDecisionJournal? journal,
+        double time,
+        TelemetryGeometryFailure failure,
+        TelemetrySpatialGearTopology.Evidence? spatial = null)
+    {
+        if (journal == null) return;
+        var (code, reason) = failure switch
+        {
+            TelemetryGeometryFailure.InsufficientSamples => ("insufficient_geometry_samples", "Too few usable telemetry samples to recover geometry."),
+            TelemetryGeometryFailure.IncompleteSettledGear => ("incomplete_settled_gear", "The recording does not end with all required gear points in sustained contact."),
+            TelemetryGeometryFailure.InsufficientDerotation => ("insufficient_derotation_evidence", "No continuous nose-free loading phase shows sufficient positive derotation before sustained nose contact."),
+            TelemetryGeometryFailure.InsufficientMainOnlyEvidence => ("insufficient_main_only_evidence", "Sustained main-only observations are too short, too few or cannot identify a pitch/compression fit."),
+            TelemetryGeometryFailure.AmbiguousContactRoles => ("ambiguous_contact_roles", "Different loading phases support different nose points; telemetry does not identify unique gear roles."),
+            TelemetryGeometryFailure.ConflictingSpatialRoles => ("conflicting_spatial_roles", "Contact timing and loaded-wheel spatial evidence disagree; temporal spatial refits do not yet establish stable replacement roles."),
+            TelemetryGeometryFailure.UnstableSpatialArm => ("unstable_spatial_arm", "Spatial roles are stable, but the main-only fit is unavailable or unstable and loaded-wheel refits do not support a stable, physically signed common main axis."),
+            TelemetryGeometryFailure.UnstablePitchArm => ("unstable_pitch_arm", "The additional topology hypothesis does not produce an identifiable, stable arm across temporal subsets."),
+            TelemetryGeometryFailure.DatumOffsetUnavailable => ("datum_offset_unavailable", "Airborne kinematics do not identify the altitude-datum to velocity-reference offset."),
+            TelemetryGeometryFailure.InvalidArm => ("invalid_longitudinal_arm", "The recovered longitudinal arm is non-finite or outside the accepted range."),
+            TelemetryGeometryFailure.LowCalibrationQuality => ("insufficient_geometry_quality", "The geometry fit does not meet the identifiability and datum-agreement limits."),
+            _ => ("unsupported_gear_topology", "Sustained contact timing does not establish a supported gear topology."),
+        };
+        journal.Record(time, "geometry", code, reason, spatial == null ? null : new Dictionary<string, double>
+        {
+            ["arm_refit_deviation_feet"] = spatial.ArmRefitDeviationFeet,
+            ["main_axis_difference_feet"] = spatial.MainAxisDifferenceFeet,
+            ["nonphysical_main_compression"] = spatial.NonPhysicalMainCompression ? 1 : 0,
+        });
     }
 
     private static TouchdownResult CreateResult(
@@ -203,6 +325,7 @@ public static class TouchdownAnalysis
         double longitudinalArmFeet,
         double geometryQuality,
         bool armRecoveredFromTelemetry,
+        bool spatialArmRecovered,
         TouchdownGeometrySource geometrySource,
         TelemetryGearTopology? gearTopology,
         IReadOnlyList<TouchdownMainGearContactPoint>? configuredMainPoints,
@@ -249,6 +372,8 @@ public static class TouchdownAnalysis
         string reconstructionDecision;
         if (gearTopology == null)
             reconstructionDecision = "unsupported_gear_topology";
+        else if (gearTopology.NoseContactPointIndices.Any(point => TelemetryGeometryCalibration.HasContactEvidence(samples[contactIndex], point)))
+            reconstructionDecision = "nose_contact_present";
         else if (!TelemetryGeometryCalibration.IsSustainedMainContact(samples, contactIndex, previousAirborneIndex, gearTopology))
             reconstructionDecision = "main_contact_not_sustained";
         else if (!IsFinite(contactArmFeet))
@@ -331,7 +456,9 @@ public static class TouchdownAnalysis
                 ? latchedNormalFpm - reconstruction.ClosureFpm
                 : double.NaN,
             ClosureReconstructionUncertaintyFpm = reconstructed
-                ? gearTopology!.UsesClusteredWheelInference || gearTopology.MainContactPointCount > 4
+                ? spatialArmRecovered
+                    ? TouchdownClosureReconstruction.FallbackUncertaintyFpm
+                    : gearTopology!.UsesClusteredWheelInference || gearTopology.MainContactPointCount > 4
                     ? geometrySource == TouchdownGeometrySource.Telemetry
                         ? TouchdownClosureReconstruction.MultiBogieTelemetryUncertaintyFpm
                         : TouchdownClosureReconstruction.FallbackUncertaintyFpm

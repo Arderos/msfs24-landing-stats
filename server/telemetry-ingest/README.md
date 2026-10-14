@@ -33,8 +33,10 @@ Automatic landing bundles use the same result format and are marked as
 contacts remain diagnosable. Both kinds may include `decisions.json`: a
 versioned decision journal tied to the same episode ID. Its envelope and entry
 fields are validated, numerical details must be finite and flat, and it is
-limited to 2,048 entries and 1 MiB expanded. Legacy bundles without a journal
+limited to 8,192 entries and 4 MiB expanded. Legacy bundles without a journal
 remain supported.
+Deploy these limits before distributing a desktop client with the expanded
+journal; older servers can reject journals above their previous limits.
 
 Journal entries contain `time_seconds`, `component`, `code`, `reason`, and a flat
 numeric `details` object. Analysis/recorder timestamps use the simulator clock.
@@ -76,12 +78,48 @@ retained and a 2 GiB free-space reserve is preserved on the dedicated
 filesystem. Stale partial uploads are removed on startup and container logs
 rotate at 3 x 10 MiB.
 
-Enrollment has its own identity-independent bounds: 10 requests/source/hour,
+New enrollment has its own identity-independent bounds: 10 requests/source/hour,
 1,000 requests globally/hour, an atomic maximum of 100,000 retained
 installations, and a 30-day expiry for active identities that have no retained
 capture. Referenced and revoked identities are never pruned. A new identity is
 rejected when the registry is full or the 2 GiB free-space reserve is active;
 an existing identity can still refresh its signed registration.
+
+Idempotent refresh of an active identity with the same key has a separate
+6 requests/source/minute pre-verification bound and must still pass timestamp
+and signature verification. It does not spend new-identity quotas. This supports
+released clients which refresh registration before each automatic report.
+
+Uploads retain the 6 requests/source/minute and 3 archives/installation/minute
+bounds. A signed, size/hash-checked upload exceeding the latter may wait for one
+minute-window boundary instead of returning 429. The complete body is received
+to the quota-bounded temporary file first, avoiding proxy write timeouts. At most
+one request per identity and eight globally may wait; waits are asynchronous,
+bounded to about 60 seconds, and released on cancellation. Full queues or a lost
+admission race still return 429. All 429 responses include `Retry-After` (older
+clients may ignore it). Daily byte budgets and archive validation are unchanged;
+byte-budget checks/reservations are serialized atomically in SQLite.
+
+API requests produce structured `telemetry_ingress` JSON lines in the existing
+rotated container logs: status, bounded reason, duration/pacing time, validated
+installation ID, archive SHA, client version, Cloudflare ray ID, and a keyed
+source-address pseudonym. No raw IP, body, public key, signature or nonce is
+logged. These logs identify future 422 rejections; they cannot recover reasons
+for rejections that occurred before this change. Temporary archive I/O failures
+return 503 instead of telling old clients to permanently quarantine the archive.
+
+Authenticated archives whose signed size and SHA match but whose contents fail
+validation are retained separately under `/data/rejected/<sha256>.zip` with a
+small `.json` reason sidecar. They still return 422 and are never counted as
+accepted captures or landings. Quarantine cleanup on startup/new rejections keeps
+at most 256 MiB / 2,000 compressed archives and expires entries older than seven
+days, evicting the oldest quarantine entries first; accepted
+archives are not affected. Existing invalid ZIP/expansion rules remain enforced,
+and quarantined archives must never be extracted or executed. If quarantine
+storage fails, the structured request log says `retention_failed`; the client's
+local rejected archive remains the recovery source.
+The API has a 90-second graceful stop allowance so routine redeployments can
+finish a paced upload; the tunnel and dashboard are not restarted with the API.
 
 Read the live SQLite database through `docker compose exec -T telemetry-api python -`
 from the deployment directory, using `file:/data/telemetry.sqlite3?mode=ro` and
@@ -135,7 +173,7 @@ A landing ID uploaded in multiple reports is
 counted once in landing statistics. Archives, samples and decision entries are
 counted per uploaded archive. The receiver's retention is currently 30 days/20 GiB:
 these are retained-data statistics, **not lifetime usage or unique-person counts**.
-Historical ingress rejection counts are not stored and are explicitly unavailable;
+Historical ingress rejection counts are not stored in the dashboard and are explicitly unavailable;
 indexing failures and reserved signed-attempt bytes are not labelled as rejections.
 
 Override `DASHBOARD_BIND_ADDRESS`, `DASHBOARD_ALLOWED_HOSTS`, and

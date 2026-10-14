@@ -197,8 +197,37 @@ internal static class Program
         Run("existing and configured topology keep priority over single-nose fallback", SingleNoseGeometryRegressionTests.ExistingAndConfiguredPathsKeepPriority);
         Run("single-nose fallback preserves contact guards", SingleNoseGeometryRegressionTests.FallbackPreservesContactGuards);
         Run("single-nose geometry is independent of latch and delivery", SingleNoseGeometryRegressionTests.CalibrationIsIndependentOfLatchAndDelivery);
+        Run("recorded main unloads recover earlier gear roles", RepeatedContactGeometryRegressionTests.RecordedMainUnloadsRecoverEarlierRoles);
+        Run("recorded spatial roles preserve nose and main contact guards", RepeatedContactGeometryRegressionTests.RecordedSpatialRolesPreserveContactGuards);
+        Run("repeated-contact geometry requires stability and continuous physics", RepeatedContactGeometryRegressionTests.EarlierPhaseNeedsStableGeometryAndContinuousPhysics);
+        Run("configured gear roles keep priority over repeated-contact inference", RepeatedContactGeometryRegressionTests.ConfiguredRolesAndProvenanceKeepPriority);
+        Run("repeated-contact geometry is independent of latch and delivery", RepeatedContactGeometryRegressionTests.RepeatedContactInferenceIgnoresLatchIndicesAndDelivery);
+        Run("spatial geometry recovers independently specified roles and arm", SpatialGearGeometryRegressionTests.AnalyticRolesAndArm);
+        Run("spatial geometry rejects unobservable and invalid mechanics", SpatialGearGeometryRegressionTests.UnobservableAndInvalidGeometry);
+        Run("spatial geometry respects physics and gear boundaries", SpatialGearGeometryRegressionTests.PhysicsAndGearBoundaries);
+        Run("recorded C172 spatial arm and ambiguous controls", SpatialGearGeometryRegressionTests.RecordedArmAndConflicts);
+        Run("spatial geometry is independent of point numbering and latch", SpatialGearGeometryRegressionTests.NumberingAndLatchIndependence);
+        Run("contact-point model recovers known rotating geometry on sloped ground", ContactPointGeometryRegressionTests.KnownRotatingPointOnSlopedGround);
+        Run("contact-point model resolves recorded nose and unstable C172 contacts", ContactPointGeometryRegressionTests.RecordedNoseAndUnstableC172);
+        Run("observed-point model takes priority on independently checked shared contacts", ContactPointGeometryRegressionTests.ObservedPointTakesPriorityOnSharedContacts);
+        Run("longitudinal fallback remains available without point-model evidence", ContactPointGeometryRegressionTests.LongitudinalModelRemainsAvailableWithoutPointEvidence);
+        Run("contact-point model rejects missing and inconsistent evidence", ContactPointGeometryRegressionTests.RejectsMissingAndInconsistentEvidence);
+        Run("contact-point model ignores latch numbering clock and duplicate delivery", ContactPointGeometryRegressionTests.LatchIndicesClockAndDeliveryAreIndependent);
+        Run("contact-point model honors supplied geometry and recovery opt-out", ContactPointGeometryRegressionTests.SuppliedGeometryAndRecoveryOptOutKeepPriority);
+        Run("bounded geometry predictions cover independent polytope vertices", ContactPointGeometryRegressionTests.BoundedPredictionCoversIndependentVertices);
+        Run("kinematic fallback validates independent recorded channels", ContactPointGeometryRegressionTests.KinematicMotionChecksIndependentChannels);
+        Run("quadratic vertical speed uses consistent cubic altitude", ContactPointGeometryRegressionTests.CubicAltitudeMatchesQuadraticVerticalSpeed);
+        Run("contact-point reconstruction survives storage with honest component labels", ContactPointReconstructionSurvivesHistoryRoundTrip);
         Run("datum calibration rejects inconsistent phases", DatumCalibrationRejectsInconsistentPhases);
         Run("flight model parser merges modular geometry and named points", FlightModelParserMergesModularGeometry);
+        Run("CFG datum transforms independently prescribed model coordinates once", BacklogGeometryAndHistoryRegressionTests.ReferenceDatumIsAppliedExactlyOnce);
+        Run("history preserves short ground and air phases at every sampling offset", BacklogGeometryAndHistoryRegressionTests.HistoryPreservesShortDiscretePhases);
+        Run("geometry options replay from archived snapshots without installed aircraft", BacklogGeometryAndHistoryRegressionTests.GeometryInputsRoundTripWithoutInstalledAircraft);
+        Run("cfg diagnostics distinguish missing geometry, parsing and telemetry datum", BacklogGeometryAndHistoryRegressionTests.ConfigResolutionDistinguishesReadAndCalibrationFailures);
+        Run("short rejected diagnostics aggregate without losing raw or crossing contexts", BacklogDiagnosticRegressionTests.RejectedTransitionsAreBatchedWithoutLosingRaw);
+        Run("recorder ignores ground chatter without delaying the first real landing", BacklogDiagnosticRegressionTests.RecorderIgnoresGroundChatterBeforeRealLanding);
+        Run("automatic captures require active flight evidence across lifecycle boundaries", LandingCaptureGateRegressionTests.RunAll);
+        Run("SDK rejection diagnostics bind packets, channels and optional capabilities per connection", BacklogDiagnosticRegressionTests.SdkPacketsHaveConnectionScopedOperationContext);
         Run("flight model resolver maps aircraft title and model", FlightModelResolverMapsAircraftIdentity);
         Run("flight model async failures fall back to telemetry", FlightModelAsyncFailuresFallBackToTelemetry);
         Run("language auto-detection is Russian-only with an English fallback", LanguageAutoDetectionIsRussianOnly);
@@ -2756,6 +2785,48 @@ internal static class Program
         finally
         {
             if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
+    private static void ContactPointReconstructionSurvivesHistoryRoundTrip()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "landing-stats-contact-point-history-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            foreach (var capture in new[] { "13dc14ff", "e78d3f80" })
+            foreach (var contactIndex in capture == "e78d3f80" ? new[] { 0, 2 } : new[] { 0 })
+            {
+                LocalizationManager.Apply("en");
+                var samples = ContactPointGeometryRegressionTests.Recorded(capture);
+                var result = TouchdownAnalysis.Analyze(samples)[contactIndex];
+                var record = LandingRecordFactory.Create(result, samples, "Anonymous test", "TEST");
+                Equal(true, record.ReconstructedRotationFpm.HasValue, "factory full rotation");
+                Equal(false, ReferenceEquals(result.ClosureReconstructionContactPointIndices, record.ClosureReconstructionContactPointIndices), "factory owns point metadata");
+                var repository = new LandingRepository(Path.Combine(root, capture + "-" + contactIndex));
+                repository.Save(record);
+                var summary = repository.LoadAll().Single();
+                var detail = repository.LoadDetail(summary) ?? throw new InvalidOperationException("contact-point detail did not load");
+                foreach (var item in new[] { summary, detail })
+                {
+                    Equal(result.ClosureReconstructionModel, item.ClosureReconstructionModel, "stored point model");
+                    Near(result.ReconstructedRotationFpm!.Value, item.ReconstructedRotationFpm!.Value, 1e-10, "stored rotation component");
+                    Near(result.ClosureReconstructionUncertaintyFpm, item.ClosureReconstructionUncertaintyFpm, 1e-10, "stored sensitivity band");
+                    Equal(true, item.ClosureReconstructionContactPointIndices!.SequenceEqual(result.ClosureReconstructionContactPointIndices!), "stored observed points");
+                    Equal(true, double.IsNaN(item.ReconstructedPitchFpm), "full rotation does not become pitch");
+                    Equal(true, item.ClosureComponentsDisplay.Contains("rotation"), "honest component label");
+                    Equal(true, item.ClosureGeometryDisplay.Contains("Contact geometry"), "full geometry is not labeled as a main axis");
+                }
+                LocalizationManager.Apply("ru");
+                Equal(true, detail.ClosureComponentsDisplay.Contains("вращение"), "Russian rotation label");
+            }
+        }
+        finally
+        {
+            LocalizationManager.Apply("en");
+            var full = Path.GetFullPath(root);
+            if (!full.StartsWith(Path.GetFullPath(Path.GetTempPath()), StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("Unexpected temporary directory");
+            if (Directory.Exists(full)) Directory.Delete(full, true);
         }
     }
 

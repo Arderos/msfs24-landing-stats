@@ -54,6 +54,68 @@ Regression tests enforce both sides of the rule:
 
 ## Compatibility
 
+### Reproducible analysis geometry
+
+New native records optionally include `summary.AnalysisGeometry` (version 1).
+It stores the exact geometry inputs supplied to the analyzer: source, signed
+longitudinal arm and quality, every configured main-wheel index and arm, nose
+indices, and whether telemetry recovery is enabled. Arms use the velocity-reference
+longitudinal frame in feet (`velocity_reference_longitudinal_feet`), after both
+the configuration reference-datum translation and the telemetry datum correction.
+This is input provenance, not a claim that configured roles passed the analyzer's
+contact-evidence checks or that reconstructed closure is available.
+
+The snapshot identifies the prepared, deduplicated physical segment by its sample
+count, first/last sequence and simulator time, plus SHA-256 of each canonical
+`TelemetryCsv.Format` row followed by LF (UTF-8 without BOM). Version 1 uses
+`InputFingerprintFormat=telemetry_csv_v7`. Restore requires that exact input;
+altered interior samples, other segments and unsupported coordinate frames are
+rejected. Reproduction requires the full raw capture and compatible analyzer
+version, not only the compact history. Snapshots contain no file paths or CFG text.
+Absent snapshots on older recordings remain absent; replay cannot invent the
+original installed aircraft's options. Older v7 readers ignore this additive field.
+
+### Discrete contact phases
+
+The normal 50 ms history schedule also preserves the real frames immediately
+before and after every aircraft `OnGround` transition and the accepted contact's
+raw witness. Extra frames do not shift that schedule. All pose, input, engine and
+contact columns use the same retained rows. No synthetic ground state is inserted
+at estimated contact zero. This affects new saves; old files are not rewritten.
+
+### Capture diagnostics
+
+`decisions.json` keeps format version 1, with a limit of 8,192 entries and 4 MiB
+expanded on the server. The client uses a conservative 3,600,000-byte estimate
+to leave serialization headroom. Truncation remains explicit. Deploy the expanded
+server limits before distributing a client that can exceed the previous limits.
+
+Replay summaries are emitted for every contact before detailed candidates.
+Constant/missing input candidates share records containing `role`, `window`
+(0 approach, 1 complete sequence, 2 ground fallback), `source_count`, and
+`source_0` through `source_15`. Repeated canonical episode bindings refer to the
+owning contact; contact-local mapping and suspension outcomes remain separate.
+`relative_contact_time` and `contact_time_seconds` disambiguate the clocks.
+
+`geometry.cfg` records lookup, parsing, ambiguity, datum or arm-validation outcomes.
+An unmatched readable geometry is not proof that a CFG was absent or encrypted.
+`simconnect_request_rejected` includes known operation identity, optional/required
+capability, available request/definition/event IDs, connection generation and
+SDK/application versions. Unknown or expired packet associations stay unknown.
+
+Rejected transitions without recent active airborne evidence in the same flight
+segment do not start automatic captures. Interrupted flights retain diagnostic
+captures even when no contact can be measured; this is not a filter on result count.
+Manual raw capture remains available independently of the automatic capture gate.
+
+Only short diagnostic-only rejected transitions with flight evidence are batched: at most 16 captures
+or 30 seconds, with earlier flush at a new aircraft, physical segment, rejection
+context, real landing or disconnect. Original samples and rejection details are
+retained, with `diagnostic_index` and `source_episode_id`; full detail fields or
+journal limits trigger an earlier flush instead of data loss. Normal landing
+captures are not delayed. A forced process termination can lose a pending batch,
+as it can any active capture; normal shutdown flushes it.
+
 ### Optional 3D replay and physical inputs
 
 New recordings add two optional root members without changing `layout: 7`:

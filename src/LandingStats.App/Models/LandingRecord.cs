@@ -13,6 +13,9 @@ public sealed class LandingRecord
     public const int CurrentFormatVersion = 7;
     public const double NonFiniteStorageSentinel = -1.7976931348623157E+308;
 
+    [DataMember(Order = 70, EmitDefaultValue = false)]
+    public AnalysisGeometrySnapshot? AnalysisGeometry { get; set; }
+
     [DataMember(Order = 1)]
     public int FormatVersion { get; set; } = CurrentFormatVersion;
 
@@ -216,6 +219,12 @@ public sealed class LandingRecord
     [DataMember(Order = 67, EmitDefaultValue = false)]
     public string? RecordingEpisodeId { get; set; }
 
+    [DataMember(Order = 68, EmitDefaultValue = false)]
+    public double? ReconstructedRotationFpm { get; set; }
+
+    [DataMember(Order = 69, EmitDefaultValue = false)]
+    public int[]? ClosureReconstructionContactPointIndices { get; set; }
+
     [IgnoreDataMember]
     public bool IsSummaryOnly { get; set; }
 
@@ -243,10 +252,10 @@ public sealed class LandingRecord
 
     public string ClosureComponentsDisplay => HasClosureReconstruction
         ? LocalizationManager.Format(
-            "Model.ComponentsFormat",
+            ReconstructedRotationFpm.HasValue ? "Model.ContactComponentsFormat" : "Model.ComponentsFormat",
             FormatSignedMetric(-ReconstructedInertialFpm),
             FormatSignedMetric(-ReconstructedTerrainFpm),
-            FormatSignedMetric(-ReconstructedPitchFpm))
+            FormatSignedMetric(-(ReconstructedRotationFpm ?? ReconstructedPitchFpm)))
         : LocalizationManager.Text("Model.ReconstructionUnavailable");
 
     public string ClosureUncertaintyDisplay => HasClosureReconstruction &&
@@ -288,6 +297,8 @@ public sealed class LandingRecord
                           IsFinite(ClosureReconstructionGeometryQuality)
                 ? LocalizationManager.Format("Model.GeometryQualityFormat", ClosureReconstructionGeometryQuality)
                 : string.Empty;
+            if (ReconstructedRotationFpm.HasValue)
+                return LocalizationManager.Format("Model.ContactGeometryFormat", source, quality);
             return LocalizationManager.Format(
                 "Model.GeometryFormat",
                 ClosureReconstructionLongitudinalArmFeet,

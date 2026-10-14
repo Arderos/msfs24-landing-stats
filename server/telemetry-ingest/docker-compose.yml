@@ -6,6 +6,7 @@ services:
       context: .
     image: msfs-landing-telemetry-api:local
     restart: unless-stopped
+    stop_grace_period: 90s
     environment:
       DATA_ROOT: /data
       SERVER_PEPPER_FILE: /run/secrets/server_pepper

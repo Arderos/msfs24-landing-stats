@@ -130,13 +130,13 @@ public sealed class ReplayControlInputs
             // Unlike flare controls, directional steering often first moves on
             // the runway; rank yaw over the complete recorded sequence.
             var indices = role == 2 ? Enumerable.Range(0, points.Count).ToArray() : approach;
-            ranked[role] = pitchOnly && role != 0 ? new List<ReplayControlAxis>() : result.Rank(record, sources, legacy, role, indices, journal);
+            ranked[role] = pitchOnly && role != 0 ? new List<ReplayControlAxis>() : result.Rank(record, sources, legacy, role, indices, journal, role == 2 ? 1 : 0);
             // Rudder may first move during rollout. Fallback requires absence of
             // a computable approach correlation, never a low score.
             if (ranked[role].Count == 0 && (!pitchOnly || role == 0))
             {
                 journal?.Record(0, "replay.inputs", "ground_fallback", "No computable primary-window correlation; trying ground samples without an acceptance cutoff.", new Dictionary<string, double> { ["role"] = role });
-                ranked[role] = result.Rank(record, sources, legacy, role, ground, journal);
+                ranked[role] = result.Rank(record, sources, legacy, role, ground, journal, 2);
             }
         }
         // Assign all roles together: a weaker pitch/roll match must not consume
@@ -204,9 +204,11 @@ public sealed class ReplayControlInputs
         return result;
     }
 
-    private List<ReplayControlAxis> Rank(LandingRecord record, int[] sources, bool legacy, int role, int[] indices, TelemetryDecisionJournal? journal)
+    private List<ReplayControlAxis> Rank(LandingRecord record, int[] sources, bool legacy, int role, int[] indices, TelemetryDecisionJournal? journal, int window)
     {
         var candidates = new List<ReplayControlAxis>();
+        var constant = new List<int>();
+        var missing = new List<int>();
         if (indices.Length < 2) return candidates;
         for (var column = 0; column < sources.Length; column++)
         {
@@ -222,7 +224,7 @@ public sealed class ReplayControlInputs
                     first = value; observed = true;
                 }
             if (!varies)
-            { journal?.Record(0, "replay.inputs", observed ? "constant_axis" : "missing_axis", "No usable variation exists in this candidate window.", new Dictionary<string, double> { ["role"] = role, ["source_index"] = source, ["samples"] = indices.Length }); continue; }
+            { (observed ? constant : missing).Add(source); continue; }
             double? best = null; var delay = 0.0;
             for (var step = 0; step <= 16; step++)
             {
@@ -242,7 +244,23 @@ public sealed class ReplayControlInputs
             journal?.Record(0, "replay.inputs", "axis_candidate", label,
                 new Dictionary<string, double> { ["role"] = role, ["source_index"] = source, ["correlation"] = best.Value, ["score"] = Math.Abs(best.Value), ["lag_seconds"] = delay, ["samples"] = indices.Length });
         }
+        RecordUnavailableAxes(journal, "constant_axis", constant, role, indices.Length, window);
+        RecordUnavailableAxes(journal, "missing_axis", missing, role, indices.Length, window);
         return candidates.OrderByDescending(axis => Math.Abs(axis.Correlation)).ToList();
+    }
+
+    private static void RecordUnavailableAxes(TelemetryDecisionJournal? journal, string code, List<int> sources, int role, int samples, int window)
+    {
+        if (journal == null) return;
+        // Preserve every source and the matching role/window, while sharing the
+        // repeated explanation. Leave room for capture/contact linkage fields.
+        for (var start = 0; start < sources.Count; start += 16)
+        {
+            var count = Math.Min(16, sources.Count - start);
+            var details = new Dictionary<string, double> { ["role"] = role, ["samples"] = samples, ["source_count"] = count, ["window"] = window };
+            for (var index = 0; index < count; index++) details["source_" + index] = sources[start + index];
+            journal.Record(0, "replay.inputs", code, "No usable variation exists in this candidate window.", details);
+        }
     }
 
     public ReplayControlSample Sample(double timeSeconds)

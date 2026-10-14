@@ -60,19 +60,19 @@
     <system:String x:Key="Help.GroundSpeed">The aircraft's speed over the ground at contact. Wind can make it different from IAS.</system:String>
 
     <system:String x:Key="Recon.Title">EXPERIMENTAL CLOSURE RECONSTRUCTION</system:String>
-    <system:String x:Key="Recon.Help">MSFS reports one Surface Closure Rate when the aircraft touches down. This panel tries to reproduce that number independently from the recorded aircraft motion, runway and landing-gear data. It is a cross-check and never replaces the value reported by MSFS above.</system:String>
+    <system:String x:Key="Recon.Help">This panel independently estimates closure from recorded aircraft motion, terrain and landing-gear data. When the data supports it, the calculation follows the actual contacting points at contact time. The MSFS surface-normal reading above remains a separate measurement.</system:String>
     <system:String x:Key="Recon.Model">CALCULATION METHOD</system:String>
-    <system:String x:Key="Recon.ModelHelp">The name of the calculation method used for this landing. The method is kept fixed so different landings remain comparable; it is not adjusted to make this particular result look better.</system:String>
+    <system:String x:Key="Recon.ModelHelp">The calculation selected from the available evidence. A validated contact-point calculation is preferred when geometry is recovered from telemetry; the longitudinal calculation remains available when the point model cannot be established. Selection never uses agreement with the MSFS reading.</system:String>
     <system:String x:Key="Recon.ModeledClosure">MODELED CLOSURE</system:String>
-    <system:String x:Key="Recon.ModeledClosureHelp">The Surface Closure Rate independently estimated from the recorded telemetry. Compare it with the MSFS value above: the closer they are, the more of the touchdown reading the model has explained.</system:String>
+    <system:String x:Key="Recon.ModeledClosureHelp">The modeled rate of closing clearance above the surface. The contact-point calculation evaluates vertical closure at contact time; the longitudinal calculation uses an earlier effective time. Timing and surface direction can make this value differ from the MSFS reading.</system:String>
     <system:String x:Key="Recon.RawMinusModel">RAW − MODEL</system:String>
-    <system:String x:Key="Recon.RawMinusModelHelp">The difference between the Surface Closure Rate reported by MSFS and the independent estimate. Zero is a perfect match; a value inside the stated Uncertainty means the model explains the reading as closely as the recorded data allows.</system:String>
+    <system:String x:Key="Recon.RawMinusModelHelp">The MSFS surface-normal reading minus the independent model. A small difference means agreement between the two values; it does not establish either value's accuracy. The model's uncertainty is not a guaranteed tolerance around the MSFS reading.</system:String>
     <system:String x:Key="Recon.Components">MODELED COMPONENTS</system:String>
-    <system:String x:Key="Recon.ComponentsHelp">The three parts that add up to Modeled Closure. Inertial is the aircraft moving down, terrain is the runway rising or falling, and pitch is the main gear moving vertically as the aircraft rotates. Inertial can differ from Aircraft Vertical Rate because the MSFS touchdown value appears to describe a slightly earlier moment.</system:String>
+    <system:String x:Key="Recon.ComponentsHelp">The components add up to Modeled Closure: aircraft vertical motion, surface variation along the motion, and contact-point motion caused by rotation. The longitudinal calculation includes only its pitch contribution. Its earlier evaluation time can also change the aircraft-motion component.</system:String>
     <system:String x:Key="Recon.Uncertainty">UNCERTAINTY</system:String>
-    <system:String x:Key="Recon.UncertaintyHelp">The expected tolerance of the reconstruction based on recorded test landings. It is normally ±10 fpm, or ±15 fpm for harder cases such as a bounce, less precise contact timing, three main gear groups or configured multi-bogie gear. A multi-bogie aircraft using telemetry-derived geometry retains a conservative ±50 fpm band. This tolerance belongs to the model, not to the MSFS value.</system:String>
+    <system:String x:Key="Recon.UncertaintyHelp">For the contact-point calculation, this band covers tested sensitivity to geometry, timing and recorded motion, with a minimum of ±15 fpm. Estimates above ±50 fpm or including zero closing speed are rejected. The longitudinal calculation retains its empirical ±10, ±15 or ±50 fpm band. These are model-specific engineering bounds, not guaranteed accuracy or a confidence probability.</system:String>
     <system:String x:Key="Recon.Geometry">GEOMETRY SOURCE</system:String>
-    <system:String x:Key="Recon.GeometryHelp">How the app learned the distance between the main gear and the point whose motion MSFS reports. A readable flight model is preferred; telemetry is the fallback for encrypted or unavailable configurations. Quality shows how clearly telemetry exposed that geometry; it is not a probability.</system:String>
+    <system:String x:Key="Recon.GeometryHelp">Where the contacting-point geometry or longitudinal gear arm came from. A readable flight model is preferred; otherwise the app tries to recover geometry from telemetry. Quality describes the evidence supporting the selected calculation; it is not a probability.</system:String>
     <system:String x:Key="Recon.UnavailableTitle">RECONSTRUCTION UNAVAILABLE FOR THIS RECORD</system:String>
     <system:String x:Key="Recon.UnavailableBody">The app does not have enough recorded data to make this reconstruction honestly. The landing may be an older record, the gear sequence may be unclear, or there may be too few useful samples. The measured values above remain available and are not changed.</system:String>
 
@@ -195,6 +195,8 @@
     <system:String x:Key="Model.NotAvailable">n/a</system:String>
     <system:String x:Key="Model.LocationRunwayFormat">{0} · RWY {1}</system:String>
     <system:String x:Key="Model.ComponentsFormat">{0} inertial · {1} terrain · {2} pitch</system:String>
+    <system:String x:Key="Model.ContactComponentsFormat">{0} inertial · {1} terrain · {2} rotation</system:String>
+    <system:String x:Key="Model.ContactGeometryFormat">Contact geometry · {0}{1}</system:String>
     <system:String x:Key="Model.ReconstructionUnavailable">reconstruction unavailable</system:String>
     <system:String x:Key="Model.GeometryUnavailable">geometry unavailable</system:String>
     <system:String x:Key="Model.Telemetry">telemetry</system:String>

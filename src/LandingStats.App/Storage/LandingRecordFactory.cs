@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using LandingStats.App.Models;
 using LandingStats.Core;
 
@@ -77,6 +78,8 @@ public static class LandingRecordFactory
             ReconstructedInertialFpm = result.ReconstructedInertialFpm,
             ReconstructedTerrainFpm = result.ReconstructedTerrainFpm,
             ReconstructedPitchFpm = result.ReconstructedPitchFpm,
+            ReconstructedRotationFpm = result.ReconstructedRotationFpm,
+            ClosureReconstructionContactPointIndices = result.ClosureReconstructionContactPointIndices?.ToArray(),
             ClosureReconstructionResidualFpm = result.ClosureReconstructionResidualFpm,
             ClosureReconstructionUncertaintyFpm = result.ClosureReconstructionUncertaintyFpm,
             ClosureReconstructionFitPointCount = result.ClosureReconstructionFitPointCount,
@@ -97,8 +100,9 @@ public static class LandingRecordFactory
             : WindowAfterSeconds;
         var storedSamples = new List<StoredSample>();
         var nextStoredTime = windowStart;
-        foreach (var sample in samples)
+        for (var sampleIndex = 0; sampleIndex < samples.Count; sampleIndex++)
         {
+            var sample = samples[sampleIndex];
             var sampleTime = TimeOf(sample);
             var relativeTime = sampleTime - contactTime;
             if (relativeTime < windowStart || relativeTime > windowEnd)
@@ -106,13 +110,21 @@ public static class LandingRecordFactory
                 continue;
             }
 
-            if (relativeTime + 0.000001 < nextStoredTime)
+            var scheduled = relativeTime + 0.000001 >= nextStoredTime;
+            // Keep the real samples on both sides of every discrete edge,
+            // including a one-frame touchdown or airborne bounce. Adding an
+            // edge must not move the normal 50 ms sampling schedule.
+            var edge = (sampleIndex > 0 && samples[sampleIndex - 1].OnGround != sample.OnGround) ||
+                       (sampleIndex + 1 < samples.Count && samples[sampleIndex + 1].OnGround != sample.OnGround);
+            var contact = sample.Sequence == result.Sequence &&
+                          Math.Abs(sample.SimulationTimeSeconds - result.SimulationTimeSeconds) < 1e-6;
+            if (!scheduled && !edge && !contact)
             {
                 continue;
             }
 
             storedSamples.Add(new StoredSample(sample, Math.Round(relativeTime, 4)));
-            nextStoredTime = relativeTime + StoredSampleIntervalSeconds;
+            if (scheduled) nextStoredTime = relativeTime + StoredSampleIntervalSeconds;
         }
 
         for (var sourceIndex = 0; sourceIndex < TelemetrySample.CapturedControllerCount; sourceIndex++)

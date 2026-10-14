@@ -144,7 +144,7 @@ public partial class MainWindow
             {
                 journal.Record(time, "storage", "site_metadata_save_failed", exception.GetType().Name);
             }
-            foreach (var record in records) LandingReplayDiagnostics.Record(record, records, journal);
+            LandingReplayDiagnostics.RecordAll(records, journal);
         }
         catch (Exception exception)
         {

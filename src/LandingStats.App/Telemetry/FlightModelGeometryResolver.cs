@@ -27,12 +27,14 @@ internal sealed class FlightModelGearGeometry
         double mainGearLongitudinalFeet,
         IReadOnlyList<FlightModelGearPoint> mainGearPoints,
         IReadOnlyList<int> noseGearContactPointIndices,
-        string configPath)
+        string configPath,
+        double referenceDatumLongitudinalFeet = 0)
     {
         MainGearLongitudinalFeet = mainGearLongitudinalFeet;
         MainGearPoints = mainGearPoints.ToArray();
         NoseGearContactPointIndices = noseGearContactPointIndices.ToArray();
         ConfigPath = configPath;
+        ReferenceDatumLongitudinalFeet = referenceDatumLongitudinalFeet;
     }
 
     public double MainGearLongitudinalFeet { get; }
@@ -42,6 +44,8 @@ internal sealed class FlightModelGearGeometry
     public IReadOnlyList<int> NoseGearContactPointIndices { get; }
 
     public string ConfigPath { get; }
+
+    public double ReferenceDatumLongitudinalFeet { get; }
 }
 
 internal sealed class FlightModelGeometryMatch
@@ -57,6 +61,7 @@ internal sealed class FlightModelGeometryMatch
         MainGearPoints = geometry.MainGearPoints;
         NoseGearContactPointIndices = geometry.NoseGearContactPointIndices;
         ConfigPath = geometry.ConfigPath;
+        ReferenceDatumLongitudinalFeet = geometry.ReferenceDatumLongitudinalFeet;
     }
 
     public string AircraftTitle { get; }
@@ -70,6 +75,8 @@ internal sealed class FlightModelGeometryMatch
     public IReadOnlyList<int> NoseGearContactPointIndices { get; }
 
     public string ConfigPath { get; }
+
+    public double ReferenceDatumLongitudinalFeet { get; }
 }
 
 /// <summary>
@@ -77,8 +84,20 @@ internal sealed class FlightModelGeometryMatch
 /// Marketplace-encrypted or ambiguous configurations fail closed so the core
 /// analyzer can use its telemetry calibration instead.
 /// </summary>
+internal sealed class FlightModelAnalysisResolution
+{
+    public FlightModelAnalysisResolution(TouchdownAnalysisOptions? options, string outcome) { Options = options; Outcome = outcome; }
+    public TouchdownAnalysisOptions? Options { get; }
+    public string Outcome { get; }
+}
+
 internal sealed class FlightModelGeometryResolver
 {
+    private sealed class Catalog
+    {
+        public List<FlightModelGeometryMatch> Matches { get; } = new List<FlightModelGeometryMatch>();
+        public Dictionary<string, string> Failures { get; } = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+    }
     private const double DuplicateGeometryToleranceFeet = 0.10;
     private const double MaximumAbsoluteArmFeet = 500.0;
     private static readonly TimeSpan MissRefreshThrottle = TimeSpan.FromSeconds(10);
@@ -86,7 +105,7 @@ internal sealed class FlightModelGeometryResolver
     private readonly Func<IReadOnlyList<string>>? _installedPackagesPathProvider;
     private string[] _installedPackagesPaths;
     private readonly object _catalogGate = new object();
-    private Task<IReadOnlyList<FlightModelGeometryMatch>> _catalogTask;
+    private Task<Catalog> _catalogTask;
     private DateTime _lastCatalogBuildUtc;
 
     public FlightModelGeometryResolver()
@@ -131,29 +150,40 @@ internal sealed class FlightModelGeometryResolver
         string aircraftType,
         string aircraftModel,
         IReadOnlyList<TelemetrySample> samples)
+        => (await ResolveAnalysisAsync(aircraftTitle, aircraftType, aircraftModel, samples).ConfigureAwait(false)).Options;
+
+    public async Task<FlightModelAnalysisResolution> ResolveAnalysisAsync(
+        string aircraftTitle, string aircraftType, string aircraftModel,
+        IReadOnlyList<TelemetrySample> samples, TelemetryDecisionJournal? journal = null)
     {
+        var outcome = "resolver_failed";
+        TouchdownAnalysisOptions? selected = null;
+        FlightModelGeometryMatch? geometry = null;
         try
         {
-            var geometry = await ResolveAsync(aircraftTitle).ConfigureAwait(false);
-            if (geometry == null)
+            geometry = await ResolveAsync(aircraftTitle, code => outcome = code).ConfigureAwait(false);
+            if (geometry != null)
             {
-                return null;
+                selected = await Task.Run(() => TryCreateAnalysisOptions(geometry, samples, out var options, code => outcome = code)
+                    ? options : null).ConfigureAwait(false);
             }
-
-            return await Task.Run(() =>
-            {
-                return TryCreateAnalysisOptions(geometry, samples, out var options)
-                    ? options
-                    : null;
-            }).ConfigureAwait(false);
         }
         catch
         {
             // Installed-package geometry is an optional enhancement. Any I/O,
             // parse, refresh, or calibration failure must preserve the landing
             // and let TouchdownAnalysis use telemetry geometry instead.
-            return null;
+            outcome = "resolver_io_or_parse_failed";
         }
+        journal?.Record(samples.Count == 0 ? 0 : TelemetryAnalysisFrames.TimeOf(samples[samples.Count - 1]),
+            "geometry.cfg", outcome, "Configuration resolution outcome; no matching readable geometry does not establish whether a file is absent or encrypted.",
+            new Dictionary<string, double>
+            {
+                ["geometry_read"] = geometry == null ? 0 : 1,
+                ["options_ready"] = selected == null ? 0 : 1,
+                ["reference_datum_longitudinal_feet"] = geometry?.ReferenceDatumLongitudinalFeet ?? double.NaN,
+            });
+        return new FlightModelAnalysisResolution(selected, outcome);
     }
 
     public bool TryCreateAnalysisOptions(
@@ -175,17 +205,20 @@ internal sealed class FlightModelGeometryResolver
     private static bool TryCreateAnalysisOptions(
         FlightModelGeometryMatch geometry,
         IReadOnlyList<TelemetrySample> samples,
-        out TouchdownAnalysisOptions options)
+        out TouchdownAnalysisOptions options,
+        Action<string>? diagnostic = null)
     {
         options = null!;
         if (!TelemetryGeometryCalibration.TryRecoverDatumOffset(samples, out var datum))
         {
+            diagnostic?.Invoke("telemetry_datum_unavailable");
             return false;
         }
 
         var armFeet = geometry.MainGearLongitudinalFeet + datum.DatumOffsetFeet;
         if (!IsFinite(armFeet) || Math.Abs(armFeet) > MaximumAbsoluteArmFeet)
         {
+            diagnostic?.Invoke("configured_arm_out_of_bounds");
             return false;
         }
 
@@ -215,6 +248,7 @@ internal sealed class FlightModelGeometryResolver
                 .ToArray();
             options.NoseGearContactPointIndices = geometry.NoseGearContactPointIndices.ToArray();
         }
+        diagnostic?.Invoke(configuredPointsFitCapture ? "cfg_options_ready" : "cfg_arm_ready_without_point_roles");
         return true;
     }
 
@@ -236,35 +270,43 @@ internal sealed class FlightModelGeometryResolver
         }
     }
 
-    private async Task<FlightModelGeometryMatch?> ResolveAsync(string aircraftTitle)
+    private async Task<FlightModelGeometryMatch?> ResolveAsync(string aircraftTitle, Action<string>? diagnostic = null)
     {
         var expectedTitle = ValueOrEmpty(aircraftTitle);
         if (expectedTitle.Length == 0)
         {
+            diagnostic?.Invoke("aircraft_title_missing");
             return null;
         }
 
         var catalog = await CurrentCatalogTask().ConfigureAwait(false);
-        var titleMatches = Match(catalog, entry => entry.AircraftTitle, expectedTitle).ToArray();
+        var titleMatches = Match(catalog.Matches, entry => entry.AircraftTitle, expectedTitle).ToArray();
         if (titleMatches.Length > 0)
         {
             // StreamedPackages can add or replace an aircraft after the initial
             // catalog scan. Periodically refresh even a successful exact-title
             // lookup so the process does not keep stale geometry indefinitely.
             catalog = await RefreshCatalogAsync(ExactMatchRefreshInterval).ConfigureAwait(false);
-            titleMatches = Match(catalog, entry => entry.AircraftTitle, expectedTitle).ToArray();
-            return TrySelectUnambiguous(titleMatches, out var exact) ? exact : null;
+            titleMatches = Match(catalog.Matches, entry => entry.AircraftTitle, expectedTitle).ToArray();
+            var success = TrySelectUnambiguous(titleMatches, out var exact);
+            diagnostic?.Invoke(success ? "cfg_geometry_ready" : titleMatches.Length > 0 ? "ambiguous_aircraft_geometry" : FailureFor(catalog, expectedTitle));
+            return success ? exact : null;
         }
 
         catalog = await RefreshCatalogAsync(MissRefreshThrottle).ConfigureAwait(false);
-        titleMatches = Match(catalog, entry => entry.AircraftTitle, expectedTitle).ToArray();
-        return TrySelectUnambiguous(titleMatches, out var refreshed) ? refreshed : null;
+        titleMatches = Match(catalog.Matches, entry => entry.AircraftTitle, expectedTitle).ToArray();
+        var found = TrySelectUnambiguous(titleMatches, out var refreshed);
+        diagnostic?.Invoke(found ? "cfg_geometry_ready" : titleMatches.Length > 0 ? "ambiguous_aircraft_geometry" : FailureFor(catalog, expectedTitle));
+        return found ? refreshed : null;
     }
 
-    internal IReadOnlyList<FlightModelGeometryMatch> CatalogForTesting() =>
-        CurrentCatalogTask().GetAwaiter().GetResult();
+    private static string FailureFor(Catalog catalog, string title) =>
+        catalog.Failures.TryGetValue(title, out var reason) ? reason : "no_readable_matching_geometry";
 
-    private Task<IReadOnlyList<FlightModelGeometryMatch>> CurrentCatalogTask()
+    internal IReadOnlyList<FlightModelGeometryMatch> CatalogForTesting() =>
+        CurrentCatalogTask().GetAwaiter().GetResult().Matches;
+
+    private Task<Catalog> CurrentCatalogTask()
     {
         lock (_catalogGate)
         {
@@ -272,7 +314,7 @@ internal sealed class FlightModelGeometryResolver
         }
     }
 
-    private Task<IReadOnlyList<FlightModelGeometryMatch>> RefreshCatalogAsync(TimeSpan minimumAge)
+    private Task<Catalog> RefreshCatalogAsync(TimeSpan minimumAge)
     {
         lock (_catalogGate)
         {
@@ -328,9 +370,9 @@ internal sealed class FlightModelGeometryResolver
             .ToArray();
     }
 
-    private static IReadOnlyList<FlightModelGeometryMatch> BuildCatalog(IEnumerable<string> installedPackagesPaths)
+    private static Catalog BuildCatalog(IEnumerable<string> installedPackagesPaths)
     {
-        var result = new List<FlightModelGeometryMatch>();
+        var result = new Catalog();
         var visitedAircraftConfigs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var installedPackagesPath in installedPackagesPaths)
         {
@@ -355,11 +397,12 @@ internal sealed class FlightModelGeometryResolver
     }
 
     private static void TryAddAircraftConfig(
-        List<FlightModelGeometryMatch> result,
+        Catalog result,
         string aircraftConfig,
         IReadOnlyDictionary<string, IReadOnlyList<string>> simObjectsByName,
         IReadOnlyDictionary<string, IReadOnlyList<string>> attachmentRootsByVfsPath)
     {
+        var titles = Array.Empty<string>();
         try
         {
             var values = IniValues.Read(aircraftConfig);
@@ -371,7 +414,7 @@ internal sealed class FlightModelGeometryResolver
                 return;
             }
 
-            var titles = values.GetAll("title")
+            titles = values.GetAll("title")
                 .Select(Unquote)
                 .Where(title => !string.IsNullOrWhiteSpace(title))
                 .Distinct(StringComparer.OrdinalIgnoreCase)
@@ -384,6 +427,7 @@ internal sealed class FlightModelGeometryResolver
             var packageRoot = FindPackageRoot(aircraftConfig);
             if (packageRoot == null)
             {
+                foreach (var title in titles) result.Failures[title] = "package_root_unresolved";
                 return;
             }
 
@@ -395,15 +439,16 @@ internal sealed class FlightModelGeometryResolver
                 attachmentRootsByVfsPath);
             if (!FlightModelConfigParser.TryReadGearGeometry(
                     configPaths,
-                    out var geometry))
+                    out var geometry, out var failure))
             {
+                foreach (var title in titles) result.Failures[title] = failure;
                 return;
             }
 
             var model = Unquote(values.GetLast("atc_model"));
             foreach (var title in titles)
             {
-                result.Add(new FlightModelGeometryMatch(
+                result.Matches.Add(new FlightModelGeometryMatch(
                     title,
                     model,
                     geometry));
@@ -411,6 +456,7 @@ internal sealed class FlightModelGeometryResolver
         }
         catch
         {
+            foreach (var title in titles) result.Failures[title] = "cfg_read_or_parse_failed";
             // One encrypted, damaged, or partially installed aircraft must not
             // prevent readable aircraft from entering the catalog.
         }
@@ -1314,21 +1360,48 @@ internal static class FlightModelConfigParser
     public static bool TryReadGearGeometry(
         IEnumerable<string> configPaths,
         out FlightModelGearGeometry geometry)
+        => TryReadGearGeometry(configPaths, out geometry, out _);
+
+    public static bool TryReadGearGeometry(
+        IEnumerable<string> configPaths,
+        out FlightModelGearGeometry geometry,
+        out string failure)
     {
         geometry = null!;
+        failure = "unsupported_cfg_topology";
         var geometryConfigPath = string.Empty;
         var points = new List<WheelPoint>();
-        foreach (var path in configPaths ?? Array.Empty<string>())
+        double[]? referenceDatum = null;
+        var paths = (configPaths ?? Array.Empty<string>()).ToArray();
+        if (paths.Length == 0) { failure = "flight_model_unavailable"; return false; }
+        foreach (var path in paths)
         {
             try
             {
                 if (HasManualModularMerge(path))
                 {
+                    failure = "manual_modular_merge_unsupported";
                     return false;
                 }
 
+                var values = IniValues.Read(path);
+                foreach (var value in values.GetAll("reference_datum_position"))
+                {
+                    var coordinates = value.Split(',');
+                    var datum = new double[3];
+                    if (coordinates.Length != 3) { failure = "invalid_reference_datum"; return false; }
+                    for (var axis = 0; axis < datum.Length; axis++)
+                    {
+                        if (!TryDouble(coordinates[axis], out datum[axis]) || !IsFinite(datum[axis])) { failure = "invalid_reference_datum"; return false; }
+                        // The datum is shared by the entire merged aircraft.
+                        // Conflicting/static-unresolvable layers are not guessed.
+                        if (referenceDatum != null && Math.Abs(referenceDatum[axis] - datum[axis]) > 1e-9) { failure = "conflicting_reference_datum"; return false; }
+                    }
+                    referenceDatum = datum;
+                }
+
                 var layer = new SortedDictionary<int, WheelPoint>();
-                foreach (var pair in IniValues.Read(path).Pairs)
+                foreach (var pair in values.Pairs)
                 {
                     if (!pair.Key.StartsWith("point.", StringComparison.OrdinalIgnoreCase) ||
                         !int.TryParse(pair.Key.Substring(6), NumberStyles.Integer, CultureInfo.InvariantCulture, out var index))
@@ -1345,6 +1418,7 @@ internal static class FlightModelConfigParser
                         // Dynamic/manual values that cannot be resolved from the
                         // static package files must fail closed. Omitting a point
                         // could silently move the inferred gear axis.
+                        failure = "unresolved_contact_point";
                         return false;
                     }
                 }
@@ -1363,12 +1437,19 @@ internal static class FlightModelConfigParser
             }
             catch
             {
+                failure = "cfg_read_or_parse_failed";
                 return false;
             }
         }
 
+        // CFG contact positions are relative to reference_datum_position;
+        // telemetry's recovered datum offset starts at the model origin.
+        // Translate once after merging, before the telemetry offset is added.
+        var referenceDatumLongitudinal = referenceDatum?[0] ?? 0;
         var wheels = points
             .Where(point => point.Type == 1)
+            .Select(point => new WheelPoint(point.ContactPointIndex, point.Type,
+                point.LongitudinalFeet + referenceDatumLongitudinal, point.LateralFeet))
             .OrderByDescending(point => point.LongitudinalFeet)
             .ToArray();
         if (wheels.Length < 3)
@@ -1426,7 +1507,9 @@ internal static class FlightModelConfigParser
                 .OrderBy(point => point.ContactPointIndex)
                 .Select(point => point.ContactPointIndex)
                 .ToArray(),
-            geometryConfigPath);
+            geometryConfigPath,
+            referenceDatumLongitudinal);
+        failure = "cfg_geometry_ready";
         return true;
     }
 

@@ -11,6 +11,7 @@ internal static class ReplayDecisionJournalTests
 {
     internal static void RunAll()
     {
+        AggregatedAxesPreserveEveryContact();
         var record = Fixture();
         var before = record.Series.Select(p => (p.TimeSeconds, p.PlaneAltitudeFeet, p.PitchDegrees)).ToArray();
         var original = ReplayControlInputs.Resolve(record);
@@ -83,6 +84,52 @@ internal static class ReplayDecisionJournalTests
             });
         }
         return record;
+    }
+
+    private static void AggregatedAxesPreserveEveryContact()
+    {
+        var contacts = Enumerable.Range(1, 8).Select(number =>
+        {
+            var r = Fixture();
+            r.ContactNumber = number; r.ContactCount = 8;
+            r.RecordingEpisodeId = "journal-budget-fixture";
+            r.TimestampUtc = new DateTime(2026, 10, 14, 0, 0, 0, DateTimeKind.Utc);
+            r.EstimatedContactTimeSeconds = 100 + number * .1;
+            var count = TelemetrySample.CapturedControllerCount * TelemetrySample.CapturedControllerAxisCount;
+            r.RawControllerAxesSourceIndices = Enumerable.Range(0, count).ToList();
+            foreach (var p in r.Series)
+            {
+                p.RawControllerAxesPercent = p.RawControllerAxesPercent.Concat(new double[count - 2]).ToArray();
+                p.RawControllerAxesValid = Enumerable.Repeat(true, count).ToArray();
+                p.RawControllerAxesAgeSeconds = new double[count];
+            }
+            return r;
+        }).ToArray();
+        var before = ReplayControlInputs.Resolve(contacts[0], contacts);
+        var journal = new TelemetryDecisionJournal();
+        LandingReplayDiagnostics.RecordAll(contacts, journal);
+        var snapshot = journal.Snapshot();
+        Require(!snapshot.Truncated, "repeated constant axes exhausted the journal");
+        foreach (var contact in contacts)
+        {
+            var entries = snapshot.Entries.Where(e => e.Details["contact_number"] == contact.ContactNumber).ToArray();
+            Require(entries.Any(e => e.Code == "contact_summary") && entries.Any(e => e.Code == "frame_decision_counts"), "late contact lost replay outcome");
+            if (contact.ContactNumber != 1)
+            {
+                var reference = entries.Single(e => e.Code == "binding_diagnostics_reference");
+                Require(reference.Details["binding_diagnostics_contact_number"] == 1, "binding reference points to another episode");
+                entries = snapshot.Entries.Where(e => e.Details["contact_number"] == 1).ToArray();
+            }
+            foreach (var role in new[] { 0, 1, 2 })
+            {
+                var groups = entries.Where(e => e.Code == "constant_axis" && e.Details["role"] == role && e.Details["window"] == (role == 2 ? 1 : 0)).ToArray();
+                var sources = groups.SelectMany(e => Enumerable.Range(0, (int)e.Details["source_count"]).Select(i => (int)e.Details["source_" + i])).ToArray();
+                Require(sources.SequenceEqual(contacts[0].RawControllerAxesSourceIndices.Skip(2)), "aggregation lost source/role linkage");
+            }
+        }
+        var after = ReplayControlInputs.Resolve(contacts[0], contacts);
+        Require(before.Pitch?.SourceIndex == after.Pitch?.SourceIndex && before.Roll?.SourceIndex == after.Roll?.SourceIndex,
+            "journal strategy changed selected controls");
     }
 
     private static void Require(bool condition, string message) { if (!condition) throw new InvalidOperationException(message); }

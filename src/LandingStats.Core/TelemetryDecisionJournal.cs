@@ -7,8 +7,8 @@ namespace LandingStats.Core;
 /// <summary>A bounded, capture-local account of decisions actually made by the analyzer.</summary>
 public sealed class TelemetryDecisionJournal
 {
-    public const int MaximumEntries = 2048;
-    private const int MaximumEstimatedJsonBytes = 900000;
+    public const int MaximumEntries = 8192;
+    private const int MaximumEstimatedJsonBytes = 3600000;
     private readonly object _gate = new object();
     private readonly List<TelemetryDecisionEntry> _entries = new List<TelemetryDecisionEntry>();
     private int _droppedEntryCount;

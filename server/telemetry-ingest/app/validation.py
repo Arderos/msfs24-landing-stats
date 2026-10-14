@@ -11,8 +11,8 @@ EXPECTED_RAW_ENTRIES = {"telemetry.csv", "session.txt"}
 EXPECTED_BUG_REPORT_ENTRIES = {"telemetry.csv", "session.txt", "landing-results.json"}
 CAPTURE_KINDS = ("raw_debug", "bug_report", "automatic_landing")
 DECISION_JOURNAL_FORMAT_VERSION = 1
-MAXIMUM_DECISION_JOURNAL_BYTES = 1024 * 1024
-MAXIMUM_DECISION_ENTRIES = 2048
+MAXIMUM_DECISION_JOURNAL_BYTES = 4 * 1024 * 1024
+MAXIMUM_DECISION_ENTRIES = 8192
 BOOLEAN_COLUMNS = {
     "on_ground",
     "motion_simulation",
@@ -267,7 +267,7 @@ def _validate_capture_archive(path: Path, expected_header: str, maximum_uncompre
                 raise ValueError("decision journal is too large")
             maximum_ratio = 100 if info.filename == "landing-results.json" else 25
             # Repeated decisions legitimately compress very well. Their strict
-            # 1 MiB expanded bound above limits allocation independently of ratio.
+            # 4 MiB expanded bound above limits allocation independently of ratio.
             if info.compress_size == 0 or (
                 info.filename != "decisions.json" and info.file_size / info.compress_size > maximum_ratio
             ):
@@ -284,7 +284,7 @@ def _validate_capture_archive(path: Path, expected_header: str, maximum_uncompre
         if is_landing_report and "decisions.json" in names:
             expected_entries = expected_entries | {"decisions.json"}
         if set(names) != expected_entries or len(names) != len(expected_entries):
-            raise ValueError(f"archive entries do not match capture kind {capture_kind}")
+            raise ValueError("archive entries do not match capture kind")
         if capture_kind not in CAPTURE_KINDS:
             raise ValueError("unsupported capture kind")
         if expected_schema not in {5, 6, 7} or session.get("telemetry_schema") != str(expected_schema):

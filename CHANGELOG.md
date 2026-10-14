@@ -2,6 +2,19 @@
 
 All notable changes to MSFS Landing Stats are documented in this file.
 
+## [0.9.4] - 2026-10-14
+
+### Improved
+
+- Improve closure reconstruction from recorded landing-gear motion when aircraft configuration data is unavailable.
+- Include more complete multi-contact analysis and geometry details in diagnostic reports.
+
+### Fixed
+
+- Stop automatic reports caused by ground-state changes without preceding active flight.
+- Preserve brief touchdown and bounce phases in saved 3D replays.
+- Correct landing-gear geometry for aircraft configured with an offset reference datum.
+
 ## [0.9.3] - 2026-10-11
 
 ### Fixed

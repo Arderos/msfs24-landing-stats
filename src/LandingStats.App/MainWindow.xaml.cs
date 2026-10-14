@@ -1971,11 +1971,12 @@ public partial class MainWindow : Window
             // Datum recovery from telemetry is also segment-local: not just the
             // contact detector, but the geometry options themselves must never
             // be calibrated using another flight's positions or rotations.
-            var analysisOptions = await _flightModelGeometryResolver.CreateAnalysisOptionsAsync(
-                    eventArgs.AircraftTitle, eventArgs.AircraftType, eventArgs.AircraftModel, segment)
+            var resolution = await _flightModelGeometryResolver.ResolveAnalysisAsync(
+                    eventArgs.AircraftTitle, eventArgs.AircraftType, eventArgs.AircraftModel, segment, journal)
                 .ConfigureAwait(false);
-            analysisOptions ??= new TouchdownAnalysisOptions();
+            var analysisOptions = resolution.Options ?? new TouchdownAnalysisOptions();
             analysisOptions.DecisionJournal = journal;
+            var geometrySnapshot = AnalysisGeometrySnapshot.Capture(segment, analysisOptions, resolution.Outcome);
             var touchdowns = TouchdownAnalysis.Analyze(segment, analysisOptions);
             var segmentIdentity = Guid.NewGuid().ToString("N");
             foreach (var touchdown in touchdowns)
@@ -1987,6 +1988,7 @@ public partial class MainWindow : Window
                     timestampUtc: episodeTimestampUtc,
                     episodeEndSimulationTimeSeconds: TelemetryAnalysisFrames.TimeOf(segment[segment.Count - 1]));
                 record.RecordingEpisodeId = segmentIdentity + ":" + touchdown.EpisodeNumber.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                record.AnalysisGeometry = geometrySnapshot.Copy();
                 record.Simulator = eventArgs.Simulator;
                 record.ControlInputSources = eventArgs.ControlInputSources.ToList();
                 TryResolveAirport(record, facilities);

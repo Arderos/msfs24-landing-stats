@@ -1,6 +1,9 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.IO;
+using System.IO.Compression;
+using LandingStats.App.Storage;
 using System.Reflection;
 using System.Threading.Tasks;
 using LandingStats.App.Telemetry;
@@ -54,14 +57,19 @@ internal static class TelemetryDecisionJournalRegressionTests
     {
         var details = Enumerable.Range(0, 24).ToDictionary(i => i.ToString() + new string('\u0001', 100), i => (double)i);
         var journal = new TelemetryDecisionJournal();
-        for (var i = 0; i < 2048; i++)
+        for (var i = 0; i < TelemetryDecisionJournal.MaximumEntries; i++)
             journal.Record(i, new string('\u0002', 200), new string('\u0003', 200), new string('\u0004', 2000), details);
         var snapshot = journal.Snapshot();
-        Assert(snapshot.Truncated && snapshot.Entries.Count < 2048, "worst-case escaped data did not hit the size budget");
+        Assert(snapshot.Truncated && snapshot.Entries.Count < TelemetryDecisionJournal.MaximumEntries, "worst-case escaped data did not hit the size budget");
         var estimatedBytes = snapshot.Entries.Sum(entry => 256 +
             6 * (entry.Component.Length + entry.Code.Length + entry.Reason.Length) +
             entry.Details.Sum(item => 48 + 6 * item.Key.Length));
-        Assert(estimatedBytes <= 900000, "journal escaped JSON bound exceeds its archive budget");
+        Assert(estimatedBytes <= 3600000, "journal escaped JSON bound exceeds its archive budget");
+        using var memory = new MemoryStream();
+        using (var archive = new ZipArchive(memory, ZipArchiveMode.Create, true)) TelemetryDecisionArchive.Write(archive, 1, snapshot);
+        memory.Position = 0;
+        using (var archive = new ZipArchive(memory, ZipArchiveMode.Read, true))
+            Assert(archive.GetEntry("decisions.json")!.Length <= 4 * 1024 * 1024, "serialized worst-case journal exceeds server limit");
         var copied = new TelemetryDecisionJournal(snapshot).Snapshot();
         Assert(copied.Entries.Count == snapshot.Entries.Count && copied.DroppedEntryCount == snapshot.DroppedEntryCount,
             "seeding a journal lost earlier decisions or truncation provenance");

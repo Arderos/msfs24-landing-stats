@@ -183,6 +183,7 @@ internal static class PhysicsContinuityRegressionTests
         Feed(recorder, Frame(10, false));
         for (var i = 0; i < 1000; i++) Feed(recorder, Frame(10, false, false));
         Feed(recorder, Frame(10, true));
+        typeof(SimConnectLandingRecorder).GetMethod("FlushRejectedContacts", PrivateInstance)!.Invoke(recorder, null);
         Assert(diagnostic != null && diagnostic.IsDiagnosticOnly, "rejected contact did not preserve a diagnostic-only capture");
         Assert(diagnostic!.RunwayFacilitiesTask.IsCompleted && diagnostic.RunwayFacilitiesTask.Result.Count == 0,
             "diagnostic-only capture waits for landing runway facilities");
@@ -205,13 +206,8 @@ internal static class PhysicsContinuityRegressionTests
         Feed(recorder, Frame(10, false, false));
         Feed(recorder, Frame(11, true, false));
         Assert(started == 0, "inactive ground flicker announced a real landing episode");
-        Assert(captures.Count == 1 && captures[0].IsDiagnosticOnly, "inactive ground flicker was not retained as diagnostics");
-        Assert(captures[0].Samples.Count == 2 && captures[0].Samples.All(sample => !sample.MotionSimulation),
-            "diagnostic capture lost original non-motion data");
-        var entries = captures[0].DecisionJournal!.Snapshot().Entries;
-        Assert(entries.Any(entry => entry.Code == "physics_discontinuity_rejected") &&
-               entries.All(entry => entry.Code != "contact_flag_transition"),
-            "diagnostic journal does not explain why the ground transition was rejected");
+        typeof(SimConnectLandingRecorder).GetMethod("FlushRejectedContacts", PrivateInstance)!.Invoke(recorder, null);
+        Assert(captures.Count == 0, "inactive ground flicker created an automatic capture without flight evidence");
     }
 
     private static void RawDebugStillReceivesNonMotionFrames()
@@ -235,8 +231,12 @@ internal static class PhysicsContinuityRegressionTests
         typeof(SimConnectLandingRecorder).GetField("_runwaySnapshotCompletion", PrivateInstance)!.SetValue(recorder, pending);
         LandingEpisodeEventArgs? diagnostic = null;
         recorder.EpisodeCompleted += (_, args) => diagnostic = args;
+        var airborne = Frame(9, false);
+        airborne.AboveGroundLevelFeet = 700; // Flight evidence without starting an approach/runway lookup.
+        Feed(recorder, airborne);
         Feed(recorder, Frame(10, false, false));
         Feed(recorder, Frame(11, true, false));
+        typeof(SimConnectLandingRecorder).GetMethod("FlushRejectedContacts", PrivateInstance)!.Invoke(recorder, null);
         Assert(diagnostic != null && diagnostic.IsDiagnosticOnly && diagnostic.RunwayFacilitiesTask.IsCompleted &&
                diagnostic.RunwayFacilitiesTask.Result.Count == 0, "diagnostic capture inherited a real landing's runway task");
         Assert(ReferenceEquals(recorder.GetRunwayFacilities(42), previous) && !pending.Task.IsCompleted,
@@ -253,6 +253,7 @@ internal static class PhysicsContinuityRegressionTests
         recorder.EpisodeCompleted += (_, args) => captures.Add(args);
         foreach (var sample in samples) Feed(recorder, sample);
         typeof(SimConnectLandingRecorder).GetMethod("CompleteEpisode", PrivateInstance)!.Invoke(recorder, new object[] { false });
+        typeof(SimConnectLandingRecorder).GetMethod("FlushRejectedContacts", PrivateInstance)!.Invoke(recorder, null);
         var recorderContacts = captures.SelectMany(capture => capture.DecisionJournal!.Snapshot().Entries)
             .Where(entry => entry.Code == "contact_flag_transition").Select(entry => entry.TimeSeconds).ToArray();
         Assert(recorderContacts.SequenceEqual(expectedTimes), name + ": recorder accepted the wrong contact sequence");

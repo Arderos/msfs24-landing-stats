@@ -197,12 +197,13 @@ internal sealed partial class SimConnectLandingRecorder : IDisposable
 
     private readonly IntPtr _windowHandle;
     private readonly Stopwatch _hostClock = Stopwatch.StartNew();
+    private readonly RejectedContactBatcher _rejectedContactBatcher = new RejectedContactBatcher();
     private readonly DispatcherTimer _retryTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
     private readonly PreRollBuffer _preRoll = new PreRollBuffer(PreRollSeconds, PreRollMaximumSamples);
     private readonly Dictionary<string, AirportFacility> _airportFacilities =
         new Dictionary<string, AirportFacility>(StringComparer.OrdinalIgnoreCase);
     private Dictionary<string, AirportFacility>? _pendingAirportFacilities;
-    private readonly Dictionary<uint, string> _simConnectOperations = new Dictionary<uint, string>();
+    private readonly SimConnectOperationJournal _simConnectOperations = new SimConnectOperationJournal();
     private readonly WindowsJoystickReader _windowsJoystickReader = new WindowsJoystickReader();
     private readonly Func<SimConnect> _openConnection;
     private readonly CancellationTokenSource _connectionCancellation = new CancellationTokenSource();
@@ -392,10 +393,13 @@ internal sealed partial class SimConnectLandingRecorder : IDisposable
 
         CloseSimConnect();
         _hostClock.Stop();
+        FlushRejectedContacts();
     }
 
     private void OnRetryTimerTick(object? sender, EventArgs eventArgs)
     {
+        var diagnostic = _rejectedContactBatcher.FlushExpired(DateTime.UtcNow);
+        if (diagnostic != null) EpisodeCompleted?.Invoke(this, diagnostic);
         ExpireRunwayRequests();
         var now = DateTime.UtcNow;
         if (_episodeSamples == null && !RawDebugEnabled && now >= _nextJoystickRefreshUtc)
@@ -496,13 +500,21 @@ internal sealed partial class SimConnectLandingRecorder : IDisposable
 
     private void OnRecvOpen(SimConnect sender, SIMCONNECT_RECV_OPEN data)
     {
+        if (!ReferenceEquals(sender, _simConnect)) return;
+        _simConnectOperations.BeginConnection(new Dictionary<string, double>
+        {
+            ["application_version_major"] = data.dwApplicationVersionMajor, ["application_version_minor"] = data.dwApplicationVersionMinor,
+            ["application_build_major"] = data.dwApplicationBuildMajor, ["application_build_minor"] = data.dwApplicationBuildMinor,
+            ["sdk_version_major"] = data.dwSimConnectVersionMajor, ["sdk_version_minor"] = data.dwSimConnectVersionMinor,
+            ["sdk_build_major"] = data.dwSimConnectBuildMajor, ["sdk_build_minor"] = data.dwSimConnectBuildMinor,
+        });
         try
         {
             RegisterGuardDefinition(sender);
             sender.RegisterDataDefineStruct<SimGuardData>(Definitions.Guard);
             RegisterFrameDefinition(sender);
             sender.RegisterDataDefineStruct<SimFrameData>(Definitions.Frame);
-            sender.AddToDataDefinition(Definitions.Metadata, "TITLE", null, SIMCONNECT_DATATYPE.STRING256, 0, SimConnect.SIMCONNECT_UNUSED);
+            AddMetadataString(sender, "TITLE");
             AddMetadataString(sender, "ATC TYPE");
             AddMetadataString(sender, "ATC MODEL");
             AddMetadataString(sender, "CATEGORY");
@@ -516,6 +528,7 @@ internal sealed partial class SimConnectLandingRecorder : IDisposable
                 0,
                 0,
                 0);
+            RememberOperation(sender, "Request guard telemetry", false, (uint)Requests.Guard, (uint)Definitions.Guard);
             _fullTelemetryEnabled = RawDebugEnabled;
             sender.RequestDataOnSimObject(
                 Requests.Frame,
@@ -526,6 +539,7 @@ internal sealed partial class SimConnectLandingRecorder : IDisposable
                 0,
                 0,
                 0);
+            RememberOperation(sender, "Request full telemetry", false, (uint)Requests.Frame, (uint)Definitions.Frame);
             RequestAircraftMetadata(sender);
             if (_airportFacilities.Count == 0)
             {
@@ -557,17 +571,15 @@ internal sealed partial class SimConnectLandingRecorder : IDisposable
     private void OnRecvException(SimConnect sender, SIMCONNECT_RECV_EXCEPTION data)
     {
         if (!ReferenceEquals(sender, _simConnect)) return;
-        (_episodeDecisionJournal ?? _pendingLifecycleJournal).Record(_lastSimulationTime,
-            "recorder", "simconnect_request_rejected", "Simulator rejected a request; retain its SDK error and packet identity.",
-            new Dictionary<string, double> { ["exception_code"] = data.dwException,
-                ["packet_id"] = data.dwSendID, ["parameter_index"] = data.dwIndex });
+        _simConnectOperations.RecordRejection(_episodeDecisionJournal ?? _pendingLifecycleJournal,
+            _lastSimulationTime, data.dwException, data.dwSendID, data.dwIndex);
         if (ReferenceEquals(sender, _simConnect) && _airportFacilityRequestPending && data.dwSendID == _airportFacilityRequestPacket)
         {
             CompleteAirportLookupFailure("Simulator rejected the fresh airport-list request.");
             return;
         }
         if (HandleRunwayException(sender, data.dwSendID)) return;
-        var operation = _simConnectOperations.TryGetValue(data.dwSendID, out var value)
+        var operation = _simConnectOperations.Name(data.dwSendID) is string value
             ? $" · {value}"
             : string.Empty;
         _recoverStatusAfterFrame = true;
@@ -781,11 +793,15 @@ internal sealed partial class SimConnectLandingRecorder : IDisposable
 
         var isContact = _contactContinuity.Observe(sample);
         var rejectedContact = sample.OnGround && !_previousOnGround && !isContact;
+        // A rejected flag transition is relevant only if recent active flight
+        // could have ended here. Loading/ground chatter alone must not create
+        // an automatic capture, even when SDK lifecycle state says Running.
+        var diagnosticContact = rejectedContact && HasActiveAirbornePreRoll(sample);
         var wasRecording = _episodeSamples != null;
         var startedNow = false;
-        if (_episodeSamples == null && _armed && (ShouldStartEpisode(sample) || isContact || rejectedContact))
+        if (_episodeSamples == null && _armed && (ShouldStartEpisode(sample) || isContact || diagnosticContact))
         {
-            StartEpisode(sample, isContact, rejectedContact);
+            StartEpisode(sample, isContact, diagnosticContact);
             startedNow = true;
         }
 
@@ -809,7 +825,7 @@ internal sealed partial class SimConnectLandingRecorder : IDisposable
 
         _previousOnGround = sample.OnGround;
 
-        if (rejectedContact)
+        if (rejectedContact && _episodeSamples != null)
         {
             _episodeDecisionJournal?.Record(sampleTime, "recorder", "physics_discontinuity_rejected",
                 "Ground transition has no airborne evidence in the current active-physics segment; retain raw diagnostics, not a landing.");
@@ -868,6 +884,7 @@ internal sealed partial class SimConnectLandingRecorder : IDisposable
 
     private void StartEpisode(TelemetrySample trigger, bool contactTriggered, bool diagnosticOnly = false)
     {
+        if (!diagnosticOnly) FlushRejectedContacts();
         _activeEpisodeId = checked(_nextEpisodeId + 1);
         _nextEpisodeId = _activeEpisodeId;
         _episodeSamples = new List<TelemetrySample>(_preRoll.Count + 4096);
@@ -984,9 +1001,7 @@ internal sealed partial class SimConnectLandingRecorder : IDisposable
             if (!refreshAirportFacilities || _simConnect == null || _disposed)
                 CompleteRunwayLookupWithoutRefresh("Capture ended without a final scenery lookup; retain only this approach's preliminary facilities.");
         }
-        EpisodeCompleted?.Invoke(
-            this,
-            new LandingEpisodeEventArgs(
+        var completedEpisode = new LandingEpisodeEventArgs(
                 episodeId,
                 samples.ToArray(),
                 _simulator,
@@ -999,7 +1014,9 @@ internal sealed partial class SimConnectLandingRecorder : IDisposable
                 runwayFacilitiesTask: diagnosticOnly ? null : _runwaySnapshotCompletion?.Task,
                 isDiagnosticOnly: diagnosticOnly,
                 facilitiesTask: diagnosticOnly ? null : _episodeFacilityCompletion?.Task,
-                initialFacilities: diagnosticOnly ? null : CurrentEpisodeFacilitySnapshot()));
+                initialFacilities: diagnosticOnly ? null : CurrentEpisodeFacilitySnapshot());
+        foreach (var completed in _rejectedContactBatcher.Accept(completedEpisode, DateTime.UtcNow))
+            EpisodeCompleted?.Invoke(this, completed);
 
         if (!diagnosticOnly && refreshAirportFacilities && _simConnect != null && !_disposed) RequestEpisodeRunways(samples);
     }
@@ -1075,6 +1092,7 @@ internal sealed partial class SimConnectLandingRecorder : IDisposable
                 0,
                 0,
                 0);
+            RememberOperation(_simConnect, enabled ? "Enable full telemetry" : "Disable full telemetry", false, (uint)Requests.Frame, (uint)Definitions.Frame);
         }
         catch (Exception exception)
         {
@@ -1091,6 +1109,19 @@ internal sealed partial class SimConnectLandingRecorder : IDisposable
                sample.AboveGroundLevelFeet >= -50 &&
                sample.AboveGroundLevelFeet <= CaptureStartAglFeet &&
                sample.VelocityWorldYFps <= CaptureStartDescentFps;
+    }
+
+    private bool HasActiveAirbornePreRoll(TelemetrySample trigger)
+    {
+        foreach (var sample in _preRoll)
+        {
+            if (sample.FlightSegment == trigger.FlightSegment &&
+                sample.MotionSimulation && !sample.OnGround &&
+                (sample.SimulatorState == TelemetrySimulatorState.Legacy ||
+                 sample.SimulatorState == TelemetrySimulatorState.Running))
+                return true;
+        }
+        return false;
     }
 
     private void Disconnect()
@@ -1120,6 +1151,7 @@ internal sealed partial class SimConnectLandingRecorder : IDisposable
 
     private void ResetFlightDetection()
     {
+        FlushRejectedContacts();
         _lastKinematicFrame = null;
         _preRoll.Clear();
         _contactContinuity.Reset();
@@ -1131,8 +1163,15 @@ internal sealed partial class SimConnectLandingRecorder : IDisposable
         _axisElevatorSetReceivedHostSeconds = double.NaN;
     }
 
+    private void FlushRejectedContacts()
+    {
+        var diagnostic = _rejectedContactBatcher.Flush();
+        if (diagnostic != null) EpisodeCompleted?.Invoke(this, diagnostic);
+    }
+
     private void CloseSimConnect()
     {
+        _simConnectOperations.Clear();
         ResetRunwayConnection();
         var connection = _simConnect;
         _simConnect = null;
@@ -1296,16 +1335,21 @@ internal sealed partial class SimConnectLandingRecorder : IDisposable
         }
     }
 
-    private static void RegisterGuardDefinition(SimConnect connection)
+    private void RegisterGuardDefinition(SimConnect connection)
     {
         connection.AddToDataDefinition(Definitions.Guard, "SIMULATION TIME", "seconds", SIMCONNECT_DATATYPE.FLOAT64, 0, SimConnect.SIMCONNECT_UNUSED);
+        RememberOperation(connection, "Guard definition: SIMULATION TIME", false, definition: (uint)Definitions.Guard);
         connection.AddToDataDefinition(Definitions.Guard, "PLANE ALT ABOVE GROUND", "Feet", SIMCONNECT_DATATYPE.FLOAT64, 0, SimConnect.SIMCONNECT_UNUSED);
+        RememberOperation(connection, "Guard definition: PLANE ALT ABOVE GROUND", false, definition: (uint)Definitions.Guard);
         connection.AddToDataDefinition(Definitions.Guard, "SIM ON GROUND", "Bool", SIMCONNECT_DATATYPE.INT32, 0, SimConnect.SIMCONNECT_UNUSED);
+        RememberOperation(connection, "Guard definition: SIM ON GROUND", false, definition: (uint)Definitions.Guard);
         connection.AddToDataDefinition(Definitions.Guard, "VELOCITY WORLD Y", "Feet per second", SIMCONNECT_DATATYPE.FLOAT64, 0, SimConnect.SIMCONNECT_UNUSED);
+        RememberOperation(connection, "Guard definition: VELOCITY WORLD Y", false, definition: (uint)Definitions.Guard);
         connection.AddToDataDefinition(Definitions.Guard, "MOTION SIMULATION", "Bool", SIMCONNECT_DATATYPE.INT32, 0, SimConnect.SIMCONNECT_UNUSED);
+        RememberOperation(connection, "Guard definition: MOTION SIMULATION", false, definition: (uint)Definitions.Guard);
     }
 
-    private static void RegisterFrameDefinition(SimConnect connection)
+    private void RegisterFrameDefinition(SimConnect connection)
     {
         AddDouble(connection, "SIMULATION TIME", "seconds");
         AddDouble(connection, "SIMULATION DELTA TIME", "seconds");
@@ -1391,22 +1435,25 @@ internal sealed partial class SimConnectLandingRecorder : IDisposable
         }
     }
 
-    private static void AddDouble(SimConnect connection, string name, string unit)
+    private void AddDouble(SimConnect connection, string name, string unit)
     {
         connection.AddToDataDefinition(Definitions.Frame, name, unit, SIMCONNECT_DATATYPE.FLOAT64, 0, SimConnect.SIMCONNECT_UNUSED);
+        RememberOperation(connection, "Frame definition: " + name, false, definition: (uint)Definitions.Frame);
     }
 
-    private static void AddInt(SimConnect connection, string name, string unit)
+    private void AddInt(SimConnect connection, string name, string unit)
     {
         connection.AddToDataDefinition(Definitions.Frame, name, unit, SIMCONNECT_DATATYPE.INT32, 0, SimConnect.SIMCONNECT_UNUSED);
+        RememberOperation(connection, "Frame definition: " + name, false, definition: (uint)Definitions.Frame);
     }
 
-    private static void AddMetadataString(SimConnect connection, string name)
+    private void AddMetadataString(SimConnect connection, string name)
     {
         connection.AddToDataDefinition(Definitions.Metadata, name, null, SIMCONNECT_DATATYPE.STRING256, 0, SimConnect.SIMCONNECT_UNUSED);
+        RememberOperation(connection, "Metadata definition: " + name, true, definition: (uint)Definitions.Metadata);
     }
 
-    private static void RequestAircraftMetadata(SimConnect connection)
+    private void RequestAircraftMetadata(SimConnect connection)
     {
         connection.RequestDataOnSimObject(
             Requests.Metadata,
@@ -1417,6 +1464,7 @@ internal sealed partial class SimConnectLandingRecorder : IDisposable
             0,
             0,
             0);
+        RememberOperation(connection, "Request aircraft metadata", true, (uint)Requests.Metadata, (uint)Definitions.Metadata);
     }
 
     private void RequestAirportFacilities(SimConnect connection)
@@ -1437,6 +1485,7 @@ internal sealed partial class SimConnectLandingRecorder : IDisposable
                 SIMCONNECT_FACILITY_LIST_TYPE.AIRPORT,
                 (Requests)_airportFacilityRequestId);
             _airportFacilityRequestPacket = connection.GetLastSentPacketID();
+            RememberOperation(connection, "Request airport facilities list", true, _airportFacilityRequestId);
         }
         catch
         {
@@ -1450,14 +1499,14 @@ internal sealed partial class SimConnectLandingRecorder : IDisposable
         TrackOperation(
             connection,
             "map AXIS_ELEVATOR_SET",
-            () => connection.MapClientEventToSimEvent(ControlEvents.AxisElevatorSet, "AXIS_ELEVATOR_SET"));
+            () => connection.MapClientEventToSimEvent(ControlEvents.AxisElevatorSet, "AXIS_ELEVATOR_SET"), (uint)ControlEvents.AxisElevatorSet);
         TrackOperation(
             connection,
             "subscribe AXIS_ELEVATOR_SET",
             () => connection.AddClientEventToNotificationGroup(
                 NotificationGroups.ControlEvents,
                 ControlEvents.AxisElevatorSet,
-                false));
+                false), (uint)ControlEvents.AxisElevatorSet);
         TrackOperation(
             connection,
             "set AXIS_ELEVATOR_SET notification priority",
@@ -1466,11 +1515,12 @@ internal sealed partial class SimConnectLandingRecorder : IDisposable
                 SimConnect.SIMCONNECT_GROUP_PRIORITY_STANDARD));
     }
 
-    private static void TrySubscribeToFlowEvents(SimConnect connection)
+    private void TrySubscribeToFlowEvents(SimConnect connection)
     {
         try
         {
             connection.SubscribeToFlowEvent();
+            RememberOperation(connection, "Subscribe to flow events", true);
         }
         catch
         {
@@ -1479,10 +1529,18 @@ internal sealed partial class SimConnectLandingRecorder : IDisposable
         }
     }
 
-    private void TrackOperation(SimConnect connection, string name, Action action)
+    private void TrackOperation(SimConnect connection, string name, Action action, uint? eventId = null)
     {
         action();
-        _simConnectOperations[connection.GetLastSentPacketID()] = name;
+        RememberOperation(connection, name, true, eventId: eventId);
+    }
+
+    private void RememberOperation(SimConnect connection, string name, bool optional, uint? request = null, uint? definition = null, uint? eventId = null)
+    {
+        // Packet diagnostics must not change a successful subscription when
+        // an older SDK cannot report its last packet identity.
+        try { _simConnectOperations.Remember(connection.GetLastSentPacketID(), name, optional, request, definition, eventId); }
+        catch { }
     }
 
     private static double NormalizeElevatorEvent(uint rawValue)

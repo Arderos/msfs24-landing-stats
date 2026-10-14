@@ -1,4 +1,7 @@
+import asyncio
 import hashlib
+import json
+import logging
 import os
 import re
 import secrets
@@ -9,6 +12,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request, Response, status
+from fastapi.exception_handlers import http_exception_handler, request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
+from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.requests import ClientDisconnect
 from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 
@@ -24,6 +31,7 @@ from .security import (
     verify_signature,
 )
 from .store import InstallationRegistryFullError, Store
+from .ingress_control import UploadPacer, rate_limited
 from .validation import CAPTURE_KINDS, DECISION_JOURNAL_FORMAT_VERSION, validate_capture
 
 
@@ -41,6 +49,8 @@ DAILY_GLOBAL_ATTEMPT_QUOTA_BYTES = int(
 )
 MINIMUM_FREE_BYTES = int(os.environ.get("MINIMUM_FREE_BYTES", str(2 * 1024 * 1024 * 1024)))
 RETENTION_DAYS = int(os.environ.get("RETENTION_DAYS", "30"))
+REJECTED_RETENTION_DAYS = 7
+REJECTED_QUOTA_BYTES = 256 * 1024 * 1024
 GLOBAL_ENROLLMENTS_PER_HOUR = int(os.environ.get("GLOBAL_ENROLLMENTS_PER_HOUR", "1000"))
 MAX_INSTALLATIONS = int(os.environ.get("MAX_INSTALLATIONS", "100000"))
 UNREFERENCED_INSTALLATION_RETENTION_DAYS = int(
@@ -52,6 +62,8 @@ EXPECTED_HEADERS = {
     for version in (5, 6, 7)
 }
 STORE = Store(DATA_ROOT)
+UPLOAD_PACER = UploadPacer()
+INGRESS_LOG = logging.getLogger("uvicorn.error")
 
 if not 1024 * 1024 <= MAX_UPLOAD_BYTES <= 64 * 1024 * 1024:
     raise RuntimeError("MAX_UPLOAD_BYTES is outside policy")
@@ -76,6 +88,7 @@ async def lifespan(_: FastAPI):
     STORE.initialize()
     STORE.prune(RETENTION_DAYS, STORAGE_QUOTA_BYTES)
     STORE.prune_installations(UNREFERENCED_INSTALLATION_RETENTION_DAYS)
+    STORE.prune_rejected(REJECTED_RETENTION_DAYS, REJECTED_QUOTA_BYTES)
     yield
 
 
@@ -97,6 +110,60 @@ class EnrollmentRequest(BaseModel):
     signature: str = Field(min_length=300, max_length=1024)
 
 
+@app.exception_handler(StarletteHTTPException)
+async def rejection_handler(request: Request, exc: StarletteHTTPException):
+    request.state.rejection_reason = str(exc.detail)[:240]
+    return await http_exception_handler(request, exc)
+
+
+@app.exception_handler(RequestValidationError)
+async def malformed_request_handler(request: Request, exc: RequestValidationError):
+    # Pydantic's error details can contain the submitted key/signature. Never log them.
+    request.state.rejection_reason = "request fields do not match the API schema"
+    return await request_validation_exception_handler(request, exc)
+
+
+@app.exception_handler(ClientDisconnect)
+async def disconnected_handler(request: Request, exc: ClientDisconnect):
+    request.state.rejection_reason = "client disconnected while uploading"
+    return Response(status_code=499)
+
+
+async def ingress_diagnostics(request: Request, call_next):
+    started = time.monotonic()
+    code = 500
+    try:
+        response = await call_next(request)
+        code = response.status_code
+        return response
+    except asyncio.CancelledError:
+        code = 499
+        request.state.rejection_reason = "request cancelled"
+        raise
+    finally:
+        if request.url.path in {"/v1/config", "/v1/enroll", "/v1/captures"}:
+            fields = {
+                "event": "telemetry_ingress", "path": request.url.path, "status": code,
+                "duration_ms": round((time.monotonic() - started) * 1000),
+                "reason": getattr(request.state, "rejection_reason", "internal error" if code == 500 else ""),
+                "source": address_key(SERVER_PEPPER, _source_address(request))[:16],
+            }
+            for header, name, pattern in (
+                ("x-install-id", "install_id", INSTALL_ID_RE),
+                ("x-capture-sha256", "sha256", re.compile(r"^[a-fA-F0-9]{64}$")),
+                ("x-app-version", "app_version", VERSION_RE),
+                ("cf-ray", "ray", re.compile(r"^[a-fA-F0-9]{16,32}(?:-[A-Z]{3})?$")),
+            ):
+                value = request.headers.get(header, "")
+                if len(value) <= 128 and pattern.fullmatch(value):
+                    fields[name] = value
+            fields["pacing_ms"] = round(getattr(request.state, "pacing_seconds", 0.0) * 1000)
+            fields["quarantine"] = getattr(request.state, "quarantine", "")
+            # JSON escapes all control characters; only bounded/validated metadata,
+            # no addresses, request bodies, nonces, keys or signatures are included.
+            INGRESS_LOG.info(json.dumps(fields, separators=(",", ":")))
+
+
 @app.middleware("http")
 async def request_size_guard(request: Request, call_next):
     if request.method == "POST" and request.url.path == "/v1/enroll":
@@ -106,10 +173,15 @@ async def request_size_guard(request: Request, call_next):
         except ValueError:
             size = -1
         if size < 0:
+            request.state.rejection_reason = "Content-Length is required"
             return Response(status_code=411, content="Content-Length is required")
         if size > 32 * 1024:
+            request.state.rejection_reason = "enrollment request exceeds policy"
             return Response(status_code=413, content="enrollment request exceeds policy")
     return await call_next(request)
+
+
+app.middleware("http")(ingress_diagnostics)
 
 
 def _source_address(request: Request) -> str:
@@ -123,6 +195,20 @@ def _fresh_timestamp(value: str) -> None:
     parsed = parse_utc(value)
     if abs((datetime.now(timezone.utc) - parsed).total_seconds()) > 900:
         raise ValueError("request timestamp is outside the 15 minute window")
+
+
+async def retain_rejection(request: Request, incoming: Path, sha256: str,
+                           install_id: str, version: str, schema: int, reason: str) -> None:
+    metadata = {"sha256": sha256, "install_id": install_id, "app_version": version,
+                "schema": schema, "received_at": int(time.time()), "reason": reason[:240]}
+    try:
+        request.state.quarantine = await run_in_threadpool(
+            STORE.quarantine_capture, incoming, sha256, metadata,
+            REJECTED_RETENTION_DAYS, REJECTED_QUOTA_BYTES)
+    except OSError:
+        # The response still describes validation, not acceptance. The shipped
+        # client also retains its rejected archive locally. Do not hide failures.
+        request.state.quarantine = "retention_failed"
 
 
 @app.get("/health")
@@ -146,11 +232,20 @@ def config() -> dict[str, object]:
 @app.post("/v1/enroll", status_code=status.HTTP_201_CREATED)
 def enroll(payload: EnrollmentRequest, request: Request, response: Response) -> dict[str, str]:
     source_hash = address_key(SERVER_PEPPER, _source_address(request))
-    if not STORE.rate_limit("enroll-ip-hour", source_hash, 3600, 10):
-        raise HTTPException(status_code=429, detail="enrollment rate limit exceeded")
-    if not STORE.rate_limit("enroll-global-hour", "global", 3600, GLOBAL_ENROLLMENTS_PER_HOUR):
-        raise HTTPException(status_code=429, detail="global enrollment rate limit exceeded")
-    was_enrolled = STORE.installation(payload.install_id) is not None
+    existing = STORE.installation(payload.install_id)
+    refresh = (existing is not None and existing["status"] == "active"
+               and existing["modulus"] == payload.public_modulus
+               and existing["exponent"] == payload.public_exponent)
+    if refresh:
+        # This does not create an identity. Keep an independent pre-verification
+        # bound for RSA/DB work; still verify possession of the registered key.
+        if not STORE.rate_limit("enroll-refresh-ip-minute", source_hash, 60, 6):
+            raise rate_limited("registration refresh rate limit exceeded")
+    else:
+        if not STORE.rate_limit("enroll-ip-hour", source_hash, 3600, 10):
+            raise rate_limited("enrollment rate limit exceeded", 3600)
+        if not STORE.rate_limit("enroll-global-hour", "global", 3600, GLOBAL_ENROLLMENTS_PER_HOUR):
+            raise rate_limited("global enrollment rate limit exceeded", 3600)
     try:
         if not INSTALL_ID_RE.fullmatch(payload.install_id):
             raise ValueError("invalid install_id")
@@ -169,7 +264,7 @@ def enroll(payload: EnrollmentRequest, request: Request, response: Response) -> 
             ),
             payload.signature,
         )
-        if not was_enrolled and shutil.disk_usage(DATA_ROOT).free < MINIMUM_FREE_BYTES:
+        if existing is None and shutil.disk_usage(DATA_ROOT).free < MINIMUM_FREE_BYTES:
             raise HTTPException(status_code=507, detail="telemetry storage reserve is active")
         created = STORE.enroll(
             payload.install_id,
@@ -205,11 +300,9 @@ async def upload_capture(request: Request) -> dict[str, object]:
 
     source_hash = address_key(SERVER_PEPPER, _source_address(request))
     if not await run_in_threadpool(STORE.rate_limit, "capture-ip-minute", source_hash, 60, 6):
-        raise HTTPException(status_code=429, detail="source rate limit exceeded")
+        raise rate_limited("source rate limit exceeded")
     if not INSTALL_ID_RE.fullmatch(install_id):
         raise HTTPException(status_code=400, detail="invalid install_id")
-    if not await run_in_threadpool(STORE.rate_limit, "capture-install-minute", install_id, 60, 3):
-        raise HTTPException(status_code=429, detail="installation rate limit exceeded")
     if not NONCE_RE.fullmatch(nonce):
         raise HTTPException(status_code=400, detail="invalid nonce")
     if not re.fullmatch(r"[a-f0-9]{64}", expected_sha):
@@ -247,7 +340,8 @@ async def upload_capture(request: Request) -> dict[str, object]:
         STORE.accepted_bytes_since, install_id, int(time.time()) - 86400
     )
     if accepted_today + expected_size > DAILY_INSTALL_QUOTA_BYTES:
-        raise HTTPException(status_code=429, detail="installation daily byte quota exceeded")
+        raise HTTPException(status_code=429, detail="installation daily byte quota exceeded",
+                            headers={"Retry-After": "86400"})
     free_bytes = (await run_in_threadpool(shutil.disk_usage, DATA_ROOT)).free
     if free_bytes - expected_size < MINIMUM_FREE_BYTES:
         raise HTTPException(status_code=507, detail="telemetry storage reserve is active")
@@ -259,7 +353,7 @@ async def upload_capture(request: Request) -> dict[str, object]:
             ("capture-global-day", "global", 86400, expected_size, DAILY_GLOBAL_ATTEMPT_QUOTA_BYTES),
         ],
     ):
-        raise HTTPException(status_code=429, detail="signed upload byte budget exceeded")
+        raise rate_limited("signed upload byte budget exceeded", 86400)
 
     existing = await run_in_threadpool(STORE.capture_by_hash, expected_sha)
     if existing is not None:
@@ -284,11 +378,23 @@ async def upload_capture(request: Request) -> dict[str, object]:
             await run_in_threadpool(output.close)
         if received != expected_size or digest.hexdigest() != expected_sha:
             raise HTTPException(status_code=400, detail="upload hash or size mismatch")
+        # Finish receiving the bounded file before pacing: waiting while the
+        # proxy is still writing a large body can trigger its write timeout.
+        request.state.pacing_seconds = await UPLOAD_PACER.admit(STORE, install_id)
         try:
             facts = await run_in_threadpool(
                 validate_capture, incoming, EXPECTED_HEADERS[schema], MAX_UNCOMPRESSED_BYTES, schema
             )
-        except (ValueError, OSError) as exc:
+        except UnicodeDecodeError as exc:
+            await retain_rejection(request, incoming, expected_sha, install_id, app_version, schema,
+                                   "archive text is not valid UTF-8")
+            raise HTTPException(status_code=422, detail="archive text is not valid UTF-8") from exc
+        except OSError as exc:
+            # A receiver disk/read error is transient, not a malformed archive.
+            # Old clients quarantine 422 permanently; 503 retains their retry.
+            raise HTTPException(status_code=503, detail="archive read failed; retry later") from exc
+        except ValueError as exc:
+            await retain_rejection(request, incoming, expected_sha, install_id, app_version, schema, str(exc))
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
         now = datetime.now(timezone.utc)

@@ -1,5 +1,15 @@
 # Project instructions
 
+## Backlog
+
+- Keep discovered unresolved issues and deferred improvements in `BACKLOG.md`.
+- Before adding an issue, check for an existing entry and update it rather than
+  creating a duplicate. Preserve reproduction data, distinguish confirmed causes
+  from hypotheses, and include verification criteria.
+- A backlog entry is not authorization to implement, deploy, or release a change.
+- When resolved, record verification and the published version without deleting
+  the issue's history.
+
 ## Changelogs and release notes
 
 - Compare with the previous **published release**, not an intermediate build,

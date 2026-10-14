@@ -120,6 +120,7 @@ internal sealed class LandingRecordFile
         summary.ReconstructedInertialFpm = Store(summary.ReconstructedInertialFpm);
         summary.ReconstructedTerrainFpm = Store(summary.ReconstructedTerrainFpm);
         summary.ReconstructedPitchFpm = Store(summary.ReconstructedPitchFpm);
+        summary.ReconstructedRotationFpm = Store(summary.ReconstructedRotationFpm);
         summary.ClosureReconstructionResidualFpm = Store(summary.ClosureReconstructionResidualFpm);
         summary.ClosureReconstructionUncertaintyFpm = Store(summary.ClosureReconstructionUncertaintyFpm);
         summary.ClosureReconstructionLongitudinalArmFeet = Store(summary.ClosureReconstructionLongitudinalArmFeet);
@@ -163,6 +164,7 @@ internal sealed class LandingRecordFile
         summary.ReconstructedInertialFpm = Restore(summary.ReconstructedInertialFpm);
         summary.ReconstructedTerrainFpm = Restore(summary.ReconstructedTerrainFpm);
         summary.ReconstructedPitchFpm = Restore(summary.ReconstructedPitchFpm);
+        summary.ReconstructedRotationFpm = Restore(summary.ReconstructedRotationFpm);
         summary.ClosureReconstructionResidualFpm = Restore(summary.ClosureReconstructionResidualFpm);
         summary.ClosureReconstructionUncertaintyFpm = Restore(summary.ClosureReconstructionUncertaintyFpm);
         summary.ClosureReconstructionLongitudinalArmFeet = Restore(summary.ClosureReconstructionLongitudinalArmFeet);
@@ -176,6 +178,7 @@ internal sealed class LandingRecordFile
 
     private void Validate()
     {
+        Summary?.AnalysisGeometry?.Validate();
         if (Summary == null)
         {
             throw new InvalidDataException("Landing detail summary is missing.");

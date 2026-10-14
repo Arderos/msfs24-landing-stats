@@ -351,9 +351,27 @@ internal static class ReplayGearRegistrationTests
             });
         }
         var timestamp = new DateTime(2026, 10, 10, 18, 0, 0, DateTimeKind.Utc);
-        return new[] { 100d, 103.20 }.Select((time, index) => LandingRecordFactory.Create(
+        var records = new[] { 100d, 103.20 }.Select((time, index) => LandingRecordFactory.Create(
             new TouchdownResult { ContactNumber = index + 1, EstimatedContactTimeSeconds = time, SimulationTimeSeconds = time },
             samples, "Fixture", "Airplane", contactCount: 2, timestampUtc: timestamp, episodeEndSimulationTimeSeconds: 104)).ToArray();
+        // Retain the historical file shape this compatibility test targets.
+        // New files preserve shared transition witnesses; old files did not.
+        foreach (var record in records)
+        {
+            var keep = new HashSet<double>();
+            var next = record.ApproachGateSeconds;
+            foreach (var sample in samples)
+            {
+                var relative = sample.SimulationTimeSeconds - record.EstimatedContactTimeSeconds!.Value;
+                if (relative < record.ApproachGateSeconds || relative + 1e-6 < next) continue;
+                keep.Add(Math.Round(relative, 4));
+                next = relative + .05;
+            }
+            record.Series.RemoveAll(p => !keep.Contains(p.TimeSeconds));
+            foreach (var contact in record.ContactPoints) contact.Points.RemoveAll(p => !keep.Contains(p.TimeSeconds));
+            foreach (var engine in record.Engines) engine.Points.RemoveAll(p => !keep.Contains(p.TimeSeconds));
+        }
+        return records;
     }
     private static void Near(double actual, double expected, double tolerance, string message) => Require(Math.Abs(actual - expected) <= tolerance, message + ": " + actual);
     private static void Require(bool value, string message) { if (!value) throw new InvalidOperationException(message); }

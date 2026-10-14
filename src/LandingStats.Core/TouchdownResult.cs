@@ -56,6 +56,12 @@ public sealed class TouchdownResult
 
     public double ReconstructedPitchFpm { get; set; } = double.NaN;
 
+    /// <summary>Full rigid-body rotation for the contact-point model; absent for v1.</summary>
+    public double? ReconstructedRotationFpm { get; set; }
+
+    /// <summary>Observed contacting channels used by the contact-point model.</summary>
+    public int[]? ClosureReconstructionContactPointIndices { get; set; }
+
     public double ClosureReconstructionResidualFpm { get; set; } = double.NaN;
 
     public double ClosureReconstructionUncertaintyFpm { get; set; } = double.NaN;

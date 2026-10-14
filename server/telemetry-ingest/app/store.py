@@ -1,4 +1,6 @@
 import os
+import json
+import re
 import sqlite3
 import threading
 import time
@@ -15,6 +17,7 @@ class Store:
         self.root = root
         self.database_path = root / "telemetry.sqlite3"
         self._schema_lock = threading.Lock()
+        self._rejection_lock = threading.Lock()
 
     def initialize(self) -> None:
         self.root.mkdir(parents=True, exist_ok=True)
@@ -142,7 +145,7 @@ class Store:
             (scope, subject, now - (now % seconds), amount, maximum)
             for scope, subject, seconds, amount, maximum in entries
         ]
-        with self.connect() as connection:
+        with self.connect(immediate=True) as connection:
             connection.execute(
                 "DELETE FROM byte_budgets WHERE window_start < ?", (now - 3 * 86400,)
             )
@@ -242,6 +245,52 @@ class Store:
             return connection.execute(
                 "SELECT capture_id FROM captures WHERE sha256=?", (sha256,)
             ).fetchone()
+
+    def quarantine_capture(self, incoming: Path, sha256: str, metadata: dict,
+                           retention_days: int, quota_bytes: int) -> str:
+        """Retain authenticated, hash-verified bytes as evidence, never as a landing."""
+        if not re.fullmatch(r"[a-f0-9]{64}", sha256):
+            raise ValueError("invalid quarantine digest")
+        with self._rejection_lock:
+            directory = self.root / "rejected"
+            directory.mkdir(exist_ok=True)
+            destination = directory / f"{sha256}.zip"
+            if destination.exists():
+                return "already_retained"
+            size = incoming.stat().st_size
+            if size > quota_bytes:
+                return "over_quarantine_quota"
+            self._prune_rejected(retention_days, quota_bytes - size, maximum_files=1999)
+            os.replace(incoming, destination)
+            temporary = directory / f"{sha256}.json.tmp"
+            try:
+                temporary.write_text(json.dumps(metadata, separators=(",", ":")), encoding="utf-8")
+                os.replace(temporary, directory / f"{sha256}.json")
+            finally:
+                temporary.unlink(missing_ok=True)
+            return "retained"
+
+    def prune_rejected(self, retention_days: int, quota_bytes: int) -> None:
+        with self._rejection_lock:
+            self._prune_rejected(retention_days, quota_bytes)
+
+    def _prune_rejected(self, retention_days: int, quota_bytes: int, maximum_files: int = 2000) -> None:
+        directory = self.root / "rejected"
+        cutoff = time.time() - retention_days * 86400
+        files = []
+        for path in directory.glob("*.zip"):
+            if re.fullmatch(r"[a-f0-9]{64}\.zip", path.name) and not path.is_symlink() and path.is_file():
+                files.append((path, path.stat()))
+        files.sort(key=lambda pair: pair[1].st_mtime)
+        total = sum(info.st_size for _, info in files)
+        count = len(files)
+        for path, info in files:
+            if info.st_mtime >= cutoff and total <= quota_bytes and count <= maximum_files:
+                continue
+            path.unlink()
+            path.with_suffix(".json").unlink(missing_ok=True)
+            total -= info.st_size
+            count -= 1
 
     def accepted_bytes_since(self, install_id: str, since: int) -> int:
         with self.connect() as connection:

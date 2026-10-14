@@ -33,7 +33,7 @@ The names used by the analyzer are easy to confuse, so the short version is:
 | `InertialVerticalFpm` | aircraft-reference descent rate at contact; the primary pilot metric | fitted `VELOCITY WORLD Y` |
 | `LatchedNormalFpm` | surface-normal touchdown value published by MSFS | `PLANE TOUCHDOWN NORMAL VELOCITY` |
 | `UnresolvedSurfaceDeltaFpm` | remainder of the original, terrain-only comparison | latch minus the primary rate and legacy terrain fit |
-| `ReconstructedClosureFpm` | independent reconstruction of what the latch should report | inertial, terrain, timing, rotation, and telemetry-derived geometry |
+| `ReconstructedClosureFpm` | independent model of surface-relative closure, identified by model version | inertial, terrain, timing, rotation, and telemetry-derived geometry |
 | `ClosureReconstructionResidualFpm` | what remains after the new reconstruction | latch minus reconstructed closure |
 
 The raw MSFS latch and the reconstructed value are deliberately kept separate.
@@ -54,6 +54,15 @@ immediately preceding the gate crossing. Pre-roll age uses the recorder's
 monotonic receipt clock, not simulation time, because the
 simulation clock can freeze in a pause or jump during loading. A separate 4,096-
 sample ceiling bounds memory even if the incoming clock or frame rate is malformed.
+
+A rejected ground-flag transition can start an automatic diagnostic capture only
+when the bounded pre-roll contains an active airborne sample from the same flight
+segment. Ground chatter during loading or with physics disabled does not start a
+capture, including when SDK lifecycle state reports Running. An existing approach
+capture still retains interrupted-flight evidence. Confirmed contacts and the
+approach gate remain unchanged; enabling physics while already on the ground is
+not airborne evidence. Ignored transitions do not clear pre-roll or disarm the
+recorder, so the next real approach or contact can start normally.
 
 Simulator telemetry is treated as an **unevenly timed series**. Frame intervals
 can change during a landing, and duplicate messages can share the same simulation
@@ -179,12 +188,14 @@ acceleration, rotation, geometry, and sampling error. It is **not** the error of
 the newer reconstruction, and it is no longer interpreted as an unknown physical
 force.
 
-### 7.2 Fixed temporal reconstruction
+### 7.2 Longitudinal reconstruction (v1)
 
-The reconstruction asks a different question: can the telemetry independently
+The longitudinal reconstruction asks a different question: can the telemetry independently
 reproduce the number that MSFS latched? It does not start with the legacy
 aircraft-rate estimate. Instead, let `t_c` be the compression-derived contact
 time, or the last airborne timestamp when compression timing is unavailable.
+This remains the supplied-geometry path and the fallback when the preferred
+observed-contact model in section 7.3.1 cannot establish a validated estimate.
 For each of the following signals the analyzer fits a separate quadratic in
 actual simulation time over the last 250 ms of the continuous airborne phase:
 
@@ -310,10 +321,10 @@ safely, the application falls back to target-independent telemetry geometry.
 Neither path reads `PLANE TOUCHDOWN NORMAL VELOCITY`.
 
 Contact-point numbers are not assigned semantic roles in that fallback. The
-analyzer finds the final sustained contact run of every active point and orders
-the runs by start time. With three through five settled wheel points, every
-point before the final delayed point is treated as main gear and the final point
-as nose gear, subject to the independent derotation checks below. This covers
+analyzer requires sustained settled contacts. With three through five wheel
+points and no repeated contacts, it orders the runs by start time: points before
+the final delayed point are treated as mains and the final point as the nose,
+subject to the independent derotation checks below. This covers
 ordinary tricycle layouts, a center main gear, and four-main-plus-nose layouts;
 there is no special rejection at five points. Aircraft with six or more settled
 wheel points may use a clustered path where a dominant derotation gap separates
@@ -323,6 +334,78 @@ followed by a single delayed nose point, with the same sustained-contact,
 derotation, and foreign-contact checks as the simpler layout. Weak or mixed
 evidence makes reconstruction unavailable rather than triggering an index-based
 guess.
+
+For repeated contacts in a three-to-five-point layout, each sustained onset is
+tested as a possible nose contact. Its loading phase extends backwards only
+while that point is absent, physics is active, and successive frames are no
+more than 0.15 seconds apart. The first sustained run of each other point in
+that phase supplies its main onset; unloading a main later does not erase that
+evidence. Derotation must follow the latest of those onsets and the same phase
+must contain at least six consecutive main-only observations spanning 0.20
+seconds. This prevents a long delay that includes an already loaded nose from
+being mistaken for a nose-lowering phase.
+
+The timing path requires all supported phases to identify the same nose point.
+Conflicting timing roles require independent spatial evidence as described below;
+an attractive main-only fit cannot resolve ambiguous physical roles. On the timing
+path, all sustained points must still be settled at the end, and
+foreign contacts are not silently discarded. When the supported phase agrees
+with the established final sequence, its existing arm path is retained. A role
+recovered only from earlier phases must additionally pass the temporal arm
+stability checks below. Trusted configured roles retain priority. The decision
+journal records accepted point indices or a specific failure such as conflicting
+roles, insufficient derotation/main-only evidence, or an unstable arm.
+
+For exactly three sustained contact points, a second check uses the recorded
+height, pitch, bank, and each loaded wheel's compression. Within the first 15
+seconds after the first contact it fits, separately for each wheel:
+
+```text
+H / (cos(theta) cos(phi)) = b0 + X tan(theta)
+                              + Y tan(phi) / cos(theta) + C compression
+```
+
+This is a rigid-body height constraint with an approximately linear suspension.
+The complete fit must have negative compression slopes and describe a unique
+forward point at least 1 ft ahead of both others, between them laterally, with
+at least 1 ft lateral separation of the mains. Point numbers, aircraft titles
+and the touchdown latch are not inputs to that decision. This identifies roles
+even when rolling on one main or touching the nose first invalidates contact-order
+assumptions. A credible full fit that contradicts timing vetoes that timing
+hypothesis; replacement roles require stable forward ordering on all seven
+temporal refits (first/last 70% and five omitted time blocks, per wheel).
+
+Every spatial fit needs at least 20 loaded observations spanning 0.5 seconds,
+pitch/bank predictor standard deviations of at least 0.05 degrees in radian
+equivalent, compression standard deviation of at least 0.1 recorded units,
+standardized design condition number at most 30, and height residual RMS at
+most 0.10 ft. Coordinates exceeding 500 ft are rejected. The window stops at a
+physics boundary or frame gap above 0.15 seconds. Attitudes above 30 degrees
+and moving gear extension invalidate the fit. According to the
+[SDK contact-point definitions](https://docs.flightsimulator.com/msfs2024/html/6_Programming_APIs/SimVars/Aircraft_SimVars/Aircraft_Brake_Landing_Gear_Variables.htm),
+`CONTACT POINT POSITION` is an extension channel, not an XYZ coordinate; it is used only to reject extension
+changes greater than 0.01 recorded units.
+
+Stable roles alone do not supply a calibrated arm. Established main-only fits
+retain priority; spatially replaced roles require the main-only stability check.
+When that arm path fails, a loaded-wheel fallback additionally requires both
+main-wheel longitudinal coefficients to remain within 1 ft of their full-fit
+values, within 1 ft of each other, and to retain negative compression slopes
+on every temporal refit. The mean of their full-fit coefficients supplies the
+pitch arm; the independent airborne datum correction `D` is still required.
+Its quality score uses conservative refit agreement multiplied by the existing
+datum agreement and phase coverage; it is not an error probability. Calibration
+reports loaded-wheel observations separately from main-only observations.
+New spatial-arm reconstructions use the existing fallback reporting band of
+`+/-15 fpm`; this is an engineering band, not a measured confidence interval for
+every supported aircraft. Existing reconstructions and configured arms retain
+their established bands and priority.
+
+The journal distinguishes `conflicting_spatial_roles`, `unstable_spatial_arm`
+(including refit displacement, main-axis separation and compression-sign
+diagnostics), `spatial_arm_calibrated`, and `nose_contact_present`. The existing
+contact guards still reject nose-loaded or insufficiently sustained main
+transitions even when spatial roles or an arm can be recovered.
 
 The last point is accepted as the nose only when it arrives at least 0.20 seconds
 after the latest main and pitch moves at least 0.5 degrees in the normal nose-
@@ -335,8 +418,9 @@ H(t) = b0 + A_theta theta(t) + A_c c_bar(t) + error(t)
 L = A_theta + D
 ```
 
-The additional multi-main/single-nose path requires at least 12 usable main-only
-observations and a stability check before accepting even the inferred topology.
+The additional multi-main/single-nose path and roles recovered only from earlier
+loading phases require at least 12 usable main-only observations and a stability
+check before accepting even the inferred topology.
 It refits the pitch arm on the first and last 70% of elapsed observation time,
 then with each of five contiguous time blocks omitted. Every subset must omit
 some observations, retain at least six, and pass the existing pitch/compression
@@ -344,9 +428,10 @@ identifiability check. Each refitted arm must differ from the full fit by no
 more than 5 ft. The datum offset is held fixed, so these are also differences
 in final longitudinal arm. These are conservative engineering acceptance limits,
 not a statistical confidence interval or proof of physical gear roles. This
-additional inference retains the multi-bogie `+/-50 fpm` reporting band when the
-arm is recovered from telemetry. Existing topology paths and verified configured
-geometry do not acquire this new gate.
+multi-main inference retains the multi-bogie `+/-50 fpm` reporting band when the
+arm is recovered from telemetry. Ordinary layouts retain their `+/-10/15 fpm`
+bands. The established arm paths and verified configured geometry do not
+acquire this extra refit gate.
 
 The fallback quality value summarizes pitch/compression separation, phase
 coverage, and agreement across interleaved estimates. It is an identifiability
@@ -355,7 +440,267 @@ touchdown latch appears nowhere in either geometry path, rollout data cannot
 tune the reconstruction to its target. Encrypted Marketplace aircraft remain
 supported; they simply take the telemetry fallback.
 
-### 7.4 Worked example
+### 7.3.1 Preferred observed-contact reconstruction (v2)
+
+When no finite external arm is supplied, `quad250-tc-contact-point-v2` and its
+bounded/kinematic alternatives are evaluated independently of v1 availability.
+An accepted point-model estimate takes priority over v1 and reconstructs the
+actual point(s) loaded at the accepted ground transition.
+It does not require a nose/main classification, a symmetric main axis, an aircraft
+name, fixed channel numbers, or the touchdown latch. A finite externally supplied
+arm retains priority; disabling telemetry recovery also disables the point model.
+If the point model refuses, an available v1 result remains selected and the
+journal records `longitudinal_fallback_selected`. Primary rate, raw latch,
+contact timing and G are unchanged. Selection does not use the latch residual.
+
+The loaded-point model uses `H = PlaneAltitude - GroundAltitude` and the recorded
+attitude, extension, compression, position, heading and ground speed. Ground
+altitude is measured along the reference-point trajectory, not under each wheel.
+A local quadratic over +/-150 ms supplies ground-height and horizontal-velocity
+derivatives. It needs five samples; unavailable edge derivatives and position
+derivatives inconsistent with native ground speed by more than max(5 ft/s, 10%)
+do not supply slope observations. Speed must exceed 5 ft/s. Let `s` be the
+along-track grade, `delta` the course minus heading, `sf=s*cos(delta)` and
+`sr=s*sin(delta)`. With `theta=pitch`, `phi=bank`:
+
+```text
+K = cos(theta)*cos(phi) - sf*cos(phi)*sin(theta) + sr*sin(phi)
+F = sin(theta) + sf*cos(theta)
+B = sin(phi)*cos(theta) - sf*sin(phi)*sin(theta) - sr*cos(phi)
+H/K = b0 + X*(F/K) + Y*(B/K) + C*compression
+```
+
+Here `X` is forward, `Y` is negative body-right, and `b0` is downward from the
+altitude reference. The projection follows the SDK yaw/pitch/roll matrix, whose
+world-vertical row for body `(forward,right,up)` is
+`[-sin(theta), sin(phi)*cos(theta), cos(phi)*cos(theta)]`
+([SDK matrix and coordinate frames](https://docs.flightsimulator.com/msfs2024/html/7_Samples_Tutorials/Primers/Flight_Model_Physics_Primer.htm)).
+The independent airborne datum fit uses the exact longitudinal displacement
+`-delta(sin(theta))` and integrated WORLD Y over the same one-second windows.
+Its contact correction is `datum*cos(theta)*dtheta/dt*60`. The v1 angular-rate
+projection remains unchanged. High-bank synthetic cases rotate an explicit body
+point before measuring its clearance, rather than repeating the fitted equation.
+
+This is a local surface model along the recorded track. It does not recover an
+unobserved cross-track terrain normal. Calibration stops at a course/heading
+difference above 10 degrees, grade above 10%, attitude outside +/-30 degrees,
+or a physics/flight boundary or gap over 150 ms. The maximum window is the first
+15 seconds after the first accepted contact. A changing gear extension invalidates
+that point. The same rules apply to every aircraft and capture. In particular,
+the Vision Jet recording develops substantial sideways sliding later in rollout;
+including that part had biased the apparent contact coordinates.
+
+Each point requires at least 20 loaded rows spanning 0.5 seconds, sufficient
+variation in pitch/bank predictors (0.05-degree equivalent) and compression (0.1
+recorded units), and height RMS <=0.10 ft. Suspension travel is constrained to
+`C<=0`; a stiff point may use the boundary `C=0` with the other coefficients
+refitted. Both 70% time subsets and five omitted time blocks must also fit and
+predict their held-out heights within 0.10 ft. The standardized design condition
+limit of 1000 protects double-precision arithmetic. Unlike the coordinate/role
+method above, v2 measures identifiability of the requested velocity, so it does
+not impose that method's condition-30 or independent one-foot coordinate limits.
+
+For a fitted point, unloaded contact height is `h=b0*K+X*F+Y*B`. A 250 ms
+quadratic over at least five distinct airborne frames evaluates `dh/dt` at the
+estimated contact time itself. The last-airborne to first-ground interval may
+not exceed 75 ms. The derivative of the flat part of `h`, plus the independently
+calibrated datum correction, is reported as **rotation**; the derivative of the
+surface-offset part is added to **terrain**. The components sum to:
+
+```text
+closure = -WORLD_Y*60 + dGround/dt*60 + dh/dt*60 + datum_rotation_correction
+```
+
+v2 is the **vertical rate of closing point clearance**, under the stated surface
+model. It is not a proof of the simulator's undocumented choice of contact point,
+evaluation instant or complete ground normal. The SDK's plane touchdown-normal
+velocity remains a separate recorded measurement; the two quantities can differ
+([official SimVar definition](https://docs.flightsimulator.com/msfs2024/html/6_Programming_APIs/SimVars/Aircraft_SimVars/Aircraft_Misc_Variables.htm)).
+In particular, the earlier v1 accuracy table below cannot be transferred to nose
+contacts or interpreted as v2 accuracy against the latch. v2 does not evaluate a
+short bounce 75 ms before its contact: that instant can still be in the preceding
+upward part of the point's motion.
+
+Every initially loaded point must have a fresh, sustained transition (>=2 frames,
+>=40 ms), a valid model, and unchanged extension. Another wheel loading during
+that confirmation does not invalidate the first point. Simultaneous points are
+averaged only with an uncertainty envelope covering all of their predictions;
+unmodelled initially loaded points are never discarded.
+
+The reporting band includes the maximum temporal-refit displacement in predicted
+FPM, height-residual sensitivity through the inverse design matrix, omitted-frame
+pre-contact fits, the complete observed contact-time interval, disagreement with
+the independent altitude derivative, and datum-phase disagreement. Correlated
+height error has a 0.01 ft floor and is **not divided by sqrt(frame count)**.
+The band is at least 15 FPM. No result is emitted if it exceeds 50 FPM or includes
+zero closing speed. These are conservative engineering acceptance/sensitivity
+bounds, not calibrated confidence intervals or guarantees of error against the
+native latch. Point indices, model ID, full rotation component and band survive
+history storage; v1 continues to display its pitch-only component.
+
+### 7.3.2 Bounded-geometry fallback (v3)
+
+If v2 cannot validate temporal geometry refits or its prediction is too uncertain,
+`quad250-tc-contact-point-bounds-v3` can bound the prediction using all loaded
+observations together. It retains the same surface, continuity, extension,
+contact, pre-contact, datum and numerical-observability guards. A full feasible
+fit must satisfy **every** loaded height observation within 0.10 ft, not merely
+an RMS limit. No observation or initially contacting point is discarded.
+
+The admissible set consists of every linear geometry/suspension model satisfying
+those pointwise inequalities, `0<=b0<=500`, `|X|,|Y|<=500`, and `-500<=C<=0`.
+These broad finite bounds protect the solve; they are not aircraft-specific
+coordinates. The value remains the full-fit prediction at the estimated contact
+time. Minimizing and maximizing its linear geometry contribution over this set
+give conditional bounds without requiring each coordinate to be independently
+precise. No averaging of frame errors or division by sqrt(N) is used.
+
+An active-set linear solver provides nonnegative dual multipliers. Each returned
+bound includes the dual-equation residual multiplied by explicit variable bounds,
+plus a numerical margin. Failure to find a certificate yields no result. The
+solver was independently checked against SciPy/HiGHS and against enumerated
+vertices, including rescaled and duplicate constraints.
+
+The optimization is repeated for every omitted pre-contact frame and both ends
+of the observed last-airborne/first-ground interval. The final envelope covers
+all these geometry/time combinations, the largest altitude/WORLD Y discrepancy,
+datum uncertainty, and all simultaneously contacting points. The 15 FPM floor,
+50 FPM maximum and positive-closing requirement remain unchanged. Accepted v2
+results retain priority within the observed-point calculation.
+
+The certificate bounds a prediction **conditional on the stated height/surface
+model and 0.10 ft error allowance**. It is not a proof of actual ground shape,
+native wheel-impact speed, or the SDK latch's internal measurement definition.
+A narrow mathematical interval is not used as a substitute for those physical
+assumptions. Config-file validation must translate contact coordinates by
+`reference_datum_position` before comparing them with this model-center frame.
+
+### 7.3.3 Consistent-motion fallback (v4)
+
+If v3 remains too uncertain, `quad250-tc-contact-point-kinematic-v4` can use
+recorded body angular velocities as independent observations of attitude rates.
+The SDK rotation order gives, with body rates `(q,r,p)` along `(X,Y,Z)`:
+
+```text
+pitch_rate   = q*cos(bank) - r*sin(bank)
+bank_rate    = p + (q*sin(bank) + r*cos(bank))*tan(pitch)
+heading_rate = (q*sin(bank) + r*cos(bank))/cos(pitch)
+```
+
+The estimated angles and terrain trajectory retain the pre-contact quadratic
+fits. Their angular derivatives in the point-velocity projection are replaced
+by these observed rates. Each replacement is checked against both the raw
+angular samples and their trapezoidal integral between every pair of recorded
+attitudes. For each Euler axis, the maximum rate-fit residual plus the maximum
+integral disagreement gives a rate-error allowance. The velocity contribution
+of that allowance is itself bounded over **all** admissible geometries. Datum
+rotation and its uncertainty are included in the same calculation.
+
+Altitude is checked against the **exact cubic integral** of the fitted quadratic
+WORLD Y velocity, minus `datum*sin(recorded_pitch)`. Independently fitting
+altitude with a quadratic would introduce a false derivative disagreement when
+vertical acceleration changes. The altitude allowance instead covers the
+largest residual rate over every original frame interval and the derivative
+of a residual trend at the requested contact time. Omitted-frame fits are
+validated on all original pre-contact observations, including the omitted one.
+
+The final band encloses the geometry extrema, these channel-consistency errors,
+all omitted-frame fits, the full observed contact-time interval, and every
+initially loaded point. It retains the 15 FPM floor, 50 FPM ceiling, positive
+closing requirement and all existing geometry/contact guards. No post-impact
+velocity, raw latch, aircraft title or fixed wheel numbering is used. Missing
+body-Z data prevents v4 while leaving earlier models available. Accepted v2/v3
+results, known external geometry and the recovery opt-out retain priority.
+
+As for v2/v3, these are conditional engineering sensitivity bounds, not a
+statistical confidence level or proof of the simulator's internal impact value.
+
+### 7.3.4 Limits checked on the recorded corpus
+
+The remaining weak C172 contact has eight airborne frames over 0.1171 s.
+Its current v4 sensitivity range includes zero closing velocity; it is therefore
+unavailable even though the central estimate is finite. This is distinct from
+contacts rejected for an insufficient or inconsistent observation window.
+
+Additional research tested shared geometry across captures, spatial ground
+profiles, three components of the altitude-reference offset, and constraints
+between simultaneously loaded points. These are **not enabled model variants**.
+Each profile/refit was checked on omitted time or position blocks and its error
+was retained in the final range. Within one recording, the tested alternatives,
+including their joint constraints and the minimum reporting band, still
+include zero. Cross-capture sharing can yield a positive conditional
+range, but matching aircraft titles does not establish a common configuration,
+loading state, or fitted suspension model. The recorded metadata lacks a
+configuration fingerprint, and independent transfer controls do not justify
+silently adopting this assumption.
+
+The actual archive headers were also checked for independent acceleration and
+surface observations. The stored corpus has G FORCE and body-X/Z acceleration,
+but no world-Y acceleration, body-Y acceleration, angular acceleration, or
+surface-normal channel. Parser support for older schema fields is not evidence
+that the channels were recorded. Three direct G-to-vertical-acceleration
+hypotheses fail integral checks against the observed WORLD Y velocity; they
+are not used to narrow the contact band. This does not establish that every
+possible measurement model for G FORCE would fail.
+
+Thus an unavailable result can be a necessary outcome of the current evidence
+and reporting criteria. This does not prove that every future model is unable
+to use the same recordings. A new method needs an independently justified
+constraint and validation of its full prediction interval, not only a smaller
+fit residual or a favorable central value. See LS-001 in `BACKLOG.md` for the
+reproducible experiments, conditional counterexamples, and remaining criteria.
+
+### 7.3.5 Selection verified across the corpus
+
+On 2026-10-14 both methods were evaluated independently on the same 489 contacts
+from the frozen 874-archive corpus, before changing selection. V1 accepted 280,
+the observed-point cascade accepted 227, and 176 were shared. There were 104
+v1-only and 51 point-only results; 158 were unavailable to either method. The
+point model now takes priority on the shared contacts, preserving all 331
+available results. Its internal v2/v3/v4 order is unchanged. All 132 replays with
+frozen external geometry retained their complete results. The external cfg
+reader's separate reference-datum issue (LS-006) is not resolved by that check.
+
+Independent NumPy evaluation reproduced all 227 point-model central estimates
+within 0.000000065 FPM. On 61 shared contacts with readable configuration controls,
+substituting the configured point coordinates into the contact-time surface model
+gave mean absolute differences of 0.408 FPM for the point model and 9.960 FPM for
+v1. The point model was closer on 57 of 61. All 62 available point-model geometry
+controls, including one outside the shared set, were inside the reported band.
+These controls retain the recorded trajectory, inferred datum and surface model;
+they do not measure the complete error against an independently observed impact.
+Local cfg files also do not establish the originating client's configuration.
+
+Four shared contacts had non-overlapping old/new reporting bands. Two Fenix
+cases were explained by lateral/vertical rotation omitted by v1 and agreed with
+the configuration controls. A Falcon bounce and a 737 contact were dominated by
+the 75 ms time difference: independent two-, three- and four-frame linear VY
+fits supported the contact-time inertial component. This supports the timing
+explanation without claiming an independently known full closure for those two.
+
+Seventy-two physical constructions varied forward/aft point placement, bank,
+surface slope, vertical acceleration and jerk. The prescribed vertical clearance
+derivative was known before fitting. All point-model estimates were accepted,
+with maximum error 0.578 FPM; the longitudinal calculation was given the correct
+arm and still had up to 128.734 FPM error against that contact-time quantity.
+This is a controlled limitation of its earlier evaluation and omitted rotation,
+not an estimate of its population error against the simulator latch.
+
+The point model is more sensitive near the end of the observation window.
+Across the 176 shared contacts, deleting one pre-contact frame changed v1 by a
+median 0.495 FPM and the point model by 0.857 FPM (maxima 17.820 and 31.147).
+The point model explicitly includes that sensitivity in its acceptance band.
+The selected priority is supported for the defined contact-time quantity; it
+does not assert that the newer model is always more precise or that every v1-only
+estimate has independent physical validation. No threshold was relaxed.
+
+Reproduction and verification are in `artifacts/ls001-selection-20261014/`:
+`comparison.jsonl`, `summary.json`, `controls.json`, `disagreements.json`,
+`analytic.json`, and `selection-verification.json`. Regression fixtures preserve
+the four disagreement cases, configured priority, fallback selection, unchanged
+primary measurements, and invariance to indices, clock, delivery and latch.
+
+### 7.4 Worked example (v1)
 
 Consider an illustrative primary contact where the fixed fits give:
 
@@ -375,7 +720,7 @@ detail. The model is not a correction that changes the raw latch.
 
 ### 7.5 Availability and accuracy
 
-The model result is available only when a supported gear sequence, a credible
+The v1 model result is available only when a supported gear sequence, a credible
 gear arm, and at least five usable pre-contact samples exist. If the raw latch
 cannot be attributed safely, the independent model can still exist, but its
 latch-minus-model residual is
@@ -383,7 +728,7 @@ unavailable. The result records whether contact time came from compression, how
 many fit points were used, whether the arm was recovered, and the geometry
 quality score.
 
-The frozen model was evaluated on 20 recorded contacts from 17 captures: 17
+The frozen v1 model was evaluated on 20 recorded contacts from 17 captures: 17
 primary contacts and three bounce contacts across A320 and A350 aircraft.
 
 | Population | MAE before | MAE after | P90 after | Maximum after |
@@ -786,6 +1131,26 @@ Landing records are local gzip-compressed JSON. Current records use a documented
 columnar v7 layout; earlier object-based records remain readable. Full-rate raw
 capture is opt-in because it can consume substantial disk space, and it is stored
 separately from the compact landing history.
+
+Readable CFG contact coordinates are translated from `reference_datum_position`
+to the model frame before adding the independently recovered telemetry datum.
+The longitudinal component is the first value in the SDK's `(z, x, y)` tuple.
+Merged aircraft/attachment definitions apply one shared translation exactly once;
+non-finite, dynamic, malformed or conflicting datum definitions are rejected.
+An omitted datum retains the legacy zero-origin interpretation. No aircraft-name
+exceptions are used. For example, a main point at -80 ft with datum +70 ft is
+-10 ft in the model frame, before the telemetry correction.
+
+New records preserve these exact configured inputs and the resolver outcome in
+an optional, segment-bound geometry snapshot. The analyzer can still reject the
+configured topology and recover geometry from telemetry; input provenance and
+the selected result source remain distinct. Replaying a snapshot with the same
+raw input and analyzer does not require installed aircraft files.
+
+Compact history retains genuine short ground/air transitions in addition to its
+regular sample schedule. It does not replace primary FPM/G measurements or turn
+missing geometry into an observed physical measurement. Symbolic 3D gear limits
+still apply independently of whether the original contact witness is preserved.
 
 See [format-v7.md](format-v7.md) for the storage contract. The simulator variables
 and delivery semantics are documented by the MSFS 2024 SDK:

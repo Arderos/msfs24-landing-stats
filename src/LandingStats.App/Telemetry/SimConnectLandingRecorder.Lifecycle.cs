@@ -32,15 +32,15 @@ internal sealed partial class SimConnectLandingRecorder
     {
         // Independent requests: an older server rejecting an extended event must
         // not prevent the remaining lifecycle signals or telemetry fallback.
-        TryLifecycleRequest(() => connection.SubscribeToSystemEvent(LifecycleEvents.Pause, "Pause_EX1"));
-        TryLifecycleRequest(() => connection.SubscribeToSystemEvent(LifecycleEvents.SimStart, "SimStart"));
-        TryLifecycleRequest(() => connection.SubscribeToSystemEvent(LifecycleEvents.SimStop, "SimStop"));
-        TryLifecycleRequest(() => connection.RequestSystemState(Requests.SimulationState, "Sim"));
+        TryLifecycleRequest(connection, "Subscribe Pause_EX1", () => connection.SubscribeToSystemEvent(LifecycleEvents.Pause, "Pause_EX1"), eventId: (uint)LifecycleEvents.Pause);
+        TryLifecycleRequest(connection, "Subscribe SimStart", () => connection.SubscribeToSystemEvent(LifecycleEvents.SimStart, "SimStart"), eventId: (uint)LifecycleEvents.SimStart);
+        TryLifecycleRequest(connection, "Subscribe SimStop", () => connection.SubscribeToSystemEvent(LifecycleEvents.SimStop, "SimStop"), eventId: (uint)LifecycleEvents.SimStop);
+        TryLifecycleRequest(connection, "Request Sim state", () => connection.RequestSystemState(Requests.SimulationState, "Sim"), requestId: (uint)Requests.SimulationState);
     }
 
-    private static void TryLifecycleRequest(Action request)
+    private void TryLifecycleRequest(SimConnect connection, string name, Action request, uint? eventId = null, uint? requestId = null)
     {
-        try { request(); }
+        try { request(); RememberOperation(connection, name, true, requestId, eventId: eventId); }
         catch { /* Unknown motion stops remain discontinuities without SDK confirmation. */ }
     }
 

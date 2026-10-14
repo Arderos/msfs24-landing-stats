@@ -5,6 +5,7 @@ import json
 import os
 import secrets
 import tempfile
+import time
 import unittest
 import zipfile
 from datetime import datetime, timezone
@@ -112,15 +113,16 @@ class EnrollmentApiTests(unittest.TestCase):
         self.assertIsNone(self.store.installation("a" * 32))
 
     def _signed_capture(self, schema: int, session_schema: int | None = None,
-                        automatic: bool = False, invalid_journal: bool = False):
-        private = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+                        automatic: bool = False, invalid_journal: bool = False,
+                        private=None, install_id=None, sample_sequence=1):
+        private = private or rsa.generate_private_key(public_exponent=65537, key_size=2048)
         numbers = private.public_key().public_numbers()
-        install_id = secrets.token_hex(16)
+        install_id = install_id or secrets.token_hex(16)
         self.store.enroll(install_id, base64.b64encode(numbers.n.to_bytes(256, "big")).decode("ascii"),
                           base64.b64encode(numbers.e.to_bytes(3, "big")).decode("ascii"))
         header = service.EXPECTED_HEADERS[schema]
         values = ["0"] * len(header.split(","))
-        values[0] = "1"
+        values[0] = str(sample_sequence)
         if schema >= 6:
             values[header.split(",").index("controller_7_raw_v_percent")] = "-63.5"
             values[header.split(",").index("controller_7_raw_v_valid")] = "1"
@@ -198,6 +200,10 @@ class EnrollmentApiTests(unittest.TestCase):
             self.assertIn("decision journal entry is malformed", response.text)
             self.assertIsNone(self.store.capture_by_hash(headers["X-Capture-SHA256"]))
             self.assertEqual([], list((Path(self.root.name) / "incoming").iterdir()))
+            retained = Path(self.root.name) / "rejected" / (headers["X-Capture-SHA256"] + ".zip")
+            self.assertEqual(body, retained.read_bytes())
+            self.assertEqual("decision journal entry is malformed",
+                             json.loads(retained.with_suffix(".json").read_text())["reason"])
 
     def test_signed_new_schema_cannot_relabel_old_session(self):
         with TestClient(service.app) as client:
@@ -207,6 +213,130 @@ class EnrollmentApiTests(unittest.TestCase):
             self.assertIn("unsupported telemetry schema", response.text)
             self.assertIsNone(self.store.capture_by_hash(headers["X-Capture-SHA256"]))
             self.assertEqual([], list((Path(self.root.name) / "incoming").iterdir()))
+
+    def test_signed_refresh_does_not_spend_new_registration_budgets(self):
+        payload = self.payload("a" * 32)
+        now = int(time.time()) // 3600 * 3600 + 60
+        with mock.patch("app.store.time.time", return_value=now) as clock, \
+                mock.patch.object(service, "GLOBAL_ENROLLMENTS_PER_HOUR", 1), \
+                TestClient(service.app) as client:
+            self.assertEqual(201, client.post("/v1/enroll", json=payload).status_code)
+            for index in range(15):
+                clock.return_value = now + (index // 3) * 60
+                response = client.post("/v1/enroll", json=payload)
+                self.assertEqual(200, response.status_code, response.text)
+            # Refresh also succeeds after the new-identity global quota is full.
+            response = client.post("/v1/enroll", json=self.payload("b" * 32))
+            self.assertEqual(429, response.status_code)
+            self.assertGreater(int(response.headers["retry-after"]), 0)
+        with self.store.connect() as db:
+            self.assertEqual(1, db.execute("SELECT SUM(count) FROM rate_limits WHERE scope='enroll-global-hour'").fetchone()[0])
+
+    def test_refresh_still_requires_signature_and_matching_active_identity(self):
+        payload = self.payload("a" * 32)
+        with TestClient(service.app) as client:
+            self.assertEqual(201, client.post("/v1/enroll", json=payload).status_code)
+            invalid = dict(payload, signature=base64.b64encode(bytes(256)).decode())
+            self.assertEqual(400, client.post("/v1/enroll", json=invalid).status_code)
+            self.assertEqual(400, client.post("/v1/enroll", json=self.payload("a" * 32)).status_code)
+            with self.store.connect() as db:
+                db.execute("UPDATE installations SET status='revoked'")
+            self.assertEqual(403, client.post("/v1/enroll", json=payload).status_code)
+
+    def test_refresh_has_independent_pre_authentication_limit(self):
+        payload = self.payload("a" * 32)
+        with mock.patch("app.store.time.time", return_value=int(time.time())), TestClient(service.app) as client:
+            self.assertEqual(201, client.post("/v1/enroll", json=payload).status_code)
+            for _ in range(6):
+                self.assertEqual(200, client.post("/v1/enroll", json=payload).status_code)
+            response = client.post("/v1/enroll", json=payload)
+            self.assertEqual(429, response.status_code)
+            self.assertIn("refresh", response.json()["detail"])
+            self.assertGreater(int(response.headers["retry-after"]), 0)
+
+    def test_fourth_signed_upload_is_received_then_paced_not_rejected(self):
+        key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        install_id = secrets.token_hex(16)
+        from app.ingress_control import UploadPacer
+        now = int(time.time()) // 60 * 60 + 5
+        with mock.patch("app.store.time.time", return_value=now) as clock, \
+                mock.patch.object(service, "UPLOAD_PACER", UploadPacer()), \
+                TestClient(service.app) as client:
+            async def advance(delay):
+                parts = list((Path(self.root.name) / "incoming").glob("*.part"))
+                self.assertEqual(1, len(parts))
+                # The complete file was spooled before the wait (proxy write timeout).
+                with zipfile.ZipFile(parts[0]) as archive:
+                    self.assertIn("telemetry.csv", archive.namelist())
+                clock.return_value += delay
+            with mock.patch("app.ingress_control.sleep", side_effect=advance) as sleep:
+                for sequence in range(1, 5):
+                    body, headers = self._signed_capture(6, automatic=True, private=key,
+                                                         install_id=install_id, sample_sequence=sequence)
+                    response = client.post("/v1/captures", content=body, headers=headers)
+                    self.assertEqual(201, response.status_code, response.text)
+                    self.assertEqual("accepted", response.json()["status"])
+                sleep.assert_awaited_once()
+                self.assertLessEqual(sleep.call_args.args[0], 60.1)
+            self.assertEqual([], list((Path(self.root.name) / "incoming").iterdir()))
+            with self.store.connect() as db:
+                self.assertEqual(4, db.execute("SELECT COUNT(*) FROM captures").fetchone()[0])
+
+    def test_rejection_log_has_reason_and_hash_but_no_secret_or_source_address(self):
+        with TestClient(service.app) as client:
+            body, headers = self._signed_capture(6, automatic=True, invalid_journal=True)
+            headers["cf-connecting-ip"] = "192.0.2.123"
+            with self.assertLogs("uvicorn.error", level="INFO") as logs:
+                response = client.post("/v1/captures", content=body, headers=headers)
+            self.assertEqual(422, response.status_code)
+            events = [json.loads(line.split(":", 2)[2]) for line in logs.output]
+            event = next(e for e in events if e["event"] == "telemetry_ingress")
+            self.assertEqual(422, event["status"])
+            self.assertEqual("decision journal entry is malformed", event["reason"])
+            self.assertEqual(headers["X-Capture-SHA256"], event["sha256"])
+            self.assertEqual(headers["X-Install-Id"], event["install_id"])
+            self.assertEqual("retained", event["quarantine"])
+            for secret in (headers["X-Signature"], headers["X-Capture-Nonce"], "192.0.2.123"):
+                self.assertNotIn(secret, "\n".join(logs.output))
+
+    def test_enrollment_size_guard_and_schema_errors_are_logged_safely(self):
+        with TestClient(service.app) as client, self.assertLogs("uvicorn.error", level="INFO") as logs:
+            response = client.post("/v1/enroll", content=b"x" * 32769)
+            self.assertEqual(413, response.status_code)
+            response = client.post("/v1/enroll", json={"signature": "PRIVATE_MARKER"})
+            self.assertEqual(422, response.status_code)
+        self.assertIn("enrollment request exceeds policy", "\n".join(logs.output))
+        self.assertIn("request fields do not match the API schema", "\n".join(logs.output))
+        self.assertNotIn("PRIVATE_MARKER", "\n".join(logs.output))
+
+    def test_disk_read_failure_is_retryable_not_permanent_quarantine(self):
+        with TestClient(service.app) as client, mock.patch.object(service, "validate_capture", side_effect=OSError("private path")):
+            body, headers = self._signed_capture(6)
+            response = client.post("/v1/captures", content=body, headers=headers)
+            self.assertEqual(503, response.status_code)
+            self.assertNotIn("private path", response.text)
+            self.assertEqual([], list((Path(self.root.name) / "incoming").iterdir()))
+
+    def test_invalid_signature_and_hash_never_enter_quarantine_or_wait(self):
+        with TestClient(service.app) as client, mock.patch.object(service.UPLOAD_PACER, "admit") as pacing:
+            body, headers = self._signed_capture(6, automatic=True, invalid_journal=True)
+            bad_signature = dict(headers, **{"X-Signature": base64.b64encode(bytes(256)).decode()})
+            self.assertEqual(403, client.post("/v1/captures", content=body, headers=bad_signature).status_code)
+            self.assertEqual(400, client.post("/v1/captures", content=bytes(len(body)), headers=headers).status_code)
+            pacing.assert_not_awaited()
+            self.assertFalse((Path(self.root.name) / "rejected").exists())
+            self.assertEqual([], list((Path(self.root.name) / "incoming").iterdir()))
+
+    def test_failed_quarantine_is_explicit_and_does_not_claim_acceptance(self):
+        with TestClient(service.app) as client, \
+                mock.patch.object(self.store, "quarantine_capture", side_effect=OSError("private path")), \
+                self.assertLogs("uvicorn.error", level="INFO") as logs:
+            body, headers = self._signed_capture(6, automatic=True, invalid_journal=True)
+            response = client.post("/v1/captures", content=body, headers=headers)
+            self.assertEqual(422, response.status_code)
+        self.assertIn('"quarantine":"retention_failed"', "\n".join(logs.output))
+        self.assertNotIn("private path", "\n".join(logs.output))
+        self.assertIsNone(self.store.capture_by_hash(headers["X-Capture-SHA256"]))
 
 
 if __name__ == "__main__":

@@ -279,6 +279,15 @@ class CaptureValidationTests(unittest.TestCase):
                 validate_capture(self._bug_report_archive(Path(value), journal=" " * (MAXIMUM_DECISION_JOURNAL_BYTES + 1)),
                                  HEADER, 64 * 1024 * 1024)
 
+    def test_accepts_exactly_four_mib_decision_journal(self):
+        with tempfile.TemporaryDirectory() as value:
+            journal = json.dumps(self._journal())
+            journal += " " * (MAXIMUM_DECISION_JOURNAL_BYTES - len(journal.encode("utf-8")))
+            self.assertEqual(4 * 1024 * 1024, len(journal.encode("utf-8")))
+            validate_capture(self._bug_report_archive(Path(value), journal=journal), HEADER, 64 * 1024 * 1024)
+            with self.assertRaisesRegex(ValueError, "decision journal is too large"):
+                validate_capture(self._bug_report_archive(Path(value), journal=journal + " "), HEADER, 64 * 1024 * 1024)
+
     def test_rejects_non_finite_value(self):
         with tempfile.TemporaryDirectory() as value:
             row = ["0"] * len(HEADER.split(","))
