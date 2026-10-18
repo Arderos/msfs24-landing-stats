@@ -251,6 +251,9 @@ jobs:
         run: .\verify-published-client-updates.ps1
 
       - name: Upload build artifact
+        # Preserve already-signed bytes if a later verification fails; recovery
+        # must reuse them instead of consuming another code-signing pass.
+        if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: MSFS-Landing-Stats
