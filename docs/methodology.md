@@ -246,7 +246,7 @@ The analyzer never scans alternatives against the current landing's latch.
 Calibration and reconstruction share one implementation of the rigid-body
 projection onto world vertical. Model v1 deliberately evaluates its pitch term
 with `omega_y = 0`, preserving the validated equation above. The omitted
-`omega_y sin(phi)` yaw-by-bank contribution can be of order 1--2 fpm on a
+`omega_y cos(theta) sin(phi)` yaw-by-bank contribution can be of order 1--2 fpm on a
 banked de-crab, but adding it would define a new model version and requires a
 new out-of-sample validation rather than a silent refactor.
 
@@ -299,12 +299,20 @@ world-vertical velocity and the vertical velocity produced by one foot of body-
 axis offset. For the recorded attitude and body rates:
 
 ```text
-rigid_vertical_per_ft = -sin(phi) omega_y
+rigid_vertical_per_ft = +cos(theta) sin(phi) omega_y
                         - cos(theta) cos(phi) omega_x
 
 Delta(PLANE ALTITUDE) - integral(VY dt)
     = D integral(rigid_vertical_per_ft dt) + error
 ```
+
+This is datum-calibration revision 2, recorded as `DatumCalibrationVersion=2`
+in new geometry snapshots. Revision 1 used
+`-cos(theta) cos(phi) omega_x - sin(phi) omega_y`; the frozen legacy equation
+remains available when restoring an older snapshot with no revision member.
+This correction changes the inferred geometry, while the closure v1 estimator
+still evaluates its rotational term with `omega_y = 0`. Stored historical
+measurements are retained without automatic recomputation.
 
 The slope `D` is the signed longitudinal offset between the altitude datum and
 the velocity reference. Overlapping windows are interleaved across four start

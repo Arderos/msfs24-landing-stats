@@ -81,14 +81,11 @@ internal static class AutomaticTelemetrySettingsRegressionTests
         var window = (MainWindow)FormatterServices.GetUninitializedObject(typeof(MainWindow));
         var button = new Button();
         var status = new TextBlock();
-        var buffer = new LastLandingBugReportBuffer();
-        buffer.BeginEpisode(candidate.EpisodeId);
-        buffer.TryRetain(candidate);
         const BindingFlags flags = BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public;
         void Set(string name, object value) => typeof(MainWindow).GetField(name, flags)!.SetValue(window, value);
         Set("ReportBugButton", button);
         Set("UploadStatusText", status);
-        Set("_lastLandingBugReport", buffer);
+        Set("_runtimeReportEpisode", Guid.NewGuid());
         Set("_startupReady", true);
         var refresh = typeof(MainWindow).GetMethod("RefreshBugReportButton", flags)!;
         Set("_automaticTelemetryEnabled", 1);

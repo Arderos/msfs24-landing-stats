@@ -21,17 +21,21 @@ internal sealed class SimConnectOperationJournal
 
     internal void Clear() { _operations.Clear(); _order.Clear(); _versions.Clear(); }
 
-    internal void Remember(uint packet, string name, bool optional, uint? request = null, uint? definition = null, uint? eventId = null)
+    internal void Remember(uint packet, string name, bool optional, uint? request = null, uint? definition = null, uint? eventId = null,
+        uint? period = null, uint? flags = null)
     {
         if (!_operations.ContainsKey(packet))
         {
             while (_order.Count >= MaximumOperations) _operations.Remove(_order.Dequeue());
             _order.Enqueue(packet);
         }
-        _operations[packet] = new Operation(name, optional, request, definition, eventId);
+        _operations[packet] = new Operation(name, optional, request, definition, eventId, period, flags);
     }
 
     internal string? Name(uint packet) => _operations.TryGetValue(packet, out var op) ? op.Name : null;
+    internal bool IsOptional(uint packet) => _operations.TryGetValue(packet, out var op) && op.Optional;
+    internal bool IsRequiredDefinition(uint packet) => _operations.TryGetValue(packet, out var op) && !op.Optional &&
+        op.Definition.HasValue && !op.Request.HasValue;
 
     internal void RecordRejection(TelemetryDecisionJournal journal, double time, uint exception, uint packet, uint parameter)
     {
@@ -47,6 +51,8 @@ internal sealed class SimConnectOperationJournal
             if (operation.Request.HasValue) details["request_id"] = operation.Request.Value;
             if (operation.Definition.HasValue) details["definition_id"] = operation.Definition.Value;
             if (operation.Event.HasValue) details["event_id"] = operation.Event.Value;
+            if (operation.Period.HasValue) details["period"] = operation.Period.Value;
+            if (operation.Flags.HasValue) details["flags"] = operation.Flags.Value;
         }
         journal.Record(time, "recorder", "simconnect_request_rejected",
             known ? "Simulator rejected operation: " + operation!.Name + "." : "Simulator rejected an unknown operation in this connection; no packet association is available.", details);
@@ -54,12 +60,14 @@ internal sealed class SimConnectOperationJournal
 
     private sealed class Operation
     {
-        internal Operation(string name, bool optional, uint? request, uint? definition, uint? eventId)
-        { Name = name; Optional = optional; Request = request; Definition = definition; Event = eventId; }
+        internal Operation(string name, bool optional, uint? request, uint? definition, uint? eventId, uint? period, uint? flags)
+        { Name = name; Optional = optional; Request = request; Definition = definition; Event = eventId; Period = period; Flags = flags; }
         internal string Name { get; }
         internal bool Optional { get; }
         internal uint? Request { get; }
         internal uint? Definition { get; }
         internal uint? Event { get; }
+        internal uint? Period { get; }
+        internal uint? Flags { get; }
     }
 }

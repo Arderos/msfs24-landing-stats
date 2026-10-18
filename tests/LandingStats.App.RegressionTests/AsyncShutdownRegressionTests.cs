@@ -94,7 +94,7 @@ internal static class AsyncShutdownRegressionTests
         var shutdown = new AsyncWindowShutdown();
         var completion = shutdown.BeginAsync(() => Task.FromException(new InvalidOperationException("Synthetic failure.")));
         PumpUntil(() => completion.IsCompleted);
-        Require(completion.IsFaulted && !shutdown.CanClose, "An unexpected incomplete cleanup cannot authorize final close.");
+        Require(completion.IsFaulted && shutdown.CanClose, "A reported cleanup failure must not trap a closed intake in the Closing state.");
         _ = completion.Exception;
     }
 

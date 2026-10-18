@@ -13,7 +13,19 @@
 
   <ItemGroup>
     <Compile Include="..\LandingStats.UpdateProtocol\BundlePayload.cs" Link="BundlePayload.cs" />
+    <Compile Include="..\LandingStats.UpdateProtocol\RuntimePayload.cs" Link="RuntimePayload.cs" />
+    <Compile Include="..\LandingStats.UpdateProtocol\UpdateProtocol.cs" Link="UpdateProtocol.cs" />
+    <Compile Include="..\LandingStats.ProcessControl\GuardianGeneration.cs" Link="ProcessControl\GuardianGeneration.cs" />
+    <Compile Include="..\LandingStats.ProcessControl\GuardianInstance.cs" Link="ProcessControl\GuardianInstance.cs" />
+    <Compile Include="..\LandingStats.ProcessControl\GuardianPolicy.cs" Link="ProcessControl\GuardianPolicy.cs" />
+    <Compile Include="..\LandingStats.ProcessControl\GuardianProtocol.cs" Link="ProcessControl\GuardianProtocol.cs" />
+    <Compile Include="..\LandingStats.ProcessControl\GuardianSignals.cs" Link="ProcessControl\GuardianSignals.cs" />
+    <Compile Include="..\LandingStats.ProcessControl\GuardianUpdateLease.cs" Link="ProcessControl\GuardianUpdateLease.cs" />
+    <Compile Include="..\LandingStats.ProcessControl\GuardianUpdater.cs" Link="ProcessControl\GuardianUpdater.cs" />
+    <Compile Include="..\LandingStats.App\Runtime\OwnedProcess.cs" Link="ProcessControl\OwnedProcess.cs" />
     <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies.net48" Version="1.0.3" PrivateAssets="all" />
     <Reference Include="System.IO.Compression" />
+    <Reference Include="System.Security" />
+    <Reference Include="System.Net.Http" />
   </ItemGroup>
 </Project>

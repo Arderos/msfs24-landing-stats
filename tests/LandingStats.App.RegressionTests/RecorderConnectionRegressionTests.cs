@@ -2,10 +2,12 @@ using System;
 using System.Diagnostics;
 using System.Reflection;
 using System.Runtime.InteropServices;
+using System.Runtime.Serialization;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Threading;
 using LandingStats.App.Telemetry;
+using Microsoft.FlightSimulator.SimConnect;
 
 namespace LandingStats.App.RegressionTests;
 
@@ -15,148 +17,125 @@ internal static class RecorderConnectionRegressionTests
 
     public static void RunAll()
     {
-        SlowConnectionKeepsDispatcherFreeAndSerializesRetries();
-        ClosingDoesNotWaitForNativeConnectionOrPublishLateErrors();
-        DispatcherShutdownDoesNotStrandFailedAttempt();
-    }
+        SimulatorWorkerRegressionTests.RunOwner();
 
-    private static void SlowConnectionKeepsDispatcherFreeAndSerializesRetries()
-    {
-        using var entered = new ManualResetEventSlim();
-        using var release = new ManualResetEventSlim();
-        var uiThread = Thread.CurrentThread.ManagedThreadId;
-        var workerThread = uiThread;
-        var calls = 0;
-        var wrongStatusThread = false;
-        var errors = 0;
-        using var recorder = new SimConnectLandingRecorder(IntPtr.Zero, () =>
-        {
-            workerThread = Thread.CurrentThread.ManagedThreadId;
-            var call = Interlocked.Increment(ref calls);
-            entered.Set();
-            if (!release.Wait(TimeSpan.FromSeconds(5))) throw new TimeoutException("Test factory was not released.");
-            if (call == 1) throw new COMException("Simulator is absent.");
-            throw new InvalidOperationException("Unexpected connection failure.");
-        });
-        recorder.StatusChanged += (_, args) =>
-        {
-            wrongStatusThread |= Thread.CurrentThread.ManagedThreadId != uiThread;
-            if (args.State == RecorderState.Error) errors++;
-        };
-        try
-        {
-            Attempt(recorder);
-            Require(entered.Wait(TimeSpan.FromSeconds(5)), "Connection worker starts.");
-            Require(workerThread != uiThread, "Native connection construction must not run on the UI thread.");
-            var probeRan = false;
-            Dispatcher.CurrentDispatcher.BeginInvoke(new Action(() => probeRan = true));
-            PumpUntil(() => probeRan);
-            Require(!Pending(recorder).IsCompleted, "UI processes input while connection is blocked.");
-            for (var index = 0; index < 2; index++)
-            {
-                var handled = false;
-                recorder.HandleWindowMessage(SimConnectLandingRecorder.WindowMessage, ref handled);
-                Require(handled, "Early native notifications are retained during connection construction.");
-            }
-            Require((int)typeof(SimConnectLandingRecorder).GetField("_pendingConnectionMessages", PrivateInstance)!.GetValue(recorder)! == 2,
-                "All early notifications are retained, not only OPEN.");
-            Attempt(recorder);
-            Require(calls == 1, "Retry must not overlap an in-flight connection attempt.");
-            release.Set();
-            PumpUntil(() => Pending(recorder).IsCompleted);
-            Pending(recorder).GetAwaiter().GetResult();
-            Require(errors == 0, "Absent simulator remains Waiting, not an error.");
-            Attempt(recorder);
-            Require((int)typeof(SimConnectLandingRecorder).GetField("_pendingConnectionMessages", PrivateInstance)!.GetValue(recorder)! == 0,
-                "A new attempt discards notifications from a failed connection.");
-            PumpUntil(() => Pending(recorder).IsCompleted);
-            Pending(recorder).GetAwaiter().GetResult();
-            Require(calls == 2 && errors == 1, "Failed attempts release the gate and unexpected errors are reported.");
-            Require(!wrongStatusThread, "Status events stay on the recorder's UI dispatcher.");
-        }
-        finally { release.Set(); }
-    }
 
-    private static void ClosingDoesNotWaitForNativeConnectionOrPublishLateErrors()
-    {
-        using var entered = new ManualResetEventSlim();
-        using var release = new ManualResetEventSlim();
-        var calls = 0;
-        var statusCount = 0;
-        using var recorder = new SimConnectLandingRecorder(IntPtr.Zero, () =>
-        {
-            Interlocked.Increment(ref calls);
-            entered.Set();
-            if (!release.Wait(TimeSpan.FromSeconds(5))) throw new TimeoutException("Test factory was not released.");
-            throw new COMException("Late native failure.");
-        });
-        recorder.StatusChanged += (_, __) => statusCount++;
-        try
-        {
-            Attempt(recorder);
-            Require(entered.Wait(TimeSpan.FromSeconds(5)), "Connection worker starts before closing.");
-            recorder.Dispose();
-            Require(!Pending(recorder).IsCompleted, "Dispose must return without waiting for the blocked constructor.");
-            var before = statusCount;
-            release.Set();
-            Require(Pending(recorder).Wait(TimeSpan.FromSeconds(5)), "Canceled attempt completes without pumping the closed UI.");
-            Attempt(recorder);
-            Require(calls == 1 && statusCount == before, "No reconnect or late status is allowed after disposal.");
-        }
-        finally { release.Set(); }
-    }
-
-    private static void DispatcherShutdownDoesNotStrandFailedAttempt()
-    {
-        using var release = new ManualResetEventSlim();
-        Task? pending = null;
-        Exception? failure = null;
-        var thread = new Thread(() =>
-        {
-            try
-            {
-                using var recorder = new SimConnectLandingRecorder(IntPtr.Zero, () =>
-                {
-                    if (!release.Wait(TimeSpan.FromSeconds(5))) throw new TimeoutException("Test factory was not released.");
-                    throw new COMException("Dispatcher already stopped.");
-                });
-                Attempt(recorder);
-                pending = Pending(recorder);
-                Dispatcher.CurrentDispatcher.InvokeShutdown();
-                release.Set();
-                Require(pending.Wait(TimeSpan.FromSeconds(5)), "Shutdown must not strand an error notification on the dispatcher.");
-            }
-            catch (Exception error) { failure = error; }
-        });
-        thread.SetApartmentState(ApartmentState.STA);
-        thread.IsBackground = true;
-        thread.Start();
-        try
-        {
-            Require(thread.Join(TimeSpan.FromSeconds(10)), "Shutdown diagnostic finishes.");
-            if (failure != null) throw new InvalidOperationException("Dispatcher shutdown regression.", failure);
-            Require(pending != null && pending.Status == TaskStatus.RanToCompletion, "Shutdown attempt completes successfully.");
-        }
-        finally { release.Set(); }
+        CloseWaitsForOutermostNativeDispatch();
+        ReceiveFailureClosesAfterUnwinding();
+        RetiredCallbacksCannotCloseReplacement();
     }
 
     private static void Attempt(SimConnectLandingRecorder recorder) =>
-        typeof(SimConnectLandingRecorder).GetMethod("TryConnect", PrivateInstance)!.Invoke(recorder, null);
+        RecorderTestAccess.Call(recorder, "TryConnect", null);
 
-    private static Task Pending(SimConnectLandingRecorder recorder) =>
-        (Task)typeof(SimConnectLandingRecorder).GetField("_connectionTask", PrivateInstance)!.GetValue(recorder)!;
-
-    private static void PumpUntil(Func<bool> condition)
+    private static SimConnect ConnectionIdentity()
     {
-        var frame = new DispatcherFrame();
-        var clock = Stopwatch.StartNew();
-        var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(1) };
-        timer.Tick += (_, __) => { if (condition() || clock.Elapsed.TotalSeconds > 5) frame.Continue = false; };
-        timer.Start();
-        try { Dispatcher.PushFrame(frame); }
-        finally { timer.Stop(); }
-        Require(condition(), "Dispatcher operation timed out.");
+        // Only an identity token: injected receive/dispose delegates replace all
+        // native operations. Never construct a real connection in these tests.
+        var connection = (SimConnect)FormatterServices.GetUninitializedObject(typeof(SimConnect));
+        GC.SuppressFinalize(connection);
+        return connection;
     }
+
+    private static void CloseWaitsForOutermostNativeDispatch()
+    {
+        foreach (var action in new[] { "quit", "disconnect", "dispose" })
+        {
+            var native = ConnectionIdentity();
+            var depth = 0;
+            var closes = 0;
+            var exits = 0;
+            var opens = 0;
+            SimConnectLandingRecorder? recorder = null;
+            recorder = new SimConnectLandingRecorder(IntPtr.Zero,
+                () => { opens++; throw new InvalidOperationException("Unexpected open."); },
+                connection =>
+                {
+                    depth++;
+                    try
+                    {
+                        if (depth == 1)
+                        {
+                            var nestedHandled = false;
+                            recorder!.HandleWindowMessage(SimConnectLandingRecorder.WindowMessage, ref nestedHandled);
+                            Require(nestedHandled && closes == 0, "Nested dispatch must not release its parent's native handle.");
+                            Attempt(recorder);
+                            Require(opens == 0, "A replacement cannot start while old native dispatch is active.");
+                        }
+                        else
+                        {
+                            if (action == "quit")
+                            {
+                                Invoke(recorder!, "OnRecvQuit", connection, null!);
+                                Invoke(recorder!, "OnRecvQuit", connection, null!);
+                            }
+                            else if (action == "dispose") recorder!.Dispose();
+                            else Invoke(recorder!, "Disconnect");
+                            Require(closes == 0, "Closing inside a callback must defer native disposal.");
+                            Require(Current(recorder!) == null, "A retired connection must immediately reject later callbacks.");
+                        }
+                    }
+                    finally { depth--; }
+                },
+                connection =>
+                {
+                    Require(depth == 0 && ReferenceEquals(connection, native), "Only the unwound native owner may close.");
+                    Attempt(recorder!);
+                    Require(opens == 0, "Replacement construction cannot overlap native Close either.");
+                    closes++;
+                });
+            using (recorder)
+            {
+                recorder.SimulatorExited += (_, __) => exits++;
+                RecorderTestAccess.Set(recorder, "_simConnect", native);
+                var handled = false;
+                recorder.HandleWindowMessage(SimConnectLandingRecorder.WindowMessage, ref handled);
+                Require(handled && closes == 1, "Native handle must be closed once after the outer dispatch returns.");
+                Require(exits == (action == "quit" ? 1 : 0), "Only a real current-generation QUIT notifies simulator exit once.");
+                recorder.Dispose();
+                Require(closes == 1, "Repeated shutdown must not close the handle twice.");
+            }
+        }
+    }
+
+    private static void ReceiveFailureClosesAfterUnwinding()
+    {
+        var inNative = false;
+        var closes = 0;
+        using var recorder = new SimConnectLandingRecorder(IntPtr.Zero, null,
+            _ =>
+            {
+                inNative = true;
+                try { throw new InvalidOperationException("Injected dispatch failure."); }
+                finally { inNative = false; }
+            },
+            _ => { Require(!inNative, "Receive error must unwind before disposal."); closes++; });
+        RecorderTestAccess.Set(recorder, "_simConnect", ConnectionIdentity());
+        var handled = false;
+        recorder.HandleWindowMessage(SimConnectLandingRecorder.WindowMessage, ref handled);
+        Require(handled && closes == 1 && Current(recorder) == null, "Receive error must close and allow recovery.");
+    }
+
+    private static void RetiredCallbacksCannotCloseReplacement()
+    {
+        var old = ConnectionIdentity();
+        var current = ConnectionIdentity();
+        var exits = 0;
+        var closes = 0;
+        using var recorder = new SimConnectLandingRecorder(IntPtr.Zero, null, _ => { }, _ => closes++);
+        recorder.SimulatorExited += (_, __) => exits++;
+        RecorderTestAccess.Set(recorder, "_simConnect", current);
+        Invoke(recorder, "OnRecvQuit", old, null!);
+        Invoke(recorder, "OnRecvSimobjectData", old, null!);
+        Require(ReferenceEquals(Current(recorder), current) && closes == 0 && exits == 0,
+            "Late QUIT/data cannot close or change a replacement connection.");
+    }
+
+    private static object? Current(SimConnectLandingRecorder recorder) =>
+        RecorderTestAccess.Get(recorder, "_simConnect");
+
+    private static void Invoke(SimConnectLandingRecorder recorder, string method, params object[] args) =>
+        RecorderTestAccess.Call(recorder, method, args);
 
     private static void Require(bool condition, string message)
     {

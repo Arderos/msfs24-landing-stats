@@ -377,9 +377,10 @@ internal static class PauseRecorderRegressionTests
 
         private void Call(string name, params object[] arguments)
         {
-            var method = typeof(SimConnectLandingRecorder).GetMethod(name, PrivateInstance);
+            var owner = RecorderTestAccess.Owner(_recorder, name);
+            var method = owner.GetType().GetMethod(name, PrivateInstance);
             if (method == null) throw new InvalidOperationException("Missing recorder lifecycle method: " + name);
-            try { method.Invoke(_recorder, arguments); }
+            try { method.Invoke(owner, arguments); }
             catch (TargetInvocationException exception) when (exception.InnerException != null)
             { throw new InvalidOperationException(name + " failed: " + exception.InnerException.Message, exception.InnerException); }
         }

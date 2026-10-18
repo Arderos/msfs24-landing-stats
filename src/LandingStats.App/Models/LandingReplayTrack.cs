@@ -1,7 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Windows.Media.Media3D;
+using LandingStats.App.ReplayMath;
 using LandingStats.Core;
 
 namespace LandingStats.App.Models;
@@ -77,12 +77,7 @@ public sealed class LandingReplayTrack
         pose = default;
         if (!Finite(timeSeconds)) return false;
         var time = Math.Max(StartSeconds, Math.Min(EndSeconds, timeSeconds));
-        var lo = 0; var hi = _frames.Length - 1;
-        while (lo < hi)
-        {
-            var middle = lo + (hi - lo) / 2;
-            if (_frames[middle].TimeSeconds < time) lo = middle + 1; else hi = middle;
-        }
+        var lo = RecordedTimeSearch.LowerBound(_frames.Length, index => _frames[index].TimeSeconds, time);
         if (lo == 0 || _frames[lo].TimeSeconds == time)
         {
             pose = new LandingReplayPose(_frames[lo], _frames[lo], 0, time);

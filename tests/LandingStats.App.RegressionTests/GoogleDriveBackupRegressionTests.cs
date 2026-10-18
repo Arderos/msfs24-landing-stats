@@ -165,13 +165,21 @@ internal static partial class GoogleDriveBackupRegressionTests
                 .GetAwaiter().GetResult();
             client.CancelLandingDeletionAsync("remote-landing", CancellationToken.None)
                 .GetAwaiter().GetResult();
-            localRepository.Delete("remote-landing");
             client.SyncAsync(CancellationToken.None).GetAwaiter().GetResult();
-            Assert(localRepository.Contains("remote-landing"), "a cancelled deletion should restore from active cloud data");
+            var cancelledRestore = new LandingRepository(Path.Combine(root, "cancelled-restore"));
+            using (var restoreClient = Service(drive, cancelledRestore, Path.Combine(root, "cancelled-restore-state.json"),
+                       () => localSettings, value => localSettings = value))
+                restoreClient.SyncAsync(CancellationToken.None).GetAwaiter().GetResult();
+            Assert(cancelledRestore.Contains("remote-landing"), "a cancelled deletion should restore from active cloud data");
+            Assert(localRepository.Contains("remote-landing"), "Canceling a queued cloud deletion removed the same-device landing.");
             Assert(!drive.IsLandingTrashed("remote-landing"), "a cancelled deletion reached Drive trash");
 
             client.DeleteLandingAsync("local-landing", CancellationToken.None)
                 .GetAwaiter().GetResult();
+            var cancellationRejected = false;
+            try { client.CancelLandingDeletionAsync("local-landing", CancellationToken.None).GetAwaiter().GetResult(); }
+            catch (InvalidOperationException error) when (error.Message == "A durable local deletion cannot be canceled.") { cancellationRejected = true; }
+            Assert(cancellationRejected, "Canceling a cloud queue silently pretended to undo a durable local tombstone.");
             client.SyncAsync(CancellationToken.None).GetAwaiter().GetResult();
             Assert(!localRepository.Contains("local-landing"), "an application deletion was restored locally");
             Assert(drive.IsLandingTrashed("local-landing"), "an application deletion was not moved to Drive trash");
@@ -468,7 +476,8 @@ internal static partial class GoogleDriveBackupRegressionTests
             var sync = client.SyncAsync(CancellationToken.None);
             drive.WaitUntilDownloadIsBlocked().GetAwaiter().GetResult();
 
-            Assert(!client.DeleteLandingLocally("delete-during-download"), "remote-only landing unexpectedly existed locally");
+            Assert(!repository.Contains("delete-during-download"), "remote-only landing unexpectedly existed locally");
+            Assert(client.DeleteLandingLocally("delete-during-download"), "Remote-only landing deletion intent was not committed.");
             client.QueueLandingDeletionAsync("delete-during-download", CancellationToken.None)
                 .GetAwaiter().GetResult();
             drive.ReleaseBlockedDownload();
@@ -906,14 +915,15 @@ internal static partial class GoogleDriveBackupRegressionTests
             repository.Save(Record("unrelated", 180));
 
             var result = client.SyncAsync(CancellationToken.None).GetAwaiter().GetResult();
-            Assert(result.ConflictedLandingIds.Contains("shared"), "sibling landing conflict was not reported");
-            Assert(result.SettingsConflict, "sibling settings conflict was not reported");
+            Assert(!result.ConflictedLandingIds.Contains("shared"), "sibling landing revisions did not converge");
+            Assert(!result.SettingsConflict, "sibling settings revisions did not converge");
+            Equal(1, drive.ActiveLandingCount("shared"), "sibling landing revisions were not reduced to one canonical file");
             Equal(1, drive.ActiveLandingCount("unrelated"), "unrelated landing was blocked by sibling conflicts");
             Assert(repository.Contains("shared"), "sibling conflict removed the local landing");
 
             var repeat = client.SyncAsync(CancellationToken.None).GetAwaiter().GetResult();
-            Assert(repeat.ConflictedLandingIds.Contains("shared"), "repeat sync lost the landing conflict warning");
-            Assert(repeat.SettingsConflict, "repeat sync lost the settings conflict warning");
+            Assert(!repeat.ConflictedLandingIds.Contains("shared"), "converged landing became conflicted again");
+            Assert(!repeat.SettingsConflict, "converged settings became conflicted again");
             Equal(1, drive.ActiveLandingCount("unrelated"), "repeat conflict sync duplicated unrelated data");
         }
         finally
@@ -1596,7 +1606,15 @@ internal static partial class GoogleDriveBackupRegressionTests
         }
 
         public int ActiveLandingCount(string landingId) => _files.Values.Count(entry =>
-            !entry.Trashed && entry.Property("landingId") == landingId);
+            !entry.Trashed && entry.Property("kind") == "landing" && entry.Property("landingId") == landingId);
+
+        public void CorruptLanding(string landingId) => _files.Values.Single(entry =>
+            !entry.Trashed && entry.Property("kind") == "landing" && entry.Property("landingId") == landingId).Content = new byte[] { 1, 2, 3 };
+
+        public void EmptyTrash()
+        {
+            foreach (var id in _files.Values.Where(entry => entry.Trashed).Select(entry => entry.Id).ToArray()) _files.Remove(id);
+        }
 
         public int ActiveLandingCountInActiveFolder(string landingId)
         {

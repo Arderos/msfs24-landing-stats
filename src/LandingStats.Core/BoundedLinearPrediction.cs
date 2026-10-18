@@ -134,5 +134,5 @@ internal sealed class BoundedLinearPrediction
 
     private static double Dot(double[] x, double[] y)
     { var sum = 0.0; for (var i = 0; i < x.Length; i++) sum += x[i] * y[i]; return sum; }
-    private static bool Finite(double value) => !double.IsNaN(value) && !double.IsInfinity(value);
+    private static bool Finite(double value) => AnalysisNumericPolicy.IsFinite(value);
 }

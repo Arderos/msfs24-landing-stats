@@ -34,7 +34,7 @@ internal static class LandingImpactStorageRegressionTests
             Equal(peak < 1.2, record.IsSmoothLanding, "smooth threshold");
             Equal(peak >= 1.2 && peak < 1.5, record.IsNormalLanding, "normal threshold");
             Equal(peak >= 1.5, record.IsFirmLanding, "firm threshold uses unrounded G");
-            Equal(peak.ToString("F2", CultureInfo.CurrentCulture), record.ImpactPeakDisplay, "legacy display uses the saved 150-ms G");
+            Equal(peak.ToString("F2", CultureInfo.CurrentCulture), new LandingStats.App.Presentation.LandingPresentation(record).ImpactPeakDisplay, "legacy display uses the saved 150-ms G");
             Equal(0, record.ImpactAnalysisVersion, "display does not migrate the record");
             Assert(record.ImpactPeakG == null, "display does not add a derived peak");
         }
@@ -114,7 +114,7 @@ internal static class LandingImpactStorageRegressionTests
 
             record.ImpactStatus = nameof(TouchdownImpactStatus.Incomplete);
             Assert(!record.HasImpactClassification, "incomplete native impact cannot fall back to old smooth G");
-            Equal(record.ImpactPeakG!.Value.ToString("F2", CultureInfo.CurrentCulture), record.ImpactPeakDisplay, "incomplete observed peak remains visible");
+            Equal(record.ImpactPeakG!.Value.ToString("F2", CultureInfo.CurrentCulture), new LandingStats.App.Presentation.LandingPresentation(record).ImpactPeakDisplay, "incomplete observed peak remains visible");
             record.ImpactStatus = nameof(TouchdownImpactStatus.InvalidTelemetry);
             Assert(!record.HasImpactClassification, "invalid native impact cannot fall back to legacy G");
             record.ImpactStatus = nameof(TouchdownImpactStatus.Settled);
@@ -135,31 +135,31 @@ internal static class LandingImpactStorageRegressionTests
         {
             LocalizationManager.Apply("en");
             var legacy = Legacy("legacy-detail", 7);
-            Equal(legacy.G2SecondsDisplay, legacy.GDetailDisplay, "legacy detail still shows saved two-second G");
-            Equal(LocalizationManager.Text("Help.PeakG2"), legacy.GDetailTooltip, "legacy help describes the old metric");
+            Equal(new LandingStats.App.Presentation.LandingPresentation(legacy).G2SecondsDisplay, new LandingStats.App.Presentation.LandingPresentation(legacy).GDetailDisplay, "legacy detail still shows saved two-second G");
+            Equal(LocalizationManager.Text("Help.PeakG2"), new LandingStats.App.Presentation.LandingPresentation(legacy).GDetailTooltip, "legacy help describes the old metric");
             var record = LandingRecordFactory.Create(new TouchdownResult {
                 SimulationTimeSeconds = 10, EstimatedContactTimeSeconds = 9.98,
                 Impact = new TouchdownImpactResult(TouchdownImpactStatus.Settled, 1.3, .1, .74)
             }, Array.Empty<TelemetrySample>(), "Test", "Test");
-            Equal("window 0.74 s", record.GDetailDisplay, "new detail shows actual adaptive duration");
-            Equal(LocalizationManager.Text("Help.ImpactWindow"), record.GDetailTooltip, "new help describes the adaptive window");
+            Equal("window 0.74 s", new LandingStats.App.Presentation.LandingPresentation(record).GDetailDisplay, "new detail shows actual adaptive duration");
+            Equal(LocalizationManager.Text("Help.ImpactWindow"), new LandingStats.App.Presentation.LandingPresentation(record).GDetailTooltip, "new help describes the adaptive window");
             LocalizationManager.Apply("ru");
-            Equal("окно 0,74 с", record.GDetailDisplay, "Russian window caption and decimal separator");
+            Equal("окно 0,74 с", new LandingStats.App.Presentation.LandingPresentation(record).GDetailDisplay, "Russian window caption and decimal separator");
             record.ImpactStatus = nameof(TouchdownImpactStatus.Liftoff);
-            Equal("окно 0,74 с", record.GDetailDisplay, "liftoff completes the contact window");
+            Equal("окно 0,74 с", new LandingStats.App.Presentation.LandingPresentation(record).GDetailDisplay, "liftoff completes the contact window");
             record.ImpactStatus = nameof(TouchdownImpactStatus.Incomplete);
-            Equal("неполное окно", record.GDetailDisplay, "incomplete window never displays a stale duration");
+            Equal("неполное окно", new LandingStats.App.Presentation.LandingPresentation(record).GDetailDisplay, "incomplete window never displays a stale duration");
             record.ImpactStatus = nameof(TouchdownImpactStatus.InvalidTelemetry);
-            Equal(LocalizationManager.Text("Model.NotAvailable"), record.GDetailDisplay, "invalid telemetry does not invent a duration");
+            Equal(LocalizationManager.Text("Model.NotAvailable"), new LandingStats.App.Presentation.LandingPresentation(record).GDetailDisplay, "invalid telemetry does not invent a duration");
             record.ImpactStatus = nameof(TouchdownImpactStatus.Settled);
             foreach (var duration in new double?[] { null, double.NaN, double.PositiveInfinity, -1, 0 })
             {
                 record.ImpactWindowSeconds = duration;
-                Equal(LocalizationManager.Text("Model.NotAvailable"), record.GDetailDisplay, "missing or invalid duration is unavailable");
+                Equal(LocalizationManager.Text("Model.NotAvailable"), new LandingStats.App.Presentation.LandingPresentation(record).GDetailDisplay, "missing or invalid duration is unavailable");
             }
             record.ImpactWindowSeconds = .74;
             record.ImpactAnalysisVersion++;
-            Equal(LocalizationManager.Text("Model.NotAvailable"), record.GDetailDisplay, "unknown version does not display a stale window");
+            Equal(LocalizationManager.Text("Model.NotAvailable"), new LandingStats.App.Presentation.LandingPresentation(record).GDetailDisplay, "unknown version does not display a stale window");
         }
         finally { LocalizationManager.Apply("en"); }
     }

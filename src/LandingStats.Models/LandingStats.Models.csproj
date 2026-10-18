@@ -1,0 +1,62 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><TargetFramework>net48</TargetFramework><PlatformTarget>x64</PlatformTarget></PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../LandingStats.App/Models/RuntimeFinalFacilities.cs" Link="Models/RuntimeFinalFacilities.cs" />
+    <ProjectReference Include="../LandingStats.Core/LandingStats.Core.csproj" />
+    <ProjectReference Include="../LandingStats.Runtime.Contracts/LandingStats.Runtime.Contracts.csproj" />
+    <Compile Include="../LandingStats.App/Models/AirportFacility.cs" Link="Models/AirportFacility.cs" />
+    <Compile Include="../LandingStats.App/Models/AnalysisGeometrySnapshot.cs" Link="Models/AnalysisGeometrySnapshot.cs" />
+    <Compile Include="../LandingStats.App/Models/ControllerCatalogTimeline.cs" Link="Models/ControllerCatalogTimeline.cs" />
+    <Compile Include="../LandingStats.App/Models/EpisodeFacilitySnapshot.cs" Link="Models/EpisodeFacilitySnapshot.cs" />
+    <Compile Include="../LandingStats.App/Models/EpisodeWorkManifest.cs" Link="Models/EpisodeWorkManifest.cs" />
+    <Compile Include="../LandingStats.App/Models/LandingContactSeries.cs" Link="Models/LandingContactSeries.cs" />
+    <Compile Include="../LandingStats.App/Models/LandingEngineSeries.cs" Link="Models/LandingEngineSeries.cs" />
+    <Compile Include="../LandingStats.App/Models/LandingRecord.cs" Link="Models/LandingRecord.cs" />
+    <Compile Include="../LandingStats.App/Models/LandingReplayContacts.cs" Link="Models/LandingReplayContacts.cs" />
+    <Compile Include="../LandingStats.App/Models/LandingReplayDiagnostics.cs" Link="Models/LandingReplayDiagnostics.cs" />
+    <Compile Include="../LandingStats.App/Models/LandingReplayRunwayOffset.cs" Link="Models/LandingReplayRunwayOffset.cs" />
+    <Compile Include="../LandingStats.App/Models/LandingReplayTrack.cs" Link="Models/LandingReplayTrack.cs" />
+    <Compile Include="../LandingStats.App/Models/LandingSeriesPoint.cs" Link="Models/LandingSeriesPoint.cs" />
+    <Compile Include="../LandingStats.App/Models/ModelText.cs" Link="Models/ModelText.cs" />
+    <Compile Include="../LandingStats.App/Models/RecordedTimeSearch.cs" Link="Models/RecordedTimeSearch.cs" />
+    <Compile Include="../LandingStats.App/Models/ReplayControlInputs.Catalogs.cs" Link="Models/ReplayControlInputs.Catalogs.cs" />
+    <Compile Include="../LandingStats.App/Models/ReplayControlInputs.cs" Link="Models/ReplayControlInputs.cs" />
+    <Compile Include="../LandingStats.App/Models/ReplayDesignation.cs" Link="Models/ReplayDesignation.cs" />
+    <Compile Include="../LandingStats.App/Models/ReplayGearRegistrationModel.cs" Link="Models/ReplayGearRegistrationModel.cs" />
+    <Compile Include="../LandingStats.App/Models/ReplayGearState.cs" Link="Models/ReplayGearState.cs" />
+    <Compile Include="../LandingStats.App/Models/ReplayMath.cs" Link="Models/ReplayMath.cs" />
+    <Compile Include="../LandingStats.App/Models/ReplaySurfaceGeometry.cs" Link="Models/ReplaySurfaceGeometry.cs" />
+    <Compile Include="../LandingStats.App/Models/RunwayFacility.cs" Link="Models/RunwayFacility.cs" />
+    <Compile Include="../LandingStats.App/Models/RunwayMarkingConvention.cs" Link="Models/RunwayMarkingConvention.cs" />
+    <Compile Include="../LandingStats.App/Models/RunwayMarkingModel.cs" Link="Models/RunwayMarkingModel.cs" />
+    <Compile Include="../LandingStats.App/Runtime/ControllerProvenanceCodec.cs" Link="Runtime/ControllerProvenanceCodec.cs" />
+    <Compile Include="../LandingStats.App/Runtime/RuntimeCheckpointCodec.cs" Link="Runtime/RuntimeCheckpointCodec.cs" />
+    <Compile Include="../LandingStats.App/Runtime/EpisodePersistenceData.cs" Link="Runtime/EpisodePersistenceData.cs" />
+    <Compile Include="../LandingStats.App/Telemetry/RecorderEvents.cs" Link="Telemetry/RecorderEvents.cs" />
+    <Compile Include="../LandingStats.App/Telemetry/ISceneryQueryPort.cs" Link="Telemetry/ISceneryQueryPort.cs" />
+    <Compile Include="../LandingStats.App/Telemetry/ISimulatorSourceContext.cs" Link="Telemetry/ISimulatorSourceContext.cs" />
+    <Compile Include="../LandingStats.App/Telemetry/IEpisodeFacilityPort.cs" Link="Telemetry/IEpisodeFacilityPort.cs" />
+    <Compile Include="../LandingStats.App/Telemetry/RunwayResolver.cs" Link="Telemetry/RunwayResolver.cs" />
+    <Compile Include="../LandingStats.App/Telemetry/AirportResolver.cs" Link="Telemetry/AirportResolver.cs" />
+    <Compile Include="../LandingStats.App/Telemetry/LandingSiteResolver.cs" Link="Telemetry/LandingSiteResolver.cs" />
+    <InternalsVisibleTo Include="MSFS-Landing-Stats" />
+    <InternalsVisibleTo Include="LandingStats.App.RegressionTests" />
+    <InternalsVisibleTo Include="LandingStats.Workers.Testing" />
+    <InternalsVisibleTo Include="LandingStats.WorkerHost" />
+    <InternalsVisibleTo Include="LandingStats.Persistence" />
+    <InternalsVisibleTo Include="LandingStats.Recording" />
+    <InternalsVisibleTo Include="LandingStats.Storage" />
+    <InternalsVisibleTo Include="LandingStats.Runtime" />
+    <InternalsVisibleTo Include="LandingStats.Delivery" />
+    <InternalsVisibleTo Include="LandingStats.Workers.Common" />
+    <InternalsVisibleTo Include="LandingStats.Workers.Simulator" />
+    <InternalsVisibleTo Include="LandingStats.Workers.Controllers" />
+    <InternalsVisibleTo Include="LandingStats.Workers.Analysis" />
+    <InternalsVisibleTo Include="LandingStats.Workers.Upload" />
+    <InternalsVisibleTo Include="LandingStats.Workers.Cloud" />
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies.net48" Version="1.0.3" PrivateAssets="all" />
+    <Reference Include="System.Runtime.Serialization" />
+    <Reference Include="System.IO.Compression" />
+    <Reference Include="System.Net.Http" />
+  </ItemGroup>
+</Project>

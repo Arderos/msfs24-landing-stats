@@ -26,6 +26,11 @@ internal static class SingleNoseGeometryRegressionTests
         Assert(result.ClosureReconstructionAvailable, "end-to-end reconstruction");
         Near(50, result.ClosureReconstructionUncertaintyFpm, "conservative uncertainty");
         Assert(result.ClosureReconstructionGeometrySource == TouchdownGeometrySource.Telemetry, "inferred provenance");
+        var inactiveTail = samples[samples.Count - 1].CopyForAnalysis(); inactiveTail.MotionSimulation = false;
+        inactiveTail.SimulationTimeSeconds += .02; samples.Add(inactiveTail);
+        Assert(TelemetryGeometryCalibration.TryDetectConventionalTopology(samples, out var retained), "non-motion tail erased settled gear");
+        Assert(retained.MainContactPointIndices.SequenceEqual(topology.MainContactPointIndices) &&
+            retained.NoseContactPointIndices.SequenceEqual(topology.NoseContactPointIndices), "non-motion tail changed accepted roles");
     }
 
     public static void StabilityRejectsDriftAndDegenerateSubsets()
@@ -61,6 +66,11 @@ internal static class SingleNoseGeometryRegressionTests
         Assert(configured.ClosureReconstructionAvailable, "verified configured roles bypass telemetry inference");
         Near(15, configured.ClosureReconstructionUncertaintyFpm, "configured uncertainty unchanged");
         Near(-8, configured.ClosureReconstructionLongitudinalArmFeet, "configured arm unchanged");
+        options.LongitudinalMainGearArmFeet = null;
+        var pointsOnly = TouchdownAnalysis.Analyze(samples, options).Single();
+        Assert(pointsOnly.ClosureReconstructionAvailable && pointsOnly.ClosureReconstructionGeometrySource == TouchdownGeometrySource.FlightModelConfig &&
+            !pointsOnly.ClosureReconstructionArmRecoveredFromTelemetry, "configured point geometry lost its provenance without a redundant scalar arm");
+        Near(-8, pointsOnly.ClosureReconstructionLongitudinalArmFeet, "configured point arm changed");
 
         // An established clustered topology has two late points. It must remain
         // selected even if the longer single-last-point hypothesis is possible.
@@ -130,6 +140,23 @@ internal static class SingleNoseGeometryRegressionTests
         foreach (var sample in samples) sample.MotionSimulation = false;
         Assert(!TelemetryGeometryCalibration.TryRecoverDatumOffset(samples, out _), "non-motion telemetry calibrated a datum offset");
         Assert(!TelemetryGeometryCalibration.TryCalibrate(samples, out _), "non-motion telemetry calibrated landing gear geometry");
+    }
+
+    internal static List<TelemetrySample> VersionedDatumTrace()
+    {
+        var samples = Trace();
+        foreach (var sample in samples)
+        {
+            var bank = .4 + .1 * Math.Sin(.5 * sample.SimulationTimeSeconds);
+            var yaw = .01 + .004 * Math.Cos(.7 * sample.SimulationTimeSeconds);
+            // Preserve the independently integrated vertical pitch motion;
+            // introduce bank/yaw whose exact body-rate projection cancels.
+            sample.BankDegrees = bank * 180 / Math.PI;
+            sample.RotationVelocityBodyYRadiansPerSecond = yaw;
+            sample.RotationVelocityBodyXRadiansPerSecond =
+                (sample.RotationVelocityBodyXRadiansPerSecond + yaw * Math.Sin(bank)) / Math.Cos(bank);
+        }
+        return samples;
     }
 
     private static List<TelemetrySample> Trace(bool drift = false, bool degenerateSubset = false)

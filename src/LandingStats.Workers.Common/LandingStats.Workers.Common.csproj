@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><TargetFramework>net48</TargetFramework><PlatformTarget>x64</PlatformTarget></PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../LandingStats.Runtime.Contracts/LandingStats.Runtime.Contracts.csproj" />
+    <Compile Include="../LandingStats.App/Runtime/WorkerOwner.cs" Link="Runtime/WorkerOwner.cs" />
+    <Compile Include="../LandingStats.App/Runtime/OwnerCadence.cs" Link="Runtime/OwnerCadence.cs" />
+    <InternalsVisibleTo Include="MSFS-Landing-Stats" />
+    <InternalsVisibleTo Include="LandingStats.App.RegressionTests" />
+    <InternalsVisibleTo Include="LandingStats.Workers.Testing" />
+    <InternalsVisibleTo Include="LandingStats.WorkerHost" />
+    <InternalsVisibleTo Include="LandingStats.Models" />
+    <InternalsVisibleTo Include="LandingStats.Persistence" />
+    <InternalsVisibleTo Include="LandingStats.Recording" />
+    <InternalsVisibleTo Include="LandingStats.Storage" />
+    <InternalsVisibleTo Include="LandingStats.Runtime" />
+    <InternalsVisibleTo Include="LandingStats.Delivery" />
+    <InternalsVisibleTo Include="LandingStats.Workers.Simulator" />
+    <InternalsVisibleTo Include="LandingStats.Workers.Controllers" />
+    <InternalsVisibleTo Include="LandingStats.Workers.Analysis" />
+    <InternalsVisibleTo Include="LandingStats.Workers.Upload" />
+    <InternalsVisibleTo Include="LandingStats.Workers.Cloud" />
+    <InternalsVisibleTo Include="LandingStats.Workers.IntegrationApi" />
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies.net48" Version="1.0.3" PrivateAssets="all" />
+    <Reference Include="System.Runtime.Serialization" />
+    <Reference Include="System.IO.Compression" />
+    <Reference Include="System.Net.Http" />
+    <Compile Include="../LandingStats.WorkerHost/WorkerChannel.cs" Link="WorkerChannel.cs" />
+  </ItemGroup>
+</Project>

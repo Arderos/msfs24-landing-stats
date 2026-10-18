@@ -28,7 +28,7 @@ internal static class LandingReplaySurfaceRegressionTests
             Require(LandingReplayTrack.TryCreate(record, out var track), "measured slope fixture");
             var originalPositions = track!.Frames.Select(f => f.Position).ToArray();
             var surface = LandingReplaySurface.Build(track, runway);
-            var center = track.ProjectGeo(runway.LatitudeDegrees, runway.LongitudeDegrees, runway.AltitudeMeters / LandingReplayTrack.FeetToMeters);
+            var center = track.ProjectGeo(runway.LatitudeDegrees, runway.LongitudeDegrees, runway.AltitudeMeters / LandingReplayTrack.FeetToMeters).ToWpf();
             var forward = Forward(heading); var right = Right(heading);
             Near(surface.Pavement.Positions.Max(p => Vector3D.DotProduct(p - center, right)) -
                 surface.Pavement.Positions.Min(p => Vector3D.DotProduct(p - center, right)), width, .000001,
@@ -42,7 +42,7 @@ internal static class LandingReplaySurfaceRegressionTests
                 "invalid query coordinates stay unavailable");
             foreach (var f in track.Frames)
             {
-                var distance = Vector3D.DotProduct(f.Ground - center, forward);
+                var distance = Vector3D.DotProduct(f.Ground.ToWpf() - center, forward);
                 var cross = center + forward * distance;
                 Require(TryHeight(surface.Pavement, cross, out var height), "measured station exists on pavement");
                 Near(height, f.Ground.Y, .000001, "pavement uses measured ground, not conflicting facility altitude");

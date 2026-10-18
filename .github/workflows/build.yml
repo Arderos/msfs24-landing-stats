@@ -26,10 +26,12 @@ jobs:
 
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
 
       - name: Set up .NET
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9
         with:
           dotnet-version: 10.0.x
 
@@ -65,26 +67,16 @@ jobs:
           certum-key-id: ${{ secrets.CERTUM_KEY_ID }}
           capture-diagnostics: 'false'
 
-      - name: Resolve current MSFS 2024 SDK
+      - name: Select pinned MSFS 2024 SDK
         id: sdk
         shell: pwsh
         run: |
-          $manifestUrl = "https://sdk.flightsimulator.com/msfs2024/files/sdk.json"
-          $manifest = Invoke-RestMethod -Uri $manifestUrl
-          $entry = $manifest.game_versions[0]
-          $relativeUrl = $entry.downloads_menu.'SDK Installer (Core)'.value
-          if ([string]::IsNullOrWhiteSpace($relativeUrl)) {
-            throw "The MSFS 2024 SDK manifest did not contain a Core installer."
-          }
-
-          $sdkVersion = ($relativeUrl -split '/')[1]
-          $downloadUrl = "https://sdk.flightsimulator.com/msfs2024/files/$relativeUrl"
-          "version=$sdkVersion" >> $env:GITHUB_OUTPUT
-          "download_url=$downloadUrl" >> $env:GITHUB_OUTPUT
+          "version=1.8.1" >> $env:GITHUB_OUTPUT
+          "download_url=https://sdk.flightsimulator.com/msfs2024/files/installers/1.8.1/MSFS2024_SDK_Core_Installer_1.8.1.zip" >> $env:GITHUB_OUTPUT
 
       - name: Cache SimConnect SDK
         id: sdk-cache
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
         with:
           path: ${{ runner.temp }}\msfs-simconnect-sdk
           key: msfs2024-simconnect-${{ steps.sdk.outputs.version }}
@@ -92,13 +84,18 @@ jobs:
       - name: Download and extract SimConnect SDK
         if: steps.sdk-cache.outputs.cache-hit != 'true'
         shell: pwsh
+        env:
+          SDK_DOWNLOAD_URL: ${{ steps.sdk.outputs.download_url }}
         run: |
           $archivePath = Join-Path $env:RUNNER_TEMP "msfs2024-sdk.zip"
           $installerDirectory = Join-Path $env:RUNNER_TEMP "msfs2024-sdk-installer"
           $adminDirectory = Join-Path $env:RUNNER_TEMP "msfs2024-sdk-admin"
           $targetRoot = Join-Path $env:RUNNER_TEMP "msfs-simconnect-sdk"
 
-          Invoke-WebRequest -Uri "${{ steps.sdk.outputs.download_url }}" -OutFile $archivePath
+          Invoke-WebRequest -Uri $env:SDK_DOWNLOAD_URL -OutFile $archivePath
+          if ((Get-FileHash $archivePath -Algorithm SHA256).Hash -ne '7e7cd4774f3cb47e2942960e17b19b0a553499b2bab23da4851127a2363b8750') {
+            throw 'Pinned MSFS SDK archive checksum mismatch.'
+          }
           Expand-Archive -LiteralPath $archivePath -DestinationPath $installerDirectory
           $msi = Get-ChildItem $installerDirectory -Recurse -Filter '*.msi' | Select-Object -First 1
           if ($null -eq $msi) {
@@ -112,7 +109,7 @@ jobs:
             "TARGETDIR=`"$adminDirectory`"",
             'REBOOT=ReallySuppress'
           )
-          $installer = Start-Process -FilePath 'msiexec.exe' -ArgumentList $arguments -Wait -PassThru
+          $installer = Start-Process -FilePath 'msiexec.exe' -ArgumentList $arguments -Wait -PassThru -WindowStyle Hidden
           if ($installer.ExitCode -ne 0) {
             throw "MSFS 2024 SDK administrative extraction failed with exit code $($installer.ExitCode)."
           }
@@ -134,6 +131,15 @@ jobs:
           Copy-Item -LiteralPath $managed.FullName -Destination $managedTarget
           Copy-Item -LiteralPath $native.FullName -Destination $nativeTarget
 
+      - name: Verify pinned SimConnect libraries including cache hits
+        shell: pwsh
+        run: |
+          $sdk = Join-Path $env:RUNNER_TEMP 'msfs-simconnect-sdk\SimConnect SDK\lib'
+          if ((Get-FileHash (Join-Path $sdk 'SimConnect.dll')).Hash -ne '5cd1ddc2e6ece8c36ce47d3a953a776f012cc13ebee17b263088f05f98568323' -or
+              (Get-FileHash (Join-Path $sdk 'managed\Microsoft.FlightSimulator.SimConnect.dll')).Hash -ne '424a9e5085ed7f58f08e078ad5933eed1bc1560df492a9d3c3777befb1c9006f') {
+            throw 'Pinned SimConnect libraries differ.'
+          }
+
       - name: Build single executable and updater
         shell: pwsh
         env:
@@ -145,8 +151,8 @@ jobs:
           $arguments = @{
             MsfsSdkRoot = Join-Path $env:RUNNER_TEMP 'msfs-simconnect-sdk'
           }
-          if ('${{ github.event_name }}' -ne 'pull_request') {
-            $arguments.RequireGoogleOAuthCredentials = $true
+          if ('${{ github.event_name }}' -eq 'pull_request') {
+            $arguments.AllowMissingGoogleOAuthCredentials = $true
           }
           if ($env:SIGN_BUILD -eq 'true') {
             $tool = Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\bin\*\x64\signtool.exe' |
@@ -160,12 +166,64 @@ jobs:
       - name: Run regression tests
         shell: pwsh
         run: |
+          $fixtures = Join-Path $env:GITHUB_WORKSPACE 'artifacts\receiver-contract'
+          New-Item -ItemType Directory -Path $fixtures -Force | Out-Null
+          foreach ($kind in @('ARCHIVE','PROVENANCE','SOURCE')) {
+            $path = Join-Path $fixtures ($kind.ToLowerInvariant() + '.zip')
+            [Environment]::SetEnvironmentVariable("MSFSLS_${kind}_FIXTURE", $path)
+            "MSFSLS_${kind}_FIXTURE=$path" >> $env:GITHUB_ENV
+          }
           & .\tests\LandingStats.App.RegressionTests\bin\Release\net48\LandingStats.App.RegressionTests.exe
           if ($LASTEXITCODE -ne 0) { throw 'Application regressions failed.' }
+          foreach ($kind in @('ARCHIVE','PROVENANCE','SOURCE')) {
+            if (-not (Test-Path -LiteralPath ([Environment]::GetEnvironmentVariable("MSFSLS_${kind}_FIXTURE")) -PathType Leaf)) {
+              throw "Required receiver contract fixture was not emitted: $kind"
+            }
+          }
+          & .\tests\LandingStats.Archives.RegressionTests\bin\Release\net48\LandingStats.Archives.RegressionTests.exe
+          if ($LASTEXITCODE -ne 0) { throw 'net48 capture archive regressions failed.' }
+          dotnet .\tests\LandingStats.Archives.RegressionTests\bin\Release\net10.0\LandingStats.Archives.RegressionTests.dll
+          if ($LASTEXITCODE -ne 0) { throw 'net10 capture archive regressions failed.' }
+          & .\tests\LandingStats.Runtime.RegressionTests\bin\Release\net48\LandingStats.Runtime.RegressionTests.exe
+          if ($LASTEXITCODE -ne 0) { throw 'net48 runtime IPC regressions failed.' }
+          dotnet .\tests\LandingStats.Runtime.RegressionTests\bin\Release\net10.0\LandingStats.Runtime.RegressionTests.dll
+          if ($LASTEXITCODE -ne 0) { throw 'net10 runtime IPC regressions failed.' }
+
+      - name: Set up Python for cross-language archive contract
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+
+      - name: Verify real C# writer output with Python reader
+        shell: pwsh
+        run: |
+          python -m pip install --disable-pip-version-check -r server/telemetry-ingest/requirements-test.txt
+          if ($LASTEXITCODE -ne 0) { throw 'Python contract dependencies failed.' }
+          & .\tests\LandingStats.Archives.RegressionTests\bin\Release\net48\LandingStats.Archives.RegressionTests.exe --emit-fixtures artifacts\archive-contract-net48
+          if ($LASTEXITCODE -ne 0) { throw 'net48 fixture writer failed.' }
+          dotnet .\tests\LandingStats.Archives.RegressionTests\bin\Release\net10.0\LandingStats.Archives.RegressionTests.dll --emit-fixtures artifacts\archive-contract-net10
+          if ($LASTEXITCODE -ne 0) { throw 'net10 fixture writer failed.' }
+          foreach ($framework in @('net48', 'net10')) {
+            python server/telemetry-ingest/tests/verify_dotnet_archives.py "artifacts/archive-contract-$framework"
+            if ($LASTEXITCODE -ne 0) { throw "Python reader failed for $framework writer." }
+          }
+          Push-Location server/telemetry-ingest
+          try {
+            python -m unittest discover -s tests -p 'test_*.py'
+            if ($LASTEXITCODE -ne 0) { throw 'Receiver rejected a real C# report or another server regression failed.' }
+          } finally { Pop-Location }
 
       - name: Test signed and unsigned bundle layouts
         shell: pwsh
         run: .\tests\BundlePayload.Tests.ps1
+
+      - name: Test Google Drive package configuration guard
+        shell: pwsh
+        run: .\tests\GoogleOAuthBuildGuard.Tests.ps1
+
+      - name: Verify guardian worker bundle topology
+        shell: pwsh
+        run: .\tests\GuardianBundle.Tests.ps1 -PackagePath .\artifacts\MSFS-Landing-Stats.exe
 
       - name: Run update compatibility gate tests
         shell: pwsh
@@ -179,17 +237,21 @@ jobs:
           CERTUM_KEY_ID: ${{ secrets.CERTUM_KEY_ID }}
         run: .\verify-authenticode-build.ps1 -CertificateThumbprint $env:CERTUM_KEY_ID -LaunchOnHostedRunner
 
-      - name: Sign update metadata and test every published client
+      - name: Sign update metadata
         if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.sign)
         shell: pwsh
         env:
           RELEASE_SIGNING_KEY_PKCS8_B64: ${{ secrets.RELEASE_SIGNING_KEY_PKCS8_B64 }}
         run: |
           .\sign-update-manifest.ps1
-          .\verify-published-client-updates.ps1
+
+      - name: Test every published client without signing credentials
+        if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.sign)
+        shell: pwsh
+        run: .\verify-published-client-updates.ps1
 
       - name: Upload build artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: MSFS-Landing-Stats
           path: |
@@ -206,10 +268,12 @@ jobs:
 
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
           python-version: "3.12"
           cache: pip
@@ -235,27 +299,23 @@ jobs:
 
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
 
       - name: Download verified build artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: MSFS-Landing-Stats
           path: artifacts
 
-      - name: Publish tagged release
+      - name: Verify tagged release and published client compatibility
         shell: pwsh
         env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_SIGNING_KEY_PKCS8_B64: ${{ secrets.RELEASE_SIGNING_KEY_PKCS8_B64 }}
           CERTUM_KEY_ID: ${{ secrets.CERTUM_KEY_ID }}
         run: |
           .\verify-authenticode-build.ps1 -CertificateThumbprint $env:CERTUM_KEY_ID
           $version = $env:GITHUB_REF_NAME.TrimStart('v')
-          if ([string]::IsNullOrWhiteSpace($env:RELEASE_SIGNING_KEY_PKCS8_B64)) {
-            throw "RELEASE_SIGNING_KEY_PKCS8_B64 is not configured. Refusing to publish an unsigned update."
-          }
-
           $packagePath = Join-Path $env:GITHUB_WORKSPACE 'artifacts\MSFS-Landing-Stats.exe'
           $updaterPath = Join-Path $env:GITHUB_WORKSPACE 'artifacts\MSFS-Landing-Stats.Updater.exe'
           $assemblyVersion = [Reflection.AssemblyName]::GetAssemblyName($updaterPath).Version
@@ -270,31 +330,12 @@ jobs:
             -PackagePath $packagePath `
             -UpdaterPath $updaterPath `
             -ExpectedVersion $version
-          $manifestBytes = [IO.File]::ReadAllBytes($channelManifestPath)
-
-          $privateKey = [Convert]::FromBase64String($env:RELEASE_SIGNING_KEY_PKCS8_B64)
-          $rsa = [Security.Cryptography.RSA]::Create()
-          try {
-            $bytesRead = 0
-            $rsa.ImportPkcs8PrivateKey($privateKey, [ref]$bytesRead)
-            if ($bytesRead -ne $privateKey.Length) {
-              throw 'Release signing key contains trailing data.'
-            }
-            $signature = $rsa.SignData(
-              $manifestBytes,
-              [Security.Cryptography.HashAlgorithmName]::SHA256,
-              [Security.Cryptography.RSASignaturePadding]::Pkcs1)
-            [IO.File]::WriteAllText(
-              $channelSignaturePath,
-              [Convert]::ToBase64String($signature) + "`n",
-              [Text.UTF8Encoding]::new($false))
+          $latest = Invoke-RestMethod 'https://api.github.com/repos/Arderos/msfs24-landing-stats/releases/latest'
+          $previousClientVersion = $latest.tag_name -replace '^v', ''
+          $parsedPrevious = $null
+          if (-not [Version]::TryParse($previousClientVersion, [ref]$parsedPrevious) -or $parsedPrevious -ge [Version]$version) {
+            throw 'Published compatibility baseline is not older than the candidate.'
           }
-          finally {
-            $rsa.Dispose()
-            [Array]::Clear($privateKey, 0, $privateKey.Length)
-          }
-
-          $previousClientVersion = '0.9.3'
           $previousClientDirectory = Join-Path $env:RUNNER_TEMP "msfs-landing-stats-v$previousClientVersion-client"
           New-Item -ItemType Directory -Path $previousClientDirectory -Force | Out-Null
           $previousClientPath = Join-Path $previousClientDirectory 'MSFS-Landing-Stats.exe'
@@ -339,6 +380,12 @@ jobs:
             -ChannelUpdaterPath $updaterPath `
             -ExpectedCurrentVersion $version
 
+      - name: Publish tagged release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $version = $env:GITHUB_REF_NAME.TrimStart('v')
           $changelog = Get-Content -LiteralPath CHANGELOG.md -Raw
           $escapedVersion = [Regex]::Escape($version)
           $pattern = if ($version -ceq '0.7.6') {

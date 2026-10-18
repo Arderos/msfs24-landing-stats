@@ -4,16 +4,24 @@
     <TargetFramework>net48</TargetFramework>
     <PlatformTarget>x64</PlatformTarget>
     <Prefer32Bit>false</Prefer32Bit>
+    <DefineConstants>$(DefineConstants);GUARDIAN_TEST_HOST</DefineConstants>
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Include="..\..\src\LandingStats.ProcessControl\GuardianGeneration.cs" Link="Guardian\GuardianGeneration.cs" />
+    <Compile Include="..\..\src\LandingStats.ProcessControl\GuardianInstance.cs" Link="Guardian\GuardianInstance.cs" />
+    <Compile Include="..\..\src\LandingStats.ProcessControl\GuardianPolicy.cs" Link="Guardian\GuardianPolicy.cs" />
+    <Compile Include="..\..\src\LandingStats.ProcessControl\GuardianUpdateLease.cs" Link="Guardian\GuardianUpdateLease.cs" />
+    <Compile Include="..\..\src\LandingStats.ProcessControl\GuardianUpdater.cs" Link="Guardian\GuardianUpdater.cs" />
+    <ProjectReference Include="../LandingStats.Workers.Testing/LandingStats.Workers.Testing.csproj" />
     <None Update="Fixtures\physical-input-*.csv" CopyToOutputDirectory="PreserveNewest" />
     <None Update="Fixtures\physical-legacy-a350.csv" CopyToOutputDirectory="PreserveNewest" />
     <None Update="Fixtures\geometry-ls001-*.csv" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\..\server\telemetry-ingest\schema-v5.header" Link="schema-v5.header" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\..\server\telemetry-ingest\schema-v6.header" Link="schema-v6.header" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\..\server\telemetry-ingest\schema-v7.header" Link="schema-v7.header" CopyToOutputDirectory="PreserveNewest" />
-    <ProjectReference Include="..\..\src\LandingStats.App\LandingStats.App.csproj" />
+    <ProjectReference Include="..\..\src\LandingStats.App\LandingStats.App.csproj" Aliases="global,ApplicationHost" />
+    <ProjectReference Include="..\..\src\LandingStats.WorkerHost\LandingStats.WorkerHost.csproj" />
     <ProjectReference Include="..\..\src\LandingStats.App.Updater\LandingStats.App.Updater.csproj" />
     <ProjectReference Include="..\..\src\LandingStats.Core\LandingStats.Core.csproj" />
     <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies.net48" Version="1.0.3" PrivateAssets="all" />

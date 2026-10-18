@@ -35,6 +35,16 @@ versioned decision journal tied to the same episode ID. Its envelope and entry
 fields are validated, numerical details must be finite and flat, and it is
 limited to 8,192 entries and 4 MiB expanded. Legacy bundles without a journal
 remain supported.
+Result JSON is scanned as a stream; only its format, episode and record count
+are kept in memory. It retains the 64 MiB expanded ceiling, permits up to 65,536
+records, and bounds nesting at 64 levels, values at 32 million and containers at
+8 million. The generous container budget includes the per-sample controller
+arrays in full-size reports; it does not allocate those arrays on the receiver.
+Auxiliary journal/controller JSON is checked before object allocation with a
+600,000-value / 100,000-container budget, in addition to its 4/8 MiB byte limits.
+One archive validation runs at a time in the single-worker ingress process;
+waiting uploads retain their already received files on disk. Rejections still
+preserve authenticated, hash-verified original bytes in quarantine.
 Deploy these limits before distributing a desktop client with the expanded
 journal; older servers can reject journals above their previous limits.
 
@@ -70,13 +80,21 @@ remains a physical discontinuity. Recorder lifecycle decisions describe the cloc
 adjustments, suspension, resumption, and partial-capture completion. Deploy this
 receiver before a v7 client; queued schema-v5/v6 uploads remain supported.
 
-Capacity is fail-closed: 16 MiB per request, 64 MiB expanded, 512 MiB per
+Capacity is fail-closed: 16 MiB per request, 128 MiB expanded in the Compose
+deployment, 512 MiB per
 installation per rolling day, and the same 512 MiB fixed-day budget counts all
 signed attempts, including invalid archives. Source addresses are capped at
 1 GiB/day and the entire ingress at 4 GiB/day. At rest, no more than 20 GiB is
 retained and a 2 GiB free-space reserve is preserved on the dedicated
 filesystem. Stale partial uploads are removed on startup and container logs
 rotate at 3 x 10 MiB.
+
+The expanded archive limit accommodates full 30,000-sample v7 diagnostic
+captures with controller and source-state metadata. CSV validation streams
+rows; sample-count, per-member, JSON-structure and compressed-upload bounds
+remain independent. The result JSON member still has its separate 64 MiB
+limit. Standalone runs use a conservative 64 MiB archive limit unless
+`MAX_UNCOMPRESSED_BYTES` is set as in Compose.
 
 New enrollment has its own identity-independent bounds: 10 requests/source/hour,
 1,000 requests globally/hour, an atomic maximum of 100,000 retained

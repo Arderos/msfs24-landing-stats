@@ -35,7 +35,7 @@ internal static class LandingCaptureGateRegressionTests
         Feed(recorder, Frame(20.1, true, true));
         Call(recorder, "FlushRejectedContacts");
         Assert(episodes.Count == 0, "SDK Running ground chatter emitted an automatic archive");
-        Assert((long)typeof(SimConnectLandingRecorder).GetField("_nextEpisodeId", Private)!.GetValue(recorder)! == 0,
+        Assert((long)RecorderTestAccess.Get(recorder, "_nextEpisodeId")! == 0,
             "ground chatter was filtered after starting an episode instead of at the capture gate");
 
         var approach = Frame(21, false, true);
@@ -114,6 +114,6 @@ internal static class LandingCaptureGateRegressionTests
 
     private static void Feed(SimConnectLandingRecorder recorder, TelemetrySample sample) => Call(recorder, "ProcessSample", sample);
     private static void Call(SimConnectLandingRecorder recorder, string name, params object[] arguments) =>
-        typeof(SimConnectLandingRecorder).GetMethod(name, Private)!.Invoke(recorder, arguments);
+        RecorderTestAccess.Call(recorder, name, arguments);
     private static void Assert(bool value, string message) { if (!value) throw new InvalidOperationException(message); }
 }

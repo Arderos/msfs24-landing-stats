@@ -9,7 +9,7 @@ namespace LandingStats.App.Models;
 /// Ranks physical axes against the recorded pilot commands. Correlation selects
 /// the source and polarity, but never changes physical amplitude or sample time.
 /// </summary>
-public sealed class ReplayControlInputs
+public sealed partial class ReplayControlInputs
 {
     public const double MaximumAgeSeconds = 0.25;
     // A strong, bounded preference for a two-axis stick/yoke, not a binding rule
@@ -33,6 +33,7 @@ public sealed class ReplayControlInputs
     public static ReplayControlInputs Resolve(LandingRecord? record, IEnumerable<LandingRecord> contacts, TelemetryDecisionJournal? journal = null)
     {
         if (record == null) return Resolve(record, journal);
+        if (record.ControllerTimeline != null) return ResolveCatalogs(record, contacts, journal);
         // Contact-local windows can have different lengths and downsampling
         // phases. Select once from the first available contact in the episode;
         // other contacts reuse its bindings, never rank their own competitors.
@@ -90,6 +91,7 @@ public sealed class ReplayControlInputs
 
     public static ReplayControlInputs Resolve(LandingRecord? record, TelemetryDecisionJournal? journal = null)
     {
+        if (record?.ControllerTimeline != null) return ResolveCatalogs(record, new[] { record }, journal);
         var points = new List<LandingSeriesPoint>();
         if (record != null)
             foreach (var point in record.Series)
@@ -265,6 +267,7 @@ public sealed class ReplayControlInputs
 
     public ReplayControlSample Sample(double timeSeconds)
     {
+        if (_catalogSegments != null) return SampleCatalog(timeSeconds);
         if (!Find(timeSeconds, out var a, out var b, out var fraction)) return default;
         return new ReplayControlSample(Value(Pitch, a, b, fraction), Value(Roll, a, b, fraction), Value(Yaw, a, b, fraction));
     }
@@ -323,8 +326,7 @@ public sealed class ReplayControlInputs
     {
         a = b = null!; fraction = 0; segment = -1;
         if (!Finite(time) || _points.Length == 0 || time < _points[0].TimeSeconds || time > _points[_points.Length - 1].TimeSeconds) return false;
-        var low = 0; var high = _points.Length - 1;
-        while (low < high) { var middle = low + (high - low) / 2; if (_points[middle].TimeSeconds < time) low = middle + 1; else high = middle; }
+        var low = RecordedTimeSearch.LowerBound(_points.Length, index => _points[index].TimeSeconds, time);
         b = _points[low];
         segment = _segments[low];
         if (low == 0 || b.TimeSeconds == time) { a = b; return true; }
@@ -334,13 +336,13 @@ public sealed class ReplayControlInputs
         return true;
     }
 
-    private static bool Raw(LandingSeriesPoint point, int column, bool legacy, out double value)
+    internal static bool Raw(LandingSeriesPoint point, int column, bool legacy, out double value)
     {
         value = 0;
         var values = legacy ? point.RawControllerYAxisPercent : point.RawControllerAxesPercent;
         var valid = legacy ? point.RawControllerYAxisValid : point.RawControllerAxesValid;
         var ages = legacy ? point.RawControllerYAxisAgeSeconds : point.RawControllerAxesAgeSeconds;
-        if (values == null || valid == null || ages == null || column >= values.Length || column >= valid.Length || column >= ages.Length ||
+        if (column < 0 || values == null || valid == null || ages == null || column >= values.Length || column >= valid.Length || column >= ages.Length ||
             !valid[column] || !Finite(values[column]) || Math.Abs(values[column]) > 100.001 || !Finite(ages[column]) || ages[column] < 0 || ages[column] > MaximumAgeSeconds) return false;
         value = values[column]; return true;
     }

@@ -36,7 +36,9 @@ from .validation import CAPTURE_KINDS, DECISION_JOURNAL_FORMAT_VERSION, validate
 
 
 DATA_ROOT = Path(os.environ.get("DATA_ROOT", "/data"))
-REGISTRATION_MODE = "open"
+REGISTRATION_MODE = os.environ.get("REGISTRATION_MODE", "open")
+if REGISTRATION_MODE not in {"open", "closed"}:
+    raise RuntimeError("REGISTRATION_MODE must be open or closed")
 MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_BYTES", str(16 * 1024 * 1024)))
 MAX_UNCOMPRESSED_BYTES = int(os.environ.get("MAX_UNCOMPRESSED_BYTES", str(64 * 1024 * 1024)))
 STORAGE_QUOTA_BYTES = int(os.environ.get("STORAGE_QUOTA_BYTES", str(20 * 1024 * 1024 * 1024)))
@@ -63,7 +65,15 @@ EXPECTED_HEADERS = {
 }
 STORE = Store(DATA_ROOT)
 UPLOAD_PACER = UploadPacer()
+# One expensive archive decoder per ingress process (the container runs one
+# worker). Waiters retain files on disk and do not allocate decoded graphs.
+VALIDATION_GATE = asyncio.Semaphore(1)
 INGRESS_LOG = logging.getLogger("uvicorn.error")
+
+
+async def validate_incoming(path: Path, schema: int):
+    async with VALIDATION_GATE:
+        return await run_in_threadpool(validate_capture, path, EXPECTED_HEADERS[schema], MAX_UNCOMPRESSED_BYTES, schema)
 
 if not 1024 * 1024 <= MAX_UPLOAD_BYTES <= 64 * 1024 * 1024:
     raise RuntimeError("MAX_UPLOAD_BYTES is outside policy")
@@ -87,6 +97,7 @@ if len(SERVER_PEPPER) < 32:
 async def lifespan(_: FastAPI):
     STORE.initialize()
     STORE.prune(RETENTION_DAYS, STORAGE_QUOTA_BYTES)
+    STORE.prune_orphans()
     STORE.prune_installations(UNREFERENCED_INSTALLATION_RETENTION_DAYS)
     STORE.prune_rejected(REJECTED_RETENTION_DAYS, REJECTED_QUOTA_BYTES)
     yield
@@ -212,8 +223,10 @@ async def retain_rejection(request: Request, incoming: Path, sha256: str,
 
 
 @app.get("/health")
-def health() -> dict[str, str]:
-    return {"status": "ok"}
+def health() -> dict[str, object]:
+    count = STORE.installation_count()
+    return {"status": "ok", "installations": count, "installation_capacity": MAX_INSTALLATIONS,
+            "registration_pressure": count >= MAX_INSTALLATIONS * 0.8}
 
 
 @app.get("/v1/config")
@@ -225,6 +238,10 @@ def config() -> dict[str, object]:
         "telemetry_schemas": list(EXPECTED_HEADERS),
         "capture_kinds": list(CAPTURE_KINDS),
         "decision_journal_formats": [DECISION_JOURNAL_FORMAT_VERSION],
+        "controller_catalog_formats": [1],
+        "source_state_formats": [1],
+        "archive_formats": [1, 2],
+        "max_uncompressed_bytes": MAX_UNCOMPRESSED_BYTES,
         "max_upload_bytes": MAX_UPLOAD_BYTES,
     }
 
@@ -242,6 +259,8 @@ def enroll(payload: EnrollmentRequest, request: Request, response: Response) -> 
         if not STORE.rate_limit("enroll-refresh-ip-minute", source_hash, 60, 6):
             raise rate_limited("registration refresh rate limit exceeded")
     else:
+        if REGISTRATION_MODE == "closed":
+            raise HTTPException(status_code=403, detail="new installation registration is disabled")
         if not STORE.rate_limit("enroll-ip-hour", source_hash, 3600, 10):
             raise rate_limited("enrollment rate limit exceeded", 3600)
         if not STORE.rate_limit("enroll-global-hour", "global", 3600, GLOBAL_ENROLLMENTS_PER_HOUR):
@@ -382,9 +401,7 @@ async def upload_capture(request: Request) -> dict[str, object]:
         # proxy is still writing a large body can trigger its write timeout.
         request.state.pacing_seconds = await UPLOAD_PACER.admit(STORE, install_id)
         try:
-            facts = await run_in_threadpool(
-                validate_capture, incoming, EXPECTED_HEADERS[schema], MAX_UNCOMPRESSED_BYTES, schema
-            )
+            facts = await validate_incoming(incoming, schema)
         except UnicodeDecodeError as exc:
             await retain_rejection(request, incoming, expected_sha, install_id, app_version, schema,
                                    "archive text is not valid UTF-8")
@@ -403,7 +420,7 @@ async def upload_capture(request: Request) -> dict[str, object]:
         await run_in_threadpool(destination.parent.mkdir, parents=True, exist_ok=True)
         await run_in_threadpool(os.replace, incoming, destination)
         try:
-            await run_in_threadpool(
+            accepted_id = await run_in_threadpool(
                 STORE.add_capture,
                 (
                     capture_id,
@@ -423,6 +440,9 @@ async def upload_capture(request: Request) -> dict[str, object]:
         except Exception:
             await run_in_threadpool(destination.unlink, missing_ok=True)
             raise
+        if accepted_id != capture_id:
+            await run_in_threadpool(destination.unlink, missing_ok=True)
+            return {"status": "already_received", "capture_id": accepted_id}
         await run_in_threadpool(STORE.prune, RETENTION_DAYS, STORAGE_QUOTA_BYTES)
         return {"status": "accepted", "capture_id": capture_id, "sample_count": facts.sample_count}
     finally:

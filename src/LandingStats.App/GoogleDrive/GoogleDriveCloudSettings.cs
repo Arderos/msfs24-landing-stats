@@ -1,7 +1,6 @@
 using System.IO;
 using System.Runtime.Serialization;
 using System.Runtime.Serialization.Json;
-using LandingStats.App.Settings;
 
 namespace LandingStats.App.GoogleDrive;
 
@@ -14,7 +13,7 @@ internal sealed class GoogleDriveCloudSettings
     public int FormatVersion { get; set; } = CurrentFormatVersion;
 
     [DataMember(Name = "language", Order = 2)]
-    public string Language { get; set; } = LocalizationManager.AutomaticLanguage;
+    public string Language { get; set; } = "auto";
 
     [DataMember(Name = "startWithSimulator", Order = 3, EmitDefaultValue = false)]
     public bool? StartWithSimulator { get; set; }
@@ -25,7 +24,8 @@ internal sealed class GoogleDriveCloudSettings
         {
             FormatVersion = CurrentFormatVersion;
         }
-        Language = LocalizationManager.NormalizePreference(Language);
+        var language = Language?.Trim().ToLowerInvariant();
+        Language = language == "en" || language == "ru" ? language : "auto";
     }
 
     public bool IsSupported => FormatVersion <= CurrentFormatVersion;

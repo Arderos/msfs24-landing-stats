@@ -2,6 +2,24 @@
 
 All notable changes to MSFS Landing Stats are documented in this file.
 
+## [0.9.5] - 2026-10-18
+
+### Added
+
+- Optional local API for external applications: landing results, recorded telemetry, application status, and event subscriptions. Includes documentation and a Python example; disabled by default and configurable in Settings.
+
+### Improved
+
+- Fully rearchitected the application into independent modules for recording, analysis, simulator connectivity, controllers, uploads, and cloud synchronization, with isolated worker processes and automatic recovery.
+- Added persistent recovery of unfinished analysis and pending uploads after application restarts.
+- Prepare aircraft geometry in the background and reuse the cached catalog during landing analysis.
+- Reduce diagnostic archive sizes with lossless Zstandard compression while retaining support for older archives.
+
+### Fixed
+
+- Correct SimConnect shutdown ordering and recover failed telemetry subscriptions.
+- Correct geometry calibration during combined bank and yaw motion.
+
 ## [0.9.4] - 2026-10-14
 
 ### Improved

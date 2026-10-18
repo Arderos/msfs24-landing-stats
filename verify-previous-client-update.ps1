@@ -84,15 +84,14 @@ try {
         "SimConnect.dll"
     )
     $archive = [IO.Compression.ZipFile]::OpenRead($payloadPath)
+    $payloadSource = Get-Content (Join-Path $PSScriptRoot 'src\LandingStats.UpdateProtocol\RuntimePayload.cs') -Raw
+    $allowedPayloadNames = @([Regex]::Matches($payloadSource, '"([^"\r\n]+\.(?:exe|dll|config))"') | ForEach-Object { $_.Groups[1].Value })
     try {
         $seen = [Collections.Generic.HashSet[string]]::new(
             [StringComparer]::OrdinalIgnoreCase)
         foreach ($entry in $archive.Entries) {
             $name = $entry.Name
-            $allowed =
-                $name -ieq "MSFS-Landing-Stats.exe" -or
-                $name -ieq "MSFS-Landing-Stats.exe.config" -or
-                [IO.Path]::GetExtension($name) -ieq ".dll"
+            $allowed = $allowedPayloadNames -icontains $name
             if ([string]::IsNullOrEmpty($name) -or
                 $entry.FullName -cne $name -or
                 $entry.Length -le 0 -or

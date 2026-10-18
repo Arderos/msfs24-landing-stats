@@ -1,7 +1,10 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
+using System.Globalization;
 using System.Runtime.InteropServices;
 using LandingStats.Core;
+using LandingStats.Runtime.Contracts;
 using Microsoft.Win32;
 
 namespace LandingStats.App.Telemetry;
@@ -14,6 +17,8 @@ internal sealed class WindowsJoystickReader
 
     private Slot[] _slots = Array.Empty<Slot>();
     private readonly IJoystickApi _api;
+    private List<Slot>? _refreshSlots;
+    private uint _refreshId, _refreshCount;
 
     public WindowsJoystickReader() : this(new NativeJoystickApi())
     {
@@ -27,20 +32,34 @@ internal sealed class WindowsJoystickReader
 
     public bool Refresh()
     {
-        var slots = new List<Slot>();
-        var supported = Math.Min(MaximumWinmmJoysticks, unchecked((int)_api.DeviceCount));
-        for (uint joystickId = 0; joystickId < supported && slots.Count < TelemetrySample.CapturedControllerCount; joystickId++)
+        BeginRefresh();
+        while (!RefreshNext(out var changed)) { }
+        return _refreshChanged;
+    }
+
+    private bool _refreshChanged;
+    public void BeginRefresh()
+    {
+        _refreshSlots = new List<Slot>(); _refreshId = 0;
+        _refreshCount = Math.Min((uint)MaximumWinmmJoysticks, _api.DeviceCount);
+    }
+
+    // The same native owner scans at most one ID between regular samples.
+    // Commit the catalog atomically after a full scan; active slots remain usable
+    // throughout enumeration. A single blocked driver call is still supervised.
+    public bool RefreshNext(out bool changed)
+    {
+        changed = false;
+        if (_refreshSlots == null) return true;
+        if (_refreshId < _refreshCount && _refreshSlots.Count < TelemetrySample.CapturedControllerCount)
         {
-            if (!_api.TryGetState(joystickId, out _) || !_api.TryGetCapabilities(joystickId, out var caps))
-            {
-                continue;
-            }
-
-            slots.Add(new Slot(joystickId, caps, ResolveProductName(joystickId, caps, ReadRegistryString)));
+            var id = _refreshId++;
+            if (_api.TryGetState(id, out _) && _api.TryGetCapabilities(id, out var caps))
+                _refreshSlots.Add(new Slot(id, caps, ResolveProductName(id, caps, ReadRegistryString)));
         }
-
-        var refreshed = slots.ToArray();
-        var changed = refreshed.Length != _slots.Length;
+        if (_refreshId < _refreshCount && _refreshSlots.Count < TelemetrySample.CapturedControllerCount) return false;
+        var refreshed = _refreshSlots.ToArray(); _refreshSlots = null;
+        changed = refreshed.Length != _slots.Length;
         if (!changed)
         {
             for (var index = 0; index < refreshed.Length; index++)
@@ -57,11 +76,13 @@ internal sealed class WindowsJoystickReader
         }
 
         _slots = refreshed;
-        return changed;
+        _refreshChanged = changed;
+        return true;
     }
 
-    public void ReadInto(TelemetrySample sample)
+    public void ReadInto(TelemetrySample sample, long[]? capturedAt = null)
     {
+        if (capturedAt != null && capturedAt.Length != TelemetrySample.CapturedControllerCount) throw new ArgumentException("Invalid controller clock array.");
         for (var slotIndex = 0; slotIndex < TelemetrySample.CapturedControllerCount; slotIndex++)
         {
             var offset = slotIndex * TelemetrySample.CapturedControllerAxisCount;
@@ -69,6 +90,7 @@ internal sealed class WindowsJoystickReader
             Array.Clear(sample.RawControllerAxesValid, offset, TelemetrySample.CapturedControllerAxisCount);
             Array.Clear(sample.RawControllerAxesAgeSeconds, offset, TelemetrySample.CapturedControllerAxisCount);
             sample.RawControllerDeviceId[slotIndex] = -1;
+            if (capturedAt != null) capturedAt[slotIndex] = 0;
             if (slotIndex < _slots.Length)
             {
                 var slot = _slots[slotIndex];
@@ -76,6 +98,7 @@ internal sealed class WindowsJoystickReader
                 // controller never reuses its previous values or masquerades as a centred stick.
                 if (_api.TryGetState(slot.JoystickId, out var info))
                 {
+                    if (capturedAt != null) capturedAt[slotIndex] = Stopwatch.GetTimestamp();
                     sample.RawControllerDeviceId[slotIndex] = unchecked((int)slot.JoystickId);
                     for (var axis = 0; axis < TelemetrySample.CapturedControllerAxisCount; axis++)
                     {
@@ -102,6 +125,20 @@ internal sealed class WindowsJoystickReader
     }
 
     public int Count => _slots.Length;
+
+    internal ControllerCatalogMessage CreateCatalog(long revision)
+    {
+        var devices = new List<ControllerDescriptor>();
+        for (var index = 0; index < _slots.Length; index++)
+        {
+            var slot = _slots[index]; byte axes = 0;
+            for (var axis = 0; axis < slot.Supported.Length; axis++) if (slot.Supported[axis]) axes |= (byte)(1 << axis);
+            devices.Add(new ControllerDescriptor(index, (int)slot.JoystickId,
+                OptionalMetadataText.Sanitize(slot.Name, 512, "Windows joystick"),
+                OptionalMetadataText.Sanitize(slot.ProductKey, 512, "unknown"), axes, slot.Minimum, slot.Maximum));
+        }
+        return new ControllerCatalogMessage(revision, devices);
+    }
 
     public string DescribeSource(int slotIndex)
     {
@@ -174,7 +211,7 @@ internal sealed class WindowsJoystickReader
     private static extern uint joyGetPosEx(uint joystickId, ref JoyInfoEx info);
 
     [DllImport("winmm.dll", CharSet = CharSet.Unicode)]
-    private static extern uint joyGetDevCaps(uint joystickId, out JoyCaps capabilities, uint capabilitiesSize);
+    private static extern uint joyGetDevCaps(UIntPtr joystickId, out JoyCaps capabilities, uint capabilitiesSize);
 
     [StructLayout(LayoutKind.Sequential)]
     internal struct JoyInfoEx
@@ -251,6 +288,8 @@ internal sealed class WindowsJoystickReader
             for (var axis = 0; axis < Supported.Length; axis++)
                 Supported[axis] &= Maximum[axis] > Minimum[axis];
             Name = name;
+            ProductKey = caps.ManufacturerId.ToString("x4", CultureInfo.InvariantCulture) + ":" + caps.ProductId.ToString("x4", CultureInfo.InvariantCulture) +
+                ":" + (caps.RegistryKey ?? "") + ":" + (caps.ProductName ?? "");
             AxisCount = caps.AxisCount;
         }
 
@@ -263,11 +302,13 @@ internal sealed class WindowsJoystickReader
         public bool[] Supported { get; }
 
         public string Name { get; }
+        public string ProductKey { get; }
 
         public uint AxisCount { get; }
 
         public bool HasSameAxes(Slot other)
         {
+            if (ProductKey != other.ProductKey) return false;
             for (var axis = 0; axis < Supported.Length; axis++)
                 if (Minimum[axis] != other.Minimum[axis] || Maximum[axis] != other.Maximum[axis] ||
                     Supported[axis] != other.Supported[axis]) return false;
@@ -293,6 +334,6 @@ internal sealed class WindowsJoystickReader
         }
 
         public bool TryGetCapabilities(uint joystickId, out JoyCaps capabilities) =>
-            joyGetDevCaps(joystickId, out capabilities, unchecked((uint)Marshal.SizeOf(typeof(JoyCaps)))) == JoyNoError;
+            joyGetDevCaps(new UIntPtr(joystickId), out capabilities, unchecked((uint)Marshal.SizeOf(typeof(JoyCaps)))) == JoyNoError;
     }
 }

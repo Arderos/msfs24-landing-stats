@@ -1,0 +1,47 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><TargetFramework>net48</TargetFramework><PlatformTarget>x64</PlatformTarget></PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../LandingStats.App/Runtime/ProcessedEpisode.cs" Link="Runtime/ProcessedEpisode.cs" />
+    <ProjectReference Include="../LandingStats.Models/LandingStats.Models.csproj" />
+    <ProjectReference Include="../LandingStats.Persistence/LandingStats.Persistence.csproj" />
+    <ProjectReference Include="../LandingStats.Recording/LandingStats.Recording.csproj" />
+    <ProjectReference Include="../LandingStats.Archives/LandingStats.Archives.csproj" />
+    <ProjectReference Include="../LandingStats.Core/LandingStats.Core.csproj" />
+    <Compile Include="../LandingStats.App/Storage/AirportFacilityRepository.cs" Link="Storage/AirportFacilityRepository.cs" />
+    <Compile Include="../LandingStats.App/Storage/AutomaticTelemetryArchive.cs" Link="Storage/AutomaticTelemetryArchive.cs" />
+    <Compile Include="../LandingStats.App/Storage/BoundedHistoryStream.cs" Link="Storage/BoundedHistoryStream.cs" />
+    <Compile Include="../LandingStats.App/Storage/BugReportRepository.cs" Link="Storage/BugReportRepository.cs" />
+    <Compile Include="../LandingStats.App/Storage/ControllerCatalogArchive.cs" Link="Storage/ControllerCatalogArchive.cs" />
+    <Compile Include="../LandingStats.App/Storage/LandingDeletionLedger.cs" Link="Storage/LandingDeletionLedger.cs" />
+    <Compile Include="../LandingStats.App/Storage/LandingRecordFactory.cs" Link="Storage/LandingRecordFactory.cs" />
+    <Compile Include="../LandingStats.App/Storage/LandingRecordFile.cs" Link="Storage/LandingRecordFile.cs" />
+    <Compile Include="../LandingStats.App/Storage/LandingReplayColumns.cs" Link="Storage/LandingReplayColumns.cs" />
+    <Compile Include="../LandingStats.App/Storage/LandingRepository.cs" Link="Storage/LandingRepository.cs" />
+    <Compile Include="../LandingStats.App/Storage/LandingSiteMetadataPersistence.cs" Link="Storage/LandingSiteMetadataPersistence.cs" />
+    <Compile Include="../LandingStats.App/Storage/RawCaptureRepository.cs" Link="Storage/RawCaptureRepository.cs" />
+    <Compile Include="../LandingStats.App/Storage/ReplaySourceArchive.cs" Link="Storage/ReplaySourceArchive.cs" />
+    <Compile Include="../LandingStats.App/Storage/TelemetryDecisionArchive.cs" Link="Storage/TelemetryDecisionArchive.cs" />
+    <Compile Include="../LandingStats.App/Runtime/EpisodeTransactionStore.cs" Link="Runtime/EpisodeTransactionStore.cs" />
+    <Compile Include="../LandingStats.App/Runtime/EpisodeTransactionStore.Import.cs" Link="Runtime/EpisodeTransactionStore.Import.cs" />
+    <Compile Include="../LandingStats.App/Runtime/EpisodeTransactionStore.Facilities.cs" Link="Runtime/EpisodeTransactionStore.Facilities.cs" />
+    <InternalsVisibleTo Include="MSFS-Landing-Stats" />
+    <InternalsVisibleTo Include="LandingStats.App.RegressionTests" />
+    <InternalsVisibleTo Include="LandingStats.Workers.Testing" />
+    <InternalsVisibleTo Include="LandingStats.WorkerHost" />
+    <InternalsVisibleTo Include="LandingStats.Models" />
+    <InternalsVisibleTo Include="LandingStats.Persistence" />
+    <InternalsVisibleTo Include="LandingStats.Recording" />
+    <InternalsVisibleTo Include="LandingStats.Runtime" />
+    <InternalsVisibleTo Include="LandingStats.Delivery" />
+    <InternalsVisibleTo Include="LandingStats.Workers.Common" />
+    <InternalsVisibleTo Include="LandingStats.Workers.Simulator" />
+    <InternalsVisibleTo Include="LandingStats.Workers.Controllers" />
+    <InternalsVisibleTo Include="LandingStats.Workers.Analysis" />
+    <InternalsVisibleTo Include="LandingStats.Workers.Upload" />
+    <InternalsVisibleTo Include="LandingStats.Workers.Cloud" />
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies.net48" Version="1.0.3" PrivateAssets="all" />
+    <Reference Include="System.Runtime.Serialization" />
+    <Reference Include="System.IO.Compression" />
+    <Reference Include="System.Net.Http" />
+  </ItemGroup>
+</Project>

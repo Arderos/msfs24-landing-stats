@@ -221,8 +221,14 @@ internal static class TouchdownImpactRegressionTests
         Near(a.PeakG, b.PeakG, 1e-12, "raw/saved G mismatch");
         Near(a.EndOffsetSeconds, b.EndOffsetSeconds, 1e-12, "delivery-clock timing affected result");
         foreach (var sample in raw)
+        { sample.AnalysisTimeSeconds = sample.SimulationTimeSeconds; if (sample.OnGround) sample.SimulationTimeSeconds += 100; }
+        var activeTime = TouchdownImpactAnalysis.Analyze(raw, Contact(saved));
+        Equal(a.Status, activeTime.Status, "public raw impact API ignored the recorder's active physics clock");
+        Near(a.EndOffsetSeconds, activeTime.EndOffsetSeconds, 1e-12, "confirmed pause changed the impact window");
+        foreach (var sample in raw)
         {
-            sample.HostElapsedSeconds = sample.SimulationTimeSeconds;
+            sample.HostElapsedSeconds = sample.AnalysisTimeSeconds;
+            sample.AnalysisTimeSeconds = double.NaN;
             sample.SimulationTimeSeconds = double.NaN;
         }
         Equal(TouchdownImpactStatus.Unavailable, TouchdownImpactAnalysis.Analyze(raw, Contact(saved)).Status,

@@ -32,7 +32,6 @@ internal static class TouchdownClosureReconstruction
 
     private const double FitWindowSeconds = 0.250;
     private const double EvaluationOffsetSeconds = -0.075;
-    private const double GroundOutlierThresholdFeet = 5.0;
     private const double TimeToleranceSeconds = 0.000000001;
 
     public static bool TryEstimate(
@@ -87,9 +86,10 @@ internal static class TouchdownClosureReconstruction
         // four simulator frames leave no useful protection against quantization
         // or a single irregular frame. The frozen reconstruction therefore needs
         // at least five distinct pre-contact samples and has no linear fallback.
-        if (indices.Count < 5 || CountDistinctTimes(samples, indices) < 5)
+        var distinctTimes = CountDistinctTimes(samples, indices);
+        if (indices.Count < 5 || distinctTimes < 5)
         {
-            decision = "insufficient_distinct_precontact_samples";
+            decision = distinctTimes < 0 ? "nonmonotonic_precontact_time" : "insufficient_distinct_precontact_samples";
             return false;
         }
 
@@ -106,7 +106,7 @@ internal static class TouchdownClosureReconstruction
             return false;
         }
 
-        var filteredGround = SanitizeGroundAltitude(samples);
+        var filteredGround = GroundAltitudeFilters.ForClosure(samples);
         if (!TryQuadraticFit(samples, indices, estimatedContactTime, sample => sample.VelocityWorldYFps, null, out var velocity) ||
             !TryQuadraticFit(samples, indices, estimatedContactTime, null, filteredGround, out var ground) ||
             !TryQuadraticFit(samples, indices, estimatedContactTime, sample => sample.RotationVelocityBodyXRadiansPerSecond, null, out var pitchRate) ||
@@ -257,105 +257,7 @@ internal static class TouchdownClosureReconstruction
         return IsFinite(solution[0]) && IsFinite(solution[1]) && IsFinite(solution[2]);
     }
 
-    private static double[] SanitizeGroundAltitude(IReadOnlyList<TelemetrySample> samples)
-    {
-        var result = new double[samples.Count];
-        var original = new double[samples.Count];
-        var outliers = new bool[samples.Count];
-        var localMedians = new double[samples.Count];
-        // A ground-height repair must not interpolate across a physics restart
-        // either, even when its target sample belongs to a valid fitting window.
-        var segmentStarts = new int[samples.Count];
-        var segmentEnds = new int[samples.Count];
-        for (var index = 0; index < samples.Count; index++)
-        {
-            result[index] = samples[index].GroundAltitudeFeet;
-            original[index] = result[index];
-            localMedians[index] = double.NaN;
-            segmentStarts[index] = index == 0 || !samples[index - 1].MotionSimulation || !samples[index].MotionSimulation
-                ? index : segmentStarts[index - 1];
-        }
-        for (var index = samples.Count - 1; index >= 0; index--)
-            segmentEnds[index] = index == samples.Count - 1 || !samples[index + 1].MotionSimulation || !samples[index].MotionSimulation
-                ? index : segmentEnds[index + 1];
 
-        for (var index = 0; index < samples.Count; index++)
-        {
-            var local = new List<double>(5);
-            var first = Math.Max(segmentStarts[index], Math.Min(index - 2, segmentEnds[index] - 4));
-            var last = Math.Min(segmentEnds[index], first + 4);
-            first = Math.Max(segmentStarts[index], last - 4);
-            for (var neighbor = first; neighbor <= last; neighbor++)
-            {
-                if (IsFinite(original[neighbor]))
-                {
-                    local.Add(original[neighbor]);
-                }
-            }
-
-            if (local.Count < 3 || !IsFinite(original[index]))
-            {
-                continue;
-            }
-
-            local.Sort();
-            var median = local[local.Count / 2];
-            localMedians[index] = median;
-            outliers[index] = Math.Abs(original[index] - median) > GroundOutlierThresholdFeet;
-        }
-
-        for (var index = 0; index < samples.Count; index++)
-        {
-            if (!outliers[index])
-            {
-                continue;
-            }
-
-            var previousIndex = index - 1;
-            while (previousIndex >= segmentStarts[index] && (outliers[previousIndex] || !IsFinite(result[previousIndex])))
-            {
-                previousIndex--;
-            }
-
-            var nextIndex = index + 1;
-            while (nextIndex <= segmentEnds[index] && (outliers[nextIndex] || !IsFinite(original[nextIndex])))
-            {
-                nextIndex++;
-            }
-
-            if (previousIndex >= segmentStarts[index] && nextIndex <= segmentEnds[index])
-            {
-                var previousTime = TouchdownAnalysis.TimeOf(samples[previousIndex]);
-                var targetTime = TouchdownAnalysis.TimeOf(samples[index]);
-                var nextTime = TouchdownAnalysis.TimeOf(samples[nextIndex]);
-                var duration = nextTime - previousTime;
-                if (duration > 0.000001)
-                {
-                    var fraction = (targetTime - previousTime) / duration;
-                    result[index] = result[previousIndex] +
-                                    (original[nextIndex] - result[previousIndex]) * fraction;
-                }
-                else
-                {
-                    result[index] = localMedians[index];
-                }
-            }
-            else if (previousIndex >= segmentStarts[index])
-            {
-                result[index] = result[previousIndex];
-            }
-            else if (nextIndex <= segmentEnds[index])
-            {
-                result[index] = original[nextIndex];
-            }
-            else
-            {
-                result[index] = localMedians[index];
-            }
-        }
-
-        return result;
-    }
 
     private static int CountDistinctTimes(
         IReadOnlyList<TelemetrySample> samples,
@@ -373,7 +275,7 @@ internal static class TouchdownClosureReconstruction
 
             if (!double.IsNaN(previousTime) && time < previousTime - TimeToleranceSeconds)
             {
-                return 0;
+                return -1;
             }
 
             if (double.IsNaN(previousTime) || time - previousTime > TimeToleranceSeconds)
@@ -395,5 +297,5 @@ internal static class TouchdownClosureReconstruction
 
     private static double DegreesToRadians(double value) => value * Math.PI / 180.0;
 
-    private static bool IsFinite(double value) => !double.IsNaN(value) && !double.IsInfinity(value);
+    private static bool IsFinite(double value) => AnalysisNumericPolicy.IsFinite(value);
 }

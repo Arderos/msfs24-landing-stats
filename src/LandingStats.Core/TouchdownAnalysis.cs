@@ -6,13 +6,12 @@ namespace LandingStats.Core;
 
 public static class TouchdownAnalysis
 {
-    private const double EpisodeGapSeconds = 10.0;
+    private const double EpisodeGapSeconds = AnalysisNumericPolicy.EpisodeGapSeconds;
     private const double GWindowAfterSeconds = 2.0;
     private const double LatchUpdateWindowSeconds = 2.0;
     private const double InertialFitWindowSeconds = 0.2;
     private const double MinimumAirborneFitSeconds = 0.15;
     private const double GroundFitWindowSeconds = 0.2;
-    private const double GroundOutlierThresholdFeet = 5.0;
 
     public static IReadOnlyList<TouchdownResult> Analyze(IReadOnlyList<TelemetrySample> samples) =>
         Analyze(samples, null);
@@ -21,6 +20,8 @@ public static class TouchdownAnalysis
         IReadOnlyList<TelemetrySample> samples,
         TouchdownAnalysisOptions? options)
     {
+        if (options != null && !Enum.IsDefined(typeof(TelemetryDatumCalibrationVersion), options.DatumCalibrationVersion))
+            throw new ArgumentOutOfRangeException(nameof(options), "Unsupported datum calibration revision.");
         samples = TelemetryAnalysisFrames.Prepare(samples, options?.DecisionJournal);
         var starts = TelemetryKinematicDiscontinuity.FindSegmentStarts(samples);
         if (starts.Count == 1) return AnalyzeSegment(samples, options);
@@ -32,7 +33,7 @@ public static class TouchdownAnalysis
         var episodeOffset = 0;
         for (var segment = 0; segment + 1 < starts.Count; segment++)
         {
-            var part = new List<TelemetrySample>(starts[segment + 1] - starts[segment]);
+            var part = new AnalysisFrameList(starts[segment + 1] - starts[segment]) { Prepared = true };
             for (var index = starts[segment]; index < starts[segment + 1]; index++) part.Add(samples[index]);
             options?.DecisionJournal?.Record(TimeOf(part[0]), "analysis", "flight_segment_isolated",
                 "Analyze and calibrate this physical segment without borrowing telemetry across SDK flight changes, unexplained physics stops or clock/position replacements.",
@@ -154,10 +155,22 @@ public static class TouchdownAnalysis
                 geometryQuality = suppliedQuality;
             }
         }
+        else if (configuredMainPoints != null && configuredMainPoints.Count > 0)
+        {
+            // Configured point arms already use the velocity-reference frame.
+            // Do not infer a second, contradictory geometry/provenance merely
+            // because the caller omitted the optional median fallback arm.
+            var configuredArms = configuredMainPoints.Select(point => point.LongitudinalArmFeet).OrderBy(value => value).ToArray();
+            var middle = configuredArms.Length / 2;
+            longitudinalArmFeet = configuredArms.Length % 2 == 0 ? .5 * (configuredArms[middle - 1] + configuredArms[middle]) : configuredArms[middle];
+            geometrySource = options!.LongitudinalMainGearArmSource;
+            if (options.LongitudinalMainGearArmQuality is double quality && IsFinite(quality)) geometryQuality = quality;
+        }
         else if (gearTopology != null &&
                  (options == null || options.RecoverLongitudinalMainGearArmFromTelemetry))
         {
-            if (TelemetryGeometryCalibration.TryCalibrate(samples, out var calibration, out var failure))
+            if (TelemetryGeometryCalibration.TryCalibrate(samples, out var calibration, out var failure, gearTopology,
+                options?.DatumCalibrationVersion ?? TelemetryDatumCalibrationVersion.BankedRotation))
             {
                 longitudinalArmFeet = calibration.LongitudinalArmFeet;
                 geometryQuality = calibration.Quality;
@@ -180,8 +193,8 @@ public static class TouchdownAnalysis
             }
         }
 
-        journal?.Record(analysisTime, "geometry", IsFinite(longitudinalArmFeet) ? "arm_selected" : "arm_unavailable",
-            IsFinite(longitudinalArmFeet) ? "Selected longitudinal arm source: " + geometrySource + "." :
+        journal?.Record(analysisTime, "geometry", candidates.Count == 0 ? "no_contact_candidates" : IsFinite(longitudinalArmFeet) ? "arm_selected" : "arm_unavailable",
+            candidates.Count == 0 ? "No physical contact candidates require a gear geometry decision." : IsFinite(longitudinalArmFeet) ? "Selected longitudinal arm source: " + geometrySource + "." :
                 gearTopology == null ? "No supported gear topology; reconstruction has no validated contact geometry." :
                 options != null && !options.RecoverLongitudinalMainGearArmFromTelemetry
                     ? "No finite supplied arm and recovery from telemetry is disabled."
@@ -223,6 +236,7 @@ public static class TouchdownAnalysis
             // motion pass validation. Retain the longitudinal reconstruction if
             // that evidence is insufficient, and never replace supplied geometry.
             if ((options == null || options.RecoverLongitudinalMainGearArmFromTelemetry) &&
+                configuredMainPoints == null &&
                 !(options?.LongitudinalMainGearArmFeet is double externalArm && IsFinite(externalArm)))
             {
                 pointModel ??= new TelemetryContactPointReconstruction(samples,
@@ -423,14 +437,14 @@ public static class TouchdownAnalysis
                 });
         }
 
-        return new TouchdownResult
+        var result = new TouchdownResult
         {
             Impact = impact,
             ClosureReconstructionModel = TouchdownClosureReconstruction.ModelName,
             EpisodeNumber = episodeNumber,
             ContactNumber = contactNumber,
             Sequence = contact.Sequence,
-            SimulationTimeSeconds = contact.SimulationTimeSeconds,
+            SimulationTimeSeconds = TimeOf(contact),
             EstimatedContactTimeSeconds = estimatedContactTime,
             EstimatedContactOffsetSeconds = estimatedContactTime - contactTime,
             ContactTimeEstimatedFromCompression = contactTimeEstimatedFromCompression,
@@ -455,27 +469,6 @@ public static class TouchdownAnalysis
             ClosureReconstructionResidualFpm = reconstructed && latchUpdateDetected
                 ? latchedNormalFpm - reconstruction.ClosureFpm
                 : double.NaN,
-            ClosureReconstructionUncertaintyFpm = reconstructed
-                ? spatialArmRecovered
-                    ? TouchdownClosureReconstruction.FallbackUncertaintyFpm
-                    : gearTopology!.UsesClusteredWheelInference || gearTopology.MainContactPointCount > 4
-                    ? geometrySource == TouchdownGeometrySource.Telemetry
-                        ? TouchdownClosureReconstruction.MultiBogieTelemetryUncertaintyFpm
-                        : TouchdownClosureReconstruction.FallbackUncertaintyFpm
-                    : contactTimeEstimatedFromCompression &&
-                      contactNumber == 1 &&
-                      double.IsPositiveInfinity(exclusiveEndTime) &&
-                      gearTopology.MainContactPointCount == 2
-                        ? TouchdownClosureReconstruction.PrimaryUncertaintyFpm
-                        : TouchdownClosureReconstruction.FallbackUncertaintyFpm
-                : double.NaN,
-            ClosureReconstructionFitPointCount = reconstructed ? reconstruction.FitPointCount : 0,
-            ClosureReconstructionLongitudinalArmFeet = reconstructed ? contactArmFeet : double.NaN,
-            ClosureReconstructionGeometryQuality = reconstructed ? geometryQuality : double.NaN,
-            ClosureReconstructionArmRecoveredFromTelemetry = reconstructed && armRecoveredFromTelemetry,
-            ClosureReconstructionGeometrySource = reconstructed
-                ? geometrySource
-                : TouchdownGeometrySource.Unavailable,
             LastAirToFirstGroundSeconds = contactTime - TimeOf(lastAirborne),
             FirstGroundToNextFrameSeconds = FindNextFrameDuration(samples, contactIndex),
             LastAirborneIndicatedFpm = ToDescentFpm(lastAirborne.VerticalSpeedFps),
@@ -497,6 +490,11 @@ public static class TouchdownAnalysis
             IndicatedAirspeedKnots = contact.IndicatedAirspeedKnots,
             GroundSpeedKnots = contact.GroundSpeedKnots,
         };
+
+        ClosureReconstructionProvenance.Apply(result, reconstructed, reconstruction, contactArmFeet, geometryQuality,
+            armRecoveredFromTelemetry, spatialArmRecovered, geometrySource, gearTopology, contactTimeEstimatedFromCompression,
+            contactNumber, exclusiveEndTime);
+        return result;
 
         void Record(string component, string code, string reason, Dictionary<string, double> details)
         {
@@ -628,7 +626,7 @@ public static class TouchdownAnalysis
                 samples,
                 fitStartIndex,
                 lastAirborneIndex,
-                sample => sample.VelocityWorldYFps,
+                index => samples[index].VelocityWorldYFps,
                 out var interceptAtLast,
                 out var slope,
                 out fitDurationSeconds))
@@ -669,7 +667,7 @@ public static class TouchdownAnalysis
                 samples,
                 fitStartIndex,
                 lastAirborneIndex,
-                sample => FilteredGroundAltitude(samples, sample),
+                index => GroundAltitudeFilters.AtContact(samples, index),
                 out _,
                 out var slope,
                 out _))
@@ -680,61 +678,13 @@ public static class TouchdownAnalysis
         return slope * 60.0;
     }
 
-    private static double FilteredGroundAltitude(
-        IReadOnlyList<TelemetrySample> samples,
-        TelemetrySample target)
-    {
-        var targetIndex = -1;
-        for (var index = 0; index < samples.Count; index++)
-        {
-            if (ReferenceEquals(samples[index], target))
-            {
-                targetIndex = index;
-                break;
-            }
-        }
 
-        if (targetIndex < 0)
-        {
-            return target.GroundAltitudeFeet;
-        }
-
-        var values = new List<double>(5);
-        var first = targetIndex;
-        var last = targetIndex;
-        while (first > Math.Max(0, targetIndex - 2) && samples[first - 1].MotionSimulation) first--;
-        while (last < Math.Min(samples.Count - 1, targetIndex + 2) && samples[last + 1].MotionSimulation) last++;
-        for (var index = first; index <= last; index++)
-        {
-            values.Add(samples[index].GroundAltitudeFeet);
-        }
-
-        values.Sort();
-        var median = values[values.Count / 2];
-        if (Math.Abs(target.GroundAltitudeFeet - median) <= GroundOutlierThresholdFeet ||
-            targetIndex == first || targetIndex == last)
-        {
-            return target.GroundAltitudeFeet;
-        }
-
-        var previous = samples[targetIndex - 1];
-        var next = samples[targetIndex + 1];
-        var duration = TimeOf(next) - TimeOf(previous);
-        if (duration <= 0.000001)
-        {
-            return median;
-        }
-
-        var fraction = (TimeOf(target) - TimeOf(previous)) / duration;
-        return previous.GroundAltitudeFeet +
-               (next.GroundAltitudeFeet - previous.GroundAltitudeFeet) * fraction;
-    }
 
     private static bool TryLinearFit(
         IReadOnlyList<TelemetrySample> samples,
         int startIndex,
         int endIndex,
-        Func<TelemetrySample, double> selectValue,
+        Func<int, double> selectValue,
         out double interceptAtEnd,
         out double slope,
         out double durationSeconds)
@@ -750,7 +700,7 @@ public static class TouchdownAnalysis
         for (var index = startIndex; index <= endIndex; index++)
         {
             var x = TimeOf(samples[index]) - endTime;
-            var y = selectValue(samples[index]);
+            var y = selectValue(index);
             sumX += x;
             sumY += y;
             sumXX += x * x;
@@ -957,5 +907,5 @@ public static class TouchdownAnalysis
             : 0.5 * (arms[arms.Count / 2 - 1] + arms[arms.Count / 2]);
     }
 
-    private static bool IsFinite(double value) => !double.IsNaN(value) && !double.IsInfinity(value);
+    private static bool IsFinite(double value) => AnalysisNumericPolicy.IsFinite(value);
 }

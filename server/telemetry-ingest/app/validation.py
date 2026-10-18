@@ -1,8 +1,13 @@
 import csv
+import base64
+import binascii
 import io
 import json
 import math
+import struct
 import zipfile
+from .capture_archive import CaptureArchive
+from .bounded_json import JsonScanner, check_json_graph
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -13,6 +18,10 @@ CAPTURE_KINDS = ("raw_debug", "bug_report", "automatic_landing")
 DECISION_JOURNAL_FORMAT_VERSION = 1
 MAXIMUM_DECISION_JOURNAL_BYTES = 4 * 1024 * 1024
 MAXIMUM_DECISION_ENTRIES = 8192
+CONTROLLER_CATALOG_FORMAT_VERSION = 1
+MAXIMUM_CONTROLLER_CATALOG_BYTES = 8 * 1024 * 1024
+MAXIMUM_RESULT_BYTES = 64 * 1024 * 1024
+MAXIMUM_RESULT_RECORDS = 65536
 BOOLEAN_COLUMNS = {
     "on_ground",
     "motion_simulation",
@@ -204,6 +213,7 @@ def _validate_decision_journal(content: bytes, episode_id: int) -> None:
     if len(content) > MAXIMUM_DECISION_JOURNAL_BYTES:
         raise ValueError("decision journal is too large")
     try:
+        check_json_graph(content)
         journal = json.loads(content.decode("utf-8"), object_pairs_hook=_unique_json_object)
     except (ValueError, UnicodeDecodeError, RecursionError) as exc:
         raise ValueError("decision journal JSON is invalid") from exc
@@ -237,6 +247,137 @@ def _validate_decision_journal(content: bytes, episode_id: int) -> None:
             raise ValueError("decision journal entry is malformed")
 
 
+def _validate_controller_catalog(payload: bytes) -> None:
+    if not payload:  # Explicitly unavailable, distinct from unknown (-1).
+        return
+    if len(payload) < 72 or len(payload) > 16384:
+        raise ValueError("controller catalog length is invalid")
+    magic = struct.unpack_from("<I", payload)[0]
+    if magic == 0x3143434C:  # LCC1 durable descriptor, independent of live IPC.
+        generation, sequence, capture, revision, count = struct.unpack_from("<qqqqi", payload, 36)
+        if not any(payload[4:20]) or not any(payload[20:36]) or generation <= 0 or sequence <= 0 or capture < 0:
+            raise ValueError("controller catalog identity is invalid")
+        offset = 72
+    else:
+        if len(payload) < 146:
+            raise ValueError("controller catalog length is invalid")
+        magic, version, kind, length = struct.unpack_from("<IHHI", payload)
+        generation = struct.unpack_from("<q", payload, 44)[0]
+        connection, sequence, capture = struct.unpack_from("<qqq", payload, 53)
+        if (magic != 0x5452534C or version != 1 or kind != 12 or length != len(payload) - 134
+                or not any(payload[12:28]) or not any(payload[28:44]) or generation <= 0
+                or payload[52] != 2 or connection != 0 or sequence <= 0 or capture < 0
+                or struct.unpack_from("<q", payload, 93)[0] < 0
+                or payload[133] not in {0, 1, 2}
+                or (payload[133] == 0) != (not any(payload[117:133]))
+                or (any(payload[117:133]) and not any(payload[101:117]))):
+            raise ValueError("controller catalog identity is invalid")
+        revision, count = struct.unpack_from("<qi", payload, 134)
+        offset = 146
+    if revision <= 0 or not 0 <= count <= 8:
+        raise ValueError("controller catalog revision/count is invalid")
+    slots, devices = set(), set()
+    try:
+        for _ in range(count):
+            slot, device = struct.unpack_from("<ii", payload, offset)
+            offset += 8
+            if not 0 <= slot < 8 or not 0 <= device < 16 or slot in slots or device in devices:
+                raise ValueError("controller catalog slot/device is invalid")
+            slots.add(slot)
+            devices.add(device)
+            for _ in range(2):
+                size = struct.unpack_from("<i", payload, offset)[0]
+                offset += 4
+                if not 0 <= size <= 512 or offset + size > len(payload):
+                    raise ValueError("controller catalog text is invalid")
+                if "\0" in payload[offset:offset + size].decode("utf-8", errors="strict"):
+                    raise ValueError("controller catalog text contains NUL")
+                offset += size
+            axes = payload[offset]
+            offset += 1
+            if axes > 63:
+                raise ValueError("controller catalog axis mask is invalid")
+            for axis in range(6):
+                minimum, maximum = struct.unpack_from("<II", payload, offset)
+                offset += 8
+                if axes & (1 << axis) and minimum >= maximum:
+                    raise ValueError("controller catalog axis range is invalid")
+    except (struct.error, IndexError, UnicodeDecodeError) as exc:
+        raise ValueError("controller catalog is truncated or malformed") from exc
+    if offset != len(payload):
+        raise ValueError("controller catalog contains trailing bytes")
+
+
+def _validate_controller_timeline(content: bytes, samples: int) -> None:
+    if len(content) > MAXIMUM_CONTROLLER_CATALOG_BYTES:
+        raise ValueError("controller metadata is too large")
+    try:
+        check_json_graph(content)
+        timeline = json.loads(content.decode("utf-8"), object_pairs_hook=_unique_json_object)
+    except (ValueError, UnicodeDecodeError, RecursionError) as exc:
+        raise ValueError("controller metadata JSON is invalid") from exc
+    if (not isinstance(timeline, dict) or set(timeline) != {"version", "samples", "catalogs", "transitions"}
+            or type(timeline["version"]) is not int or timeline["version"] != CONTROLLER_CATALOG_FORMAT_VERSION
+            or type(timeline["samples"]) is not int or timeline["samples"] != samples
+            or not isinstance(timeline["catalogs"], list) or len(timeline["catalogs"]) > 4096
+            or not isinstance(timeline["transitions"], list) or not 1 <= len(timeline["transitions"]) <= samples):
+        raise ValueError("controller metadata envelope is malformed")
+    total = 0
+    for encoded in timeline["catalogs"]:
+        if not isinstance(encoded, str) or len(encoded) > 21848:
+            raise ValueError("controller catalog encoding is too large")
+        try:
+            payload = base64.b64decode(encoded, validate=True)
+        except (ValueError, binascii.Error) as exc:
+            raise ValueError("controller catalog base64 is invalid") from exc
+        total += len(payload)
+        if total > 4 * 1024 * 1024:
+            raise ValueError("controller catalog table is too large")
+        _validate_controller_catalog(payload)
+    previous = -1
+    for transition in timeline["transitions"]:
+        if (not isinstance(transition, list) or len(transition) != 2
+                or any(type(value) is not int for value in transition)
+                or not previous < transition[0] < samples
+                or (previous == -1 and transition[0] != 0)
+                or not -1 <= transition[1] < len(timeline["catalogs"])):
+            raise ValueError("controller catalog transition is invalid")
+        previous = transition[0]
+
+
+def _validate_source_timeline(content: bytes, samples: int) -> None:
+    # LSR1 is optional provenance, independent of the numeric CSV schema. Keep
+    # raw non-finite physics values; availability/identity must still be valid.
+    if not 1 <= samples <= 65536 or not 8 <= len(content) <= 8 + 65536 * 129:
+        raise ValueError("source metadata exceeds its bound")
+    if content[:4] != b"LSR1" or struct.unpack_from("<i", content, 4)[0] != samples:
+        raise ValueError("source metadata does not match telemetry rows")
+    position = 8
+    for _ in range(samples):
+        if position >= len(content) or content[position] not in (0, 1):
+            raise ValueError("source metadata presence tag is invalid")
+        present = content[position]
+        position += 1
+        if not present:
+            continue
+        if position + 128 > len(content):
+            raise ValueError("source metadata is truncated")
+        (version, sdk, reserved, worker, generation, connection, observed, frame, frequency,
+         availability, mask, slew, reason, request, exception, *pose) = struct.unpack_from("<BbH16sqqqqqBbbBII7d", content, position)
+        if (version != 1 or sdk not in (-1, 0, 1) or reserved != 0 or worker == bytes(16)
+                or generation <= 0 or connection <= 0 or observed < 0 or frame < 0 or frequency <= 0
+                or availability not in range(5) or reason not in range(8)):
+            raise ValueError("source metadata identity or state is invalid")
+        if availability == 2:
+            if mask not in range(8) or slew not in (0, 1) or reason != 0 or request == 0:
+                raise ValueError("available source observation is invalid")
+        elif mask != -1 or slew != -1 or reason == 0:
+            raise ValueError("unavailable source observation has fabricated values")
+        position += 128
+    if position != len(content):
+        raise ValueError("source metadata contains trailing bytes")
+
+
 def validate_capture(path: Path, expected_header: str, maximum_uncompressed: int, expected_schema: int = 5) -> CaptureFacts:
     try:
         return _validate_capture_archive(path, expected_header, maximum_uncompressed, expected_schema)
@@ -245,11 +386,11 @@ def validate_capture(path: Path, expected_header: str, maximum_uncompressed: int
 
 
 def _validate_capture_archive(path: Path, expected_header: str, maximum_uncompressed: int, expected_schema: int) -> CaptureFacts:
-    with zipfile.ZipFile(path, "r") as archive:
+    with CaptureArchive(path, maximum_uncompressed) as archive:
         infos = archive.infolist()
         names = [info.filename for info in infos]
-        allowed_entries = EXPECTED_BUG_REPORT_ENTRIES | {"decisions.json"}
-        if len(infos) not in {2, 3, 4} or len(set(names)) != len(names) or not set(names) <= allowed_entries:
+        allowed_entries = EXPECTED_BUG_REPORT_ENTRIES | {"decisions.json", "controller-catalogs.json", "source-state.bin"}
+        if len(infos) not in {2, 3, 4, 5, 6} or len(set(names)) != len(names) or not set(names) <= allowed_entries:
             raise ValueError("archive contains unexpected or duplicate entries")
         if "session.txt" not in names:
             raise ValueError("archive is missing session metadata")
@@ -265,12 +406,16 @@ def _validate_capture_archive(path: Path, expected_header: str, maximum_uncompre
                 raise ValueError("archive expands beyond the configured limit")
             if info.filename == "decisions.json" and info.file_size > MAXIMUM_DECISION_JOURNAL_BYTES:
                 raise ValueError("decision journal is too large")
+            if info.filename == "controller-catalogs.json" and info.file_size > MAXIMUM_CONTROLLER_CATALOG_BYTES:
+                raise ValueError("controller metadata is too large")
+            if info.filename == "landing-results.json" and info.file_size > MAXIMUM_RESULT_BYTES:
+                raise ValueError("bug report results are too large")
             maximum_ratio = 100 if info.filename == "landing-results.json" else 25
             # Repeated decisions legitimately compress very well. Their strict
             # 4 MiB expanded bound above limits allocation independently of ratio.
-            if info.compress_size == 0 or (
-                info.filename != "decisions.json" and info.file_size / info.compress_size > maximum_ratio
-            ):
+            if archive.format == 1 and (info.compress_size == 0 or (
+                info.filename not in {"decisions.json", "controller-catalogs.json", "source-state.bin"} and info.file_size / info.compress_size > maximum_ratio
+            )):
                 raise ValueError("archive compression ratio exceeds policy")
 
         session = _session_values(archive.read("session.txt"))
@@ -283,6 +428,10 @@ def _validate_capture_archive(path: Path, expected_header: str, maximum_uncompre
         )
         if is_landing_report and "decisions.json" in names:
             expected_entries = expected_entries | {"decisions.json"}
+        if "controller-catalogs.json" in names:
+            expected_entries = expected_entries | {"controller-catalogs.json"}
+        if "source-state.bin" in names:
+            expected_entries = expected_entries | {"source-state.bin"}
         if set(names) != expected_entries or len(names) != len(expected_entries):
             raise ValueError("archive entries do not match capture kind")
         if capture_kind not in CAPTURE_KINDS:
@@ -297,19 +446,23 @@ def _validate_capture_archive(path: Path, expected_header: str, maximum_uncompre
                 declared_landing_count = int(session["landing_count"])
                 declared_episode_id = int(session["episode_id"])
                 report_format = int(session["bug_report_format"])
-                results = json.loads(archive.read("landing-results.json").decode("utf-8"))
+                if not 0 <= declared_landing_count <= MAXIMUM_RESULT_RECORDS:
+                    raise ValueError("bug report landing count exceeds its bound")
+                with archive.open("landing-results.json") as result_stream:
+                    results = JsonScanner(result_stream).result_envelope(declared_landing_count)
             except (KeyError, ValueError, UnicodeDecodeError, RecursionError) as exc:
                 raise ValueError("bug report result metadata is invalid") from exc
-            result_format = results.get("format_version") if isinstance(results, dict) else None
-            records = results.get("records") if isinstance(results, dict) else None
+            result_format = results.get("format_version")
+            records = results.get("records")
             if (
                 report_format != 1
                 or result_format != 1
                 or results.get("episode_id") != declared_episode_id
-                or not isinstance(records, list)
+                or type(result_format) is not int
+                or type(results.get("episode_id")) is not int
+                or type(records) is not int
                 or (not records and capture_kind == "bug_report")
-                or declared_landing_count != len(records)
-                or any(not isinstance(record, dict) for record in records)
+                or declared_landing_count != records
             ):
                 raise ValueError("bug report results are malformed")
             if "decisions.json" in names:
@@ -405,6 +558,10 @@ def _validate_capture_archive(path: Path, expected_header: str, maximum_uncompre
             raise ValueError("session sample_count is missing or invalid") from exc
         if declared_count != sample_count:
             raise ValueError("session sample_count does not match telemetry.csv")
+        if "controller-catalogs.json" in names:
+            _validate_controller_timeline(archive.read("controller-catalogs.json"), sample_count)
+        if "source-state.bin" in names:
+            _validate_source_timeline(archive.read("source-state.bin"), sample_count)
         # Rejected automatic episodes are diagnostics, not claimed landing results.
         # Keep their raw evidence/journal available without admitting replay-like
         # telemetry as a calculated landing or a legacy/manual capture.

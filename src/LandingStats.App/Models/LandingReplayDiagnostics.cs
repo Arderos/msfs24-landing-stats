@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using LandingStats.App.Controls;
 using LandingStats.Core;
 
 namespace LandingStats.App.Models;
@@ -24,7 +23,10 @@ internal static class LandingReplayDiagnostics
         {
             var canonical = LandingReplayContacts.ForEpisode(records[i], contacts)
                 .FirstOrDefault(c => !c.IsSummaryOnly && c.Series.Count >= 2) ?? records[i];
-            if (!bindingOwners.TryGetValue(canonical.Id, out var owner)) bindingOwners[canonical.Id] = owner = i;
+            // Different catalogue windows may contain source generations absent
+            // from the first contact. Retain their explicitly scoped decisions.
+            var ownerKey = records[i].ControllerTimeline == null ? canonical.Id : records[i].Id;
+            if (!bindingOwners.TryGetValue(ownerKey, out var owner)) bindingOwners[ownerKey] = owner = i;
             owners[i] = owner;
         }
         // Cover every contact before spending the remaining shared budget on
@@ -78,9 +80,10 @@ internal static class LandingReplayDiagnostics
             ReplayControlInputs.Resolve(record, contacts, replay);
             if (!LandingReplayTrack.TryCreate(record, out var track, replay)) return replay.Snapshot();
             LandingReplayRunwayOffset.TryCreate(record, track!, out _, replay);
-            var offset = ReplayGearRegistration.VisualOffset(track!, replay);
-            var surface = LandingReplaySurface.Build(track!, record.RunwayGeometry, replay);
-            var gear = new ReplayGearRegistration(new ReplayLandingGear(), track!, surface, offset, replay,
+            var offset = ReplayGearRegistrationModel.VisualOffset(track!, replay);
+            var surface = ReplaySurfaceGeometry.Build(track!, record.RunwayGeometry, replay);
+            if (record.RunwayGeometry != null) RunwayMarkingModel.Build(record.RunwayGeometry, replay);
+            var gear = new ReplayGearRegistrationModel(new ReplayGearState(), track!, surface, offset, replay,
                 LandingReplayContacts.ContactTimes(record, track!, contacts, replay));
             foreach (var frame in track!.Frames)
                 if (track.TrySample(frame.TimeSeconds, out var pose)) gear.Update(pose);

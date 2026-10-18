@@ -146,23 +146,20 @@ internal sealed class GoogleDriveSyncStateRepository
 
     private GoogleDriveSyncState LoadCore()
     {
-        if (!File.Exists(_path))
-        {
-            return new GoogleDriveSyncState();
-        }
         try
         {
             using var input = File.OpenRead(_path);
             var value = new DataContractJsonSerializer(typeof(GoogleDriveSyncState))
                 .ReadObject(input) as GoogleDriveSyncState;
-            value ??= new GoogleDriveSyncState();
+            if (value == null) throw new SerializationException("Google Drive sync state is empty.");
             value.Normalize();
             return value;
         }
-        catch (Exception exception) when (
-            exception is IOException ||
-            exception is UnauthorizedAccessException ||
-            exception is SerializationException)
+        catch (FileNotFoundException)
+        {
+            return new GoogleDriveSyncState();
+        }
+        catch (DirectoryNotFoundException)
         {
             return new GoogleDriveSyncState();
         }
@@ -316,31 +313,6 @@ internal sealed class GoogleDriveSyncState
         {
             KnownRootIds.Add(RootFolderId!);
         }
-    }
-
-    public void ResetForRoot(string rootFolderId, IReadOnlyCollection<string>? activeRootIds = null)
-    {
-        if (string.IsNullOrWhiteSpace(rootFolderId))
-        {
-            throw new ArgumentException("A Google Drive root folder id is required.", nameof(rootFolderId));
-        }
-
-        if (!string.IsNullOrWhiteSpace(RootFolderId))
-        {
-            PendingDeletesByRoot[RootFolderId!] = PendingDeletes.ToList();
-        }
-
-        RootFolderId = rootFolderId;
-        Landings.Clear();
-        PendingDeletes = PendingDeletesByRoot.TryGetValue(rootFolderId, out var pendingForRoot)
-            ? pendingForRoot.ToList()
-            : new List<string>();
-        KnownRootIds = (activeRootIds ?? new[] { rootFolderId })
-            .Where(value => !string.IsNullOrWhiteSpace(value))
-            .Distinct(StringComparer.Ordinal)
-            .ToList();
-        SettingsFileId = null;
-        LastSettingsHash = null;
     }
 
     public void SwitchAccount(

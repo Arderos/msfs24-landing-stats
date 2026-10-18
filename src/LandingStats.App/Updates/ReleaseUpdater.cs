@@ -61,8 +61,13 @@ internal sealed class ReleaseUpdater : IDisposable
         _client.DefaultRequestHeaders.UserAgent.ParseAdd("MSFS-Landing-Stats-Updater/3");
     }
 
-    public async Task<ReleaseUpdateResult> CheckAndInstallAsync(Version currentVersion, CancellationToken cancellationToken)
+    public async Task<ReleaseUpdateResult> CheckAndInstallAsync(Version currentVersion, CancellationToken cancellationToken, Func<bool>? canInstall = null)
     {
+        if (Environment.GetEnvironmentVariable("MSFS_LANDING_STATS_SKIP_UPDATE_ONCE") == "1")
+        {
+            Environment.SetEnvironmentVariable("MSFS_LANDING_STATS_SKIP_UPDATE_ONCE", null);
+            return new ReleaseUpdateResult(ReleaseUpdateState.Unavailable, "Update.MetadataUnavailable");
+        }
         string? updateRoot = null;
         var updaterStarted = false;
         try
@@ -107,8 +112,20 @@ internal sealed class ReleaseUpdater : IDisposable
                 cancellationToken).ConfigureAwait(false);
             VerifyPortableExecutable(updaterPath);
 
-            var processId = Process.GetCurrentProcess().Id;
             var readyEventName = "Local\\MSFSLandingStatsUpdate-" + Guid.NewGuid().ToString("N");
+            if (canInstall != null && !canInstall()) return new ReleaseUpdateResult(ReleaseUpdateState.Unavailable, "Update.DeferredUnsafe");
+            var guardian = App.Guardian;
+            if (guardian != null)
+            {
+                var request = new Runtime.GuardianUpdateRequest(updaterPath, targetPath,
+                    $"{manifest.Version.Major}.{manifest.Version.Minor}.{manifest.Version.Build}", readyEventName,
+                    Protocol.ChannelManifestName, manifest.UpdaterSize, manifest.UpdaterSha256);
+                if (!await guardian.UpdateAsync(request, cancellationToken).ConfigureAwait(false))
+                    throw new IOException("The application guardian rejected the verified updater handoff");
+            }
+            else
+            {
+            var processId = Process.GetCurrentProcess().Id;
             var arguments = string.Join(" ", new[]
             {
                 "--apply",
@@ -130,6 +147,8 @@ internal sealed class ReleaseUpdater : IDisposable
                 WorkingDirectory = updateRoot,
                 Arguments = arguments,
                 UseShellExecute = false,
+                CreateNoWindow = true,
+                WindowStyle = ProcessWindowStyle.Normal,
             });
             if (started == null)
             {
@@ -146,6 +165,7 @@ internal sealed class ReleaseUpdater : IDisposable
                     // The helper may have exited while the timeout was being handled.
                 }
                 throw new TimeoutException("The verified updater did not confirm the application identity");
+            }
             }
 
             updaterStarted = true;

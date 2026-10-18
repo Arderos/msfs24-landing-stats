@@ -29,7 +29,7 @@ behind them:
 | G-load | One value with an unspecified sampling window | An adaptive window isolates each contact's load response; SMOOTH / NORMAL / FIRM uses its recorded G peak, not descent rate |
 | Evidence | Summary values only | Synchronized black-box traces for motion, loads, controls, power, attitude, and gear |
 | Data quality | A number is shown even when its source is ambiguous | Extrapolation, fallback, latch verification, and unavailable data are identified explicitly |
-| Ownership | Often cloud-backed | Local, portable landing records with optional backup to the user's own Google Drive; new diagnostic reports are created only after an explicit **Report bug** action |
+| Ownership | Often cloud-backed | Local, portable landing records with optional backup to the user's own Google Drive; automatic diagnostic reporting is enabled by default and can be disabled in Settings, with manual **Report bug** submission available when disabled |
 
 The result is not a landing score or a structural inspection verdict. It is an
 engineering view of what the simulator published, how the result was derived,
@@ -96,10 +96,17 @@ To build locally:
 .\build-app.ps1 -MsfsSdkRoot "D:\MSFS 2024 SDK"
 ```
 
-This contributor build leaves Google Drive sign-in unconfigured. Official builds
-inject `GOOGLE_OAUTH_CLIENT_ID` and `GOOGLE_OAUTH_CLIENT_SECRET` from GitHub
-Actions Secrets and use `-RequireGoogleOAuthCredentials` so a release cannot be
-published accidentally without Drive support. Do not commit either value.
+Normal packages require `GOOGLE_OAUTH_CLIENT_ID` and `GOOGLE_OAUTH_CLIENT_SECRET`
+in the build environment. Official CI builds obtain them from GitHub Actions
+Secrets. The build validates both inputs and the metadata in the actual
+`LandingStats.Delivery.dll` before packaging or signing. Do not commit either
+value. Existing `-RequireGoogleOAuthCredentials` calls remain supported.
+
+For an unsigned developer/test package without Google Drive sign-in, opt out
+explicitly with `-AllowMissingGoogleOAuthCredentials`. Pull-request CI uses this
+option because it has no credentials. This option cannot be used for a signed
+package; passing `-RequireGoogleOAuthCredentials:$false` alone does not disable
+the normal-package guard.
 
 The resulting user download and standalone update helper are written to:
 
@@ -197,5 +204,21 @@ earlier schema v4/v5 captures. The v5/v6 receiver must be deployed before releas
 the v6 client; older queued captures retain their original signed schema. Landing
 details use the documented [columnar v7 format](docs/format-v7.md), while v1-v6
 record files remain readable.
+
+## Local integrations
+
+External Windows applications can read landing results, historical telemetry,
+aircraft and runway information, and component status through the optional local
+API. Subscriptions deliver complete landing results before history/archive
+compression and can resume after a disconnect.
+
+Enable **Settings → Local API → Allow local applications to read landing data**.
+It is off by default, applies only to this computer, and can be switched off
+without restarting Landing Stats. Access is read-only and limited to local
+applications running as the same Windows user.
+
+See the [API protocol and data reference](docs/integration-api.md) and the
+[standalone Python client](docs/examples/integration_client.py) for discovery,
+queries, subscriptions, cursor recovery, limits and data availability.
 
 See [CHANGELOG.md](CHANGELOG.md) for release history.

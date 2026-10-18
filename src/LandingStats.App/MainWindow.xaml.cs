@@ -8,17 +8,16 @@ using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
-using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Navigation;
 using System.Windows.Shapes;
 using LandingStats.App.Controls;
 using LandingStats.App.GoogleDrive;
 using LandingStats.App.Models;
+using LandingStats.App.Runtime;
 using LandingStats.App.Settings;
 using LandingStats.App.Storage;
 using LandingStats.App.Telemetry;
-using LandingStats.App.TelemetryUpload;
 using LandingStats.App.Updates;
 using LandingStats.Core;
 
@@ -26,45 +25,27 @@ namespace LandingStats.App;
 
 public partial class MainWindow : Window
 {
+    private readonly ApplicationServices _services;
     private readonly ApplicationSettingsRepository _settingsRepository;
     private ApplicationSettings _settings = new ApplicationSettings();
-    private readonly SimulatorAutoStartManager _autoStartManager = new SimulatorAutoStartManager();
-    private readonly LandingRepository _repository = new LandingRepository();
-    private readonly RawCaptureRepository _rawCaptureRepository = new RawCaptureRepository(null, false);
-    private readonly BugReportRepository _bugReportRepository;
-    private readonly LastLandingBugReportBuffer _lastLandingBugReport = new LastLandingBugReportBuffer();
-    private readonly AirportFacilityRepository _airportFacilityRepository = new AirportFacilityRepository();
-    private readonly FlightModelGeometryResolver _flightModelGeometryResolver;
-    private readonly ReleaseUpdater _releaseUpdater = new ReleaseUpdater();
-    private readonly GoogleOAuthTokenStore _googleDriveTokenStore = new GoogleOAuthTokenStore();
-    private readonly GoogleOAuthClient _googleOAuthClient;
-    private readonly GoogleDriveApiClient _googleDriveApiClient;
+    private readonly SimulatorAutoStartManager _autoStartManager;
+    private readonly LandingRepository _repository;
+    private readonly RawCaptureRepository _rawCaptureRepository;
+    private readonly AirportFacilityRepository _airportFacilityRepository;
+    private readonly ReleaseUpdater _releaseUpdater;
+    private readonly GoogleOAuthTokenStore _googleDriveTokenStore;
+    private readonly DeferredGoogleDriveApi _googleDriveApiClient;
     private readonly GoogleDriveBackupService _googleDriveBackupService;
     private readonly CancellationTokenSource _lifetimeCancellation = new CancellationTokenSource();
     private CancellationTokenSource? _googleDriveAuthorizationCancellation;
-    private readonly object _episodeProcessingGate = new object();
-    private readonly object _landingRepositoryGate = new object();
-    private readonly object _airportFacilityRepositoryGate = new object();
-    private readonly object _airportMetadataPersistenceGate = new object();
-    private readonly object _telemetryUploadClientGate = new object();
-    private readonly object _bugReportRetryGate = new object();
+    private readonly object _landingRepositoryGate;
+    private readonly object _airportFacilityRepositoryGate;
     private readonly object _bugReportPersistenceGate = new object();
-    private Task _episodePersistenceTask = Task.CompletedTask;
-    private Task _airportMetadataPersistenceTask = Task.CompletedTask;
-    private Task _bugReportRetryTask = Task.CompletedTask;
-    private bool _bugReportRetryRunning;
-    private bool _bugReportRetryRequested;
     private Task _bugReportPersistenceTask = Task.CompletedTask;
     private Task _googleDriveSyncTask = Task.CompletedTask;
-    private Task _googleDriveDeleteTask = Task.CompletedTask;
-    private TelemetryUploadClient? _telemetryUploadClient;
     private IReadOnlyList<LandingRecord> _landings = Array.Empty<LandingRecord>();
     private IReadOnlyList<AirportFacility> _airportFacilities = Array.Empty<AirportFacility>();
     private readonly Dictionary<string, LandingRecord> _loadedDetails = new Dictionary<string, LandingRecord>(StringComparer.Ordinal);
-    private long _runwayRecordsEpisodeId;
-    private IReadOnlyList<LandingRecord> _runwayRecords = Array.Empty<LandingRecord>();
-    private HwndSource? _messageSource;
-    private SimConnectLandingRecorder? _recorder;
     private LandingChart[] _charts = Array.Empty<LandingChart>();
     private bool _showFullApproach;
     private bool _showReplay;
@@ -95,34 +76,35 @@ public partial class MainWindow : Window
     private DateTime? _lastGoogleDriveSyncUtc;
     private string? _googleDriveErrorDetail;
     private string? _googleDriveWarningDetail;
+    private CloudSyncSummary? _googleDriveWarningSummary;
+    private string? _googleDriveErrorKey;
+    private ReleaseUpdateResult? _releaseUpdateResult;
+    private string _versionAuthorBase = string.Empty;
     private bool _isClosed;
+    private StartupTimeline? _startupTimeline;
+    private int _firstDetailPresented;
 
-    private bool GoogleDriveBusy => _googleDriveAuthorizing || _googleDrivePendingOperations > 0;
+    private bool _googleDriveDisconnecting;
+    private bool GoogleDriveBusy => _googleDriveAuthorizing || _googleDriveDisconnecting || _googleDrivePendingOperations > 0;
 
-    public MainWindow() : this(null)
+    public MainWindow() : this(new ApplicationServices()) { }
+
+    internal MainWindow(ApplicationServices services)
     {
-    }
-
-    internal MainWindow(FlightModelGeometryResolver? geometryResolver)
-    {
-        _flightModelGeometryResolver = geometryResolver ?? new FlightModelGeometryResolver();
-        _bugReportRepository = new BugReportRepository(_rawCaptureRepository.RootPath);
-        _settingsRepository = new ApplicationSettingsRepository();
-        _googleOAuthClient = new GoogleOAuthClient(_googleDriveTokenStore);
-        _googleDriveApiClient = new GoogleDriveApiClient(_googleOAuthClient);
-        _googleDriveBackupService = new GoogleDriveBackupService(
-            _googleDriveApiClient,
-            _repository,
-            _landingRepositoryGate,
-            new GoogleDriveSyncStateRepository(),
-            ReadCloudSettingsAsync,
-            ApplyCloudSettingsAsync);
+        _services = services;
+        _settingsRepository = services.SettingsRepository; _autoStartManager = services.AutoStart;
+        _repository = services.Landings; _rawCaptureRepository = services.LegacyRaw; _airportFacilityRepository = services.Airports;
+        _releaseUpdater = services.Updater; _googleDriveTokenStore = services.Tokens;
+        _googleDriveApiClient = services.CloudBinding; _googleDriveBackupService = services.Backup;
+        _landingRepositoryGate = services.LandingGate; _airportFacilityRepositoryGate = services.AirportGate;
+        services.Settings.Changed += OnCommittedSettingsChanged;
         LocalizationManager.Apply(_settings.Language);
         InitializeComponent();
         var assembly = typeof(MainWindow).Assembly;
         var version = assembly.GetName().Version;
         var company = assembly.GetCustomAttribute<AssemblyCompanyAttribute>()?.Company ?? "Evgeniy Zaytsev";
         VersionAuthorRun.Text = $"v{version?.Major ?? 0}.{version?.Minor ?? 0}.{version?.Build ?? 0} · {company}";
+        _versionAuthorBase = VersionAuthorRun.Text;
         _charts = new[] { MainChart, MiniGChart, MiniPowerChart, MiniGearChart };
         ReplayView.TimeChanged += OnChartHoverTimeChanged;
         foreach (var chart in _charts)
@@ -140,7 +122,6 @@ public partial class MainWindow : Window
         UpdateMainLegend(LandingChartMode.VerticalSpeed);
         RefreshHistoryLoadingPresentation();
 
-        SourceInitialized += OnSourceInitialized;
         Loaded += OnWindowLoaded;
         Closing += OnWindowClosing;
         Closed += OnWindowClosed;
@@ -160,8 +141,8 @@ public partial class MainWindow : Window
         {
             if (!_isClosed)
             {
-                SetConnectionWarning("Recorder.AnalysisFailedFormat", exception.Message);
-                if (!_startupReady)
+                SetConnectionWarning("Runtime.StartFailedFormat", exception.Message);
+                if (!_startupReady && _historyLoading)
                 {
                     _historyLoading = false;
                     _historyLoadError = exception.Message;
@@ -173,43 +154,42 @@ public partial class MainWindow : Window
 
     private async Task InitializeWindowCoreAsync()
     {
+        _startupTimeline = new StartupTimeline();
+        _startupTimeline.Mark("window_loaded");
         ReleaseUpdater.BeginCompletedUpdateCleanup(Environment.GetCommandLineArgs());
         var initialState = LoadInitialStateAsync();
         _initializationPersistenceTask = initialState;
+        await InitializeWindowContentAsync(async () =>
+        {
+            var loaded = await initialState;
+            _startupTimeline.Mark("initial_state_ready");
+            if (_isClosed) return;
+            _settings = loaded.Settings;
+            ApplyTelemetryPreference(_settings.AutomaticTelemetryUpload);
+            _settingsPersistedAndReadable = loaded.SettingsReadable;
+            LocalizationManager.Apply(_settings.Language);
+            // Local settings remain available even while engine startup waits or fails.
+            _startupReady = true;
+            SettingsButton.IsEnabled = true;
+            RefreshLocalizedPresentation();
+            _runtimeInitializationTask = TryStartRuntimeAsync();
+        });
+        if (_isClosed) return;
         var state = await initialState;
-        if (_isClosed) return;
-        _settings = state.Settings;
-        ApplyTelemetryPreference(_settings.AutomaticTelemetryUpload);
-        _settingsPersistedAndReadable = state.SettingsReadable;
-        LocalizationManager.Apply(_settings.Language);
-        await InitializeHistoryAsync();
-        if (_isClosed) return;
         _startupReady = true;
+        _startupTimeline.Mark("startup_ready");
         SettingsButton.IsEnabled = true;
         RefreshLocalizedPresentation();
         if (state.PendingUploads)
         {
             StartPendingBugReportRetry();
         }
-        var version = typeof(MainWindow).Assembly.GetName().Version ?? new Version(0, 0, 0);
-        var result = await _releaseUpdater.CheckAndInstallAsync(version, _lifetimeCancellation.Token);
-        if (_isClosed) return;
-        VersionAuthorText.ToolTip = result.Path == null ? result.Message : result.Message + "\n" + result.Path;
-        if (result.State == ReleaseUpdateState.UpdateStarted && result.Version != null)
-        {
-            VersionAuthorRun.Text += LocalizationManager.Format("Update.StatusUpdatingFormat", result.Version);
-            VersionAuthorText.Foreground = Brush("#8FD6A8");
-            Close();
-            return;
-        }
-        else if (result.State == ReleaseUpdateState.Rejected)
-        {
-            VersionAuthorRun.Text += LocalizationManager.Text("Update.StatusRejected");
-            VersionAuthorText.Foreground = Brush("#FF8A6A");
-        }
+        var updateCheck = CheckForUpdateAsync();
+        if (ShouldRestoreSettingsBeforeOnboarding(_googleDriveTokenStore.HasRefreshToken(), _settingsPersistedAndReadable))
+            await _runtimeInitializationTask;
 
         Task googleDriveStartupSync = Task.CompletedTask;
-        if (_googleOAuthClient.IsSignedIn)
+        if (_runtime?.Ready == true && _googleDriveTokenStore.HasRefreshToken())
         {
             googleDriveStartupSync = RunGoogleDriveSyncAsync(false);
             _googleDriveSyncTask = googleDriveStartupSync;
@@ -218,7 +198,7 @@ public partial class MainWindow : Window
         // If settings were deleted or unreadable, let an existing Drive backup
         // restore them before onboarding can persist fallback defaults.
         if (ShouldRestoreSettingsBeforeOnboarding(
-                _googleOAuthClient.IsSignedIn,
+                _googleDriveTokenStore.HasRefreshToken(),
                 _settingsPersistedAndReadable))
         {
             await googleDriveStartupSync;
@@ -228,9 +208,10 @@ public partial class MainWindow : Window
         if (_isClosed) return;
         await InitializeAutoStartSettingAsync();
         if (_isClosed) return;
-        _autoStartInitialized = true;
+        _autoStartInitialized = true; _services.Settings.AutoStartInitialized = true;
         ShowGoogleDrivePromptIfNeeded();
         await googleDriveStartupSync;
+        await updateCheck;
     }
 
     private void OnHistorySelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs eventArgs)
@@ -253,6 +234,7 @@ public partial class MainWindow : Window
 
     private void PresentRecord(LandingRecord detail, IReadOnlyList<LandingRecord> replayContacts)
     {
+        var sameRecord = DataContext is LandingRecord currentRecord && currentRecord.Id == detail.Id;
         if (ReferenceEquals(DataContext, detail))
         {
             // Airport resolution mutates cached details after they have already been bound.
@@ -269,6 +251,8 @@ public partial class MainWindow : Window
         MiniPowerChart.Record = detail;
         MiniGearChart.Record = detail;
         Timeline.Record = detail;
+        if (!sameRecord)
+        {
         MiniGChart.SetIsolatedSeries(0);
         MiniPowerChart.SetIsolatedSeries(detail.Engines.Count > 0 ? 0 : (int?)null);
         _primaryGearSeriesIndex = PrimaryGearSeriesIndex(detail);
@@ -278,8 +262,9 @@ public partial class MainWindow : Window
         UpdateMainLegend(MainChart.Mode);
         UpdateChartDescription(MainChart.Mode);
         ApplyZoom(_showFullApproach ? null : -6, _showFullApproach ? null : 8);
-        UpdateLaneReadouts(detail, 0);
-        RefreshRunwayLoadingPresentation();
+        }
+        UpdateLaneReadouts(detail, sameRecord ? ReplayView.CurrentTimeSeconds : 0);
+        if (Interlocked.Exchange(ref _firstDetailPresented, 1) == 0) _startupTimeline?.Mark("first_detail_presented");
     }
 
     private void OnChartHoverTimeChanged(object? sender, LandingChartHoverEventArgs eventArgs)
@@ -331,11 +316,6 @@ public partial class MainWindow : Window
         }
     }
 
-    private void OnResetZoomClick(object sender, RoutedEventArgs eventArgs)
-    {
-        _showFullApproach = true;
-        ApplyZoom(null, null);
-    }
 
     private void OnChartWindowClick(object sender, RoutedEventArgs eventArgs)
     {
@@ -448,7 +428,6 @@ public partial class MainWindow : Window
         MiniPowerChart.Record = null;
         MiniGearChart.Record = null;
         Timeline.Record = null;
-        RefreshRunwayLoadingPresentation();
     }
 
     private void OnDeleteLandingClick(object sender, RoutedEventArgs eventArgs)
@@ -519,7 +498,7 @@ public partial class MainWindow : Window
             preferredSelectionId = nextIndex >= 0 ? remainingVisible[nextIndex].Id : null;
         }
 
-        var signedIn = _googleOAuthClient.IsSignedIn;
+        var signedIn = _googleDriveTokenStore.HasRefreshToken();
         Exception? queueError = null;
         try
         {
@@ -530,24 +509,8 @@ public partial class MainWindow : Window
             // cannot republish the record while its deletion waits for storage.
             _locallyRemovedHistoryIds.Add(record.Id);
             ApplySessionFilter(preferredSelectionId);
-            var deletion = Task.Run(async () =>
-            {
-                _googleDriveBackupService.DeleteLandingLocally(record.Id);
-                try
-                {
-                    // Accepted local deletion metadata is durable work, not
-                    // network activity; finish it even if the window is closing.
-                    await _googleDriveBackupService.QueueLandingDeletionAsync(record.Id, CancellationToken.None)
-                        .ConfigureAwait(false);
-                    return (Exception?)null;
-                }
-                catch (Exception exception)
-                {
-                    return exception;
-                }
-            });
+            var deletion = _services.DeleteLandingAsync(record.Id);
             _localDeletionTask = deletion;
-            _googleDriveDeleteTask = deletion;
             queueError = await deletion;
             if (_isClosed || _historyStopped) return;
             _loadedDetails.Remove(record.Id);
@@ -586,7 +549,7 @@ public partial class MainWindow : Window
         }
         catch (Exception exception)
         {
-            _googleDriveErrorDetail = exception.Message;
+            _googleDriveErrorDetail = exception.Message; _googleDriveErrorKey = null;
             RefreshGoogleDrivePresentation();
         }
         finally
@@ -678,17 +641,17 @@ public partial class MainWindow : Window
             snapshot.Language = preference;
             try
             {
-                await SettingsPersistence.SaveAsync(_settingsRepository, snapshot);
+                await _services.Settings.SaveAsync(_settings, snapshot);
             }
             catch (Exception exception)
             {
                 error = exception.Message;
                 return false;
             }
-            _settings.CopyFrom(snapshot);
+            _settings.CopyFrom(_services.Settings.Snapshot.Settings);
             if (!_isClosed)
             {
-                LocalizationManager.Apply(preference);
+                LocalizationManager.Apply(_settings.Language);
                 RefreshLocalizedPresentation();
             }
             return true;
@@ -768,7 +731,7 @@ public partial class MainWindow : Window
             if (!_settings.StartWithSimulator.HasValue)
             {
                 _autoStartErrorDetail = _autoStartLegacyCleanupError;
-                _autoStartInitialized = true;
+                _autoStartInitialized = true; _services.Settings.AutoStartInitialized = true;
                 return true;
             }
             var enabled = _settings.StartWithSimulator.Value;
@@ -782,7 +745,7 @@ public partial class MainWindow : Window
             {
                 _autoStartErrorDetail = CombineAutoStartErrors(_autoStartLegacyCleanupError, exception.Message);
             }
-            _autoStartInitialized = true;
+            _autoStartInitialized = true; _services.Settings.AutoStartInitialized = true;
             return true;
         });
         if (!_isClosed && !_settings.StartWithSimulator.HasValue)
@@ -828,8 +791,8 @@ public partial class MainWindow : Window
             AutoStartOperationResult? result = null;
             try
             {
-                await SettingsPersistence.SaveAsync(
-                    _settingsRepository, snapshot,
+                await _services.Settings.SaveAsync(
+                    _settings, snapshot,
                     () => result = _autoStartManager.SetEnabled(enabled),
                     () => _autoStartManager.SetEnabled(previous == true));
             }
@@ -838,7 +801,7 @@ public partial class MainWindow : Window
                 _autoStartErrorDetail = CombineAutoStartErrors(_autoStartLegacyCleanupError, exception.Message);
                 return false;
             }
-            _settings.CopyFrom(snapshot);
+            _settings.CopyFrom(_services.Settings.Snapshot.Settings);
             _autoStartProfileCount = result!.ConfigurationPaths.Count;
             _autoStartErrorDetail = _autoStartLegacyCleanupError;
             return true;
@@ -934,6 +897,7 @@ public partial class MainWindow : Window
         SettingsFileText.ToolTip = _settingsRepository.Path;
         SetAutoStartSelection(_settings.StartWithSimulator == true);
         RefreshTelemetrySettingsPresentation();
+        RefreshIntegrationApiSettingsPresentation();
         SettingsAutoStartStateText.Text = !_autoStartInitialized
             ? (showLoading ? LocalizationManager.Text("Settings.Loading") : string.Empty)
             : _settings.StartWithSimulator == true
@@ -956,11 +920,11 @@ public partial class MainWindow : Window
             return;
         }
 
-        if (!_googleOAuthClient.IsSignedIn)
+        if (!_googleDriveTokenStore.HasRefreshToken())
         {
             _googleDriveAuthorizing = true;
-            _googleDriveErrorDetail = null;
-            _googleDriveWarningDetail = null;
+            _googleDriveErrorDetail = null; _googleDriveErrorKey = null;
+            _googleDriveWarningDetail = null; _googleDriveWarningSummary = null;
             RefreshGoogleDrivePresentation();
             using var authorizationCancellation = CancellationTokenSource.CreateLinkedTokenSource(
                 _lifetimeCancellation.Token);
@@ -969,11 +933,8 @@ public partial class MainWindow : Window
             authorizationCancellation.CancelAfter(TimeSpan.FromMinutes(3));
             try
             {
-                await RunSettingsOperationAsync(async () =>
-                {
-                    await Task.Run(() => _googleOAuthClient.SignInAsync(authorizationCancellation.Token));
-                    return true;
-                });
+                var runtime = _runtime ?? throw new InvalidOperationException("Cloud runtime is not ready.");
+                await runtime.SignInCloudAsync(authorizationCancellation.Token);
             }
             catch (OperationCanceledException) when (_lifetimeCancellation.IsCancellationRequested)
             {
@@ -983,13 +944,14 @@ public partial class MainWindow : Window
             {
                 if (!_googleDriveAuthorizationCanceledByUser)
                 {
-                    _googleDriveErrorDetail = LocalizationManager.Text("Settings.DriveAuthorizationTimeout");
+                    _googleDriveErrorKey = "Settings.DriveAuthorizationTimeout";
+                    _googleDriveErrorDetail = LocalizationManager.Text(_googleDriveErrorKey);
                 }
                 return;
             }
             catch (Exception exception)
             {
-                _googleDriveErrorDetail = exception.Message;
+                _googleDriveErrorDetail = exception.Message; _googleDriveErrorKey = null;
                 return;
             }
             finally
@@ -1004,7 +966,7 @@ public partial class MainWindow : Window
         if (_isClosed) return;
         _googleDriveSyncTask = RunGoogleDriveSyncAsync(true);
         await _googleDriveSyncTask;
-        if (!_isClosed && _googleOAuthClient.IsSignedIn)
+        if (!_isClosed && _googleDriveTokenStore.HasRefreshToken())
         {
             await TrySaveGoogleDrivePromptAnsweredAsync(false);
         }
@@ -1045,7 +1007,7 @@ public partial class MainWindow : Window
     private void ShowGoogleDrivePromptIfNeeded()
     {
         if (_isClosed || _settingsOperations.IsStopping) return;
-        var signedIn = _googleOAuthClient.IsSignedIn;
+        var signedIn = _googleDriveTokenStore.HasRefreshToken();
         if (signedIn && !_settings.GoogleDrivePromptAnswered)
         {
             // The save itself joins PendingSettingsOperations synchronously.
@@ -1094,14 +1056,14 @@ public partial class MainWindow : Window
             snapshot.GoogleDrivePromptAnswered = true;
             try
             {
-                await SettingsPersistence.SaveAsync(_settingsRepository, snapshot);
+                await _services.Settings.SaveAsync(_settings, snapshot);
             }
             catch (Exception exception)
             {
                 error = exception.Message;
                 return false;
             }
-            _settings.CopyFrom(snapshot);
+            _settings.CopyFrom(_services.Settings.Snapshot.Settings);
             return true;
         });
         if (!saved && showPromptError && error != null && !_isClosed)
@@ -1134,31 +1096,41 @@ public partial class MainWindow : Window
             _googleDriveAuthorizationCancellation?.Cancel();
             return;
         }
-        if (GoogleDriveBusy || SettingsBusy || _settingsOperations.IsStopping || _isClosed)
+        if (_googleDriveDisconnecting || SettingsBusy || _settingsOperations.IsStopping || _isClosed)
         {
             return;
         }
-        await RunSettingsOperationAsync(async () =>
+        _googleDriveDisconnecting = true; RefreshGoogleDrivePresentation();
+        try
         {
-            try
+            // Drain the sync scope before entering the settings queue: that scope
+            // may itself be waiting for an already accepted settings mutation.
+            if (_runtime != null) await _runtime.SignOutCloudAsync(_lifetimeCancellation.Token);
+            await RunSettingsOperationAsync(async () =>
             {
-                await Task.Run(() => _googleOAuthClient.SignOut());
-                _lastGoogleDriveSyncUtc = null;
-                _googleDriveErrorDetail = null;
-                _googleDriveWarningDetail = null;
-                return true;
-            }
-            catch (Exception exception)
-            {
-                _googleDriveErrorDetail = exception.Message;
-                return false;
-            }
-        });
+                try
+                {
+                    await Task.Run(() => _googleDriveTokenStore.Clear());
+                    _lastGoogleDriveSyncUtc = null;
+                    _runtimeCloudPhase = CloudSyncPhase.Paused;
+                    _googleDriveErrorDetail = null; _googleDriveErrorKey = null;
+                    _googleDriveWarningDetail = null; _googleDriveWarningSummary = null;
+                    return true;
+                }
+                catch (Exception exception)
+                {
+                    _googleDriveErrorDetail = exception.Message; _googleDriveErrorKey = null;
+                    return false;
+                }
+            });
+        }
+        catch (Exception exception) { _googleDriveErrorDetail = exception.Message; _googleDriveErrorKey = null; }
+        finally { _googleDriveDisconnecting = false; if (!_isClosed) RefreshGoogleDrivePresentation(); }
     }
 
     private void QueueGoogleDriveSync()
     {
-        if (_isClosed || !_startupReady || _lifetimeCancellation.IsCancellationRequested || !_googleOAuthClient.IsSignedIn)
+        if (_isClosed || !_startupReady || _lifetimeCancellation.IsCancellationRequested || !_googleDriveTokenStore.HasRefreshToken())
         {
             return;
         }
@@ -1167,7 +1139,7 @@ public partial class MainWindow : Window
 
     private async Task RunGoogleDriveSyncAsync(bool userInitiated)
     {
-        if (_isClosed || !_startupReady || _lifetimeCancellation.IsCancellationRequested || !_googleOAuthClient.IsSignedIn)
+        if (_isClosed || !_startupReady || _lifetimeCancellation.IsCancellationRequested || !_googleDriveTokenStore.HasRefreshToken())
         {
             return;
         }
@@ -1175,68 +1147,42 @@ public partial class MainWindow : Window
         _googleDrivePendingOperations++;
         if (_googleDrivePendingOperations == 1)
         {
-            _googleDriveErrorDetail = null;
-            _googleDriveWarningDetail = null;
+            _googleDriveErrorDetail = null; _googleDriveErrorKey = null;
+            _googleDriveWarningDetail = null; _googleDriveWarningSummary = null;
             RefreshGoogleDrivePresentation();
         }
         try
         {
             var selectedId = (LandingHistoryList.SelectedItem as LandingRecord)?.Id;
-            // SyncAsync loads its local state before the first network await.
-            // Start the whole operation off-dispatcher, including that prefix.
-            var cancellationToken = _lifetimeCancellation.Token;
-            var result = await Task.Run(() => _googleDriveBackupService.SyncAsync(cancellationToken));
+            var runtime = Volatile.Read(ref _runtime) ?? throw new GoogleDriveNotSignedInException();
+            if (userInitiated && !runtime.CloudEnabled) await runtime.SetCloudEnabledAsync(true);
+            if (!runtime.CloudEnabled) return;
+            var result = await runtime.RequestCloudSyncAsync();
             if (_isClosed)
             {
                 return;
             }
-            if (result.DownloadedSettings || result.UploadedSettings)
-            {
-                // A successful sync either restored cloud settings or established
-                // the current local snapshot as the first cloud revision.
-                await CompleteGoogleDriveSettingsRestoreAsync();
-                if (_isClosed) return;
-            }
             _lastGoogleDriveSyncUtc = DateTime.UtcNow;
-            _googleDriveErrorDetail = null;
-            var warnings = new List<string>();
-            if (result.ConflictedLandingIds.Count > 0)
-            {
-                warnings.Add(LocalizationManager.Format(
-                    "Settings.DriveLandingConflictFormat",
-                    result.ConflictedLandingIds.Count));
-            }
-            if (result.SettingsConflict)
-            {
-                warnings.Add(LocalizationManager.Text("Settings.DriveSettingsConflict"));
-            }
-            if (result.SettingsChangedDuringSync)
-            {
-                warnings.Add(LocalizationManager.Text("Settings.DriveSettingsChangedDuringSync"));
-            }
-            if (result.UnsupportedSettingsFormatVersion.HasValue)
-            {
-                warnings.Add(LocalizationManager.Format(
-                    "Settings.DriveUnsupportedSettingsFormat",
-                    result.UnsupportedSettingsFormatVersion.Value));
-            }
-            _googleDriveWarningDetail = warnings.Count == 0 ? null : string.Join(" ", warnings);
+            _googleDriveErrorDetail = null; _googleDriveErrorKey = null;
+            _googleDriveWarningSummary = CloudSyncSummary.From(result);
+            _googleDriveWarningDetail = CloudWarnings(_googleDriveWarningSummary);
             if (result.HistoryChanged)
             {
                 InvalidateLoadedHistoryDetails();
                 await LoadHistoryAsync(selectedId);
             }
         }
-        catch (OperationCanceledException) when (_lifetimeCancellation.IsCancellationRequested)
+        catch (OperationCanceledException) when (_lifetimeCancellation.IsCancellationRequested || _googleDriveDisconnecting || !_googleDriveTokenStore.HasRefreshToken())
         {
         }
         catch (GoogleDriveNotSignedInException)
         {
-            _googleDriveErrorDetail = LocalizationManager.Text("Settings.DriveSignInAgain");
+            _googleDriveErrorKey = "Settings.DriveSignInAgain";
+            _googleDriveErrorDetail = LocalizationManager.Text(_googleDriveErrorKey);
         }
         catch (Exception exception)
         {
-            _googleDriveErrorDetail = exception.Message;
+            _googleDriveErrorDetail = exception.Message; _googleDriveErrorKey = null;
         }
         finally
         {
@@ -1245,96 +1191,6 @@ public partial class MainWindow : Window
             {
                 RefreshGoogleDrivePresentation();
             }
-        }
-    }
-
-    private Task<GoogleDriveLocalSettings> ReadCloudSettingsAsync()
-    {
-        if (Dispatcher.CheckAccess())
-        {
-            return ReadCommittedCloudSettingsAsync();
-        }
-        return Dispatcher.InvokeAsync(ReadCommittedCloudSettingsAsync).Task.Unwrap();
-    }
-
-    private async Task<GoogleDriveLocalSettings> ReadCommittedCloudSettingsAsync()
-    {
-        // Do not expose an old snapshot while an accepted local save is pending.
-        await PendingSettingsOperations;
-        return CreateLocalCloudSettingsSnapshot();
-    }
-
-    private GoogleDriveLocalSettings CreateLocalCloudSettingsSnapshot() =>
-        new GoogleDriveLocalSettings(CreateCloudSettingsSnapshot(), _settingsPersistedAndReadable);
-
-    private GoogleDriveCloudSettings CreateCloudSettingsSnapshot() => new GoogleDriveCloudSettings
-    {
-        Language = _settings.Language,
-        StartWithSimulator = _settings.StartWithSimulator,
-    };
-
-    private Task<bool> ApplyCloudSettingsAsync(
-        GoogleDriveCloudSettings cloudSettings,
-        string expectedLocalHash)
-    {
-        if (Dispatcher.CheckAccess())
-        {
-            return ApplyCloudSettingsIfUnchangedAsync(cloudSettings, expectedLocalHash);
-        }
-        return Dispatcher.InvokeAsync(() =>
-            ApplyCloudSettingsIfUnchangedAsync(cloudSettings, expectedLocalHash)).Task.Unwrap();
-    }
-
-    private Task<bool> ApplyCloudSettingsIfUnchangedAsync(
-        GoogleDriveCloudSettings cloudSettings,
-        string expectedLocalHash) => RunSettingsOperationAsync(async () =>
-    {
-        var currentHash = GoogleDriveBackupService.Hash(
-            GoogleDriveCloudSettings.Serialize(CreateCloudSettingsSnapshot()));
-        if (!string.Equals(currentHash, expectedLocalHash, StringComparison.OrdinalIgnoreCase))
-        {
-            return false;
-        }
-
-        await ApplyCloudSettingsCoreAsync(cloudSettings);
-        return true;
-    });
-
-    private async Task ApplyCloudSettingsCoreAsync(GoogleDriveCloudSettings cloudSettings)
-    {
-        var cloudSnapshot = cloudSettings.Clone();
-        cloudSnapshot.Normalize();
-        var previousLanguage = _settings.Language;
-        var previousAutoStart = _settings.StartWithSimulator;
-        var targetAutoStart = cloudSnapshot.StartWithSimulator ?? previousAutoStart;
-        AutoStartOperationResult? autoStartResult = null;
-        var snapshot = _settings.Clone();
-        snapshot.Language = cloudSnapshot.Language;
-        snapshot.StartWithSimulator = targetAutoStart;
-        var updateAutoStart = _autoStartInitialized && targetAutoStart.HasValue && targetAutoStart != previousAutoStart;
-        await SettingsPersistence.SaveAsync(
-            _settingsRepository, snapshot,
-            updateAutoStart ? () => autoStartResult = _autoStartManager.SetEnabled(targetAutoStart!.Value) : null,
-            updateAutoStart ? () => _autoStartManager.SetEnabled(previousAutoStart == true) : null);
-        _settings.CopyFrom(snapshot);
-
-        if (autoStartResult != null)
-        {
-            _autoStartProfileCount = autoStartResult.ConfigurationPaths.Count;
-        }
-        if (_isClosed) return;
-        if (targetAutoStart.HasValue && AutoStartPromptOverlay.Visibility == Visibility.Visible)
-        {
-            HideAutoStartPrompt();
-        }
-        if (!string.Equals(previousLanguage, _settings.Language, StringComparison.Ordinal))
-        {
-            LocalizationManager.Apply(_settings.Language);
-            RefreshLocalizedPresentation();
-        }
-        else
-        {
-            RefreshSettingsPresentation();
         }
     }
 
@@ -1352,7 +1208,7 @@ public partial class MainWindow : Window
                 ? LocalizationManager.Text("Settings.Loading") : string.Empty;
             return;
         }
-        var signedIn = _googleOAuthClient.IsSignedIn;
+        var signedIn = _googleDriveTokenStore.HasRefreshToken();
         GoogleDrivePrimaryButton.Content = LocalizationManager.Text(
             signedIn ? "Settings.DriveSyncNow" : "Settings.DriveConnect");
         GoogleDrivePrimaryButton.IsEnabled = !GoogleDriveBusy && !SettingsBusy && !_settingsOperations.IsStopping;
@@ -1362,23 +1218,18 @@ public partial class MainWindow : Window
             ? Visibility.Visible
             : Visibility.Collapsed;
         GoogleDriveSignOutButton.IsEnabled = !_settingsOperations.IsStopping &&
-            (_googleDriveAuthorizing || (!GoogleDriveBusy && !SettingsBusy));
+            (_googleDriveAuthorizing || (!_googleDriveDisconnecting && !SettingsBusy));
+        GoogleDriveStateText.ToolTip = _lastGoogleDriveSyncUtc.HasValue && signedIn
+            ? LocalizationManager.Format("Settings.DriveLastSyncFormat", _lastGoogleDriveSyncUtc.Value.ToLocalTime()) : null;
 
         if (!string.IsNullOrWhiteSpace(_googleDriveErrorDetail))
         {
             GoogleDriveStateText.Text = LocalizationManager.Format(
-                "Settings.DriveErrorFormat",
+                _runtimeCloudPhase == CloudSyncPhase.Retrying ? "Settings.DriveRetryingFormat" : "Settings.DriveErrorFormat",
                 _googleDriveErrorDetail!);
             GoogleDriveStateText.Foreground = Brush("#FF8A6A");
         }
-        else if (!string.IsNullOrWhiteSpace(_googleDriveWarningDetail))
-        {
-            GoogleDriveStateText.Text = LocalizationManager.Format(
-                "Settings.DriveWarningFormat",
-                _googleDriveWarningDetail!);
-            GoogleDriveStateText.Foreground = Brush("#D9C46A");
-        }
-        else if (GoogleDriveBusy)
+        else if (GoogleDriveBusy || signedIn && _runtimeCloudPhase == CloudSyncPhase.Syncing)
         {
             GoogleDriveStateText.Text = LocalizationManager.Text(
                 _googleDriveAuthorizing ? "Settings.DriveAuthorizing" : "Settings.DriveSyncing");
@@ -1388,6 +1239,21 @@ public partial class MainWindow : Window
         {
             GoogleDriveStateText.Text = LocalizationManager.Text("Settings.DriveDisconnected");
             GoogleDriveStateText.Foreground = Brush("#7E878F");
+        }
+        else if (_runtime?.CloudEnabled != true)
+        {
+            GoogleDriveStateText.Text = LocalizationManager.Text("Settings.DrivePaused");
+            GoogleDriveStateText.Foreground = Brush("#D9C46A");
+        }
+        else if (_runtimeCloudPhase == CloudSyncPhase.Retrying)
+        {
+            GoogleDriveStateText.Text = LocalizationManager.Text("Settings.DriveRetrying");
+            GoogleDriveStateText.Foreground = Brush("#D9C46A");
+        }
+        else if (!string.IsNullOrWhiteSpace(_googleDriveWarningDetail))
+        {
+            GoogleDriveStateText.Text = LocalizationManager.Format("Settings.DriveWarningFormat", _googleDriveWarningDetail!);
+            GoogleDriveStateText.Foreground = Brush("#D9C46A");
         }
         else if (_lastGoogleDriveSyncUtc.HasValue)
         {
@@ -1405,6 +1271,10 @@ public partial class MainWindow : Window
 
     private void RefreshLocalizedPresentation()
     {
+        _googleDriveWarningDetail = CloudWarnings(_googleDriveWarningSummary);
+        if (_googleDriveErrorKey != null) _googleDriveErrorDetail = LocalizationManager.Text(_googleDriveErrorKey);
+        if (_telemetrySettingsError != null) SettingsTelemetryErrorText.Text = LocalizationManager.Format("Settings.SaveErrorFormat", _telemetrySettingsError);
+        RefreshUpdatePresentation();
         RefreshSettingsPresentation();
         SetLanguageSelection(_settings.Language);
 
@@ -1428,6 +1298,7 @@ public partial class MainWindow : Window
             _connectionStatusIsWarning);
         SetUploadStatusCore(_uploadStatusKey, _uploadStatusArguments, _uploadStatusIsError);
         RefreshAutoStartErrorPresentation();
+        if (DataContext is LandingRecord current) UpdateLaneReadouts(current, ReplayView.CurrentTimeSeconds);
 
         if (_pendingDeleteRecord != null)
         {
@@ -1444,7 +1315,7 @@ public partial class MainWindow : Window
                 record.ContactCount)
             : string.Empty;
         DeleteLandingDescription.Text =
-            $"{record.AircraftTitle}\n{record.LocationDisplay} · {record.TimestampDisplay}{contact}";
+            $"{record.AircraftTitle}\n{new LandingStats.App.Presentation.LandingPresentation(record).LocationDisplay} · {new LandingStats.App.Presentation.LandingPresentation(record).TimestampDisplay}{contact}";
     }
 
     internal static void UpdateControlTab(bool hasReplay, RadioButton reconstructionTab, RadioButton controlsTab)
@@ -1510,6 +1381,7 @@ public partial class MainWindow : Window
         {
             LandingChartMode.VerticalSpeed => LocalizationManager.Text("Chart.DescriptionVertical"),
             LandingChartMode.LoadFactors => LocalizationManager.Text("Chart.DescriptionLoads"),
+            LandingChartMode.FlightControls when record?.ControllerTimeline != null && ReplayPresentationData.PitchValues(record) != null => LocalizationManager.Text("Chart.DescriptionCatalogControls"),
             LandingChartMode.FlightControls when record?.HasRawPitchInput == true =>
                 LocalizationManager.Format(
                     "Chart.DescriptionRawControlsFormat",
@@ -1582,7 +1454,7 @@ public partial class MainWindow : Window
             case LandingChartMode.FlightControls:
                 labels = new[]
                 {
-                    LocalizationManager.Text(record?.HasRawPitchInput == true ? "Chart.PitchRaw" : "Chart.PitchSim"),
+                    LocalizationManager.Text((record?.HasRawPitchInput == true || record?.ControllerTimeline != null && ReplayPresentationData.PitchValues(record) != null) ? "Chart.PitchRaw" : "Chart.PitchSim"),
                     LocalizationManager.Text("Chart.Roll"),
                     LocalizationManager.Text("Chart.Yaw"),
                 };
@@ -1655,46 +1527,13 @@ public partial class MainWindow : Window
         }
     }
 
-    private void OnSourceInitialized(object? sender, EventArgs eventArgs)
+    private void OnSimulatorExited()
     {
-        var handle = new WindowInteropHelper(this).Handle;
-        _messageSource = HwndSource.FromHwnd(handle);
-        _messageSource?.AddHook(WindowProcedure);
-        _recorder = new SimConnectLandingRecorder(handle);
-        _recorder.StatusChanged += OnRecorderStatusChanged;
-        if (Environment.GetEnvironmentVariable(App.SimulatorAutoStartEnvironmentVariable) == "1")
-        {
-            _recorder.SimulatorExited += OnSimulatorExited;
-        }
-        _recorder.EpisodeStarted += OnEpisodeStarted;
-        _recorder.EpisodeCompleted += OnEpisodeCompleted;
-        _recorder.AirportFacilitiesUpdated += OnAirportFacilitiesUpdated;
-        // Episode-owned facility tasks update both history and the report using
-        // one two-stage decision. Global runway notifications cannot do that.
-        _recorder.AircraftGroundStateChanged += OnAircraftGroundStateChanged;
-        _recorder.SeedAirportFacilities(_airportFacilities);
-        _recorder.Start();
+        // Finish the runtime snapshot projection before starting window shutdown.
+        Dispatcher.BeginInvoke(new Action(() => { if (!_isClosed) { _stopReason = GuardianStopReason.SimulatorQuit; Close(); } }));
     }
 
-    private void OnSimulatorExited(object? sender, EventArgs eventArgs)
-    {
-        // Leave the SimConnect callback before disposing the recorder and window.
-        Dispatcher.BeginInvoke(new Action(() => { if (!_isClosed) Close(); }));
-    }
-
-    private void OnEpisodeStarted(object? sender, LandingEpisodeStartedEventArgs eventArgs)
-    {
-        _lastLandingBugReport.BeginEpisode(eventArgs.EpisodeId);
-        SetUploadStatus("Footer.ReportWaiting");
-        RefreshBugReportButton();
-    }
-
-    private IntPtr WindowProcedure(IntPtr windowHandle, int message, IntPtr wordParameter, IntPtr longParameter, ref bool handled)
-    {
-        return _recorder?.HandleWindowMessage(message, ref handled) ?? IntPtr.Zero;
-    }
-
-    private void OnRecorderStatusChanged(object? sender, RecorderStatusEventArgs eventArgs)
+    private void OnRecorderStatusChanged(RecorderStatusEventArgs eventArgs)
     {
         SetConnectionStatus(eventArgs.MessageKey, eventArgs.MessageArguments);
         UpdateRecorderPresentation(eventArgs.State);
@@ -1702,15 +1541,7 @@ public partial class MainWindow : Window
         {
             ShowReplayUnsupportedOverlay();
         }
-        else if (_recorder?.IsAircraftAirborne == true)
-        {
-            HideReplayUnsupportedOverlay();
-        }
-    }
-
-    private void OnAircraftGroundStateChanged(object? sender, AircraftGroundStateEventArgs eventArgs)
-    {
-        if (!eventArgs.OnGround)
+        else if (_runtime?.Snapshot.Airborne == true)
         {
             HideReplayUnsupportedOverlay();
         }
@@ -1781,230 +1612,6 @@ public partial class MainWindow : Window
         };
     }
 
-    private async void OnEpisodeCompleted(object? sender, LandingEpisodeEventArgs eventArgs)
-    {
-        var episodeTimestampUtc = DateTime.UtcNow;
-        Task<ProcessedEpisode> processingTask;
-        lock (_episodeProcessingGate)
-        {
-            var predecessor = _episodePersistenceTask;
-            var knownFacilities = _airportFacilities;
-            processingTask = ProcessEpisodeAfterAsync(
-                predecessor,
-                eventArgs,
-                knownFacilities,
-                episodeTimestampUtc);
-            _episodePersistenceTask = processingTask;
-        }
-        var reportTask = QueueEpisodeReport(processingTask, eventArgs, episodeTimestampUtc);
-
-        try
-        {
-            var processed = await processingTask;
-            if (_isClosed || eventArgs.IsDiagnosticOnly)
-            {
-                return;
-            }
-
-            if (processed.ReplayLike)
-            {
-                UpdateRecorderPresentation(RecorderState.Connected);
-                SetConnectionWarning("Recorder.ReplayIgnored");
-                ShowReplayUnsupportedOverlay();
-                return;
-            }
-
-            // A facility refresh can finish while the episode is being analyzed.
-            // Keep the newest in-memory entries and resolve this just-saved landing
-            // again so an earlier episode snapshot cannot roll the cache backward
-            // or leave the landing as Unknown until the next application start.
-            _airportFacilities = MergeAirportFacilities(
-                processed.AirportFacilities,
-                _airportFacilities);
-            var airportUpdates = new List<LandingRecord>();
-            if (eventArgs.EpisodeId >= _runwayRecordsEpisodeId)
-            {
-                _runwayRecordsEpisodeId = eventArgs.EpisodeId;
-                _runwayRecords = processed.Records;
-            }
-            foreach (var record in processed.Records)
-            {
-                if (TryResolveAirport(record, _airportFacilities))
-                {
-                    airportUpdates.Add(record);
-                }
-            }
-            if (airportUpdates.Count > 0)
-            {
-                Task persistence;
-                lock (_airportMetadataPersistenceGate)
-                {
-                    persistence = AirportMetadataPersistence.SaveAfterAsync(_airportMetadataPersistenceTask,
-                        _airportFacilityRepository, _airportFacilityRepositoryGate, _repository,
-                        _landingRepositoryGate, _airportFacilities, airportUpdates);
-                    _airportMetadataPersistenceTask = persistence;
-                }
-                await persistence;
-                if (_isClosed) return;
-            }
-            if (processed.Records.Count == 0)
-            {
-                UpdateRecorderPresentation(RecorderState.Connected);
-                SetConnectionWarning("Recorder.NoTouchdown");
-                return;
-            }
-
-            foreach (var record in processed.Records.Where(record => !_locallyRemovedHistoryIds.Contains(record.Id)))
-            {
-                _loadedDetails[record.Id] = record;
-            }
-
-            AddLandingRecords(processed.Records);
-            QueueGoogleDriveSync();
-            if (processed.Records.Count == 1)
-            {
-                SetConnectionStatus("Recorder.LandingSaved");
-            }
-            else
-            {
-                SetConnectionStatus("Recorder.ContactsSavedFormat", processed.Records.Count);
-            }
-            UpdateRecorderPresentation(RecorderState.Connected);
-            var candidate = await reportTask;
-            if (!_isClosed && candidate != null)
-            {
-                // The report worker persisted this same terminal facility choice.
-                // Update only this episode; a newer landing must not steal it.
-                foreach (var update in candidate.Records)
-                {
-                    foreach (var record in _landings.Concat(processed.Records).Where(record => record.Id == update.Id))
-                        CopyRunwayMetadata(update, record);
-                    if (_loadedDetails.TryGetValue(update.Id, out var detail)) CopyRunwayMetadata(update, detail);
-                }
-                LandingHistoryList.Items.Refresh();
-                if (LandingHistoryList.SelectedItem is LandingRecord selected && candidate.Records.Any(record => record.Id == selected.Id))
-                    SelectRecord(selected);
-                QueueGoogleDriveSync();
-            }
-            if (!_isClosed && candidate != null && _lastLandingBugReport.TryRetain(candidate))
-            {
-                SetUploadStatus("Footer.ReportReady");
-                RefreshBugReportButton();
-            }
-        }
-        catch (Exception exception)
-        {
-            if (_isClosed || eventArgs.IsDiagnosticOnly)
-            {
-                return;
-            }
-
-            SetConnectionStatus("Recorder.AnalysisFailedFormat", exception.Message);
-            UpdateRecorderPresentation(RecorderState.Error);
-        }
-    }
-
-    private async Task<ProcessedEpisode> ProcessEpisodeAfterAsync(
-        Task predecessor,
-        LandingEpisodeEventArgs eventArgs,
-        IReadOnlyList<AirportFacility> knownFacilities,
-        DateTime episodeTimestampUtc)
-    {
-        try
-        {
-            await predecessor.ConfigureAwait(false);
-        }
-        catch
-        {
-            // A failed episode must not poison persistence of later landings.
-        }
-
-        return await Task.Run(() => ProcessEpisodeAsync(
-                eventArgs,
-                knownFacilities,
-                episodeTimestampUtc))
-            .ConfigureAwait(false);
-    }
-
-    private async Task<ProcessedEpisode> ProcessEpisodeAsync(
-        LandingEpisodeEventArgs eventArgs,
-        IReadOnlyList<AirportFacility> knownFacilities,
-        DateTime episodeTimestampUtc)
-    {
-        // Keep the capture's raw frames untouched for diagnostics. Every consumer
-        // below (geometry, contact/G analysis, controls and 3D storage) must use
-        // the same active-time sequence with confirmed SDK pauses removed.
-        var prepared = TelemetryAnalysisFrames.Prepare(eventArgs.Samples);
-        var samples = TelemetryDeduplicator.Deduplicate(prepared);
-        var journal = eventArgs.DecisionJournal ?? new TelemetryDecisionJournal();
-        var time = samples.Count == 0 ? 0 : samples[samples.Count - 1].SimulationTimeSeconds;
-        journal.Record(time, "analysis", "frames_deduplicated", "Excluded confirmed SDK pauses from the analysis timeline, then kept the latest same-time frame without erasing unknown physics interruptions.",
-            new Dictionary<string, double> { ["received"] = eventArgs.Samples.Count, ["analysis_frames"] = prepared.Count, ["retained"] = samples.Count });
-        if (eventArgs.IsDiagnosticOnly || samples.Count == 0)
-        {
-            // Record the rejection without loading aircraft configuration or touching landing history.
-            TouchdownAnalysis.Analyze(samples, new TouchdownAnalysisOptions { DecisionJournal = journal });
-            journal.Record(time, "analysis", "diagnostic_only", "Retained raw and decisions; no landing is saved.");
-            return ProcessedEpisode.Completed(knownFacilities, Array.Empty<LandingRecord>(), journal.Snapshot());
-        }
-        // The episode carries a point-in-time copy of the recorder's facility
-        // list. Use it for this analysis, but never write it back to the shared
-        // cache: a newer facilities event may already have been persisted while
-        // geometry analysis was running, and this stale snapshot must not win.
-        var facilities = MergeAirportFacilities(knownFacilities, eventArgs.AirportFacilities);
-
-        var savedRecords = new List<LandingRecord>();
-        var anyReplay = false;
-        var anyAnalyzed = false;
-        foreach (var rawSegment in TelemetryKinematicDiscontinuity.SplitPhysicalSegments(eventArgs.Samples))
-        {
-            var segment = TelemetryDeduplicator.Deduplicate(TelemetryAnalysisFrames.Prepare(rawSegment, journal));
-            if (segment.Count == 0) continue;
-            if (ReplayTelemetryDetector.IsReplayLike(segment))
-            {
-                journal.Record(TelemetryAnalysisFrames.TimeOf(segment[0]), "analysis", "replay_rejected",
-                    "Kinematic consistency check rejected this physical segment as replay-like; other segments remain independent.");
-                anyReplay = true;
-                continue;
-            }
-            anyAnalyzed = true;
-            // Datum recovery from telemetry is also segment-local: not just the
-            // contact detector, but the geometry options themselves must never
-            // be calibrated using another flight's positions or rotations.
-            var resolution = await _flightModelGeometryResolver.ResolveAnalysisAsync(
-                    eventArgs.AircraftTitle, eventArgs.AircraftType, eventArgs.AircraftModel, segment, journal)
-                .ConfigureAwait(false);
-            var analysisOptions = resolution.Options ?? new TouchdownAnalysisOptions();
-            analysisOptions.DecisionJournal = journal;
-            var geometrySnapshot = AnalysisGeometrySnapshot.Capture(segment, analysisOptions, resolution.Outcome);
-            var touchdowns = TouchdownAnalysis.Analyze(segment, analysisOptions);
-            var segmentIdentity = Guid.NewGuid().ToString("N");
-            foreach (var touchdown in touchdowns)
-            {
-                var aircraftType = eventArgs.AircraftType == "unknown" ? eventArgs.AircraftModel : eventArgs.AircraftType;
-                var record = LandingRecordFactory.Create(
-                    touchdown, rawSegment, eventArgs.AircraftTitle, aircraftType,
-                    contactCount: touchdowns.Count(contact => contact.EpisodeNumber == touchdown.EpisodeNumber),
-                    timestampUtc: episodeTimestampUtc,
-                    episodeEndSimulationTimeSeconds: TelemetryAnalysisFrames.TimeOf(segment[segment.Count - 1]));
-                record.RecordingEpisodeId = segmentIdentity + ":" + touchdown.EpisodeNumber.ToString(System.Globalization.CultureInfo.InvariantCulture);
-                record.AnalysisGeometry = geometrySnapshot.Copy();
-                record.Simulator = eventArgs.Simulator;
-                record.ControlInputSources = eventArgs.ControlInputSources.ToList();
-                TryResolveAirport(record, facilities);
-                lock (_landingRepositoryGate) _repository.Save(record);
-                savedRecords.Add(record);
-            }
-        }
-
-        if (anyReplay && !anyAnalyzed) return ProcessedEpisode.Replay(journal.Snapshot());
-
-        journal.Record(time, "analysis", "episode_analyzed", "Finished analysis of the retained landing episode.",
-            new Dictionary<string, double> { ["contacts"] = savedRecords.Count });
-        var decisions = journal.Snapshot();
-        return ProcessedEpisode.Completed(facilities, savedRecords, decisions);
-    }
-
     private void SetConnectionStatus(string key, params object[] arguments)
     {
         SetConnectionStatusCore(key, arguments, false);
@@ -2027,256 +1634,16 @@ public partial class MainWindow : Window
         }
     }
 
-    private void AddLandingRecords(IReadOnlyList<LandingRecord> records)
-    {
-        records = records.Where(record => !_locallyRemovedHistoryIds.Contains(record.Id)).ToArray();
-        if (records.Count == 0)
-        {
-            return;
-        }
 
-        var addedIds = new HashSet<string>(records.Select(record => record.Id), StringComparer.Ordinal);
-        var newestFirst = records
-            .OrderByDescending(record => record.TimestampUtc)
-            .ThenByDescending(record => record.ContactNumber)
-            .ToArray();
-        _landings = newestFirst
-            .Concat(_landings.Where(record => !addedIds.Contains(record.Id)))
-            .OrderByDescending(record => record.TimestampUtc)
-            .ThenByDescending(record => record.ContactNumber)
-            .ToArray();
-
-        ApplySessionFilter((LandingHistoryList.SelectedItem as LandingRecord)?.Id ?? newestFirst[0].Id);
-    }
-
-    private async void OnRunwayFacilitiesUpdated(object? sender, RunwayFacilitiesEventArgs eventArgs)
-    {
-        if (_isClosed || _recorder == null || eventArgs.EpisodeId != _runwayRecordsEpisodeId) return;
-        // Only the contacts whose landing requested this snapshot. Browsing an
-        // older record with missing geometry must not silently rewrite history.
-        var updates = await PersistRunwaysAsync(_runwayRecords, eventArgs.Runways);
-        if (_isClosed) return;
-        foreach (var update in updates)
-        {
-            foreach (var record in _landings.Concat(_runwayRecords).Where(record => record.Id == update.Id))
-                CopyRunwayMetadata(update, record);
-            if (_loadedDetails.TryGetValue(update.Id, out var detail)) CopyRunwayMetadata(update, detail);
-        }
-        if (updates.Count == 0) return;
-        LandingHistoryList.Items.Refresh();
-        if (LandingHistoryList.SelectedItem is LandingRecord selected) SelectRecord(selected);
-        QueueGoogleDriveSync();
-    }
-
-    internal static bool TryResolveRunway(LandingRecord record, IReadOnlyList<RunwayFacility> facilities) =>
-        RunwayResolver.TryApply(record, facilities);
-
-    private async void OnAirportFacilitiesUpdated(object? sender, AirportFacilitiesEventArgs eventArgs)
-    {
-        if (_isClosed) return;
-        _airportFacilities = MergeAirportFacilities(_airportFacilities, eventArgs.Facilities);
-
-        var changedRecords = new List<LandingRecord>();
-        foreach (var record in _landings)
-        {
-            if (!TryResolveAirport(record, _airportFacilities))
-            {
-                continue;
-            }
-
-            changedRecords.Add(record);
-            if (_loadedDetails.TryGetValue(record.Id, out var detail))
-            {
-                detail.Airport = record.Airport;
-                detail.Runway = record.Runway;
-                detail.AirportDistanceNauticalMiles = record.AirportDistanceNauticalMiles;
-            }
-        }
-
-        Task persistence;
-        lock (_airportMetadataPersistenceGate)
-        {
-            persistence = AirportMetadataPersistence.SaveAfterAsync(
-                _airportMetadataPersistenceTask,
-                _airportFacilityRepository,
-                _airportFacilityRepositoryGate,
-                _repository,
-                _landingRepositoryGate,
-                eventArgs.Facilities,
-                changedRecords);
-            _airportMetadataPersistenceTask = persistence;
-        }
-
-        if (changedRecords.Count > 0)
-        {
-            var selected = LandingHistoryList.SelectedItem as LandingRecord;
-            LandingHistoryList.Items.Refresh();
-            if (selected != null)
-            {
-                SelectRecord(selected);
-            }
-        }
-
-        try
-        {
-            await persistence;
-        }
-        catch (Exception exception)
-        {
-            if (!_isClosed) SetConnectionWarning("Recorder.AnalysisFailedFormat", exception.Message);
-        }
-    }
-
-    private static bool TryResolveAirport(
-        LandingRecord record,
-        IReadOnlyList<AirportFacility> facilities)
-    {
-        if (!string.Equals(record.Airport, "Unknown airport", StringComparison.OrdinalIgnoreCase) ||
-            !record.HasTouchdownCoordinates)
-        {
-            return false;
-        }
-
-        var airport = AirportResolver.FindNearest(
-            record.TouchdownLatitudeDegrees!.Value,
-            record.TouchdownLongitudeDegrees!.Value,
-            facilities,
-            out var distanceNauticalMiles);
-        if (airport == null)
-        {
-            return false;
-        }
-
-        record.Airport = airport.Ident;
-        record.AirportDistanceNauticalMiles = Math.Round(distanceNauticalMiles, 2);
-        return true;
-    }
 
     internal static IReadOnlyList<AirportFacility> MergeAirportFacilities(
-        IEnumerable<AirportFacility> baseline,
-        IEnumerable<AirportFacility> updates)
-    {
-        return (baseline ?? Enumerable.Empty<AirportFacility>())
-            .Concat(updates ?? Enumerable.Empty<AirportFacility>())
-            .GroupBy(facility => facility.Key, StringComparer.OrdinalIgnoreCase)
-            .Select(group => group.Last())
-            .ToArray();
-    }
+        IEnumerable<AirportFacility> baseline, IEnumerable<AirportFacility> updates) => AirportMetadata.Merge(baseline, updates);
 
     private async void OnReportBugClick(object sender, RoutedEventArgs eventArgs)
     {
-        if (_isClosed || AutomaticTelemetryUploadEnabled) return;
-        var cancellationToken = _lifetimeCancellation.Token;
-        var candidate = _lastLandingBugReport.Available();
-        if (candidate == null || _bugReportSubmitting)
-        {
-            return;
-        }
-
-        _bugReportSubmitting = true;
-        RefreshBugReportButton();
-        SetUploadStatus("BugReport.Preparing");
-        string? path = null;
-        try
-        {
-            // Persist first. Network preparation must never be able to destroy
-            // the only copy of a user-initiated report when the app closes or
-            // the next landing sequence replaces the in-memory candidate.
-            Task<string> persistenceTask;
-            lock (_bugReportPersistenceGate)
-            {
-                persistenceTask = Task.Run(() => PersistBugReport(
-                    _bugReportRepository,
-                    _lastLandingBugReport,
-                    candidate,
-                    DateTime.UtcNow));
-                _bugReportPersistenceTask = Task.WhenAll(_bugReportPersistenceTask, persistenceTask);
-            }
-            path = await persistenceTask;
-            if (cancellationToken.IsCancellationRequested)
-            {
-                return;
-            }
-
-            TelemetryUploadClient uploadClient;
-            try
-            {
-                uploadClient = await Task.Run(EnsureTelemetryUploadClient);
-            }
-            catch (Exception)
-            {
-                SetUploadStatus("BugReport.SavedForRetryFormat", System.IO.Path.GetFileName(path));
-                return;
-            }
-
-            if (_isClosed || cancellationToken.IsCancellationRequested) return;
-            var preparation = await Task.Run(() => uploadClient.PrepareAsync(cancellationToken));
-            if (_isClosed || cancellationToken.IsCancellationRequested) return;
-            if (preparation.State != TelemetryPreparationState.Ready)
-            {
-                SetUploadStatus("BugReport.SavedForRetryFormat", System.IO.Path.GetFileName(path));
-                StartPendingBugReportRetry(uploadClient);
-                return;
-            }
-
-            // Queue the newly submitted report before scanning any older
-            // backlog. This keeps user-initiated reports ahead of legacy RAW.
-            var queued = await Task.Run(() =>
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                var accepted = uploadClient.Enqueue(path);
-                cancellationToken.ThrowIfCancellationRequested();
-                uploadClient.EnqueueExisting();
-                return accepted;
-            });
-            if (queued)
-            {
-                SetUploadStatus("BugReport.Queued");
-            }
-            else
-            {
-                SetUploadStatus("BugReport.SavedForRetryFormat", System.IO.Path.GetFileName(path));
-            }
-        }
-        catch (OperationCanceledException) when (_lifetimeCancellation.IsCancellationRequested)
-        {
-            // Application shutdown owns cancellation and presentation teardown.
-        }
-        catch (Exception exception)
-        {
-            if (path != null && await Task.Run(() => System.IO.File.Exists(path)))
-            {
-                _lastLandingBugReport.MarkSubmitted(candidate.EpisodeId);
-                SetUploadStatus("BugReport.SavedForRetryFormat", System.IO.Path.GetFileName(path));
-            }
-            else
-            {
-                SetUploadError("BugReport.FailedFormat", exception.Message);
-            }
-        }
-        finally
-        {
-            _bugReportSubmitting = false;
-            if (!_lastLandingBugReport.IsActiveEpisode(candidate.EpisodeId))
-            {
-                SetUploadStatus(
-                    _lastLandingBugReport.Available() == null
-                        ? "Footer.ReportWaiting"
-                        : "Footer.ReportReady");
-            }
-            RefreshBugReportButton();
-        }
-    }
-
-    internal static string PersistBugReport(
-        BugReportRepository repository,
-        LastLandingBugReportBuffer buffer,
-        BugReportCandidate candidate,
-        DateTime createdUtc)
-    {
-        var path = repository.Create(candidate, createdUtc);
-        buffer.MarkSubmitted(candidate.EpisodeId);
-        return path;
+        var runtime = Volatile.Read(ref _runtime);
+        if (_isClosed || AutomaticTelemetryUploadEnabled || runtime == null) return;
+        await SubmitRuntimeReportAsync(runtime);
     }
 
     private void RefreshBugReportButton()
@@ -2286,7 +1653,8 @@ public partial class MainWindow : Window
             return;
         }
 
-        var available = _startupReady && !AutomaticTelemetryUploadEnabled && _lastLandingBugReport.Available() != null;
+        var available = _startupReady && !AutomaticTelemetryUploadEnabled &&
+            _runtimeReportEpisode != Guid.Empty;
         UploadStatusText.Visibility = _startupReady && !AutomaticTelemetryUploadEnabled ? Visibility.Visible : Visibility.Collapsed;
         ReportBugButton.Visibility = available ? Visibility.Visible : Visibility.Collapsed;
         var enabled = !_bugReportSubmitting && available;
@@ -2294,83 +1662,7 @@ public partial class MainWindow : Window
         ReportBugButton.Opacity = enabled ? 1.0 : 0.42;
     }
 
-    private TelemetryUploadClient EnsureTelemetryUploadClient()
-    {
-        lock (_telemetryUploadClientGate)
-        {
-            if (_isClosed || _lifetimeCancellation.IsCancellationRequested)
-            {
-                throw new OperationCanceledException("The application is closing.");
-            }
-            if (_telemetryUploadClient != null)
-            {
-                return _telemetryUploadClient;
-            }
-
-            var client = new TelemetryUploadClient(_rawCaptureRepository.RootPath);
-            client.StatusChanged += OnTelemetryUploadStatusChanged;
-            _telemetryUploadClient = client;
-            client.SetAutomaticUploadEnabled(AutomaticTelemetryUploadEnabled);
-            return client;
-        }
-    }
-
-    private void StartPendingBugReportRetry(TelemetryUploadClient? existingClient = null)
-    {
-        var cancellationToken = _lifetimeCancellation.Token;
-        lock (_bugReportRetryGate)
-        {
-            if (cancellationToken.IsCancellationRequested) return;
-            _bugReportRetryRequested = true;
-            if (_bugReportRetryRunning) return;
-            _bugReportRetryRunning = true;
-
-            _bugReportRetryTask = Task.Run(async () =>
-            {
-                while (true)
-                {
-                    lock (_bugReportRetryGate) _bugReportRetryRequested = false;
-                    try
-                    {
-                        var client = existingClient ?? EnsureTelemetryUploadClient();
-                        await client.PreparePendingReportsUntilReadyAsync(cancellationToken)
-                            .ConfigureAwait(false);
-                    }
-                    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-                    {
-                        // Normal application shutdown.
-                    }
-                    catch (Exception exception) { System.Diagnostics.Debug.WriteLine(exception); }
-                    lock (_bugReportRetryGate)
-                    {
-                        // A rapid opt-out/opt-in can request a new scan while the
-                        // cancelled enrollment is still unwinding. Coalesce it,
-                        // and publish idle atomically with the decision to exit.
-                        if (_bugReportRetryRequested && !cancellationToken.IsCancellationRequested) continue;
-                        _bugReportRetryRunning = false;
-                        return;
-                    }
-                }
-            });
-        }
-    }
-
-    private void OnTelemetryUploadStatusChanged(object? sender, TelemetryUploadStatusEventArgs eventArgs)
-    {
-        if (_isClosed || Dispatcher.HasShutdownStarted || Dispatcher.HasShutdownFinished) return;
-        Dispatcher.BeginInvoke(new Action(() =>
-        {
-            if (_isClosed) return;
-            if (_lastLandingBugReport.Available() != null)
-            {
-                SetUploadStatus("Footer.ReportReady");
-            }
-            else
-            {
-                SetUploadStatusCore(eventArgs.MessageKey, eventArgs.MessageArguments, eventArgs.IsError);
-            }
-        }));
-    }
+    private void StartPendingBugReportRetry() => Volatile.Read(ref _runtime)?.WakeDelivery();
 
     private void SetUploadStatus(string key, params object[] arguments)
     {
@@ -2427,39 +1719,8 @@ public partial class MainWindow : Window
 
     internal static int ClosestSeriesPointIndex(IReadOnlyList<LandingSeriesPoint> points, double targetTime)
     {
-        if (points == null || points.Count == 0)
-        {
-            throw new ArgumentException("At least one series point is required.", nameof(points));
-        }
-
-        if (points.Count == 1 || targetTime <= points[0].TimeSeconds)
-        {
-            return 0;
-        }
-
-        if (targetTime >= points[points.Count - 1].TimeSeconds)
-        {
-            return points.Count - 1;
-        }
-
-        var low = 0;
-        var high = points.Count - 1;
-        while (high - low > 1)
-        {
-            var middle = low + (high - low) / 2;
-            if (points[middle].TimeSeconds < targetTime)
-            {
-                low = middle;
-            }
-            else
-            {
-                high = middle;
-            }
-        }
-
-        return targetTime - points[low].TimeSeconds <= points[high].TimeSeconds - targetTime
-            ? low
-            : high;
+        if (points == null || points.Count == 0) throw new ArgumentException("At least one series point is required.", nameof(points));
+        return RecordedTimeSearch.Nearest(points.Count, index => points[index].TimeSeconds, targetTime);
     }
 
     private void OnWindowClosed(object? sender, EventArgs eventArgs)
@@ -2468,40 +1729,7 @@ public partial class MainWindow : Window
         DisposeShutdownResources();
     }
 
-    private sealed class ProcessedEpisode
-    {
-        private ProcessedEpisode(
-            bool replayLike,
-            IReadOnlyList<AirportFacility> airportFacilities,
-            IReadOnlyList<LandingRecord> records,
-            TelemetryDecisionSnapshot? decisions = null)
-        {
-            ReplayLike = replayLike;
-            AirportFacilities = airportFacilities;
-            Records = records;
-            ReportRecords = records.Select(record => LandingRecordFile.FromRecord(record).ToRecord()).ToArray();
-            Decisions = decisions;
-        }
 
-        public bool ReplayLike { get; }
-
-        public IReadOnlyList<AirportFacility> AirportFacilities { get; }
-
-        public IReadOnlyList<LandingRecord> Records { get; }
-        public TelemetryDecisionSnapshot? Decisions { get; }
-        public IReadOnlyList<LandingRecord> ReportRecords { get; }
-
-        public static ProcessedEpisode Replay(TelemetryDecisionSnapshot decisions) => new ProcessedEpisode(
-            true,
-            Array.Empty<AirportFacility>(),
-            Array.Empty<LandingRecord>(), decisions);
-
-        public static ProcessedEpisode Completed(
-            IReadOnlyList<AirportFacility> airportFacilities,
-            IReadOnlyList<LandingRecord> records,
-            TelemetryDecisionSnapshot decisions) =>
-            new ProcessedEpisode(false, airportFacilities, records, decisions);
-    }
 
     private static Brush Brush(string color)
     {
@@ -2530,7 +1758,8 @@ public partial class MainWindow : Window
             WindowState = WindowState.Normal;
         }
 
-        DragMove();
+        if (Mouse.LeftButton == MouseButtonState.Pressed)
+            try { DragMove(); } catch (InvalidOperationException error) { Debug.WriteLine(error); }
     }
 
     private void OnMinimizeClick(object sender, RoutedEventArgs eventArgs)
@@ -2550,7 +1779,9 @@ public partial class MainWindow : Window
 
     private void OnReleasesLinkNavigate(object sender, RequestNavigateEventArgs eventArgs)
     {
-        Process.Start(new ProcessStartInfo(eventArgs.Uri.AbsoluteUri) { UseShellExecute = true });
+        try { Process.Start(new ProcessStartInfo(eventArgs.Uri.AbsoluteUri) { UseShellExecute = true }); }
+        catch (Exception error) when (error is System.ComponentModel.Win32Exception || error is InvalidOperationException)
+        { Debug.WriteLine(error); SetConnectionWarning("Common.OpenLinkFailedFormat", error.Message); }
         eventArgs.Handled = true;
     }
 }

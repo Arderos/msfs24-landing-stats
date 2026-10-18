@@ -9,9 +9,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
-using System.Windows.Markup;
 using System.Windows.Threading;
-using System.Xml.Linq;
 using LandingStats.App.Models;
 using LandingStats.App.Settings;
 using LandingStats.App.Storage;
@@ -37,7 +35,7 @@ internal static class AsyncHistoryRegressionTests
         {
             // Never show this window: SourceInitialized/Loaded (simulator,
             // update and cloud startup) must not run in an isolated disk test.
-            window = new MainWindow(new FlightModelGeometryResolver(Array.Empty<string>(), false));
+            window = new MainWindow();
             var repository = new LandingRepository(directory);
             Set(window, "_repository", repository);
             Set(window, "_airportFacilityRepository", new AirportFacilityRepository(Path.Combine(directory, "airports.gz")));
@@ -277,18 +275,7 @@ internal static class AsyncHistoryRegressionTests
             "scenery metadata received after the disk read still outranks the worker snapshot");
     }
 
-    private static ResourceDictionary LoadApplicationResources()
-    {
-        var directory = new DirectoryInfo(AppDomain.CurrentDomain.BaseDirectory);
-        while (directory != null && !File.Exists(Path.Combine(directory.FullName, "src", "LandingStats.App", "App.xaml")))
-            directory = directory.Parent;
-        if (directory == null) throw new InvalidOperationException("Repository root not found.");
-        XNamespace ns = "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
-        var app = XDocument.Load(Path.Combine(directory.FullName, "src", "LandingStats.App", "App.xaml"));
-        var resources = app.Root!.Element(ns + "Application.Resources")!.Elements().Single();
-        resources.SetAttributeValue(XNamespace.Xmlns + "x", "http://schemas.microsoft.com/winfx/2006/xaml");
-        return (ResourceDictionary)XamlReader.Parse(resources.ToString());
-    }
+    private static ResourceDictionary LoadApplicationResources() => Review089UiRegressionTests.LoadApplicationResources();
 
     private static void DrainHistory(MainWindow window)
     {

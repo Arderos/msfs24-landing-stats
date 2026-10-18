@@ -6,6 +6,7 @@ using System.Reflection;
 using System.Runtime.Serialization;
 using System.Threading.Tasks;
 using LandingStats.App.Models;
+using LandingStats.App.Runtime;
 using LandingStats.App.Storage;
 using LandingStats.App.Telemetry;
 using LandingStats.Core;
@@ -50,11 +51,11 @@ internal static class PausePipelineRegressionTests
 
     private static void PausedOnlyCaptureDoesNotLoadConfigurationOrHistory()
     {
-        var window = (MainWindow)FormatterServices.GetUninitializedObject(typeof(MainWindow));
+        var processor = new EpisodeProcessor(null!, null!, null!);
         var sample = Frame(10, false);
         sample.SimulatorState = TelemetrySimulatorState.Paused;
         sample.MotionSimulation = false;
-        Assert(Process(window, new[] { sample }).Count == 0,
+        Assert(Process(processor, new[] { sample }).Count == 0,
             "a paused-only capture was saved or accessed uninitialized configuration/history services");
     }
 
@@ -94,9 +95,9 @@ internal static class PausePipelineRegressionTests
     {
         using var recorder = new SimConnectLandingRecorder(IntPtr.Zero);
         var previousRunways = new[] { new RunwayFacility { AirportIdent = "OLD", PrimaryName = "09" } };
-        Set(recorder, "_publishedRunways", previousRunways);
         Set(recorder, "_runwayEpisodeId", 76L);
         Set(recorder, "_activeEpisodeId", 77L);
+        Set(recorder, "_activePersistentId", Guid.NewGuid());
         Set(recorder, "_episodeSamples", new List<TelemetrySample> { Frame(9.99, false), Frame(10, true) });
         Set(recorder, "_lastContactTime", (double?)10);
         Set(recorder, "_episodeDecisionJournal", new TelemetryDecisionJournal());
@@ -190,28 +191,21 @@ internal static class PausePipelineRegressionTests
     private static IReadOnlyList<LandingRecord> Process(IReadOnlyList<TelemetrySample> samples)
     {
         var directory = Path.Combine(Path.GetTempPath(), "landing-stats-pause-pipeline-" + Guid.NewGuid().ToString("N"));
-        var window = (MainWindow)FormatterServices.GetUninitializedObject(typeof(MainWindow));
-        Set(window, "_flightModelGeometryResolver", new FlightModelGeometryResolver(Array.Empty<string>(), false));
-        Set(window, "_repository", new LandingRepository(directory));
-        Set(window, "_landingRepositoryGate", new object());
-        try { return Process(window, samples); }
+        var processor = new EpisodeProcessor(new FlightModelGeometryResolver(Array.Empty<string>(), false), new LandingRepository(directory), new object());
+        try { return Process(processor, samples); }
         finally { if (Directory.Exists(directory)) Directory.Delete(directory, true); }
     }
 
-    private static IReadOnlyList<LandingRecord> Process(MainWindow window, IReadOnlyList<TelemetrySample> samples)
+    private static IReadOnlyList<LandingRecord> Process(EpisodeProcessor processor, IReadOnlyList<TelemetrySample> samples)
     {
         var episode = new LandingEpisodeEventArgs(1, samples, "MSFS", "TEST", "TEST", "TEST",
-            Array.Empty<AirportFacility>(), Array.Empty<string>());
-        var processing = (Task)Invoke(window, "ProcessEpisodeAsync", episode, Array.Empty<AirportFacility>(), DateTime.UtcNow)!;
-        Assert(processing.Wait(TimeSpan.FromSeconds(10)), "pipeline fixture timed out");
-        processing.GetAwaiter().GetResult();
-        var processed = processing.GetType().GetProperty("Result")!.GetValue(processing)!;
-        return (IReadOnlyList<LandingRecord>)processed.GetType().GetProperty("Records")!.GetValue(processed)!;
+            Array.Empty<AirportFacility>(), Array.Empty<string>(), persistentId: System.Guid.NewGuid());
+        return ReportPipelineFixture.Complete(processor.ProcessAsync(episode, Array.Empty<AirportFacility>(), DateTime.UtcNow)).Records;
     }
 
     private static object? Invoke(object instance, string name, params object[] args) =>
-        instance.GetType().GetMethod(name, PrivateInstance)!.Invoke(instance, args);
-    private static object? Get(object instance, string name) => instance.GetType().GetField(name, PrivateInstance)!.GetValue(instance);
-    private static void Set(object instance, string name, object? value) => instance.GetType().GetField(name, PrivateInstance)!.SetValue(instance, value);
+        RecorderTestAccess.Call(instance, name, args);
+    private static object? Get(object instance, string name) => RecorderTestAccess.Get(instance, name);
+    private static void Set(object instance, string name, object? value) => RecorderTestAccess.Set(instance, name, value);
     private static void Assert(bool value, string message) { if (!value) throw new InvalidOperationException(message); }
 }

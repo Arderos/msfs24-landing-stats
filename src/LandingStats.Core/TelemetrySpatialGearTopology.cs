@@ -62,16 +62,16 @@ internal static class TelemetrySpatialGearTopology
         var contacts = TelemetryContactDetector.Find(samples, 10);
         if (contacts.Count == 0) return false;
         var start = contacts[0].ContactIndex;
-        var endTime = samples[start].SimulationTimeSeconds + WindowSeconds;
+        var endTime = TelemetryAnalysisFrames.TimeOf(samples[start]) + WindowSeconds;
         var rows = points.Select(_ => new List<Observation>()).ToArray();
         var extensions = points.Select(point => samples[start].ContactPointPosition[point]).ToArray();
         for (var index = start; index < samples.Count; index++)
         {
             var sample = samples[index];
-            if (sample.SimulationTimeSeconds > endTime || !sample.MotionSimulation) break;
+            if (TelemetryAnalysisFrames.TimeOf(sample) > endTime || !sample.MotionSimulation) break;
             if (index > start)
             {
-                var gap = sample.SimulationTimeSeconds - samples[index - 1].SimulationTimeSeconds;
+                var gap = TelemetryAnalysisFrames.TimeOf(sample) - TelemetryAnalysisFrames.TimeOf(samples[index - 1]);
                 if (gap <= 0 || gap > MaximumFrameGapSeconds ||
                     sample.FlightSegment != samples[start].FlightSegment) break;
             }
@@ -97,7 +97,7 @@ internal static class TelemetrySpatialGearTopology
                 //     + Y tan(phi)/cos(theta) - suspension_scale * compression.
                 rows[pointIndex].Add(new Observation
                 {
-                    Time = sample.SimulationTimeSeconds,
+                    Time = TelemetryAnalysisFrames.TimeOf(sample),
                     Pitch = Math.Tan(theta),
                     Bank = Math.Tan(phi) / Math.Cos(theta),
                     Compression = compression,
@@ -277,5 +277,5 @@ internal static class TelemetrySpatialGearTopology
     }
 
     private static double Square(double value) => value * value;
-    private static bool Finite(double value) => !double.IsNaN(value) && !double.IsInfinity(value);
+    private static bool Finite(double value) => AnalysisNumericPolicy.IsFinite(value);
 }

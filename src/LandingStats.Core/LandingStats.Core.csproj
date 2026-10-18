@@ -4,6 +4,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Remove="ContactPointAnalysis.cs;ContactPointResult.cs;TelemetryDownsampler.cs" />
     <InternalsVisibleTo Include="LandingStats.App.RegressionTests" />
   </ItemGroup>
 </Project>

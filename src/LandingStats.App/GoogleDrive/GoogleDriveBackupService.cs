@@ -22,6 +22,7 @@ internal sealed class GoogleDriveBackupService : IDisposable
     private const string LandingsFolderKind = "landings-folder";
     private const string LandingKind = "landing";
     private const string SettingsKind = "settings";
+    private const string TombstoneKind = "landing-tombstone";
     private readonly IGoogleDriveApi _drive;
     private readonly LandingRepository _landings;
     private readonly object _landingGate;
@@ -34,6 +35,7 @@ internal sealed class GoogleDriveBackupService : IDisposable
         new ConcurrentDictionary<string, byte>(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, byte> _durableLocalDeletesAwaitingQueue =
         new ConcurrentDictionary<string, byte>(StringComparer.Ordinal);
+    internal event Action<Guid, bool>? Progress;
     private bool _disposed;
 
     public GoogleDriveBackupService(
@@ -52,7 +54,7 @@ internal sealed class GoogleDriveBackupService : IDisposable
         _applySettingsAsync = applySettingsAsync ?? throw new ArgumentNullException(nameof(applySettingsAsync));
     }
 
-    public async Task DeleteLandingAsync(string landingId, CancellationToken cancellationToken)
+    internal async Task DeleteLandingAsync(string landingId, CancellationToken cancellationToken)
     {
         DeleteLandingLocally(landingId);
         await QueueLandingDeletionAsync(landingId, cancellationToken).ConfigureAwait(false);
@@ -64,6 +66,7 @@ internal sealed class GoogleDriveBackupService : IDisposable
         ThrowIfDisposed();
         lock (_pendingDeleteGate)
         {
+            if (!HasBackupScope()) { lock (_landingGate) return _landings.Delete(landingId); }
             _sessionPendingDeletes.TryAdd(landingId, 0);
             var stateQueued = false;
             try
@@ -113,6 +116,7 @@ internal sealed class GoogleDriveBackupService : IDisposable
         cancellationToken.ThrowIfCancellationRequested();
         lock (_pendingDeleteGate)
         {
+            if (!HasBackupScope()) return Task.CompletedTask;
             if (_durableLocalDeletesAwaitingQueue.TryRemove(landingId, out _))
             {
                 return Task.CompletedTask;
@@ -123,11 +127,13 @@ internal sealed class GoogleDriveBackupService : IDisposable
         return Task.CompletedTask;
     }
 
+    // Cancels only an uncommitted cloud queue entry, never a local deletion ledger.
     internal Task CancelLandingDeletionAsync(string landingId, CancellationToken cancellationToken)
     {
         ValidateLandingId(landingId);
         ThrowIfDisposed();
         cancellationToken.ThrowIfCancellationRequested();
+        if (_landings.IsDeleted(landingId)) throw new InvalidOperationException("A durable local deletion cannot be canceled.");
         _stateRepository.RemovePendingDelete(landingId);
         lock (_pendingDeleteGate)
         {
@@ -201,7 +207,7 @@ internal sealed class GoogleDriveBackupService : IDisposable
                 {
                     state.AccountPermissionId = accountPermissionId;
                     state.RebaseWithinActiveRoots(root.Id, rootIds);
-                    _stateRepository.Save(state);
+                    _stateRepository.SavePreservingPendingDeletes(state);
                 }
                 else
                 {
@@ -278,7 +284,8 @@ internal sealed class GoogleDriveBackupService : IDisposable
                     result,
                     cancellationToken)
                 .ConfigureAwait(false);
-            ValidateFinalLandingState(state, remoteLandings, result.ConflictedLandingIds);
+            ValidateFinalLandingState(state, remoteLandings,
+                result.ConflictedLandingIds.Concat(result.FailedLandings.Keys).ToArray());
 
             var remoteSettings = await NormalizeSettingsFilesAsync(files, rootIds, result, cancellationToken)
                 .ConfigureAwait(false);
@@ -330,6 +337,12 @@ internal sealed class GoogleDriveBackupService : IDisposable
         exception is UnauthorizedAccessException ||
         exception is System.Runtime.Serialization.SerializationException;
 
+    private bool HasBackupScope()
+    {
+        try { var state = _stateRepository.Load(); return !string.IsNullOrEmpty(state.AccountPermissionId) || !string.IsNullOrEmpty(state.RootFolderId); }
+        catch (Exception error) when (IsStateStorageFailure(error)) { return true; }
+    }
+
     private async Task<bool> ProcessCloudDeletionMarkersAsync(
         GoogleDriveSyncState state,
         IReadOnlyList<GoogleDriveFile> files,
@@ -338,7 +351,7 @@ internal sealed class GoogleDriveBackupService : IDisposable
     {
         var changedCloud = false;
         var deletedLandingIds = files
-            .Where(file => string.Equals(file.Property(KindProperty), LandingKind, StringComparison.Ordinal))
+            .Where(file => file.Property(KindProperty) == LandingKind || file.Property(KindProperty) == TombstoneKind)
             .Where(file => string.Equals(
                 file.Property(DeletedByApplicationProperty),
                 "true",
@@ -397,6 +410,14 @@ internal sealed class GoogleDriveBackupService : IDisposable
 
         foreach (var landingId in state.PendingDeletes.ToArray())
         {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!files.Any(file => !file.Trashed && file.Property(KindProperty) == TombstoneKind && file.Property(LandingIdProperty) == landingId))
+            {
+                await _drive.UploadFileAsync(landingId + ".deleted.json", "application/json", state.RootFolderId!,
+                    Properties(TombstoneKind, new KeyValuePair<string, string>(LandingIdProperty, landingId),
+                        new KeyValuePair<string, string>(DeletedByApplicationProperty, "true")),
+                    System.Text.Encoding.UTF8.GetBytes("{\"deleted\":true}"), cancellationToken).ConfigureAwait(false);
+            }
             var matchingFiles = files
                 .Where(file => string.Equals(
                     file.Property(KindProperty),
@@ -465,8 +486,15 @@ internal sealed class GoogleDriveBackupService : IDisposable
                 }
                 continue;
             }
-            await TrashNonCanonicalAsync(group, canonical, cancellationToken).ConfigureAwait(false);
-            result.Add(group.Key, canonical);
+            try
+            {
+                await TrashNonCanonicalAsync(group, canonical, cancellationToken).ConfigureAwait(false);
+                result.Add(group.Key, canonical);
+            }
+            catch (Exception error) when (IsLandingFailure(error))
+            {
+                syncResult.FailedLandings[group.Key] = error.Message;
+            }
         }
         return result;
     }
@@ -518,6 +546,7 @@ internal sealed class GoogleDriveBackupService : IDisposable
         CancellationToken cancellationToken)
     {
         Dictionary<string, LocalLandingBackup> local;
+        using (LocalOperation(cancellationToken))
         lock (_landingGate)
         {
             var summaries = _landings.LoadAll();
@@ -530,8 +559,68 @@ internal sealed class GoogleDriveBackupService : IDisposable
                 StringComparer.Ordinal);
         }
 
+        // Stage bounded chunks outside the history gate, then commit one index
+        // per chunk while holding it. Other writers never join a deferred batch.
+        var restored = new HashSet<string>(StringComparer.Ordinal);
+        var imports = new List<Tuple<string, GoogleDriveFile, byte[]>>(); long importBytes = 0;
+        void CommitImports()
+        {
+            using (LocalOperation(cancellationToken))
+            lock (_landingGate)
+            using (_landings.BeginBatch())
+            {
+                foreach (var item in imports)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    if (IsDeletePending(item.Item1)) continue;
+                    if (_landings.Contains(item.Item1))
+                    {
+                        result.ConflictedLandingIds.Add(item.Item1);
+                        continue;
+                    }
+                    try
+                    {
+                        var record = _landings.Import(item.Item3, item.Item1);
+                        var fingerprint = _landings.GetBackupFingerprint(record);
+                        local[item.Item1] = new LocalLandingBackup(item.Item1, fingerprint, hash: item.Item2.Property(HashProperty));
+                        state.Landings[item.Item1] = Link(item.Item2.Id, item.Item2.Property(HashProperty)!, fingerprint);
+                        restored.Add(item.Item1); result.DownloadedLandings++;
+                    }
+                    catch (Exception error) when (IsLandingFailure(error)) { result.FailedLandings[item.Item1] = error.Message; }
+                }
+            }
+            imports.Clear(); importBytes = 0; _stateRepository.SavePreservingPendingDeletes(state);
+        }
+        foreach (var remote in remoteByLandingId.Where(pair => !local.ContainsKey(pair.Key) && !string.IsNullOrWhiteSpace(pair.Value.Property(HashProperty))))
+        {
+            cancellationToken.ThrowIfCancellationRequested(); if (IsDeletePending(remote.Key)) continue;
+            try
+            {
+                var bytes = await _drive.DownloadFileAsync(remote.Value.Id, cancellationToken).ConfigureAwait(false);
+                VerifyHash(bytes, remote.Value.Property(HashProperty)!, "landing");
+                if (imports.Count > 0 && importBytes + bytes.Length > 32L * 1024 * 1024) CommitImports();
+                imports.Add(Tuple.Create(remote.Key, remote.Value, bytes)); importBytes += bytes.Length;
+                if (imports.Count >= 64 || importBytes >= 32L * 1024 * 1024) CommitImports();
+            }
+            catch (Exception error) when (IsLandingFailure(error)) { result.FailedLandings[remote.Key] = error.Message; }
+        }
+        if (imports.Count > 0) CommitImports();
+
+        var changedSinceCheckpoint = 0;
+        void Checkpoint()
+        {
+            if (++changedSinceCheckpoint < 32) return;
+            using (LocalOperation(cancellationToken)) _stateRepository.SavePreservingPendingDeletes(state);
+            changedSinceCheckpoint = 0;
+        }
         foreach (var remotePair in remoteByLandingId)
         {
+            if (restored.Contains(remotePair.Key) || result.FailedLandings.ContainsKey(remotePair.Key) ||
+                result.ConflictedLandingIds.Contains(remotePair.Key, StringComparer.Ordinal)) continue;
+            cancellationToken.ThrowIfCancellationRequested();
+            var operation = Guid.NewGuid(); Progress?.Invoke(operation, false);
+            try
+            {
             if (IsDeletePending(remotePair.Key))
             {
                 continue;
@@ -567,7 +656,26 @@ internal sealed class GoogleDriveBackupService : IDisposable
                 }
                 else
                 {
-                    LoadLocalContent(localBackup);
+                    try { LoadLocalContent(localBackup); }
+                    catch (Exception error) when (IsLandingFailure(error))
+                    {
+                        remoteBytes ??= await _drive.DownloadFileAsync(remote.Id, cancellationToken).ConfigureAwait(false);
+                        VerifyHash(remoteBytes, expectedRemoteHash, "landing");
+                        using (LocalOperation(cancellationToken))
+                        lock (_landingGate)
+                        {
+                            if (IsDeletePending(remotePair.Key)) continue;
+                            if (!LocalRevisionMatches(localBackup))
+                            {
+                                result.ConflictedLandingIds.Add(remotePair.Key);
+                                continue;
+                            }
+                            var repaired = _landings.Import(remoteBytes, remotePair.Key, true);
+                            localBackup.Fingerprint = _landings.GetBackupFingerprint(repaired);
+                        }
+                        localBackup.Bytes = remoteBytes; localBackup.Hash = expectedRemoteHash;
+                        result.DownloadedLandings++;
+                    }
                 }
                 var localHash = localBackup.Hash!;
                 if (!string.Equals(localHash, expectedRemoteHash, StringComparison.OrdinalIgnoreCase))
@@ -607,10 +715,13 @@ internal sealed class GoogleDriveBackupService : IDisposable
                             {
                                 continue;
                             }
-                            _landings.Import(remoteBytes, remotePair.Key, true);
-                            localBackup.Fingerprint = _landings.GetBackupFingerprint(
-                                _landings.LoadAll().Single(record =>
-                                    string.Equals(record.Id, remotePair.Key, StringComparison.Ordinal)));
+                            if (!LocalRevisionMatches(localBackup))
+                            {
+                                result.ConflictedLandingIds.Add(remotePair.Key);
+                                continue;
+                            }
+                            var imported = _landings.Import(remoteBytes, remotePair.Key, true);
+                            localBackup.Fingerprint = _landings.GetBackupFingerprint(imported);
                         }
                         localBackup.Bytes = remoteBytes;
                         localBackup.Hash = expectedRemoteHash;
@@ -655,9 +766,12 @@ internal sealed class GoogleDriveBackupService : IDisposable
                 {
                     continue;
                 }
-                _landings.Import(remoteBytes, remotePair.Key);
-                var summary = _landings.LoadAll().Single(record =>
-                    string.Equals(record.Id, remotePair.Key, StringComparison.Ordinal));
+                if (_landings.Contains(remotePair.Key))
+                {
+                    result.ConflictedLandingIds.Add(remotePair.Key);
+                    continue;
+                }
+                var summary = _landings.Import(remoteBytes, remotePair.Key);
                 local[remotePair.Key] = new LocalLandingBackup(
                     remotePair.Key,
                     _landings.GetBackupFingerprint(summary),
@@ -669,10 +783,20 @@ internal sealed class GoogleDriveBackupService : IDisposable
                 expectedRemoteHash,
                 local[remotePair.Key].Fingerprint);
             result.DownloadedLandings++;
+            }
+            catch (Exception error) when (IsLandingFailure(error)) { result.FailedLandings[remotePair.Key] = error.Message; }
+            finally { Progress?.Invoke(operation, true); cancellationToken.ThrowIfCancellationRequested(); Checkpoint(); }
         }
 
         foreach (var pair in local.ToArray())
         {
+            if (remoteByLandingId.ContainsKey(pair.Key) || IsDeletePending(pair.Key) ||
+                result.ConflictedLandingIds.Contains(pair.Key, StringComparer.Ordinal) ||
+                result.FailedLandings.ContainsKey(pair.Key)) continue;
+            cancellationToken.ThrowIfCancellationRequested();
+            var operation = Guid.NewGuid(); Progress?.Invoke(operation, false);
+            try
+            {
             if (remoteByLandingId.ContainsKey(pair.Key))
             {
                 continue;
@@ -703,7 +827,12 @@ internal sealed class GoogleDriveBackupService : IDisposable
                 cancellationToken).ConfigureAwait(false);
             state.Landings[pair.Key] = Link(uploaded.Id, hash, pair.Value.Fingerprint);
             result.UploadedLandings++;
+            }
+            catch (Exception error) when (IsLandingFailure(error)) { result.FailedLandings[pair.Key] = error.Message; }
+            finally { Progress?.Invoke(operation, true); cancellationToken.ThrowIfCancellationRequested(); Checkpoint(); }
         }
+        if (changedSinceCheckpoint > 0)
+            using (LocalOperation(cancellationToken)) _stateRepository.SavePreservingPendingDeletes(state);
     }
 
     private async Task<bool> TryResolveLandingMetadataConflictAsync(
@@ -729,6 +858,11 @@ internal sealed class GoogleDriveBackupService : IDisposable
             {
                 return true;
             }
+            if (!LocalRevisionMatches(localBackup))
+            {
+                result.ConflictedLandingIds.Add(landingId);
+                return true;
+            }
             var localRecord = _landings.DeserializeBackup(localBackup.Bytes!);
             var remoteRecord = _landings.DeserializeBackup(remoteBytes);
             if (!string.Equals(
@@ -744,10 +878,8 @@ internal sealed class GoogleDriveBackupService : IDisposable
             mergedHash = Hash(mergedBytes);
             if (!string.Equals(mergedHash, localBackup.Hash, StringComparison.OrdinalIgnoreCase))
             {
-                _landings.Import(mergedBytes, landingId, true);
+                var summary = _landings.Import(mergedBytes, landingId, true);
                 result.LocalHistoryChanged = true;
-                var summary = _landings.LoadAll().Single(record =>
-                    string.Equals(record.Id, landingId, StringComparison.Ordinal));
                 localBackup.Fingerprint = _landings.GetBackupFingerprint(summary);
                 localBackup.Bytes = mergedBytes;
                 localBackup.Hash = mergedHash;
@@ -984,6 +1116,9 @@ internal sealed class GoogleDriveBackupService : IDisposable
                 cancellationToken).ConfigureAwait(false);
         }
         var expectedRemoteHash = remoteHash!;
+        if (local.PersistedAndReadable && string.Equals(localHash, expectedRemoteHash, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(state.LastSettingsHash, expectedRemoteHash, StringComparison.OrdinalIgnoreCase))
+        { state.SettingsFileId = remote.Id; return; }
         remoteBytes ??= await _drive.DownloadFileAsync(remote.Id, cancellationToken).ConfigureAwait(false);
         VerifyHash(remoteBytes, expectedRemoteHash, "settings");
         var remoteSettings = GoogleDriveCloudSettings.Deserialize(remoteBytes);
@@ -1199,19 +1334,15 @@ internal sealed class GoogleDriveBackupService : IDisposable
             .Where(file => !string.IsNullOrWhiteSpace(file.Property(BaseHashProperty)))
             .GroupBy(file => file.Property(BaseHashProperty)!, StringComparer.OrdinalIgnoreCase)
             .ToDictionary(group => group.Key, group => group.ToArray(), StringComparer.OrdinalIgnoreCase);
-        if (childrenByBase.Any(pair => pair.Value.Length != 1))
-        {
-            throw new InvalidDataException("Google Drive contains concurrent " + label + " edits.");
-        }
 
         var leaves = byHash
             .Where(pair => !childrenByBase.ContainsKey(pair.Key))
             .Select(pair => pair.Key)
             .ToArray();
-        if (leaves.Length != 1)
-        {
-            throw new InvalidDataException("Google Drive contains concurrent " + label + " edits.");
-        }
+        if (leaves.Length == 0) throw new InvalidDataException("Google Drive contains a cyclic " + label + " revision graph.");
+        // Converge independently on every device. Losing complete revisions go
+        // to Drive trash through TrashNonCanonicalAsync and remain recoverable.
+        if (leaves.Length > 1) return byHash[leaves.OrderBy(value => value, StringComparer.OrdinalIgnoreCase).First()];
 
         var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var current = leaves[0];
@@ -1224,16 +1355,17 @@ internal sealed class GoogleDriveBackupService : IDisposable
             }
             current = parent!;
         }
-        if (visited.Count != byHash.Count)
-        {
-            throw new InvalidDataException("Google Drive contains concurrent " + label + " edits.");
-        }
+        if (visited.Count != byHash.Count) return byHash[leaves[0]];
 
         return byHash[leaves[0]];
     }
 
+    private static bool IsLandingFailure(Exception error) => !(error is Runtime.CloudApiException remote && remote.Transient) &&
+        (error is IOException || error is InvalidDataException || error is System.Runtime.Serialization.SerializationException || error is UnauthorizedAccessException);
+
     private void LoadLocalContent(LocalLandingBackup local)
     {
+        using var operation = LocalOperation(Runtime.CloudOperationCancellation.Token);
         if (local.Bytes != null && !string.IsNullOrWhiteSpace(local.Hash))
         {
             return;
@@ -1241,8 +1373,30 @@ internal sealed class GoogleDriveBackupService : IDisposable
         lock (_landingGate)
         {
             local.Bytes = _landings.ExportForBackup(local.Id);
+            var summary = _landings.LoadAll().First(record => string.Equals(record.Id, local.Id, StringComparison.Ordinal));
+            local.Fingerprint = _landings.GetBackupFingerprint(summary);
         }
         local.Hash = Hash(local.Bytes);
+    }
+
+    // The caller holds _landingGate through the subsequent import. A network
+    // await never reserves the snapshot: history writers may have committed
+    // airport metadata, a repaired detail, or a whole replacement meanwhile.
+    private bool LocalRevisionMatches(LocalLandingBackup local)
+    {
+        var summary = _landings.LoadAll().FirstOrDefault(record => string.Equals(record.Id, local.Id, StringComparison.Ordinal));
+        return summary != null && string.Equals(
+            _landings.GetBackupFingerprints(new[] { summary })[local.Id],
+            local.Fingerprint, StringComparison.Ordinal);
+    }
+
+    private IDisposable LocalOperation(CancellationToken cancellation) => new LocalProgressScope(this, cancellation);
+    private sealed class LocalProgressScope : IDisposable
+    {
+        private readonly GoogleDriveBackupService _owner; private readonly CancellationToken _token; private readonly Guid _id = Guid.NewGuid();
+        public LocalProgressScope(GoogleDriveBackupService owner, CancellationToken token)
+        { _owner = owner; _token = token; token.ThrowIfCancellationRequested(); owner.Progress?.Invoke(_id, false); }
+        public void Dispose() { _owner.Progress?.Invoke(_id, true); _token.ThrowIfCancellationRequested(); }
     }
 
     private static GoogleDriveLandingLink Link(
@@ -1305,7 +1459,7 @@ internal sealed class GoogleDriveBackupService : IDisposable
 
     private bool IsDeletePending(string landingId)
     {
-        return _sessionPendingDeletes.ContainsKey(landingId);
+        return _sessionPendingDeletes.ContainsKey(landingId) || _landings.IsDeleted(landingId);
     }
 
     private string[] SessionPendingDeletes()
@@ -1313,14 +1467,6 @@ internal sealed class GoogleDriveBackupService : IDisposable
         lock (_pendingDeleteGate)
         {
             return _sessionPendingDeletes.Keys.ToArray();
-        }
-    }
-
-    private void ClearSessionPendingDeletes()
-    {
-        lock (_pendingDeleteGate)
-        {
-            _sessionPendingDeletes.Clear();
         }
     }
 
@@ -1420,6 +1566,7 @@ internal sealed class GoogleDriveBackupService : IDisposable
 
 internal sealed class GoogleDriveSyncResult
 {
+    public Dictionary<string, string> FailedLandings { get; } = new Dictionary<string, string>(StringComparer.Ordinal);
     public int UploadedLandings { get; set; }
     public int DownloadedLandings { get; set; }
     public List<string> ConflictedLandingIds { get; } = new List<string>();

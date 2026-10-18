@@ -15,42 +15,210 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <ProjectReference Include="../LandingStats.Workers.Cloud/LandingStats.Workers.Cloud.csproj" />
+    <ProjectReference Include="../LandingStats.Workers.IntegrationApi/LandingStats.Workers.IntegrationApi.csproj" />
+    <Compile Remove="Runtime/CloudWorkerRole.cs" />
+
+    <ProjectReference Include="../LandingStats.Workers.Upload/LandingStats.Workers.Upload.csproj" />
+    <Compile Remove="Runtime/UploadWorkerRole.cs" />
+
+    <ProjectReference Include="../LandingStats.Workers.Analysis/LandingStats.Workers.Analysis.csproj" />
+    <Compile Remove="Runtime/AnalysisWorkerRole.cs" />
+
+    <ProjectReference Include="../LandingStats.Workers.Controllers/LandingStats.Workers.Controllers.csproj" />
+    <Compile Remove="Runtime/ControllersWorkerRole.cs" />
+    <Compile Remove="Telemetry/WindowsJoystickReader.cs" />
+
+    <ProjectReference Include="../LandingStats.Workers.Simulator/LandingStats.Workers.Simulator.csproj" />
+    <Compile Remove="Runtime/SimulatorWorkerRole.cs" />
+    <Compile Remove="Telemetry/RunwayFacilityRequest.cs" />
+    <Compile Remove="Telemetry/RunwayIlsRequest.cs" />
+    <Compile Remove="Telemetry/SimConnectOperationJournal.cs" />
+    <Compile Remove="Telemetry/SimConnectSource.cs" />
+    <Compile Remove="Telemetry/SimConnectSource.Effects.cs" />
+    <Compile Remove="Telemetry/SimConnectSource.Health.cs" />
+    <Compile Remove="Telemetry/SimConnectSource.Lifecycle.cs" />
+    <Compile Remove="Telemetry/SimConnectSource.Observations.cs" />
+    <Compile Remove="Telemetry/SimConnectSource.Runways.cs" />
+    <Compile Remove="Telemetry/SimConnectSource.SceneryPort.cs" />
+    <Compile Remove="Telemetry/SimFrameData.cs" />
+
+    <ProjectReference Include="../LandingStats.Workers.Common/LandingStats.Workers.Common.csproj" />
+    <Compile Remove="Runtime/WorkerOwner.cs" />
+    <Compile Remove="Runtime/OwnerCadence.cs" />
+
+    <ProjectReference Include="../LandingStats.Runtime/LandingStats.Runtime.csproj" />
+    <Compile Remove="Runtime/AirportMetadata.cs" />
+    <Compile Remove="Runtime/ApplicationRuntime.cs" />
+    <Compile Remove="Runtime/ArchiveIntakeOwner.cs" />
+    <Compile Remove="Runtime/CaptureArchivePolicy.cs" />
+    <Compile Remove="Runtime/CloudOperationData.cs" />
+    <Compile Remove="Runtime/CloudSyncRuntimeOwner.cs" />
+    <Compile Remove="Runtime/CloudWorkerSession.cs" />
+    <Compile Remove="Runtime/ColdRecordingRecovery.cs" />
+    <Compile Remove="Runtime/ComponentGenerations.cs" />
+    <Compile Remove="Runtime/ComponentSupervisor.cs" />
+    <Compile Remove="Runtime/ControllerJoiner.cs" />
+    <Compile Remove="Runtime/DeferredGoogleDriveApi.cs" />
+    <Compile Remove="Runtime/DurableOutbox.cs" />
+    <Compile Remove="Runtime/DurableRuntimeDispatcher.cs" />
+    <Compile Remove="Runtime/EpisodeProcessor.cs" />
+    <Compile Remove="Runtime/EpisodeRuntimeOwner.cs" />
+    <Compile Remove="Runtime/EpisodeWorkCoordinator.cs" />
+    <Compile Remove="Runtime/HistoryCommands.cs" />
+    <Compile Remove="Runtime/IsolatedGoogleDriveApi.cs" />
+    <Compile Remove="Runtime/LandingRuntime.cs" />
+    <Compile Remove="Runtime/OperationLifetime.cs" />
+    <Compile Remove="Runtime/OwnedProcess.cs" />
+    <Compile Remove="Runtime/OwnedProcess.Workers.cs" />
+    <Compile Remove="Runtime/ProcessingEngineLease.cs" />
+    <Compile Remove="Runtime/ProcessJobExecutor.cs" />
+    <Compile Remove="Runtime/ProcessWorkerHost.cs" />
+    <Compile Remove="Runtime/RawBatchPersistence.cs" />
+    <Compile Remove="Runtime/RawChunkStore.cs" />
+    <Compile Remove="Runtime/RawEffectStore.cs" />
+    <Compile Remove="Runtime/RawExportOwner.cs" />
+    <Compile Remove="Runtime/RecordingEffectPersistence.cs" />
+    <Compile Remove="Runtime/RecordingRuntimeOwner.cs" />
+    <Compile Remove="Runtime/RecordingRuntimeState.cs" />
+    <Compile Remove="Runtime/RecoveryJournal.cs" />
+    <Compile Remove="Runtime/RemoteSceneryQueryPort.cs" />
+    <Compile Remove="Runtime/RetainedAnalysisExecutor.cs" />
+    <Compile Remove="Runtime/RollingRuntimeJournal.cs" />
+    <Compile Remove="Runtime/RuntimeCommandQueue.cs" />
+    <Compile Remove="Runtime/RuntimeComponentCatalog.cs" />
+    <Compile Remove="Runtime/RuntimeInputPreparation.cs" />
+    <Compile Remove="Runtime/RuntimePresentation.cs" />
+    <Compile Remove="Runtime/RuntimeRetentionOwner.cs" />
+    <Compile Remove="Runtime/RuntimeScratchLease.cs" />
+    <Compile Remove="Runtime/RuntimeSession.cs" />
+    <Compile Remove="Runtime/RuntimeSessionOwners.cs" />
+    <Compile Remove="Runtime/RuntimeWorkerSource.cs" />
+    <Compile Remove="Runtime/UploadRuntimeOwner.cs" />
+
+    <ProjectReference Include="../LandingStats.Delivery/LandingStats.Delivery.csproj" />
+    <Compile Remove="GoogleDrive/BoundedCloudDownload.cs" />
+    <Compile Remove="GoogleDrive/GoogleDriveApiClient.cs" />
+    <Compile Remove="GoogleDrive/GoogleDriveBackupService.cs" />
+    <Compile Remove="GoogleDrive/GoogleDriveCloudSettings.cs" />
+    <Compile Remove="GoogleDrive/GoogleDriveOAuthConfiguration.cs" />
+    <Compile Remove="GoogleDrive/GoogleDriveSyncStateRepository.cs" />
+    <Compile Remove="GoogleDrive/GoogleOAuthClient.cs" />
+    <Compile Remove="GoogleDrive/GoogleOAuthTokenStore.cs" />
+    <Compile Remove="TelemetryUpload/TelemetryUploadClient.cs" />
+    <Compile Remove="TelemetryUpload/TelemetryUploadIdentityStore.cs" />
+
+    <Compile Remove="Runtime/ProcessedEpisode.cs" />
+    <Compile Remove="Models/RuntimeFinalFacilities.cs" />
+    <ProjectReference Include="../LandingStats.Models/LandingStats.Models.csproj" />
+    <ProjectReference Include="../LandingStats.Persistence/LandingStats.Persistence.csproj" />
+    <ProjectReference Include="../LandingStats.Recording/LandingStats.Recording.csproj" />
+    <ProjectReference Include="../LandingStats.Storage/LandingStats.Storage.csproj" />
+    <Compile Remove="Models/AirportFacility.cs" />
+    <Compile Remove="Models/AnalysisGeometrySnapshot.cs" />
+    <Compile Remove="Models/ControllerCatalogTimeline.cs" />
+    <Compile Remove="Models/EpisodeFacilitySnapshot.cs" />
+    <Compile Remove="Models/EpisodeWorkManifest.cs" />
+    <Compile Remove="Models/LandingContactSeries.cs" />
+    <Compile Remove="Models/LandingEngineSeries.cs" />
+    <Compile Remove="Models/LandingRecord.cs" />
+    <Compile Remove="Models/LandingReplayContacts.cs" />
+    <Compile Remove="Models/LandingReplayDiagnostics.cs" />
+    <Compile Remove="Models/LandingReplayRunwayOffset.cs" />
+    <Compile Remove="Models/LandingReplayTrack.cs" />
+    <Compile Remove="Models/LandingSeriesPoint.cs" />
+    <Compile Remove="Models/ModelText.cs" />
+    <Compile Remove="Models/RecordedTimeSearch.cs" />
+    <Compile Remove="Models/ReplayControlInputs.Catalogs.cs" />
+    <Compile Remove="Models/ReplayControlInputs.cs" />
+    <Compile Remove="Models/ReplayDesignation.cs" />
+    <Compile Remove="Models/ReplayGearRegistrationModel.cs" />
+    <Compile Remove="Models/ReplayGearState.cs" />
+    <Compile Remove="Models/ReplayMath.cs" />
+    <Compile Remove="Models/ReplaySurfaceGeometry.cs" />
+    <Compile Remove="Models/RunwayFacility.cs" />
+    <Compile Remove="Models/RunwayMarkingConvention.cs" />
+    <Compile Remove="Models/RunwayMarkingModel.cs" />
+    <Compile Remove="Runtime/ControllerProvenanceCodec.cs" />
+    <Compile Remove="Runtime/RuntimeCheckpointCodec.cs" />
+    <Compile Remove="Runtime/EpisodePersistenceData.cs" />
+    <Compile Remove="Telemetry/RecorderEvents.cs" />
+    <Compile Remove="Telemetry/ISceneryQueryPort.cs" />
+    <Compile Remove="Telemetry/ISimulatorSourceContext.cs" />
+    <Compile Remove="Telemetry/IEpisodeFacilityPort.cs" />
+    <Compile Remove="Telemetry/RunwayResolver.cs" />
+    <Compile Remove="Telemetry/AirportResolver.cs" />
+    <Compile Remove="Telemetry/LandingSiteResolver.cs" />
+    <Compile Remove="Runtime/DurableFile.cs" />
+    <Compile Remove="Runtime/RuntimeStorageQuota.cs" />
+    <Compile Remove="Runtime/JournalCrc32.cs" />
+    <Compile Remove="Telemetry/DirectoryTraversalIdentity.cs" />
+    <Compile Remove="Telemetry/EpisodeFacilityCoordinator.Checkpoint.cs" />
+    <Compile Remove="Telemetry/EpisodeFacilityCoordinator.cs" />
+    <Compile Remove="Telemetry/FlightModelGeometryResolver.Cache.cs" />
+    <Compile Remove="Telemetry/FlightModelGeometryResolver.cs" />
+    <Compile Remove="Telemetry/LandingEpisodeCoordinator.Checkpoint.cs" />
+    <Compile Remove="Telemetry/LandingEpisodeCoordinator.cs" />
+    <Compile Remove="Telemetry/LandingEpisodeCoordinator.Lifecycle.cs" />
+    <Compile Remove="Telemetry/OptionalMetadataText.cs" />
+    <Compile Remove="Telemetry/PreRollBuffer.cs" />
+    <Compile Remove="Telemetry/RejectedContactBatcher.cs" />
+    <Compile Remove="Telemetry/RequiredTelemetrySubscription.cs" />
+    <Compile Remove="Telemetry/SimulatorStreamWatchdog.cs" />
+    <Compile Remove="Storage/AirportFacilityRepository.cs" />
+    <Compile Remove="Storage/AirportMetadataPersistence.cs" />
+    <Compile Remove="Storage/AutomaticTelemetryArchive.cs" />
+    <Compile Remove="Storage/BoundedHistoryStream.cs" />
+    <Compile Remove="Storage/BoundedTelemetryQueue.cs" />
+    <Compile Remove="Storage/BugReportRepository.cs" />
+    <Compile Remove="Storage/ControllerCatalogArchive.cs" />
+    <Compile Remove="Storage/LandingDeletionLedger.cs" />
+    <Compile Remove="Storage/LandingRecordFactory.cs" />
+    <Compile Remove="Storage/LandingRecordFile.cs" />
+    <Compile Remove="Storage/LandingReplayColumns.cs" />
+    <Compile Remove="Storage/LandingRepository.cs" />
+    <Compile Remove="Storage/LandingSiteMetadataPersistence.cs" />
+    <Compile Remove="Storage/RawCaptureRepository.cs" />
+    <Compile Remove="Storage/ReplaySourceArchive.cs" />
+    <Compile Remove="Storage/RunwayMetadataPersistence.cs" />
+    <Compile Remove="Storage/TelemetryDecisionArchive.cs" />
+    <Compile Remove="Runtime/EpisodeTransactionStore.cs" />
+    <Compile Remove="Runtime/EpisodeTransactionStore.Import.cs" />
+    <Compile Remove="Runtime/EpisodeTransactionStore.Facilities.cs" />
+
     <AssemblyMetadata Include="GoogleOAuthClientId" Value="$(GoogleOAuthClientId)" />
     <AssemblyMetadata Include="GoogleOAuthClientSecret" Value="$(GoogleOAuthClientSecret)" />
     <InternalsVisibleTo Include="LandingStats.App.RegressionTests" />
     <Compile Include="..\LandingStats.UpdateProtocol\UpdateProtocol.cs" Link="Updates\UpdateProtocol.cs" />
+    <Compile Include="..\LandingStats.ProcessControl\GuardianClient.cs" Link="ProcessControl\GuardianClient.cs" />
+    <Compile Include="..\LandingStats.ProcessControl\GuardianProtocol.cs" Link="ProcessControl\GuardianProtocol.cs" />
+    <Compile Include="..\LandingStats.ProcessControl\GuardianSignals.cs" Link="ProcessControl\GuardianSignals.cs" />
     <None Remove="Assets\AppIcon.ico" />
     <Resource Include="Assets\AppIcon.ico" />
     <ProjectReference Include="..\LandingStats.Core\LandingStats.Core.csproj" />
+    <ProjectReference Include="..\LandingStats.Archives\LandingStats.Archives.csproj" />
+    <ProjectReference Include="..\LandingStats.Runtime.Contracts\LandingStats.Runtime.Contracts.csproj" />
+    <ProjectReference Include="..\LandingStats.WorkerHost\LandingStats.WorkerHost.csproj" ReferenceOutputAssembly="false" />
     <PackageReference Include="Google.Apis.Drive.v3" Version="1.75.0.4218" />
     <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies.net48" Version="1.0.3" PrivateAssets="all" />
-    <Reference Include="Microsoft.FlightSimulator.SimConnect">
-      <HintPath>$(MsfsSdkRoot)\SimConnect SDK\lib\managed\Microsoft.FlightSimulator.SimConnect.dll</HintPath>
-      <Private>true</Private>
-    </Reference>
+
     <Reference Include="System.IO.Compression" />
     <Reference Include="System.Net.Http" />
     <Reference Include="System.Runtime.Serialization" />
     <Reference Include="System.Security" />
     <Reference Include="System.Xml.Linq" />
-    <None Include="$(MsfsSdkRoot)\SimConnect SDK\lib\SimConnect.dll">
-      <Link>SimConnect.dll</Link>
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </None>
+
   </ItemGroup>
 
-  <Target Name="ValidateMsfsSdk" BeforeTargets="PrepareForBuild">
-    <Error
-      Condition="!Exists('$(MsfsSdkRoot)\SimConnect SDK\lib\managed\Microsoft.FlightSimulator.SimConnect.dll')"
-      Text="MSFS 2024 SimConnect SDK not found under '$(MsfsSdkRoot)'. Set /p:MsfsSdkRoot=&quot;path to MSFS 2024 SDK&quot;." />
+
+
+  <Target Name="CopyWorkerHost" AfterTargets="CopyFilesToOutputDirectory">
+    <MSBuild Projects="../LandingStats.WorkerHost/LandingStats.WorkerHost.csproj" Targets="GetWorkerPayload" BuildInParallel="false" Properties="Configuration=$(Configuration)">
+      <Output TaskParameter="TargetOutputs" ItemName="WorkerRuntime" />
+    </MSBuild>
+    <Copy SourceFiles="@(WorkerRuntime)" DestinationFolder="$(TargetDir)" SkipUnchangedFiles="true">
+      <Output TaskParameter="CopiedFiles" ItemName="FileWrites" />
+    </Copy>
   </Target>
 
-  <Target Name="ValidateGoogleOAuthCredentials" BeforeTargets="CoreCompile" Condition="'$(RequireGoogleOAuthCredentials)' == 'true'">
-    <Error
-      Condition="'$(GoogleOAuthClientId)' == ''"
-      Text="Google OAuth client id is required for an official build. Set GOOGLE_OAUTH_CLIENT_ID." />
-    <Error
-      Condition="'$(GoogleOAuthClientSecret)' == ''"
-      Text="Google OAuth client secret is required for an official build. Set GOOGLE_OAUTH_CLIENT_SECRET." />
-  </Target>
 </Project>

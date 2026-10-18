@@ -89,8 +89,8 @@ internal static class FreshAirportLookupRegressionTests
             rgData = new object[] { new SIMCONNECT_DATA_FACILITY_AIRPORT { Ident = airport.Ident, Region = airport.Region,
                 Latitude = airport.LatitudeDegrees, Longitude = airport.LongitudeDegrees, Altitude = airport.AltitudeMeters } } });
     private const BindingFlags Flags = BindingFlags.Instance | BindingFlags.NonPublic;
-    private static object Get(object target, string name) => target.GetType().GetField(name, Flags)!.GetValue(target)!;
-    private static void Set(object target, string name, object value) => target.GetType().GetField(name, Flags)!.SetValue(target, value);
-    private static void Call(object target, string name, params object[] args) => target.GetType().GetMethod(name, Flags)!.Invoke(target, args);
+    private static object Get(object target, string name) => RecorderTestAccess.Get(target, name)!;
+    private static void Set(object target, string name, object value) => RecorderTestAccess.Set(target, name, value);
+    private static void Call(object target, string name, params object[] args) => RecorderTestAccess.Call(target, name, args);
     private static void Require(bool value, string message) { if (!value) throw new InvalidOperationException(message); }
 }

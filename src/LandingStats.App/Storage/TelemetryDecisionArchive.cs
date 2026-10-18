@@ -1,5 +1,7 @@
 using System.Collections.Generic;
-using System.IO.Compression;
+using System;
+using System.IO;
+using LandingStats.Archives;
 using System.Linq;
 using System.Runtime.Serialization;
 using System.Runtime.Serialization.Json;
@@ -9,7 +11,9 @@ namespace LandingStats.App.Storage;
 
 internal static class TelemetryDecisionArchive
 {
-    internal static void Write(ZipArchive archive, long episodeId, TelemetryDecisionSnapshot snapshot)
+    internal static void Write(CaptureArchiveWriter archive, long episodeId, TelemetryDecisionSnapshot snapshot)
+        => Write(name => archive.CreateEntry(name), episodeId, snapshot);
+    private static void Write(Func<string, Stream> create, long episodeId, TelemetryDecisionSnapshot snapshot)
     {
         var payload = new Journal
         {
@@ -24,7 +28,7 @@ internal static class TelemetryDecisionArchive
                 Details = entry.Details.ToDictionary(pair => pair.Key, pair => pair.Value),
             }).ToArray(),
         };
-        using var stream = archive.CreateEntry("decisions.json", CompressionLevel.Optimal).Open();
+        using var stream = create("decisions.json");
         new DataContractJsonSerializer(typeof(Journal), new DataContractJsonSerializerSettings
         {
             UseSimpleDictionaryFormat = true,

@@ -31,10 +31,17 @@ internal static class GoogleDriveOAuthConfiguration
 
         if (string.IsNullOrWhiteSpace(value))
         {
-            throw new InvalidOperationException(
-                "Google Drive support is not configured in this build. Please install an official release.");
+            throw new GoogleDriveConfigurationException();
         }
 
         return value!;
     }
+}
+
+// This fixed diagnostic is safe to carry across the worker boundary. Arbitrary
+// OAuth exception messages can include request data and must stay private.
+internal sealed class GoogleDriveConfigurationException : InvalidOperationException
+{
+    public GoogleDriveConfigurationException() : base(
+        "Google Drive support is not configured in this build. Please install an official release.") { }
 }

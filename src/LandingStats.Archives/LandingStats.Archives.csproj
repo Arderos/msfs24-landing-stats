@@ -1,0 +1,4 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><TargetFramework>netstandard2.0</TargetFramework></PropertyGroup>
+  <ItemGroup><PackageReference Include="ZstdSharp.Port" Version="0.8.8" /></ItemGroup>
+</Project>

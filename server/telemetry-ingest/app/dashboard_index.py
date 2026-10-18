@@ -20,9 +20,11 @@ from collections import Counter, defaultdict
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+from .capture_archive import CaptureArchive
+from .validation import MAXIMUM_DECISION_JOURNAL_BYTES, MAXIMUM_DECISION_ENTRIES, _validate_controller_timeline, _validate_source_timeline
 
 
-INDEX_VERSION = 3
+INDEX_VERSION = 4
 # LandingRecord.NonFiniteStorageSentinel / LandingRecordFile.Restore use exact
 # equality, not a magnitude threshold. Other finite values remain measurable.
 NONFINITE_STORAGE_SENTINEL = -1.7976931348623157E308
@@ -246,10 +248,10 @@ def _index_archive(path, row):
             digest.update(chunk)
     if digest.hexdigest() != row["sha256"]:
         raise ValueError("archive SHA-256 does not match retained metadata")
-    with zipfile.ZipFile(path) as archive:
+    with CaptureArchive(path, MAX_EXPANDED_BYTES) as archive:
         infos = archive.infolist()
         names = [info.filename for info in infos]
-        if len(names) > 4 or len(names) != len(set(names)) or not set(names) <= {"telemetry.csv", "session.txt", "landing-results.json", "decisions.json"}:
+        if len(names) > 6 or len(names) != len(set(names)) or not set(names) <= {"telemetry.csv", "session.txt", "landing-results.json", "decisions.json", "controller-catalogs.json", "source-state.bin"}:
             raise ValueError("unexpected or duplicate archive entries")
         if not {"telemetry.csv", "session.txt"} <= set(names):
             raise ValueError("archive is missing required entries")
@@ -270,14 +272,18 @@ def _index_archive(path, row):
         landings = _landings(results, session)
         journal = {"available": False, "truncated": None, "entries": []}
         if "decisions.json" in names:
-            raw_journal = json.loads(_read_member(archive, "decisions.json", 1024 * 1024))
-            if not isinstance(raw_journal, dict) or not isinstance(raw_journal.get("entries"), list) or len(raw_journal["entries"]) > 2048:
+            raw_journal = json.loads(_read_member(archive, "decisions.json", MAXIMUM_DECISION_JOURNAL_BYTES))
+            if not isinstance(raw_journal, dict) or not isinstance(raw_journal.get("entries"), list) or len(raw_journal["entries"]) > MAXIMUM_DECISION_ENTRIES:
                 raise ValueError("invalid decision journal")
             entries = raw_journal["entries"]
             if any(not isinstance(entry, dict) for entry in entries):
                 raise ValueError("invalid decision entry")
             journal = {"available": True, "truncated": raw_journal.get("truncated"), "entries": _json(entries)}
         telemetry = _telemetry(archive)
+        if "controller-catalogs.json" in names:
+            _validate_controller_timeline(archive.read("controller-catalogs.json"), telemetry["rows"])
+        if "source-state.bin" in names:
+            _validate_source_timeline(archive.read("source-state.bin"), telemetry["rows"])
         components = Counter(_text(e.get("component")) or UNKNOWN for e in journal["entries"])
         codes = Counter(f"{_text(e.get('component')) or UNKNOWN}.{_text(e.get('code')) or UNKNOWN}" for e in journal["entries"])
         invalid = telemetry["confirmed_no_active_physics"]

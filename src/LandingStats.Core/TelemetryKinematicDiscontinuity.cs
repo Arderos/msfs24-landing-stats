@@ -270,5 +270,5 @@ public static class TelemetryKinematicDiscontinuity
         return x + z + normal;
     }
 
-    private static bool Finite(double value) => !double.IsNaN(value) && !double.IsInfinity(value);
+    private static bool Finite(double value) => AnalysisNumericPolicy.IsFinite(value);
 }

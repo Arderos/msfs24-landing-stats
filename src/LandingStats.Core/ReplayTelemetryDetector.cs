@@ -154,5 +154,5 @@ public static class ReplayTelemetryDetector
             : values[middle];
     }
 
-    private static bool IsFinite(double value) => !double.IsNaN(value) && !double.IsInfinity(value);
+    private static bool IsFinite(double value) => AnalysisNumericPolicy.IsFinite(value);
 }

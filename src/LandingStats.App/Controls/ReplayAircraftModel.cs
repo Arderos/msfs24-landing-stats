@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using LandingStats.App.Models;
 using System.Windows.Media;
 using System.Windows.Media.Media3D;
 
@@ -8,12 +9,13 @@ namespace LandingStats.App.Controls;
 /// <summary>A generic airliner, in metres, nose along -Z. No aircraft-specific geometry is implied.</summary>
 internal static class ReplayAircraftModel
 {
-    internal const double RestHeight = 3.2;
+    internal const double RestHeight = ReplayGearState.RestHeight;
     // Immutable shared geometry: scrubbing only changes the containing pose transform.
-    private static readonly Model3DGroup Shared = Build(true);
-    private static readonly Model3DGroup SharedAirframe = Build(false);
-    internal static Model3DGroup Create() => Shared;
-    internal static Model3DGroup CreateAirframe() => SharedAirframe;
+    private static readonly Lazy<Model3DGroup> Shared = new Lazy<Model3DGroup>(() => Build(true));
+    private static readonly Lazy<Model3DGroup> SharedAirframe = new Lazy<Model3DGroup>(() => Build(false));
+    private static readonly Ring[] Profile = FuselageProfile();
+    internal static Model3DGroup Create() => Shared.Value;
+    internal static Model3DGroup CreateAirframe() => SharedAirframe.Value;
 
     private static Model3DGroup Build(bool includeGear)
     {
@@ -23,7 +25,7 @@ internal static class ReplayAircraftModel
         var interior = new MeshGeometry3D(); var seams = new MeshGeometry3D();
 
         // Dense shared rings and averaged vertex normals remove the faceted nose and tube.
-        Loft(body, FuselageProfile(), (z, r, a) => new Point3D(r * Math.Cos(a), r * Math.Sin(a), z), 48);
+        Loft(body, Profile, (z, r, a) => new Point3D(r * Math.Cos(a), r * Math.Sin(a), z), 48);
         foreach (var side in new[] { -1d, 1d })
         {
             Wing(wings, side, new[] {
@@ -122,7 +124,7 @@ internal static class ReplayAircraftModel
     private static double Radius(double z)
     {
         // Used only at construction time for surface details.
-        var profile = FuselageProfile();
+        var profile = Profile;
         for (var i = 1; i < profile.Length; i++)
             if (z <= profile[i].Z) return profile[i - 1].Radius + (profile[i].Radius - profile[i - 1].Radius) *
                 (z - profile[i - 1].Z) / (profile[i].Z - profile[i - 1].Z);
@@ -200,8 +202,9 @@ internal static class ReplayAircraftModel
     internal static void Wheel(MeshGeometry3D tyres, MeshGeometry3D hubs, Point3D center, double radius, double width)
     {
         Point3D Map(double x, double r, double a) => center + new Vector3D(x, r * Math.Sin(a), r * Math.Cos(a));
-        Loft(tyres, new[] { new Ring(-width * .5, radius * .46), new Ring(-width * .57, radius * .78),
-            new Ring(-width * .35, radius), new Ring(width * .35, radius), new Ring(width * .57, radius * .78), new Ring(width * .5, radius * .46) }, Map, 24, true);
+        var firstIndex = tyres.TriangleIndices.Count; var start = tyres.Positions.Count;
+        foreach (var point in ReplayTyreGeometry.Points(center.ToReplay(), radius, width)) tyres.Positions.Add(point.ToWpf());
+        Stitch(tyres, start, 6, ReplayTyreGeometry.Sides); Reverse(tyres, firstIndex);
         Loft(hubs, new[] { new Ring(-width * .52, .005), new Ring(-width * .52, radius * .46),
             new Ring(width * .52, radius * .46), new Ring(width * .52, .005) }, Map, 24, true);
     }

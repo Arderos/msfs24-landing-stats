@@ -17,7 +17,9 @@ internal static class AutomaticTelemetryArchive
         BugReportCandidate candidate,
         DateTime timestampUtc,
         long maximumQueueBytes = MaximumQueueBytes,
-        int maximumQueuedFiles = MaximumQueuedFiles)
+        int maximumQueuedFiles = MaximumQueuedFiles,
+        Guid archiveId = default,
+        bool throwOnStorageFailure = false)
     {
         if (repository == null) throw new ArgumentNullException(nameof(repository));
         if (maximumQueueBytes <= 0) throw new ArgumentOutOfRangeException(nameof(maximumQueueBytes));
@@ -26,14 +28,20 @@ internal static class AutomaticTelemetryArchive
         {
             try
             {
+                if (archiveId != Guid.Empty)
+                {
+                    var existing = repository.ExistingAutomatic(timestampUtc, archiveId);
+                    if (existing != null) return existing;
+                }
                 var availableBytes = maximumQueueBytes;
                 var fileCount = 0;
                 if (Directory.Exists(repository.RootPath))
                 {
-                    // Rejected automatic diagnostics still occupy disk space.
-                    // Include their quarantine names in the same retention budget.
+                    // Quarantined evidence remains on disk, but no longer
+                    // consumes the queue's slots for new deliverable captures.
                     foreach (var path in Directory.EnumerateFiles(repository.RootPath, "*_auto_raw*.zip", SearchOption.TopDirectoryOnly))
                     {
+                        if (Path.GetFileName(path).IndexOf(".rejected-", StringComparison.OrdinalIgnoreCase) >= 0) continue;
                         long length;
                         try { length = new FileInfo(path).Length; }
                         catch (FileNotFoundException) { continue; } // The upload worker completed this file.
@@ -42,10 +50,10 @@ internal static class AutomaticTelemetryArchive
                         availableBytes -= length;
                     }
                 }
-                return repository.TryCreateAutomatic(candidate, timestampUtc, availableBytes);
+                return repository.TryCreateAutomatic(candidate, timestampUtc, availableBytes, archiveId);
             }
-            catch (IOException) { return null; }
-            catch (UnauthorizedAccessException) { return null; }
+            catch (IOException) when (!throwOnStorageFailure) { return null; }
+            catch (UnauthorizedAccessException) when (!throwOnStorageFailure) { return null; }
         }
     }
 }

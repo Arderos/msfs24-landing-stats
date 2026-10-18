@@ -169,6 +169,7 @@ class EnrollmentApiTests(unittest.TestCase):
             self.assertEqual([5, 6, 7], config["telemetry_schemas"])
             self.assertEqual(["raw_debug", "bug_report", "automatic_landing"], config["capture_kinds"])
             self.assertEqual([1], config["decision_journal_formats"])
+            self.assertEqual([1], config["controller_catalog_formats"])
             for schema in (5, 6, 7):
                 body, headers = self._signed_capture(schema)
                 response = client.post("/v1/captures", content=body, headers=headers)
@@ -178,6 +179,29 @@ class EnrollmentApiTests(unittest.TestCase):
                     capture = connection.execute("SELECT schema_version FROM captures WHERE sha256=?",
                                                  (headers["X-Capture-SHA256"],)).fetchone()
                 self.assertEqual(schema, capture["schema_version"])
+
+    def test_missing_receipted_archive_is_received_again_on_signed_retry(self):
+        key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        with TestClient(service.app) as client:
+            body, headers = self._signed_capture(7, private=key)
+            response = client.post("/v1/captures", content=body, headers=headers)
+            self.assertEqual(201, response.status_code, response.text)
+            first_id = response.json()["capture_id"]
+            with self.store.connect() as connection:
+                relative = connection.execute("SELECT relative_path FROM captures WHERE capture_id=?", (first_id,)).fetchone()[0]
+            (self.store.root / relative).unlink()
+            headers["X-Capture-Nonce"] = secrets.token_urlsafe(16)
+            headers["X-Signature"] = base64.b64encode(key.sign(canonical_capture(
+                headers["X-Install-Id"], headers["X-Sent-At-Utc"], headers["X-Capture-Nonce"],
+                headers["X-Capture-SHA256"], len(body), 7, headers["X-App-Version"]),
+                padding.PKCS1v15(), hashes.SHA256())).decode("ascii")
+            retried = client.post("/v1/captures", content=body, headers=headers)
+            self.assertEqual(201, retried.status_code, retried.text)
+            self.assertEqual("accepted", retried.json()["status"])
+            self.assertNotEqual(first_id, retried.json()["capture_id"])
+            with self.store.connect() as connection:
+                relative = connection.execute("SELECT relative_path FROM captures WHERE sha256=?", (headers["X-Capture-SHA256"],)).fetchone()[0]
+            self.assertEqual(body, (self.store.root / relative).read_bytes())
 
     def test_signed_automatic_report_persists_kind_and_journal(self):
         with TestClient(service.app) as client:
@@ -242,6 +266,17 @@ class EnrollmentApiTests(unittest.TestCase):
             with self.store.connect() as db:
                 db.execute("UPDATE installations SET status='revoked'")
             self.assertEqual(403, client.post("/v1/enroll", json=payload).status_code)
+
+    def test_closed_registration_refreshes_active_identity_but_not_new_or_pruned(self):
+        payload = self.payload("a" * 32)
+        with TestClient(service.app) as client:
+            self.assertEqual(201, client.post("/v1/enroll", json=payload).status_code)
+            with mock.patch.object(service, "REGISTRATION_MODE", "closed"):
+                self.assertEqual(200, client.post("/v1/enroll", json=payload).status_code)
+                self.assertEqual(403, client.post("/v1/enroll", json=self.payload("b" * 32)).status_code)
+                with self.store.connect() as connection:
+                    connection.execute("DELETE FROM installations WHERE install_id=?", ("a" * 32,))
+                self.assertEqual(403, client.post("/v1/enroll", json=payload).status_code)
 
     def test_refresh_has_independent_pre_authentication_limit(self):
         payload = self.payload("a" * 32)

@@ -127,42 +127,6 @@ internal static class AutomaticTelemetryUploadRegressionTests
         Wait(() => !File.Exists(first) && !File.Exists(second), "Re-enabling resumes preserved consented legacy backlog.");
     }
 
-    public static void RapidOptOutAndInPreservesRequestedRetry()
-    {
-        using var fixture = new Fixture();
-        fixture.Handler.BlockFirstConfig = true;
-        fixture.Handler.DelayCancellationCompletion = true;
-        var automatic = fixture.Report("automatic", true);
-        using var client = fixture.Client();
-        using var lifetime = new CancellationTokenSource();
-        var window = (MainWindow)FormatterServices.GetUninitializedObject(typeof(MainWindow));
-        const BindingFlags flags = BindingFlags.Instance | BindingFlags.NonPublic;
-        typeof(MainWindow).GetField("_bugReportRetryGate", flags)!.SetValue(window, new object());
-        typeof(MainWindow).GetField("_lifetimeCancellation", flags)!.SetValue(window, lifetime);
-        typeof(MainWindow).GetField("_bugReportRetryTask", flags)!.SetValue(window, Task.CompletedTask);
-        var start = typeof(MainWindow).GetMethod("StartPendingBugReportRetry", flags)!;
-        Task Pending() => (Task)typeof(MainWindow).GetField("_bugReportRetryTask", flags)!.GetValue(window)!;
-        try
-        {
-            client.SetAutomaticUploadEnabled(true);
-            start.Invoke(window, new object[] { client });
-            Wait(() => fixture.Handler.Blocked.IsSet, "Automatic retry reaches its first enrollment.");
-            client.SetAutomaticUploadEnabled(false);
-            Wait(() => fixture.Handler.Cancelled.IsSet, "Opt-out cancels enrollment before delayed completion.");
-            Require(!Pending().IsCompleted, "Fixture keeps canceled enrollment unwinding during re-enable.");
-            client.SetAutomaticUploadEnabled(true);
-            start.Invoke(window, new object[] { client });
-            fixture.Handler.ReleaseCancellation.TrySetResult(true);
-            Wait(() => !File.Exists(automatic), "Re-enable request must survive canceled task completion without another landing or restart.");
-        }
-        finally
-        {
-            fixture.Handler.ReleaseCancellation.TrySetResult(true);
-            lifetime.Cancel();
-            Require(Pending().Wait(TimeSpan.FromSeconds(15)), "Retry fixture drains cleanly.");
-        }
-    }
-
     public static void AutomaticTimeoutRetriesSilently()
     {
         using var fixture = new Fixture();
@@ -249,8 +213,6 @@ internal static class AutomaticTelemetryUploadRegressionTests
         public bool BlockFirstCapture;
         public bool BlockFirstConfig;
         public bool TimeoutFirstCapture;
-        public bool DelayCancellationCompletion;
-        public TaskCompletionSource<bool> ReleaseCancellation { get; } = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         public volatile bool SupportsNewReports = true;
         private int _captureRequests;
         private int _configRequests;
@@ -287,7 +249,7 @@ internal static class AutomaticTelemetryUploadRegressionTests
                 using var archive = new ZipArchive(new MemoryStream(bytes), ZipArchiveMode.Read);
                 using var reader = new StreamReader(archive.GetEntry("session.txt")!.Open());
                 Uploaded.Enqueue(reader.ReadToEnd());
-                return Json("{}", HttpStatusCode.Created);
+                return Json("{\"status\":\"accepted\",\"capture_id\":\"0123456789abcdef0123456789abcdef\"}", HttpStatusCode.Created);
             }
             throw new InvalidOperationException("Unexpected fixture request: " + route);
         }
@@ -299,7 +261,6 @@ internal static class AutomaticTelemetryUploadRegressionTests
             catch (OperationCanceledException)
             {
                 Cancelled.Set();
-                if (DelayCancellationCompletion) await ReleaseCancellation.Task.ConfigureAwait(false);
                 throw;
             }
         }

@@ -8,6 +8,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Google.Apis.Auth.OAuth2.Responses;
 using Google.Apis.Util.Store;
+using LandingStats.App.Runtime;
 
 namespace LandingStats.App.GoogleDrive;
 
@@ -28,6 +29,44 @@ internal sealed class GoogleOAuthTokenStore : IDataStore
     }
 
     public string Path => _path;
+    internal string ExportSnapshot(string destination)
+    {
+        lock (_gate)
+        {
+            if (Load() == null) throw new GoogleDriveNotSignedInException();
+            var bytes = ReadBounded(_path);
+            DurableFile.Write(destination, output => output.Write(bytes, 0, bytes.Length));
+            return EpisodeTransactionStore.Hash(destination);
+        }
+    }
+    internal string ExportAuthorizationSnapshot(string destination)
+    {
+        lock (_gate)
+        {
+            if (!File.Exists(_path)) return "";
+            var bytes = ReadBounded(_path);
+            DurableFile.Write(destination, output => output.Write(bytes, 0, bytes.Length));
+            return EpisodeTransactionStore.Hash(destination);
+        }
+    }
+    internal bool ImportSnapshot(string source, string expectedOriginalHash, string resultHash)
+    {
+        lock (_gate)
+        {
+            if (expectedOriginalHash == "" ? File.Exists(_path) : !File.Exists(_path) || EpisodeTransactionStore.Hash(_path) != expectedOriginalHash) return false;
+            if (resultHash.Length == 0) { Clear(); return true; }
+            if (resultHash == expectedOriginalHash) return true;
+            var bytes = ReadBounded(source); EpisodeTransactionStore.Verify(source, resultHash);
+            if (new GoogleOAuthTokenStore(source).Load() == null) throw new InvalidDataException("Worker credential result is invalid.");
+            DurableFile.Write(_path, output => output.Write(bytes, 0, bytes.Length)); Volatile.Write(ref _hasRefreshToken, 1); return true;
+        }
+    }
+    private static byte[] ReadBounded(string path)
+    {
+        using var input = File.OpenRead(path);
+        if (input.Length <= 0 || input.Length > 65536) throw new InvalidDataException("Credential snapshot exceeds its bound.");
+        using var copy = new MemoryStream(); input.CopyTo(copy); return copy.ToArray();
+    }
 
     public bool HasRefreshToken()
     {
@@ -62,6 +101,8 @@ internal sealed class GoogleOAuthTokenStore : IDataStore
 
         lock (_gate)
         {
+            var existing = LoadCore();
+            if (existing?.RefreshToken == refreshToken && existing.AccountEmail == accountEmail) return;
             var clearBytes = Encoding.UTF8.GetBytes(refreshToken);
             try
             {
@@ -91,6 +132,27 @@ internal sealed class GoogleOAuthTokenStore : IDataStore
                 File.Delete(_path);
             }
             Volatile.Write(ref _hasRefreshToken, 0);
+            RemoveAbandonedCopies();
+        }
+    }
+
+    private void RemoveAbandonedCopies()
+    {
+        var directory = System.IO.Path.GetDirectoryName(_path);
+        if (string.IsNullOrEmpty(directory) || !Directory.Exists(directory)) return;
+        var name = System.IO.Path.GetFileName(_path);
+        foreach (var candidate in Directory.EnumerateFiles(directory, name + "*.tmp"))
+        {
+            var suffix = System.IO.Path.GetFileName(candidate).Substring(name.Length);
+            if (suffix != ".tmp" && !(suffix.Length == 38 && suffix.StartsWith(".w", StringComparison.Ordinal) &&
+                suffix.EndsWith(".tmp", StringComparison.Ordinal) && Guid.TryParseExact(suffix.Substring(2, 32), "N", out _))) continue;
+            try
+            {
+                using var held = new FileStream(candidate, FileMode.Open, FileAccess.ReadWrite, FileShare.Delete);
+                File.Delete(candidate);
+            }
+            catch (IOException) { } // An active writer still owns this temporary file.
+            catch (UnauthorizedAccessException) { }
         }
     }
 
@@ -106,7 +168,9 @@ internal sealed class GoogleOAuthTokenStore : IDataStore
 
     public Task DeleteAsync<T>(string key)
     {
-        Clear();
+        // Google.Apis calls this for every non-5xx refresh failure, including
+        // transient rate limiting. Only the explicit invalid_grant handler may
+        // revoke the durable refresh credential.
         return Task.CompletedTask;
     }
 
@@ -189,9 +253,10 @@ internal sealed class GoogleOAuthTokenStore : IDataStore
         var temporary = _path + ".tmp";
         try
         {
-            using (var output = new FileStream(temporary, FileMode.Create, FileAccess.Write, FileShare.None))
+            using (var output = new FileStream(temporary, FileMode.Create, FileAccess.Write, FileShare.None, 1))
             {
-                new DataContractJsonSerializer(typeof(TokenFile)).WriteObject(output, value);
+                using var bounded = LandingStats.App.Runtime.RuntimeStorageQuota.Protect(output, _path, true);
+                new DataContractJsonSerializer(typeof(TokenFile)).WriteObject(bounded, value);
                 output.Flush(true);
             }
 

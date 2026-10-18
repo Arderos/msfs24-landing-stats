@@ -174,7 +174,7 @@ internal static class TwoStageRecorderRegressionTests
     {
         var source = new TaskCompletionSource<IReadOnlyList<RunwayFacility>>();
         var args = new LandingEpisodeEventArgs(80, Array.Empty<TelemetrySample>(), "sim", "title", "type", "model",
-            new[] { Airport("LEGACY") }, Array.Empty<string>(), runwayFacilitiesTask: source.Task);
+            new[] { Airport("LEGACY") }, Array.Empty<string>(), runwayFacilitiesTask: source.Task, persistentId: System.Guid.NewGuid());
         Assert(!args.FacilitiesTask.IsCompleted, "legacy event adaptation ignored the supplied runway promise");
         source.SetResult(new[] { Runway("LEGACY") });
         var result = args.FacilitiesTask.GetAwaiter().GetResult();
@@ -187,7 +187,7 @@ internal static class TwoStageRecorderRegressionTests
         using var recorder = NewEpisode(90);
         var runway = Runway("APP");
         Publish(recorder, Airport("APP"), runway);
-        var initial = (EpisodeFacilitySnapshot)recorder.GetType().GetMethod("CurrentEpisodeFacilitySnapshot", Flags)!.Invoke(recorder, Array.Empty<object>())!;
+        var initial = (EpisodeFacilitySnapshot)RecorderTestAccess.Call(recorder, "CurrentEpisodeFacilitySnapshot", Array.Empty<object>())!;
         Assert(!Promise(recorder).Task.IsCompleted && initial.PreliminaryRunways.Single().AirportIdent == "APP",
             "timeout fallback requires prematurely completing the final promise");
         runway.WidthMeters = 99;
@@ -210,7 +210,7 @@ internal static class TwoStageRecorderRegressionTests
         paused.SimulatorState = TelemetrySimulatorState.Paused;
         var last = Frame(3.1, false);
         Call(recorder, "RequestPreliminaryRunways", last, new[] { old, barrier, first, duplicate, paused, last });
-        var initial = (EpisodeFacilitySnapshot)recorder.GetType().GetMethod("CurrentEpisodeFacilitySnapshot", Flags)!.Invoke(recorder, Array.Empty<object>())!;
+        var initial = (EpisodeFacilitySnapshot)RecorderTestAccess.Call(recorder, "CurrentEpisodeFacilitySnapshot", Array.Empty<object>())!;
         Assert(initial.ApproachSamples.Count == 2 && initial.ApproachSamples[0].SimulationTimeSeconds == 3 &&
             initial.ApproachSamples[0].HeadingTrueDegrees == 95 && initial.ApproachSamples.All(sample => sample.MotionSimulation),
             "approach intent retained duplicate deliveries, paused frames or a previous physics segment");
@@ -351,10 +351,11 @@ internal static class TwoStageRecorderRegressionTests
             rgData = new object[] { new SIMCONNECT_DATA_FACILITY_AIRPORT { Ident = airport.Ident, Region = airport.Region,
                 Latitude = airport.LatitudeDegrees, Longitude = airport.LongitudeDegrees, Altitude = airport.AltitudeMeters } } });
     private const BindingFlags Flags = BindingFlags.Instance | BindingFlags.NonPublic;
-    private static object Get(object target, string name) => target.GetType().GetField(name, Flags)!.GetValue(target)!;
-    private static void Set(object target, string name, object? value) => target.GetType().GetField(name, Flags)!.SetValue(target, value);
+    private static object Get(object target, string name) => RecorderTestAccess.Get(target, name)!;
+    private static void Set(object target, string name, object? value) => RecorderTestAccess.Set(target, name, value);
     private static void Call(object target, string name, params object[] args)
     {
+        target = RecorderTestAccess.Owner(target, name);
         var method = target.GetType().GetMethod(name, Flags) ?? throw new MissingMethodException(target.GetType().FullName, name);
         method.Invoke(target, args);
     }

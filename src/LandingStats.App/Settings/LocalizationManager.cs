@@ -79,6 +79,7 @@ internal static class LocalizationManager
         }
 
         Volatile.Write(ref _strings, strings);
+        Models.ModelText.SetStrings(strings);
         EffectiveLanguage = effectiveLanguage;
     }
 

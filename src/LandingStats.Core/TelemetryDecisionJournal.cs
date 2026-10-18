@@ -57,6 +57,13 @@ public sealed class TelemetryDecisionJournal
         lock (_gate)
             return new TelemetryDecisionSnapshot(_entries.ToArray(), _droppedEntryCount);
     }
+
+    /// <summary>Restore the bounded journal's loss counter from its durable snapshot.</summary>
+    public void RestoreDroppedEntryCount(int count)
+    {
+        if (count < 0) throw new ArgumentOutOfRangeException(nameof(count));
+        lock (_gate) _droppedEntryCount = Math.Max(_droppedEntryCount, count);
+    }
 }
 
 public sealed class TelemetryDecisionSnapshot
@@ -108,7 +115,21 @@ public sealed class TelemetryDecisionEntry
     public string Reason { get; }
     public IReadOnlyDictionary<string, double> Details { get; }
 
-    private static bool Finite(double value) => !double.IsNaN(value) && !double.IsInfinity(value);
-    private static string Bound(string value, int maximum) =>
-        string.IsNullOrEmpty(value) ? string.Empty : value.Length <= maximum ? value : value.Substring(0, maximum);
+    private static bool Finite(double value) => AnalysisNumericPolicy.IsFinite(value);
+    private static string Bound(string value, int maximum)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return "unknown";
+        var result = new System.Text.StringBuilder(Math.Min(value.Length, maximum));
+        for (var i = 0; i < value.Length && result.Length < maximum; i++)
+        {
+            var character = value[i];
+            if (char.IsHighSurrogate(character) && i + 1 < value.Length && char.IsLowSurrogate(value[i + 1]))
+            {
+                if (result.Length + 2 > maximum) break;
+                result.Append(character); result.Append(value[++i]);
+            }
+            else result.Append(char.IsSurrogate(character) || character == '\0' ? '\uFFFD' : character);
+        }
+        return result.Length == 0 ? "unknown" : result.ToString();
+    }
 }

@@ -7,6 +7,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Media.Animation;
 using System.Windows.Media.Media3D;
 using System.Windows.Threading;
 using LandingStats.App.Models;
@@ -19,7 +20,7 @@ public sealed class LandingReplayView : Grid
 {
     private static readonly Brush Muted = Brush("#8A837B");
     private static readonly Brush Ink = Brush("#EAE5DE");
-    private readonly Viewport3D _viewport = new Viewport3D { IsHitTestVisible = false, ClipToBounds = true };
+    private readonly Viewport3D _viewport = new Viewport3D { IsHitTestVisible = false, ClipToBounds = false };
     private readonly PerspectiveCamera _camera = new PerspectiveCamera { FieldOfView = 50, NearPlaneDistance = .5, FarPlaneDistance = 100000 };
     private readonly ModelVisual3D _scene = new ModelVisual3D();
     private Grid _footer = null!;
@@ -41,6 +42,7 @@ public sealed class LandingReplayView : Grid
     private LandingRecord? _record;
     private IReadOnlyList<LandingRecord> _contacts = Array.Empty<LandingRecord>();
     private LandingReplayTrack? _track;
+    private ReplayPresentationData? _prepared;
     private LandingReplayPose _pose;
     private bool _hasPose;
     private bool _visualUpdatePending;
@@ -56,9 +58,12 @@ public sealed class LandingReplayView : Grid
     private double _visualOffset;
     private readonly ReplayLandingGear _gear = new ReplayLandingGear();
     private ReplayGearRegistration? _gearRegistration;
+    private readonly ReplayInteractionDiagnostics? _interactionDiagnostics;
+    private Clock? _presentationClock;
 
     public LandingReplayView()
     {
+        _interactionDiagnostics = ReplayInteractionDiagnostics.Create(Dispatcher);
         Background = Brush("#10100F");
         ClipToBounds = true;
         RowDefinitions.Add(new RowDefinition());
@@ -75,14 +80,16 @@ public sealed class LandingReplayView : Grid
         canvas.SizeChanged += (_, e) => _hint.Visibility = _track != null && e.NewSize.Width >= 1000 ? Visibility.Visible : Visibility.Collapsed;
         _message.TextWrapping = TextWrapping.Wrap; _message.MaxWidth = 480; _message.TextAlignment = TextAlignment.Center;
         _message.HorizontalAlignment = HorizontalAlignment.Center; _message.VerticalAlignment = VerticalAlignment.Center; canvas.Children.Add(_message);
-        canvas.MouseLeftButtonDown += (_, e) => { if (_track == null) return; _drag = e.GetPosition(canvas); canvas.CaptureMouse(); e.Handled = true; };
-        canvas.MouseLeftButtonUp += (_, e) => { _drag = null; canvas.ReleaseMouseCapture(); e.Handled = true; };
-        canvas.LostMouseCapture += (_, __) => _drag = null;
+        canvas.MouseLeftButtonDown += (_, e) => { if (_track == null) return; _interactionDiagnostics?.Begin(e.Timestamp, canvas.ActualWidth, canvas.ActualHeight); _drag = e.GetPosition(canvas); canvas.CaptureMouse(); e.Handled = true; };
+        canvas.MouseLeftButtonUp += (_, e) => { _interactionDiagnostics?.End("button_up"); _drag = null; canvas.ReleaseMouseCapture(); e.Handled = true; };
+        canvas.LostMouseCapture += (_, __) => { _interactionDiagnostics?.End("capture_lost"); _drag = null; };
         canvas.MouseMove += (_, e) =>
         {
             if (!_drag.HasValue || e.LeftButton != MouseButtonState.Pressed) return;
+            var diagnosticStart = _interactionDiagnostics == null ? 0 : Stopwatch.GetTimestamp();
             var next = e.GetPosition(canvas); var delta = next - _drag.Value; _drag = next;
             _azimuth -= delta.X * .006; _elevation = Math.Max(5, Math.Min(85, _elevation + delta.Y * .25)); UpdateCamera();
+            _interactionDiagnostics?.Move(e.Timestamp, next.X, next.Y, delta.X, delta.Y, diagnosticStart, _azimuth, _elevation);
         };
         canvas.MouseWheel += (_, e) =>
         {
@@ -101,15 +108,37 @@ public sealed class LandingReplayView : Grid
         SetRow(footer, 1); Children.Add(footer);
         _play.Click += (_, __) => TogglePlayback();
         _reset.Click += (_, __) => ResetCamera();
-        _slider.ValueChanged += (_, __) => { if (_settingSlider) return; StopPlayback(); SetTimeCore(_slider.Value, true); };
+        _slider.ValueChanged += (_, __) =>
+        {
+            if (_settingSlider) return;
+            var started = _interactionDiagnostics == null ? 0 : Stopwatch.GetTimestamp();
+            _interactionDiagnostics?.TimeInput(_slider.Value, started);
+            StopPlayback(); SetTimeCore(_slider.Value, true);
+        };
         _timer.Interval = TimeSpan.FromMilliseconds(33); _timer.Tick += OnTick;
-        Unloaded += (_, __) => StopPlayback();
+        Loaded += (_, __) =>
+        {
+            _ownerWindow = Window.GetWindow(this);
+            if (_ownerWindow != null) _ownerWindow.StateChanged += OnOwnerStateChanged;
+            RefreshPresentationClock();
+        };
+        Unloaded += (_, __) =>
+        {
+            if (_ownerWindow != null) _ownerWindow.StateChanged -= OnOwnerStateChanged;
+            _ownerWindow = null; StopPlayback(); StopPresentationClock();
+        };
         IsVisibleChanged += (_, __) =>
         {
             if (!IsVisible) StopPlayback();
             else ApplyPendingTime();
+            RefreshPresentationClock();
         };
-        foreach (var button in new[] { _play, _reset }) { button.Background = Brush("#25231F"); button.Foreground = Ink; button.BorderBrush = Brush("#4A433B"); }
+        foreach (var button in new[] { _play, _reset })
+        {
+            button.SetResourceReference(StyleProperty, "OutlineButtonStyle");
+            button.Background = Brush("#25231F"); button.Foreground = Ink;
+            button.BorderBrush = Brush("#4A433B"); button.BorderThickness = new Thickness(1);
+        }
         var transform = new Transform3DGroup(); transform.Children.Add(_poseVisibility); transform.Children.Add(new RotateTransform3D(_rotation)); transform.Children.Add(_translation); _aircraft.Transform = transform;
         _aircraft.Children.Add(ReplayAircraftModel.CreateAirframe()); _aircraft.Children.Add(_gear.Model); RefreshLocalization(); ShowUnavailable();
     }
@@ -125,12 +154,22 @@ public sealed class LandingReplayView : Grid
 
     public void SetRecord(LandingRecord? value, IEnumerable<LandingRecord>? contacts = null)
     {
+        var nextContacts = value == null ? Array.Empty<LandingRecord>() : LandingReplayContacts.ForEpisode(value, contacts ?? Array.Empty<LandingRecord>());
+        var prepared = value == null ? null : ReplayPresentationData.Prepare(value, nextContacts);
+        if (value != null && ReferenceEquals(_record, value) && ReferenceEquals(_prepared, prepared))
+        { RefreshLocalization(); return; }
+        _interactionDiagnostics?.Record(value?.Id, value?.Series.Count ?? 0);
+        var sameRecord = value != null && _record?.Id == value.Id;
+        var savedTime = _time; var resumePlayback = sameRecord && _playing;
         StopPlayback(); _record = value; _hasPose = false; _gearRegistration = null; _offset = null;
-        _visualUpdatePending = false; _resetCameraPending = true;
-        _contacts = value == null ? Array.Empty<LandingRecord>() : LandingReplayContacts.ForEpisode(value, contacts ?? Array.Empty<LandingRecord>());
-        if (!LandingReplayTrack.TryCreate(value, out _track)) { _scene.Content = null; ShowUnavailable(); return; }
+        _visualUpdatePending = false; _resetCameraPending = !sameRecord;
+        _contacts = nextContacts;
+        _prepared = prepared;
+        _track = _prepared?.Track;
+        if (_track == null) { _scene.Content = null; ShowUnavailable(); StopPresentationClock(); return; }
+        RefreshPresentationClock();
         LandingReplayRunwayOffset.TryCreate(value!, _track!, out _offset);
-        _metrics.SetTrack(_track, _offset?.HeadingTrueDegrees); _controls.SetInputs(ReplayControlInputs.Resolve(value, _contacts));
+        _metrics.SetTrack(_track, _offset?.HeadingTrueDegrees); _controls.SetInputs(_prepared!.Inputs);
         _runwayOffset.SetRunway(value!.RunwayGeometry);
         // A generic mesh has no measured datum/gear geometry. Register its
         // rest height ONCE; never clamp individual frames (which erases bounces).
@@ -141,13 +180,16 @@ public sealed class LandingReplayView : Grid
         _hint.Visibility = _viewport.ActualWidth >= 1000 ? Visibility.Visible : Visibility.Collapsed;
         _metrics.Visibility = _controls.Visibility = _runwayOffset.Visibility = Visibility.Visible;
         BuildScene(); _visualUpdatePending = true;
-        SetTimeCore(Math.Max(_track.StartSeconds, Math.Min(_track.EndSeconds, 0)), false); RefreshLocalization();
+        SetTimeCore(Math.Max(_track.StartSeconds, Math.Min(_track.EndSeconds, sameRecord ? savedTime : 0)), false);
+        if (resumePlayback) { _playing = true; _lastTicks = Stopwatch.GetTimestamp(); _timer.Start(); }
+        RefreshLocalization();
     }
 
     public void SetTime(double timeSeconds) => SetTimeCore(timeSeconds, false);
 
     public void RefreshLocalization()
     {
+        if (_track != null) _clock.Text = _time.ToString("+0.00;-0.00;0.00", CultureInfo.CurrentCulture) + LocalizationManager.Text("Unit.SecondSuffix");
         _play.Content = LocalizationManager.Text(_playing ? "Replay.Pause" : "Replay.Play");
         _reset.Content = LocalizationManager.Text("Replay.ResetView");
         _hint.Text = LocalizationManager.Text("Replay.Hint");
@@ -166,7 +208,12 @@ public sealed class LandingReplayView : Grid
         // Chart hover also selects replay time while its tab is collapsed.
         // Retain that selection without running suspension or touching visuals.
         if (!HasHiddenVisualAncestor()) ApplyPendingTime();
-        if (notify) TimeChanged?.Invoke(this, new LandingChartHoverEventArgs(_time));
+        if (notify)
+        {
+            var started = _interactionDiagnostics == null ? 0 : Stopwatch.GetTimestamp();
+            TimeChanged?.Invoke(this, new LandingChartHoverEventArgs(_time));
+            _interactionDiagnostics?.TimeNotified(_time, started);
+        }
     }
 
     private bool HasHiddenVisualAncestor()
@@ -182,14 +229,15 @@ public sealed class LandingReplayView : Grid
     private void ApplyPendingTime()
     {
         if (!_visualUpdatePending || _track == null) return;
+        var started = _interactionDiagnostics == null ? 0 : Stopwatch.GetTimestamp();
         _visualUpdatePending = false;
         _settingSlider = true; _slider.Value = _time; _settingSlider = false;
-        _clock.Text = _time.ToString("+0.00;-0.00;0.00", CultureInfo.CurrentCulture) + "s";
+        _clock.Text = _time.ToString("+0.00;-0.00;0.00", CultureInfo.CurrentCulture) + LocalizationManager.Text("Unit.SecondSuffix");
         _hasPose = _track.TrySample(_time, out _pose);
         _message.Visibility = _hasPose ? Visibility.Collapsed : Visibility.Visible;
         if (_hasPose)
         {
-            _rotation.Quaternion = _pose.Orientation;
+            _rotation.Quaternion = _pose.Orientation.ToWpf();
             _translation.OffsetX = _pose.Position.X; _translation.OffsetY = _pose.Position.Y + _visualOffset; _translation.OffsetZ = _pose.Position.Z;
             _gearRegistration?.Update(_pose);
             if (_resetCameraPending) ResetCamera();
@@ -199,6 +247,41 @@ public sealed class LandingReplayView : Grid
         UpdateReadouts();
         // Hide stale pose across gaps while keeping the full recorded trail.
         _poseVisibility.ScaleX = _poseVisibility.ScaleY = _poseVisibility.ScaleZ = _hasPose ? 1 : 0;
+        _interactionDiagnostics?.TimeApplied(_time, started);
+    }
+
+    private Window? _ownerWindow;
+    private void OnOwnerStateChanged(object? sender, EventArgs args)
+    {
+        if (_ownerWindow?.WindowState == WindowState.Minimized) StopPlayback();
+        RefreshPresentationClock();
+    }
+
+    private void RefreshPresentationClock()
+    {
+        if (!IsVisible || _track == null || Window.GetWindow(this)?.WindowState == WindowState.Minimized) { StopPresentationClock(); return; }
+        if (_presentationClock != null) return;
+        // Preserve WPF's native animation/presentation mode used by guardian,
+        // independently of loading progress. Input still updates the scene
+        // immediately; this clock does not buffer input or compute camera poses.
+        _presentationClock = new DoubleAnimation(0, 1, TimeSpan.FromSeconds(1))
+            { RepeatBehavior = RepeatBehavior.Forever }.CreateClock(true);
+        _presentationClock.CurrentTimeInvalidated += OnPresentationTick;
+        _presentationClock.Controller!.Begin();
+    }
+
+    private static void OnPresentationTick(object? sender, EventArgs args)
+    {
+        // A time listener keeps the native clock active without animating a
+        // hidden control or changing any displayed property.
+    }
+
+    private void StopPresentationClock()
+    {
+        if (_presentationClock == null) return;
+        _presentationClock.CurrentTimeInvalidated -= OnPresentationTick;
+        _presentationClock.Controller!.Remove();
+        _presentationClock = null;
     }
 
     private void ShowUnavailable()
@@ -248,7 +331,7 @@ public sealed class LandingReplayView : Grid
     private void UpdateCamera()
     {
         if (!_hasPose) return;
-        var target = _pose.Position + new Vector3D(0, _visualOffset, 0); var elevation = _elevation * Math.PI / 180;
+        var target = _pose.Position.ToWpf() + new Vector3D(0, _visualOffset, 0); var elevation = _elevation * Math.PI / 180;
         var offset = new Vector3D(Math.Sin(_azimuth) * Math.Cos(elevation) * _distance,
             Math.Sin(elevation) * _distance, Math.Cos(_azimuth) * Math.Cos(elevation) * _distance);
         _camera.Position = target + offset; _camera.LookDirection = -offset; _camera.UpDirection = new Vector3D(0, 1, 0);
@@ -264,20 +347,20 @@ public sealed class LandingReplayView : Grid
         {
             var a = _track.Frames[i - 1]; var b = _track.Frames[i];
             if (b.TimeSeconds - a.TimeSeconds > LandingReplayTrack.MaximumInterpolationGapSeconds) continue;
-            Ribbon(trail, a.Position + new Vector3D(0, _visualOffset, 0), b.Position + new Vector3D(0, _visualOffset, 0), .28);
+            Ribbon(trail, a.Position.ToWpf() + new Vector3D(0, _visualOffset, 0), b.Position.ToWpf() + new Vector3D(0, _visualOffset, 0), .28);
         }
-        var surface = LandingReplaySurface.Build(_track, _record?.RunwayGeometry);
+        var surface = _prepared!.Surface!;
         _gearRegistration = new ReplayGearRegistration(_gear, _track, surface, _visualOffset,
-            contactTimesSeconds: LandingReplayContacts.ContactTimes(_record!, _track, _contacts));
+            contactTimesSeconds: _prepared!.ContactTimes);
         AddFrozen(scene, surface.Terrain, Material("#191D1C"));
         AddFrozen(scene, surface.Pavement, Material("#36383A"));
         AddFrozen(scene, surface.Markings, Material("#C2BFB5", true));
         foreach (var designation in surface.Designations) scene.Children.Add(designation);
         AddFrozen(scene, trail, Material("#FA7849", true));
         var marker = new MeshGeometry3D();
-        foreach (var contact in LandingReplayContacts.GroundPositions(_record!, _track, _contacts))
+        foreach (var contact in _prepared!.GroundPositions)
         {
-            var ground = contact; ground.Y = surface.HeightAt(ground.X, ground.Z) ?? ground.Y;
+            var ground = contact.ToWpf(); ground.Y = surface.HeightAt(ground.X, ground.Z) ?? ground.Y;
             Ribbon(marker, ground + new Vector3D(-7, .1, 0), ground + new Vector3D(7, .1, 0), .3);
             Ribbon(marker, ground + new Vector3D(0, .1, -7), ground + new Vector3D(0, .1, 7), .3);
         }

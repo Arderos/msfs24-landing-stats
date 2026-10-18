@@ -1,6 +1,8 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.IO;
+using LandingStats.App.Runtime;
 using LandingStats.Core;
 
 namespace LandingStats.App.Telemetry;
@@ -70,6 +72,36 @@ internal sealed class PreRollBuffer : IEnumerable<TelemetrySample>
     {
         _entries.Clear();
         _lastReceivedHostSeconds = double.NaN;
+    }
+
+    internal void WriteCheckpoint(BinaryWriter writer)
+    {
+        writer.Write(_lastReceivedHostSeconds); writer.Write(-_entries.Count - 1);
+        foreach (var entry in _entries) writer.Write(entry.ReceivedHostSeconds);
+        RuntimeCheckpointCodec.WriteSamples(writer, ToArray(), _maximumSamples);
+    }
+    internal void RestoreCheckpoint(BinaryReader reader)
+    {
+        var last = reader.ReadDouble(); var encodedCount = reader.ReadInt32(); var annotated = encodedCount < 0;
+        var count = annotated ? -(long)encodedCount - 1 : encodedCount;
+        if (count < 0 || count > _maximumSamples) throw new InvalidDataException("Pre-roll checkpoint exceeds its sample bound.");
+        var entries = new Entry[count]; var times = new double[count]; var previous = double.NegativeInfinity;
+        for (var i = 0; i < count; i++)
+        {
+            var time = reader.ReadDouble();
+            if (double.IsNaN(time) || double.IsInfinity(time) || time < previous || time > last) throw new InvalidDataException("Invalid pre-roll receipt clock.");
+            previous = times[i] = time;
+            if (!annotated) entries[i] = new Entry(TelemetryBinaryCodec.Decode(RuntimeCheckpointCodec.ReadBytes(reader, TelemetryBinaryCodec.EncodedSize)), time);
+        }
+        if (annotated)
+        {
+            var samples = RuntimeCheckpointCodec.ReadSamples(reader, _maximumSamples);
+            if (samples.Length != count) throw new InvalidDataException("Pre-roll receipt and sample counts differ.");
+            for (var i = 0; i < count; i++) entries[i] = new Entry(samples[i], times[i]);
+        }
+        if ((count == 0 && !double.IsNaN(last)) || (count != 0 && (double.IsNaN(last) || double.IsInfinity(last) || last != previous)))
+            throw new InvalidDataException("Invalid pre-roll checkpoint boundary.");
+        _entries.Clear(); foreach (var entry in entries) _entries.Enqueue(entry); _lastReceivedHostSeconds = last;
     }
 
     public TelemetrySample[] ToArray()

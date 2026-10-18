@@ -2,6 +2,7 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:controls="clr-namespace:LandingStats.App.Controls"
+        xmlns:presentation="clr-namespace:LandingStats.App.Presentation"
         Title="{DynamicResource Product.Name}"
         Width="1680"
         Height="940"
@@ -14,6 +15,7 @@
         Background="{StaticResource AppBackgroundBrush}"
         UseLayoutRounding="True">
     <Window.Resources>
+        <presentation:LandingPresentationConverter x:Key="LandingPresentationConverter" />
         <Style x:Key="NonReplayPanelStyle" TargetType="Border">
             <Style.Triggers>
                 <DataTrigger Binding="{Binding IsChecked, ElementName=ReconstructionTab}" Value="True">
@@ -321,9 +323,6 @@
                             <Trigger Property="IsMouseOver" Value="True">
                                 <Setter TargetName="Rail" Property="Background" Value="#3A3531" />
                             </Trigger>
-                            <Trigger Property="IsEnabled" Value="False">
-                                <Setter Property="Opacity" Value="0" />
-                            </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
                 </Setter.Value>
@@ -368,6 +367,8 @@
                 <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
                     <Ellipse x:Name="ConnectionStatusDot" Width="6" Height="6" Fill="{StaticResource AmberBrush}" />
                     <TextBlock x:Name="ConnectionStatusText" Text="{DynamicResource Top.Waiting}" Foreground="{StaticResource MutedTextBrush}" FontSize="12" Margin="7,0,0,0" />
+                    <Button x:Name="RetryRuntimeButton" Content="{DynamicResource Runtime.Retry}" Visibility="Collapsed"
+                            Margin="8,0,0,0" Style="{StaticResource TopBarButtonStyle}" Click="OnRetryRuntimeClick" />
                     <TextBlock Text="·" Foreground="{StaticResource LabelTextBrush}" Margin="9,0" />
                     <TextBlock x:Name="RecorderModeText" Text="{DynamicResource Top.Offline}" Foreground="{StaticResource MutedTextBrush}" FontSize="12" />
                 </StackPanel>
@@ -440,6 +441,22 @@
                     <ListBox.Resources>
                         <Style TargetType="{x:Type ScrollBar}" BasedOn="{StaticResource HistoryScrollBarStyle}" />
                     </ListBox.Resources>
+                    <ListBox.Template>
+                        <!-- Keep our background when shutdown disables input; the system template paints white. -->
+                        <ControlTemplate TargetType="{x:Type ListBox}">
+                            <Border Background="{TemplateBinding Background}"
+                                    BorderBrush="{TemplateBinding BorderBrush}"
+                                    BorderThickness="{TemplateBinding BorderThickness}"
+                                    SnapsToDevicePixels="True">
+                                <ScrollViewer Focusable="False" Padding="{TemplateBinding Padding}"
+                                              CanContentScroll="{TemplateBinding ScrollViewer.CanContentScroll}"
+                                              HorizontalScrollBarVisibility="{TemplateBinding ScrollViewer.HorizontalScrollBarVisibility}"
+                                              VerticalScrollBarVisibility="{TemplateBinding ScrollViewer.VerticalScrollBarVisibility}">
+                                    <ItemsPresenter SnapsToDevicePixels="{TemplateBinding SnapsToDevicePixels}" />
+                                </ScrollViewer>
+                            </Border>
+                        </ControlTemplate>
+                    </ListBox.Template>
                     <ListBox.ItemContainerStyle>
                         <Style TargetType="ListBoxItem">
                             <Setter Property="HorizontalContentAlignment" Value="Stretch" />
@@ -466,7 +483,7 @@
                     </ListBox.ItemContainerStyle>
                     <ListBox.ItemTemplate>
                         <DataTemplate>
-                            <Grid>
+                            <Grid DataContext="{Binding Converter={StaticResource LandingPresentationConverter}}">
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="*" />
                                     <ColumnDefinition Width="60" />
@@ -496,7 +513,7 @@
                                 <Button Grid.Column="1"
                                         Style="{StaticResource HistoryDeleteButtonStyle}"
                                         HorizontalAlignment="Right"
-                                        Tag="{Binding}"
+                                        Tag="{Binding Record}"
                                         Click="OnDeleteLandingClick"
                                         ToolTip="{DynamicResource History.Delete}"
                                         AutomationProperties.Name="{DynamicResource History.Delete}">
@@ -518,7 +535,7 @@
                 <StackPanel x:Name="HistoryLoadingPanel" Grid.Row="2" Margin="18,26"
                             HorizontalAlignment="Center" VerticalAlignment="Top"
                             Visibility="Collapsed" MaxWidth="230">
-                    <ProgressBar x:Name="HistoryLoadingProgress" Height="3" IsIndeterminate="True"
+                    <ProgressBar x:Name="HistoryLoadingProgress" Height="3" IsIndeterminate="{Binding IsVisible, RelativeSource={RelativeSource Self}}"
                                  Foreground="{StaticResource AccentBrush}" />
                     <TextBlock x:Name="HistoryLoadingText" Margin="0,10,0,0"
                                Text="{DynamicResource History.Loading}" TextWrapping="Wrap"
@@ -537,7 +554,8 @@
         </Border>
 
         <Grid Grid.Row="1" Grid.Column="1">
-            <Grid x:Name="LandingContent" Visibility="Collapsed">
+            <Grid x:Name="LandingContent" Visibility="Collapsed"
+                  DataContext="{Binding Converter={StaticResource LandingPresentationConverter}}">
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto" />
                     <RowDefinition Height="Auto" />
@@ -557,9 +575,7 @@
                     </Grid.ColumnDefinitions>
                     <StackPanel VerticalAlignment="Top">
                         <TextBlock Text="{Binding LocationDisplay}" FontSize="19" FontWeight="SemiBold" />
-                        <TextBlock x:Name="RunwayLoadingText" Visibility="Collapsed"
-                                   Text="{DynamicResource History.LoadingRunway}"
-                                   Foreground="{StaticResource MutedTextBrush}" FontSize="11" Margin="0,4,0,0" />
+
                         <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
                             <TextBlock Text="{Binding AircraftTitle}" Foreground="{StaticResource SubtleTextBrush}" FontSize="12" />
                             <TextBlock Text="  ·  " Foreground="{StaticResource SubtleTextBrush}" FontSize="12" />
@@ -1035,7 +1051,7 @@
 
             <Grid x:Name="DetailLoadingPanel" Visibility="Collapsed">
                 <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Width="320">
-                    <ProgressBar x:Name="DetailLoadingProgress" Height="3" IsIndeterminate="True"
+                    <ProgressBar x:Name="DetailLoadingProgress" Height="3" IsIndeterminate="{Binding IsVisible, RelativeSource={RelativeSource Self}}"
                                  Foreground="{StaticResource AccentBrush}" />
                     <TextBlock x:Name="DetailLoadingText" Text="{DynamicResource History.DetailLoading}"
                                FontSize="15" TextAlignment="Center" TextWrapping="Wrap"
@@ -1067,7 +1083,7 @@
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
                 <TextBlock Text="{DynamicResource Footer.Window}" Foreground="{StaticResource LabelTextBrush}" FontSize="11" VerticalAlignment="Center" />
-                <TextBlock Grid.Column="1" Text="{Binding RecordSummaryDisplay}" Foreground="{StaticResource LabelTextBrush}" FontSize="11" VerticalAlignment="Center" Margin="16,0,0,0" />
+                <TextBlock Grid.Column="1" DataContext="{Binding Converter={StaticResource LandingPresentationConverter}}" Text="{Binding RecordSummaryDisplay}" Foreground="{StaticResource LabelTextBrush}" FontSize="11" VerticalAlignment="Center" Margin="16,0,0,0" />
                 <TextBlock Grid.Column="2" x:Name="VersionAuthorText" Foreground="{StaticResource LabelTextBrush}"
                            FontFamily="Cascadia Mono, Consolas" FontSize="10" VerticalAlignment="Center"
                            HorizontalAlignment="Center">
@@ -1382,6 +1398,31 @@
                         </StackPanel>
                     </Border>
 
+                    <Border Background="{StaticResource SurfaceBrush}" CornerRadius="8"
+                            BorderBrush="{StaticResource BorderBrush}" BorderThickness="1"
+                            Padding="16" Margin="0,12,0,0">
+                        <StackPanel>
+                            <TextBlock Text="{DynamicResource Settings.IntegrationApiTitle}"
+                                       Style="{StaticResource SectionLabelStyle}"
+                                       Foreground="{StaticResource LabelTextBrush}" />
+                            <CheckBox x:Name="SettingsIntegrationApiCheckBox"
+                                      Style="{StaticResource SettingsToggleStyle}"
+                                      Margin="0,12,0,0"
+                                      AutomationProperties.Name="{DynamicResource Settings.IntegrationApiToggle}"
+                                      Checked="OnIntegrationApiSelectionChanged"
+                                      Unchecked="OnIntegrationApiSelectionChanged">
+                                <TextBlock Text="{DynamicResource Settings.IntegrationApiToggle}"
+                                           TextWrapping="Wrap" />
+                            </CheckBox>
+                            <TextBlock Text="{DynamicResource Settings.IntegrationApiBody}"
+                                       Foreground="{StaticResource MutedTextBrush}"
+                                       FontSize="11" LineHeight="17" TextWrapping="Wrap" Margin="0,7,0,0" />
+                            <TextBlock x:Name="SettingsIntegrationApiErrorText" Visibility="Collapsed"
+                                       Foreground="{StaticResource DangerBrush}"
+                                       FontSize="11" TextWrapping="Wrap" Margin="0,7,0,0" />
+                        </StackPanel>
+                    </Border>
+
                     <TextBlock x:Name="SettingsErrorText"
                                Visibility="Collapsed"
                                Foreground="{StaticResource DangerBrush}"
@@ -1463,7 +1504,7 @@
                 <StackPanel>
                     <TextBlock x:Name="ClosingStatusText" Text="{DynamicResource Lifecycle.Closing}"
                                FontSize="15" TextWrapping="Wrap" TextAlignment="Center" />
-                    <ProgressBar Height="3" Margin="0,20,0,0" IsIndeterminate="True"
+                    <ProgressBar x:Name="ClosingProgress" Height="3" Margin="0,20,0,0" IsIndeterminate="{Binding IsVisible, RelativeSource={RelativeSource Self}}"
                                  Foreground="{StaticResource AccentBrush}" />
                 </StackPanel>
             </Border>

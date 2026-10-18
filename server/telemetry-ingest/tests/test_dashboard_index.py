@@ -10,7 +10,7 @@ import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
-from app.dashboard_index import DashboardIndex, NONFINITE_STORAGE_SENTINEL, _distribution, _index_archive, _number
+from app.dashboard_index import DashboardIndex, INDEX_VERSION, NONFINITE_STORAGE_SENTINEL, _distribution, _index_archive, _number
 
 
 class DashboardIndexTests(unittest.TestCase):
@@ -33,7 +33,7 @@ class DashboardIndexTests(unittest.TestCase):
         self.temp.cleanup()
 
     def archive(self, capture_id="one", landing_id="landing-one", *, airport="LMML", journal=True, times=(0, .05, .05, .1, 1.2), offset=0, malformed=False, legacy=False, sentinel=False,
-                records=None, results_present=True, motion=None, entries=None, summary_updates=None):
+                records=None, results_present=True, motion=None, entries=None, summary_updates=None, controllers=False):
         summary = {"Id": landing_id, "Airport": airport, "Runway": "31", "AircraftTitle": "A320", "ContactNumber": 1, "ContactCount": 1,
                    "InertialFpm": 196.7, "ImpactPeakG": 1.2, "PeakG2Seconds": 1.4, "ImpactWindowSeconds": 3.08, "ImpactStatus": "Settled", "ClosureReconstructionAvailable": True,
                    "PitchDegrees": -6.9, "BankDegrees": -.3, "GroundSpeedKnots": 110.7, "AirspeedKnots": 121.4,
@@ -52,6 +52,8 @@ class DashboardIndexTests(unittest.TestCase):
             archive.writestr("session.txt", "aircraft_title=A320\nsimulator=SunRise\ncapture_kind=automatic_landing\n")
             suffix = ",motion_simulation" if motion is not None else ""
             archive.writestr("telemetry.csv", "sequence,simulation_time_s,host_elapsed_s,g_force,controller_0_raw_y_valid" + suffix + "\n" + "".join(f"{n},{t},{n * .01},1,1" + (f",{motion[n]}" if motion is not None else "") + "\n" for n, t in enumerate(times)))
+            if controllers:
+                archive.writestr("controller-catalogs.json", json.dumps({"version": 1, "samples": len(times), "catalogs": [""], "transitions": [[0, 0]]}))
             if results_present:
                 archive.writestr("landing-results.json", json.dumps({"records": [record] if records is None else records}))
             if journal:
@@ -66,6 +68,14 @@ class DashboardIndexTests(unittest.TestCase):
         self.db.execute("INSERT INTO captures VALUES(?,?,?,?,?,?,?,?,?,?,?)", row)
         self.db.commit()
         return path
+
+    def test_indexes_controller_metadata_and_full_current_journal_bound(self):
+        entries = [{"component": "recorder", "code": "contact", "details": {"contact_number": i}} for i in range(8192)]
+        self.archive(controllers=True, entries=entries)
+        self.index._refresh()
+        detail = self.index.capture("one")
+        self.assertEqual(8192, len(detail["journal"]["entries"]))
+        self.assertEqual(1, len(detail["landings"]))
 
     def test_uploads_are_distinct_but_saved_landings_are_deduplicated(self):
         self.archive("one")
@@ -102,6 +112,45 @@ class DashboardIndexTests(unittest.TestCase):
         with patch("app.dashboard_index._index_archive", side_effect=AssertionError("should use cache")):
             self.index._refresh()
         self.assertEqual(self.index.summary()["index"]["indexed"], 1)
+
+    def test_version_three_journal_error_is_reparsed_immediately(self):
+        # Version 3 rejected valid client journals above 2,048 entries. A recent
+        # negative cache entry must not delay recovery after the parser upgrade.
+        self.assertGreater(INDEX_VERSION, 3)
+        path = self.archive(entries=[{"component": "recorder", "code": "contact"}] * 2165)
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        now = time.time()
+        with self.index._connect_cache() as connection:
+            connection.execute("INSERT INTO archive_index VALUES(?,?,?,?,?,?)",
+                               (digest, 3, now, None, None, "ValueError: invalid decision journal"))
+        with patch("app.dashboard_index.time.time", return_value=now), \
+                patch("app.dashboard_index._index_archive", wraps=_index_archive) as parse:
+            self.index._refresh()
+        parse.assert_called_once()
+        self.assertEqual(0, self.index.summary()["index"]["errors"])
+        self.assertEqual(2165, len(self.index.capture("one")["journal"]["entries"]))
+        with self.index._connect_cache() as connection:
+            cached = connection.execute("SELECT version,error FROM archive_index WHERE sha256=?", (digest,)).fetchone()
+        self.assertEqual(INDEX_VERSION, cached["version"])
+        self.assertIsNone(cached["error"])
+
+    def test_current_version_negative_cache_expires_after_five_minutes(self):
+        path = self.archive()
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        now = time.time()
+        with self.index._connect_cache() as connection:
+            connection.execute("INSERT INTO archive_index VALUES(?,?,?,?,?,?)",
+                               (digest, INDEX_VERSION, now, None, None, "ValueError: prior transient error"))
+        with patch("app.dashboard_index.time.time", return_value=now + 299), \
+                patch("app.dashboard_index._index_archive", side_effect=AssertionError("negative cache should be reused")):
+            self.index._refresh()
+        self.assertEqual(1, self.index.summary()["index"]["errors"])
+        with patch("app.dashboard_index.time.time", return_value=now + 300), \
+                patch("app.dashboard_index._index_archive", wraps=_index_archive) as parse:
+            self.index._refresh()
+        parse.assert_called_once()
+        self.assertEqual(0, self.index.summary()["index"]["errors"])
+        self.assertEqual(1, self.index.summary()["index"]["indexed"])
 
     def test_refresh_preserves_complete_previous_view_until_atomic_swap(self):
         self.archive("one")

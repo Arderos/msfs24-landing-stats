@@ -12,7 +12,6 @@
     <system:String x:Key="History.Title">LANDINGS</system:String>
     <system:String x:Key="History.Loading">Loading landing history…</system:String>
     <system:String x:Key="History.DetailLoading">Loading landing details…</system:String>
-    <system:String x:Key="History.LoadingRunway">Loading runway details…</system:String>
     <system:String x:Key="History.LoadFailed">Landing history could not be loaded.</system:String>
     <system:String x:Key="History.DetailLoadFailed">Landing details could not be loaded.</system:String>
     <system:String x:Key="History.RetryLoad">Retry</system:String>
@@ -31,7 +30,6 @@
     <system:String x:Key="Metric.AircraftRate">AIRCRAFT VERTICAL RATE</system:String>
     <system:String x:Key="Metric.AircraftRateSubline">vertical speed at contact</system:String>
     <system:String x:Key="Help.AircraftRate">How fast the aircraft itself was moving vertically at contact. Negative means descending. This value is calculated from the aircraft's motion, without runway slope.</system:String>
-    <system:String x:Key="Help.LandingFeelName">Landing feel classification information</system:String>
     <system:String x:Key="Metric.SurfaceClosure">SURFACE CLOSURE RATE</system:String>
     <system:String x:Key="Help.SurfaceClosure">The touchdown rate reported by MSFS. It describes how quickly the aircraft and the surface came together, so runway slope and aircraft rotation can make it differ from Aircraft Vertical Rate.</system:String>
     <system:String x:Key="Help.SurfaceDelta">The difference between Surface Closure Rate and Aircraft Vertical Rate. It shows how much the simulator's touchdown value differs from the aircraft's own vertical motion.</system:String>
@@ -40,12 +38,9 @@
     <system:String x:Key="Metric.Terrain">Terrain component</system:String>
     <system:String x:Key="Help.Unresolved">What remains after the older, terrain-only comparison. It combines timing, flare, rotation and sampling effects; it is not the error of the Experimental Closure Reconstruction below.</system:String>
     <system:String x:Key="Metric.Unresolved">Unresolved component</system:String>
-    <system:String x:Key="Metric.PeakG150">PEAK G · 150 MS</system:String>
     <system:String x:Key="Metric.PeakGAdaptive">PEAK G</system:String>
     <system:String x:Key="Help.PeakGAdaptive">The highest recorded vertical G-load for this contact. This is a peak value, not an average.</system:String>
-    <system:String x:Key="Help.PeakG150">The highest vertical G-load during the first 150 milliseconds after contact. It captures the immediate impact and is a peak value, not an average.</system:String>
     <system:String x:Key="Help.PeakG2">The highest vertical G-load during the first two seconds after contact, cut off before the next contact.</system:String>
-    <system:String x:Key="Metric.PeakG2">Peak G over 2 seconds</system:String>
     <system:String x:Key="Help.ImpactWindow">Duration of the adaptive G window, from contact until the response settles or the aircraft lifts off.</system:String>
     <system:String x:Key="Model.ImpactWindowFormat">window {0:F2} s</system:String>
     <system:String x:Key="Model.ImpactWindowIncomplete">incomplete window</system:String>
@@ -103,7 +98,6 @@
     <system:String x:Key="Chart.Aoa">AoA</system:String>
     <system:String x:Key="Chart.EngineFormat">ENG {0}</system:String>
     <system:String x:Key="Chart.PowerStyle">solid N1/RPM · dashed throttle</system:String>
-    <system:String x:Key="Chart.ContactPointFormat">CP {0}</system:String>
     <system:String x:Key="Chart.ContactPointGroupFormat">CP {0}</system:String>
     <system:String x:Key="Chart.GearStrutFormat">Gear {0}</system:String>
     <system:String x:Key="Chart.GearNose">Nose</system:String>
@@ -164,6 +158,10 @@
     <system:String x:Key="Settings.AutoStartToggle">Start Landing Stats with MSFS 2024</system:String>
     <system:String x:Key="Settings.AutoStartEnabledFormat">Enabled · {0} MSFS 2024 installation(s)</system:String>
     <system:String x:Key="Settings.AutoStartDisabled">Disabled</system:String>
+    <system:String x:Key="Settings.IntegrationApiTitle">LOCAL API</system:String>
+    <system:String x:Key="Settings.IntegrationApiToggle">Allow local applications to read landing data</system:String>
+    <system:String x:Key="Settings.IntegrationApiBody">Provides read-only access to landing results, history and runtime status for applications running under your Windows account. No internet access. Off by default; changes take effect immediately on this computer.</system:String>
+    <system:String x:Key="Settings.IntegrationApiErrorFormat">Could not apply the local API setting: {0}</system:String>
     <system:String x:Key="Settings.DriveTitle">GOOGLE DRIVE BACKUP</system:String>
     <system:String x:Key="Settings.DriveBody">Keeps saved landings and preferences in Google Drive and synchronizes them across devices. Raw telemetry and bug reports are not included.</system:String>
     <system:String x:Key="Settings.DriveConnect">CONNECT GOOGLE DRIVE</system:String>
@@ -172,6 +170,8 @@
     <system:String x:Key="Settings.DriveDisconnected">Not connected</system:String>
     <system:String x:Key="Settings.DriveConnected">Connected · waiting for first sync</system:String>
     <system:String x:Key="Settings.DriveSyncing">Synchronizing landings and settings…</system:String>
+    <system:String x:Key="Settings.DriveRetrying">Sync interrupted · retrying automatically…</system:String>
+    <system:String x:Key="Settings.DriveRetryingFormat">Sync failed · retrying automatically · {0}</system:String>
     <system:String x:Key="Settings.DriveAuthorizing">Waiting for browser authorization…</system:String>
     <system:String x:Key="Settings.DriveAuthorizationTimeout">Google authorization timed out. Try connecting again.</system:String>
     <system:String x:Key="Settings.DriveLandingConflictFormat">{0} landing conflict(s) were left unchanged; all other data synchronized.</system:String>
@@ -238,6 +238,7 @@
     <system:String x:Key="Recorder.ConnectedGate">Connected — waiting for 500 ft AGL</system:String>
     <system:String x:Key="Recorder.ApproachRestarted">Approach window restarted — still armed</system:String>
     <system:String x:Key="Recorder.DisconnectedRetry">MSFS disconnected — retrying</system:String>
+    <system:String x:Key="Recorder.TelemetryRecovering">Telemetry interrupted — recovering</system:String>
     <system:String x:Key="Recorder.ContactRollout">Contact detected — recording rollout</system:String>
     <system:String x:Key="Recorder.BelowGate">Below 500 ft — landing capture in progress</system:String>
     <system:String x:Key="Recorder.ReceiveFailedFormat">SimConnect receive failed: {0}</system:String>
@@ -251,6 +252,8 @@
     <system:String x:Key="Recorder.ModeChangeFailedFormat">Telemetry mode change failed: {0}</system:String>
     <system:String x:Key="Recorder.NoTouchdown">Capture ended, but no touchdown was detected</system:String>
     <system:String x:Key="Recorder.LandingSaved">Landing analyzed and saved</system:String>
+    <system:String x:Key="Recorder.AnalyzingLanding">Analyzing landing…</system:String>
+    <system:String x:Key="Recorder.AnalysisIncomplete">Analysis not completed — source data retained</system:String>
     <system:String x:Key="Recorder.ContactsSavedFormat">{0} contacts analyzed and saved</system:String>
     <system:String x:Key="Recorder.AnalysisFailedFormat">Landing analysis failed: {0}</system:String>
     <system:String x:Key="Delete.ContactSuffixFormat" xml:space="preserve"> · contact {0}/{1}</system:String>
@@ -258,7 +261,6 @@
 
     <system:String x:Key="BugReport.Preparing">Preparing the latest landing bug report…</system:String>
     <system:String x:Key="BugReport.Queued">Bug report queued for secure upload</system:String>
-    <system:String x:Key="BugReport.SavedForRetryFormat">Bug report saved for automatic retry · {0}</system:String>
     <system:String x:Key="BugReport.FailedFormat">Could not prepare the bug report: {0}</system:String>
 
     <system:String x:Key="Telemetry.NotConfigured">Bug-report receiver is not configured in this build</system:String>
@@ -293,7 +295,6 @@
     <system:String x:Key="Replay.Pause">Pause</system:String>
     <system:String x:Key="Replay.ResetView">Reset view</system:String>
     <system:String x:Key="Replay.Hint">Drag to orbit · scroll to zoom</system:String>
-    <system:String x:Key="Replay.NoRunway">Runway geometry unavailable</system:String>
     <system:String x:Key="Replay.Pitch">PITCH</system:String>
     <system:String x:Key="Replay.Bank">BANK</system:String>
     <system:String x:Key="Replay.Yaw">YAW</system:String>
@@ -323,4 +324,13 @@
     <system:String x:Key="Replay.PhysicalInputs">PHYSICAL INPUTS</system:String>
     <system:String x:Key="Replay.NoPhysicalInputs">Physical controls were not recorded</system:String>
     <system:String x:Key="Replay.PhysicalInputHint">Recorded device axis; −100% to +100%. Axis names do not imply simulator bindings.</system:String>
+    <system:String x:Key="Runtime.StartFailedFormat">Recording could not start: {0}</system:String>
+    <system:String x:Key="Runtime.Retry">Retry recording</system:String>
+    <system:String x:Key="Settings.TelemetryPolicyErrorFormat">Could not save telemetry delivery policy: {0}</system:String>
+    <system:String x:Key="Settings.DrivePaused">Google Drive sync is paused. Connect again to resume.</system:String>
+    <system:String x:Key="Common.OpenLinkFailedFormat">Could not open the link: {0}</system:String>
+    <system:String x:Key="Update.DeferredUnsafe">Update postponed until recording is idle.</system:String>
+    <system:String x:Key="Chart.DescriptionCatalogControls">Physical pitch follows the recorded controller source for each interval. Gaps indicate unavailable input.</system:String>
+    <system:String x:Key="Settings.DriveFailedLandingsFormat">{0} landing(s) could not sync. IDs: {1}</system:String>
+    <system:String x:Key="Runtime.ProcessingFailedFormat">Landing processing failed ({0}): {1}. Original data retained.</system:String>
 </ResourceDictionary>

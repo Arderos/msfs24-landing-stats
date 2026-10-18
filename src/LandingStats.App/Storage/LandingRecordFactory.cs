@@ -127,6 +127,8 @@ public static class LandingRecordFactory
             if (scheduled) nextStoredTime = relativeTime + StoredSampleIntervalSeconds;
         }
 
+        record.ControllerTimeline = ControllerCatalogTimeline.Capture(storedSamples.Select(value => value.Sample).ToArray());
+        record.SourceEvidenceTimeline = ReplaySourceTimelineCodec.EncodeText(storedSamples.Select(value => value.Sample).ToArray());
         for (var sourceIndex = 0; sourceIndex < TelemetrySample.CapturedControllerCount; sourceIndex++)
         {
             foreach (var stored in storedSamples)
@@ -564,17 +566,6 @@ public static class LandingRecordFactory
         }
 
         return closest;
-    }
-
-    private static double[] RoundedCopy(double[] values, int digits)
-    {
-        var result = new double[values.Length];
-        for (var index = 0; index < values.Length; index++)
-        {
-            result[index] = Math.Round(values[index], digits);
-        }
-
-        return result;
     }
 
     private static double[] RoundedSelectedCopy(double[] values, IReadOnlyList<int> sourceIndices, int digits)

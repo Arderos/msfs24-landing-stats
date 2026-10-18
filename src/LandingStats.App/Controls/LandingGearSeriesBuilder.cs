@@ -83,11 +83,10 @@ internal static class LandingGearSeriesBuilder
             return a340Series;
         }
 
-        // Aircraft.cfg convention places wheel contacts first and scrape/helper
-        // contacts later. Keep the contiguous wheel block beginning at CP 0;
-        // this removes the A340's transient and rollout-only helpers (CP 10+)
-        // without deleting them from the stored black-box record.
-        var wheels = ContiguousWheelBlock(active);
+        // Index gaps can be unloaded or missing wheels, not a helper boundary.
+        // Preserve unclassified active points; only known aircraft mappings can
+        // exclude helpers without discarding measured contacts.
+        var wheels = active;
         if (wheels.Count <= 4)
         {
             return BuildSingletons(wheels);
@@ -135,24 +134,6 @@ internal static class LandingGearSeriesBuilder
             "Chart.ContactPointGroupFormat",
             FormatContactPointIndices(series.ContactPointIndices));
         return $"{role} · {members}";
-    }
-
-    private static List<LandingContactSeries> ContiguousWheelBlock(List<LandingContactSeries> settled)
-    {
-        var result = new List<LandingContactSeries>();
-        var expectedIndex = settled[0].ContactPointIndex;
-        foreach (var series in settled)
-        {
-            if (series.ContactPointIndex != expectedIndex)
-            {
-                break;
-            }
-
-            result.Add(series);
-            expectedIndex++;
-        }
-
-        return result;
     }
 
     private static IReadOnlyList<LandingGearSeries> BuildSingletons(IReadOnlyList<LandingContactSeries> wheels)
@@ -204,12 +185,6 @@ internal static class LandingGearSeriesBuilder
         var byIndex = active
             .Where(series => series.ContactPointIndex >= 0 && series.ContactPointIndex <= 8)
             .ToDictionary(series => series.ContactPointIndex);
-        if (Enumerable.Range(1, 8).Any(index => !byIndex.ContainsKey(index)))
-        {
-            result = Array.Empty<LandingGearSeries>();
-            return false;
-        }
-
         var groups = new List<LandingGearSeries>(4);
         AddKnownGroup(groups, byIndex, LandingGearRole.Nose, 0);
         AddKnownGroup(groups, byIndex, LandingGearRole.MainOne, 1, 2, 3);
@@ -263,40 +238,8 @@ internal static class LandingGearSeriesBuilder
         .DefaultIfEmpty(double.MaxValue)
         .Min();
 
-    private static LandingContactPoint? PointAt(IReadOnlyList<LandingContactPoint> points, double timeSeconds)
-    {
-        if (points.Count == 0)
-        {
-            return null;
-        }
-        if (points.Count == 1 || timeSeconds <= points[0].TimeSeconds)
-        {
-            return points[0];
-        }
-        if (timeSeconds >= points[points.Count - 1].TimeSeconds)
-        {
-            return points[points.Count - 1];
-        }
-
-        var low = 0;
-        var high = points.Count - 1;
-        while (high - low > 1)
-        {
-            var middle = low + (high - low) / 2;
-            if (points[middle].TimeSeconds < timeSeconds)
-            {
-                low = middle;
-            }
-            else
-            {
-                high = middle;
-            }
-        }
-
-        return Math.Abs(points[low].TimeSeconds - timeSeconds) <= Math.Abs(points[high].TimeSeconds - timeSeconds)
-            ? points[low]
-            : points[high];
-    }
+    private static LandingContactPoint? PointAt(IReadOnlyList<LandingContactPoint> points, double timeSeconds) =>
+        points.Count == 0 ? null : points[RecordedTimeSearch.Nearest(points.Count, index => points[index].TimeSeconds, timeSeconds)];
 
     private static string FormatContactPointIndices(IReadOnlyList<int> indices)
     {

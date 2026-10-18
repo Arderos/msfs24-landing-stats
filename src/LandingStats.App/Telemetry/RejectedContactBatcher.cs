@@ -1,6 +1,9 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.IO;
+using LandingStats.App.Runtime;
+using LandingStats.App.Models;
 using LandingStats.Core;
 
 namespace LandingStats.App.Telemetry;
@@ -12,6 +15,32 @@ internal sealed class RejectedContactBatcher
     internal static readonly TimeSpan MaximumDelay = TimeSpan.FromSeconds(30);
     private readonly List<LandingEpisodeEventArgs> _pending = new List<LandingEpisodeEventArgs>();
     private DateTime _startedUtc;
+    internal long MaximumRetainedSequence => _pending.SelectMany(episode => episode.Samples.Concat(episode.InitialFacilities.ApproachSamples))
+        .Select(sample => sample.Sequence).DefaultIfEmpty(0).Max();
+
+    internal void WriteCheckpoint(BinaryWriter writer)
+    {
+        writer.Write(_startedUtc.Ticks); writer.Write(_pending.Count);
+        foreach (var episode in _pending)
+        {
+            RuntimeCheckpointCodec.WriteJson(writer, EpisodeInputMetadata.Capture(episode, _startedUtc, Array.Empty<AirportFacility>()));
+            RuntimeCheckpointCodec.WriteSamples(writer, episode.Samples, 3);
+            RuntimeCheckpointCodec.WriteSamples(writer, episode.InitialFacilities.ApproachSamples);
+        }
+    }
+    internal void RestoreCheckpoint(BinaryReader reader)
+    {
+        var started = new DateTime(reader.ReadInt64(), DateTimeKind.Utc);
+        var count = RuntimeCheckpointCodec.ReadCount(reader, MaximumCaptures); var pending = new List<LandingEpisodeEventArgs>();
+        for (var i = 0; i < count; i++)
+        {
+            var metadata = RuntimeCheckpointCodec.ReadJson<EpisodeInputMetadata>(reader);
+            var episode = metadata.Restore(RuntimeCheckpointCodec.ReadSamples(reader, 3), RuntimeCheckpointCodec.ReadSamples(reader));
+            if (!episode.IsDiagnosticOnly) throw new InvalidDataException("Rejected-contact checkpoint contains a real landing.");
+            pending.Add(episode);
+        }
+        _pending.Clear(); _pending.AddRange(pending); _startedUtc = started;
+    }
 
     internal IReadOnlyList<LandingEpisodeEventArgs> Accept(LandingEpisodeEventArgs episode, DateTime nowUtc)
     {
@@ -42,7 +71,7 @@ internal sealed class RejectedContactBatcher
         _pending.Clear();
         return new LandingEpisodeEventArgs(first.EpisodeId, samples, first.Simulator, first.AircraftTitle,
             first.AircraftType, first.AircraftModel, first.AirportFacilities, first.ControlInputSources,
-            journal, isDiagnosticOnly: true);
+            journal, isDiagnosticOnly: true, persistentId: first.PersistentId);
     }
 
     private static TelemetryDecisionJournal BuildJournal(IReadOnlyList<LandingEpisodeEventArgs> episodes)

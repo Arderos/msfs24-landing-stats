@@ -302,10 +302,10 @@ internal sealed class SimulatorAutoStartManager
     {
         var markerRange = FindMarkerRange(text);
         var ownedEntries = OwnedEntries(document).ToArray();
-        if (enabled && markerRange == null && ownedEntries.Length > 0)
+        if (markerRange == null && ownedEntries.Length > 0)
         {
             throw new InvalidDataException(
-                $"An unmanaged '{EntryName}' entry already exists. Remove or rename that entry before using this setting.");
+                $"An unmanaged '{EntryName}' entry already exists. Remove or rename that entry before changing this setting.");
         }
 
         if (markerRange != null && ownedEntries.Length != 1)

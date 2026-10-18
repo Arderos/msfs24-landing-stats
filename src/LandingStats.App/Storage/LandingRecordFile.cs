@@ -3,12 +3,14 @@ using System.Collections.Generic;
 using System.IO;
 using System.Runtime.Serialization;
 using LandingStats.App.Models;
+using LandingStats.Core;
 
 namespace LandingStats.App.Storage;
 
 [DataContract(Name = "landing-v7")]
-internal sealed class LandingRecordFile
+internal sealed class LandingRecordFile : IExtensibleDataObject
 {
+    public ExtensionDataObject? ExtensionData { get; set; }
     [DataMember(Name = "layout", Order = 1)]
     public int LayoutVersion { get; set; } = 7;
 
@@ -30,14 +32,23 @@ internal sealed class LandingRecordFile
     [DataMember(Name = "inputs", Order = 7, EmitDefaultValue = false)]
     public LandingPhysicalInputColumns? Inputs { get; set; }
 
+    [DataMember(Name = "controller_catalogs", Order = 8, EmitDefaultValue = false)]
+    public ControllerCatalogTimeline? ControllerCatalogs { get; set; }
+
+    [DataMember(Name = "source_state", Order = 9, EmitDefaultValue = false)]
+    public string? SourceState { get; set; }
+
     public static LandingRecordFile FromRecord(LandingRecord record)
     {
         var file = new LandingRecordFile
         {
+            ExtensionData = record.DetailExtensionData,
             Summary = SanitizedSummaryCopy(record),
             Series = LandingSeriesColumns.FromPoints(record.Series),
             Pose = LandingPoseColumns.FromPoints(record.Series),
             Inputs = LandingPhysicalInputColumns.FromRecord(record),
+            ControllerCatalogs = record.ControllerTimeline?.Copy(),
+            SourceState = record.SourceEvidenceTimeline,
         };
         file.Summary.IsSummaryOnly = false;
         foreach (var engine in record.Engines)
@@ -63,11 +74,14 @@ internal sealed class LandingRecordFile
 
         Validate();
         var record = Summary ?? new LandingRecord();
+        record.DetailExtensionData = ExtensionData;
         RestoreSummary(record);
         record.IsSummaryOnly = false;
         record.Series = (Series ?? new LandingSeriesColumns()).ToPoints();
         Pose?.ApplyTo(record.Series);
         Inputs?.ApplyTo(record.Series);
+        record.ControllerTimeline = ControllerCatalogs?.Copy();
+        record.SourceEvidenceTimeline = SourceState;
         record.Engines = new List<LandingEngineSeries>();
         foreach (var engine in Engines ?? new List<LandingEngineColumns>())
         {
@@ -86,6 +100,8 @@ internal sealed class LandingRecordFile
     internal static LandingRecord SanitizedSummaryCopy(LandingRecord source)
     {
         var summary = LandingRepository.CreateSummary(source);
+        summary.ExtensionData = source.ExtensionData;
+        summary.AnalysisGeometry = source.AnalysisGeometry?.Copy();
         summary.InertialFpm = Store(summary.InertialFpm);
         summary.SurfaceFpm = Store(summary.SurfaceFpm);
         summary.SurfaceDeltaFpm = Store(summary.SurfaceDeltaFpm);
@@ -178,7 +194,7 @@ internal sealed class LandingRecordFile
 
     private void Validate()
     {
-        Summary?.AnalysisGeometry?.Validate();
+        if (Summary?.AnalysisGeometry?.IsSupported == true) Summary.AnalysisGeometry.Validate();
         if (Summary == null)
         {
             throw new InvalidDataException("Landing detail summary is missing.");
@@ -187,6 +203,8 @@ internal sealed class LandingRecordFile
             throw new InvalidDataException("Landing runway snapshot has invalid geometry.");
 
         Series?.Validate(Summary.RawControllerSourceIndices.Count);
+        if (ControllerCatalogs != null && ControllerCatalogs.Version <= 1) ControllerCatalogs.Validate(Series?.Time?.Length ?? 0);
+        if (SourceState != null) ReplaySourceTimelineCodec.DecodeText(SourceState, Series?.Time?.Length ?? 0);
         Pose?.Validate(Series?.Time?.Length ?? 0);
         LandingPhysicalInputColumns.ValidateMapping(Summary.RawControllerAxesSourceIndices);
         if (Inputs == null && Summary.RawControllerAxesSourceIndices.Count != 0)

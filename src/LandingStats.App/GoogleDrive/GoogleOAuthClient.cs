@@ -19,10 +19,15 @@ internal sealed class GoogleOAuthClient : IDisposable
     private readonly SemaphoreSlim _credentialGate = new SemaphoreSlim(1, 1);
     private UserCredential? _credential;
     private bool _disposed;
+    private readonly bool _interactive;
+    private readonly TokenResponse? _cachedToken;
+    internal TokenResponse? CurrentToken => _credential?.Token;
 
-    public GoogleOAuthClient(GoogleOAuthTokenStore tokenStore)
+    public GoogleOAuthClient(GoogleOAuthTokenStore tokenStore, bool interactive = true, TokenResponse? cachedToken = null)
     {
         _tokenStore = tokenStore ?? throw new ArgumentNullException(nameof(tokenStore));
+        _interactive = interactive;
+        _cachedToken = cachedToken;
     }
 
     public bool IsSignedIn => _tokenStore.HasRefreshToken();
@@ -64,7 +69,14 @@ internal sealed class GoogleOAuthClient : IDisposable
                 {
                     throw new GoogleDriveNotSignedInException();
                 }
-                _credential = await AuthorizeAsync(cancellationToken).ConfigureAwait(false);
+                if (_interactive) _credential = await AuthorizeAsync(cancellationToken).ConfigureAwait(false);
+                else
+                {
+                    var stored = _tokenStore.Load() ?? throw new GoogleDriveNotSignedInException();
+                    var flow = new GoogleAuthorizationCodeFlow(CreateInitializer(GoogleDriveOAuthConfiguration.ClientId, GoogleDriveOAuthConfiguration.ClientSecret, _tokenStore));
+                    var token = _cachedToken?.RefreshToken == stored.RefreshToken ? _cachedToken : new TokenResponse { RefreshToken = stored.RefreshToken };
+                    _credential = new UserCredential(flow, UserKey, token);
+                }
             }
 
             try
@@ -95,6 +107,22 @@ internal sealed class GoogleOAuthClient : IDisposable
     {
         ThrowIfDisposed();
         SignOutCore();
+    }
+
+    internal async Task RevokeAsync(CancellationToken cancellationToken)
+    {
+        var token = _tokenStore.Load();
+        try
+        {
+            if (token == null) return;
+            using var client = new System.Net.Http.HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+            using var body = new System.Net.Http.FormUrlEncodedContent(new[]
+            { new System.Collections.Generic.KeyValuePair<string, string>("token", token.RefreshToken) });
+            using var response = await client.PostAsync("https://oauth2.googleapis.com/revoke", body, cancellationToken).ConfigureAwait(false);
+            if (!response.IsSuccessStatusCode && response.StatusCode != System.Net.HttpStatusCode.BadRequest)
+                throw new System.IO.IOException("Google credential revocation failed (HTTP " + (int)response.StatusCode + ").");
+        }
+        finally { SignOutCore(); }
     }
 
     internal static Uri BuildAuthorizationUri(

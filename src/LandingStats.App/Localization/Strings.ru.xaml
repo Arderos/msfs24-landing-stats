@@ -12,7 +12,6 @@
     <system:String x:Key="History.Title">ПОСАДКИ</system:String>
     <system:String x:Key="History.Loading">Загрузка истории посадок…</system:String>
     <system:String x:Key="History.DetailLoading">Загрузка данных посадки…</system:String>
-    <system:String x:Key="History.LoadingRunway">Загрузка данных ВПП…</system:String>
     <system:String x:Key="History.LoadFailed">Не удалось загрузить историю посадок.</system:String>
     <system:String x:Key="History.DetailLoadFailed">Не удалось загрузить данные посадки.</system:String>
     <system:String x:Key="History.RetryLoad">Повторить</system:String>
@@ -31,7 +30,6 @@
     <system:String x:Key="Metric.AircraftRate">ВЕРТИКАЛЬНАЯ СКОРОСТЬ САМОЛЁТА</system:String>
     <system:String x:Key="Metric.AircraftRateSubline">вертикальная скорость при касании</system:String>
     <system:String x:Key="Help.AircraftRate">Скорость вертикального движения самого самолёта в момент касания. Отрицательное значение означает снижение. Уклон ВПП в эту величину не входит.</system:String>
-    <system:String x:Key="Help.LandingFeelName">Пояснение к классификации посадки</system:String>
     <system:String x:Key="Metric.SurfaceClosure">СКОРОСТЬ СБЛИЖЕНИЯ С ПОВЕРХНОСТЬЮ</system:String>
     <system:String x:Key="Help.SurfaceClosure">Скорость касания, которую сообщает MSFS. Она показывает, как быстро самолёт и поверхность сближались, поэтому уклон ВПП и вращение самолёта могут отличать её от вертикальной скорости самолёта.</system:String>
     <system:String x:Key="Help.SurfaceDelta">Разница между скоростью сближения с поверхностью и вертикальной скоростью самолёта. Показывает, насколько значение MSFS отличается от вертикального движения самого самолёта.</system:String>
@@ -40,12 +38,9 @@
     <system:String x:Key="Metric.Terrain">Составляющая рельефа</system:String>
     <system:String x:Key="Help.Unresolved">Остаток старого сравнения, учитывавшего только рельеф. Он смешивает влияние времени измерения, выравнивания, вращения и дискретности данных и не является ошибкой экспериментальной реконструкции ниже.</system:String>
     <system:String x:Key="Metric.Unresolved">Необъяснённая составляющая</system:String>
-    <system:String x:Key="Metric.PeakG150">ПИКОВАЯ ПЕРЕГРУЗКА · 150 мс</system:String>
     <system:String x:Key="Metric.PeakGAdaptive">ПИК G</system:String>
     <system:String x:Key="Help.PeakGAdaptive">Максимальная записанная вертикальная перегрузка этого касания. Это пиковое, а не среднее значение.</system:String>
-    <system:String x:Key="Help.PeakG150">Наибольшая вертикальная перегрузка за первые 150 миллисекунд после касания. Это пиковое, а не среднее значение, характеризующее первоначальный удар.</system:String>
     <system:String x:Key="Help.PeakG2">Максимальная вертикальная перегрузка за первые две секунды после касания, строго до следующего контакта.</system:String>
-    <system:String x:Key="Metric.PeakG2">Пиковая перегрузка за 2 с</system:String>
     <system:String x:Key="Help.ImpactWindow">Длительность адаптивного окна G: от касания до затухания реакции или отрыва.</system:String>
     <system:String x:Key="Model.ImpactWindowFormat">окно {0:F2} с</system:String>
     <system:String x:Key="Model.ImpactWindowIncomplete">неполное окно</system:String>
@@ -103,7 +98,6 @@
     <system:String x:Key="Chart.Aoa">угол атаки</system:String>
     <system:String x:Key="Chart.EngineFormat">ДВИГ {0}</system:String>
     <system:String x:Key="Chart.PowerStyle">сплошная — N1/RPM · пунктир — РУД</system:String>
-    <system:String x:Key="Chart.ContactPointFormat">ТК {0}</system:String>
     <system:String x:Key="Chart.ContactPointGroupFormat">ТК {0}</system:String>
     <system:String x:Key="Chart.GearStrutFormat">Стойка {0}</system:String>
     <system:String x:Key="Chart.GearNose">Носовая</system:String>
@@ -164,6 +158,10 @@
     <system:String x:Key="Settings.AutoStartToggle">Запускать Landing Stats вместе с MSFS 2024</system:String>
     <system:String x:Key="Settings.AutoStartEnabledFormat">Включено · установок MSFS 2024: {0}</system:String>
     <system:String x:Key="Settings.AutoStartDisabled">Выключено</system:String>
+    <system:String x:Key="Settings.IntegrationApiTitle">ЛОКАЛЬНЫЙ API</system:String>
+    <system:String x:Key="Settings.IntegrationApiToggle">Разрешить локальным приложениям читать данные посадок</system:String>
+    <system:String x:Key="Settings.IntegrationApiBody">Предоставляет доступ только для чтения к результатам посадок, истории и состоянию трекера приложениям под вашей учётной записью Windows. Доступ через интернет отсутствует. По умолчанию выключен; изменение действует сразу и только на этом компьютере.</system:String>
+    <system:String x:Key="Settings.IntegrationApiErrorFormat">Не удалось применить настройку локального API: {0}</system:String>
     <system:String x:Key="Settings.DriveTitle">РЕЗЕРВНАЯ КОПИЯ В GOOGLE DRIVE</system:String>
     <system:String x:Key="Settings.DriveBody">Сохраняет посадки и настройки в Google Drive и синхронизирует их между устройствами. Сырая телеметрия и баг-репорты не отправляются.</system:String>
     <system:String x:Key="Settings.DriveConnect">ПОДКЛЮЧИТЬ GOOGLE DRIVE</system:String>
@@ -172,6 +170,8 @@
     <system:String x:Key="Settings.DriveDisconnected">Не подключено</system:String>
     <system:String x:Key="Settings.DriveConnected">Подключено · ожидание первой синхронизации</system:String>
     <system:String x:Key="Settings.DriveSyncing">Синхронизация посадок и настроек…</system:String>
+    <system:String x:Key="Settings.DriveRetrying">Синхронизация прервана · автоматический повтор…</system:String>
+    <system:String x:Key="Settings.DriveRetryingFormat">Ошибка синхронизации · автоматический повтор · {0}</system:String>
     <system:String x:Key="Settings.DriveAuthorizing">Ожидание авторизации в браузере…</system:String>
     <system:String x:Key="Settings.DriveAuthorizationTimeout">Время авторизации Google истекло. Попробуйте подключиться снова.</system:String>
     <system:String x:Key="Settings.DriveLandingConflictFormat">Конфликтующих посадок: {0}. Они оставлены без изменений; остальные данные синхронизированы.</system:String>
@@ -238,6 +238,7 @@
     <system:String x:Key="Recorder.ConnectedGate">Подключено — ожидание снижения ниже 500 фт AGL</system:String>
     <system:String x:Key="Recorder.ApproachRestarted">Окно захода перезапущено — запись готова</system:String>
     <system:String x:Key="Recorder.DisconnectedRetry">MSFS отключён — повторное подключение</system:String>
+    <system:String x:Key="Recorder.TelemetryRecovering">Приём телеметрии прерван — восстановление</system:String>
     <system:String x:Key="Recorder.ContactRollout">Касание обнаружено — запись пробега</system:String>
     <system:String x:Key="Recorder.BelowGate">Ниже 500 фт — идёт запись посадки</system:String>
     <system:String x:Key="Recorder.ReceiveFailedFormat">Ошибка получения данных SimConnect: {0}</system:String>
@@ -251,6 +252,8 @@
     <system:String x:Key="Recorder.ModeChangeFailedFormat">Не удалось изменить режим телеметрии: {0}</system:String>
     <system:String x:Key="Recorder.NoTouchdown">Запись завершена, но касание не обнаружено</system:String>
     <system:String x:Key="Recorder.LandingSaved">Посадка проанализирована и сохранена</system:String>
+    <system:String x:Key="Recorder.AnalyzingLanding">Анализ посадки…</system:String>
+    <system:String x:Key="Recorder.AnalysisIncomplete">Анализ не завершён — исходные данные сохранены</system:String>
     <system:String x:Key="Recorder.ContactsSavedFormat">Проанализировано и сохранено касаний: {0}</system:String>
     <system:String x:Key="Recorder.AnalysisFailedFormat">Ошибка анализа посадки: {0}</system:String>
     <system:String x:Key="Delete.ContactSuffixFormat" xml:space="preserve"> · касание {0}/{1}</system:String>
@@ -258,7 +261,6 @@
 
     <system:String x:Key="BugReport.Preparing">Подготовка отчёта по последней посадке…</system:String>
     <system:String x:Key="BugReport.Queued">Отчёт об ошибке поставлен в очередь на защищённую отправку</system:String>
-    <system:String x:Key="BugReport.SavedForRetryFormat">Отчёт сохранён для автоматической повторной отправки · {0}</system:String>
     <system:String x:Key="BugReport.FailedFormat">Не удалось подготовить отчёт об ошибке: {0}</system:String>
 
     <system:String x:Key="Telemetry.NotConfigured">Сервер отчётов об ошибках не настроен в этой сборке</system:String>
@@ -293,7 +295,6 @@
     <system:String x:Key="Replay.Pause">Пауза</system:String>
     <system:String x:Key="Replay.ResetView">Сбросить камеру</system:String>
     <system:String x:Key="Replay.Hint">Перетаскивание — поворот · колесо — масштаб</system:String>
-    <system:String x:Key="Replay.NoRunway">Геометрия ВПП недоступна</system:String>
     <system:String x:Key="Replay.Pitch">ТАНГАЖ</system:String>
     <system:String x:Key="Replay.Bank">КРЕН</system:String>
     <system:String x:Key="Replay.Yaw">РЫСКАНИЕ</system:String>
@@ -323,4 +324,13 @@
     <system:String x:Key="Replay.PhysicalInputs">ФИЗИЧЕСКИЕ ОСИ</system:String>
     <system:String x:Key="Replay.NoPhysicalInputs">Физические органы управления не записаны</system:String>
     <system:String x:Key="Replay.PhysicalInputHint">Записанная ось устройства: от −100% до +100%. Название оси не определяет назначение в симуляторе.</system:String>
+    <system:String x:Key="Runtime.StartFailedFormat">Не удалось запустить запись: {0}</system:String>
+    <system:String x:Key="Runtime.Retry">Повторить запуск записи</system:String>
+    <system:String x:Key="Settings.TelemetryPolicyErrorFormat">Не удалось сохранить настройку отправки телеметрии: {0}</system:String>
+    <system:String x:Key="Settings.DrivePaused">Синхронизация Google Drive приостановлена. Подключитесь снова для продолжения.</system:String>
+    <system:String x:Key="Common.OpenLinkFailedFormat">Не удалось открыть ссылку: {0}</system:String>
+    <system:String x:Key="Update.DeferredUnsafe">Обновление отложено до завершения записи.</system:String>
+    <system:String x:Key="Chart.DescriptionCatalogControls">Физический тангаж показан по записанному устройству каждого интервала. Разрывы означают недоступный ввод.</system:String>
+    <system:String x:Key="Settings.DriveFailedLandingsFormat">Не удалось синхронизировать посадки: {0}. ID: {1}</system:String>
+    <system:String x:Key="Runtime.ProcessingFailedFormat">Ошибка обработки посадки ({0}): {1}. Исходные данные сохранены.</system:String>
 </ResourceDictionary>

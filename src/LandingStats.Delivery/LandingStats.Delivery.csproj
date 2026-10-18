@@ -1,0 +1,50 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><TargetFramework>net48</TargetFramework><PlatformTarget>x64</PlatformTarget><GoogleOAuthClientId Condition="'$(GoogleOAuthClientId)' == ''">$(GOOGLE_OAUTH_CLIENT_ID)</GoogleOAuthClientId><GoogleOAuthClientSecret Condition="'$(GoogleOAuthClientSecret)' == ''">$(GOOGLE_OAUTH_CLIENT_SECRET)</GoogleOAuthClientSecret></PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../LandingStats.App/Runtime/CloudOperationData.cs" Link="Runtime/CloudOperationData.cs" />
+    <ProjectReference Include="../LandingStats.Models/LandingStats.Models.csproj" />
+    <ProjectReference Include="../LandingStats.Storage/LandingStats.Storage.csproj" />
+    <ProjectReference Include="../LandingStats.Persistence/LandingStats.Persistence.csproj" />
+    <ProjectReference Include="../LandingStats.Core/LandingStats.Core.csproj" />
+    <ProjectReference Include="../LandingStats.Archives/LandingStats.Archives.csproj" />
+    <Compile Include="../LandingStats.App/GoogleDrive/BoundedCloudDownload.cs" Link="GoogleDrive/BoundedCloudDownload.cs" />
+    <Compile Include="../LandingStats.App/GoogleDrive/GoogleDriveApiClient.cs" Link="GoogleDrive/GoogleDriveApiClient.cs" />
+    <Compile Include="../LandingStats.App/GoogleDrive/GoogleDriveBackupService.cs" Link="GoogleDrive/GoogleDriveBackupService.cs" />
+    <Compile Include="../LandingStats.App/GoogleDrive/GoogleDriveCloudSettings.cs" Link="GoogleDrive/GoogleDriveCloudSettings.cs" />
+    <Compile Include="../LandingStats.App/GoogleDrive/GoogleDriveOAuthConfiguration.cs" Link="GoogleDrive/GoogleDriveOAuthConfiguration.cs" />
+    <Compile Include="../LandingStats.App/GoogleDrive/GoogleDriveSyncStateRepository.cs" Link="GoogleDrive/GoogleDriveSyncStateRepository.cs" />
+    <Compile Include="../LandingStats.App/GoogleDrive/GoogleOAuthClient.cs" Link="GoogleDrive/GoogleOAuthClient.cs" />
+    <Compile Include="../LandingStats.App/GoogleDrive/GoogleOAuthTokenStore.cs" Link="GoogleDrive/GoogleOAuthTokenStore.cs" />
+    <Compile Include="../LandingStats.App/TelemetryUpload/TelemetryUploadClient.cs" Link="TelemetryUpload/TelemetryUploadClient.cs" />
+    <Compile Include="../LandingStats.App/TelemetryUpload/TelemetryUploadIdentityStore.cs" Link="TelemetryUpload/TelemetryUploadIdentityStore.cs" />
+    <InternalsVisibleTo Include="MSFS-Landing-Stats" />
+    <InternalsVisibleTo Include="LandingStats.App.RegressionTests" />
+    <InternalsVisibleTo Include="LandingStats.Workers.Testing" />
+    <InternalsVisibleTo Include="LandingStats.WorkerHost" />
+    <InternalsVisibleTo Include="LandingStats.Models" />
+    <InternalsVisibleTo Include="LandingStats.Persistence" />
+    <InternalsVisibleTo Include="LandingStats.Recording" />
+    <InternalsVisibleTo Include="LandingStats.Storage" />
+    <InternalsVisibleTo Include="LandingStats.Runtime" />
+    <InternalsVisibleTo Include="LandingStats.Workers.Common" />
+    <InternalsVisibleTo Include="LandingStats.Workers.Simulator" />
+    <InternalsVisibleTo Include="LandingStats.Workers.Controllers" />
+    <InternalsVisibleTo Include="LandingStats.Workers.Analysis" />
+    <InternalsVisibleTo Include="LandingStats.Workers.Upload" />
+    <InternalsVisibleTo Include="LandingStats.Workers.Cloud" />
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies.net48" Version="1.0.3" PrivateAssets="all" />
+    <Reference Include="System.Runtime.Serialization" />
+    <Reference Include="System.IO.Compression" />
+    <Reference Include="System.Net.Http" />
+    <Reference Include="System.Security" />
+    <PackageReference Include="Google.Apis.Drive.v3" Version="1.75.0.4218" />
+    <AssemblyMetadata Include="GoogleOAuthClientId" Value="$(GoogleOAuthClientId)" />
+    <AssemblyMetadata Include="GoogleOAuthClientSecret" Value="$(GoogleOAuthClientSecret)" />
+  </ItemGroup>
+  <Target Name="ValidateGoogleOAuthCredentials" BeforeTargets="CoreCompile" Condition="'$(RequireGoogleOAuthCredentials)' == 'true'">
+    <Error Condition="$([System.String]::IsNullOrWhiteSpace('$(GoogleOAuthClientId)'))"
+      Text="Google OAuth client id is required in LandingStats.Delivery for a normal package. Set GOOGLE_OAUTH_CLIENT_ID." />
+    <Error Condition="$([System.String]::IsNullOrWhiteSpace('$(GoogleOAuthClientSecret)'))"
+      Text="Google OAuth client secret is required in LandingStats.Delivery for a normal package. Set GOOGLE_OAUTH_CLIENT_SECRET." />
+  </Target>
+</Project>

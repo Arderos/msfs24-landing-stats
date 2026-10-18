@@ -1,6 +1,7 @@
 using System;
 using System.Linq;
 using LandingStats.App.Models;
+using LandingStats.App.Telemetry;
 
 namespace LandingStats.App.RegressionTests;
 
@@ -15,18 +16,18 @@ internal static class RunwayAirportMetadataRegressionTests
             PrimaryName = "09", SecondaryName = "27",
         };
         var record = Record();
-        Assert(MainWindow.TryResolveRunway(record, new[] { runway }), "fixture runway not selected");
+        Assert(RunwayResolver.TryApply(record, new[] { runway }), "fixture runway not selected");
         Assert(record.Airport == "REAL" && record.Runway == "09", "nearest ARP identity survived actual runway match");
         Assert(record.AirportDistanceNauticalMiles == null, "distance to a different ARP survived correction");
 
         var sameAirport = Record();
         sameAirport.Airport = "real";
-        Assert(MainWindow.TryResolveRunway(sameAirport, new[] { runway }), "same airport runway not selected");
+        Assert(RunwayResolver.TryApply(sameAirport, new[] { runway }), "same airport runway not selected");
         Assert(sameAirport.AirportDistanceNauticalMiles == .3, "correct airport distance was discarded");
 
         var offRunway = Record();
         offRunway.TouchdownLatitudeDegrees = 1;
-        Assert(!MainWindow.TryResolveRunway(offRunway, new[] { runway }), "off-runway touchdown acquired geometry");
+        Assert(!RunwayResolver.TryApply(offRunway, new[] { runway }), "off-runway touchdown acquired geometry");
         Assert(offRunway.Airport == "NEAR" && offRunway.Runway == "—" && offRunway.AirportDistanceNauticalMiles == .3,
             "failed match changed airport metadata");
     }

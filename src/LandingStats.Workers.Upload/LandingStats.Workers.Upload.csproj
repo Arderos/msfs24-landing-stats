@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><TargetFramework>net48</TargetFramework><PlatformTarget>x64</PlatformTarget></PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../LandingStats.Workers.Common/LandingStats.Workers.Common.csproj" />
+    <ProjectReference Include="../LandingStats.Runtime/LandingStats.Runtime.csproj" />
+    <ProjectReference Include="../LandingStats.Recording/LandingStats.Recording.csproj" />
+    <ProjectReference Include="../LandingStats.Storage/LandingStats.Storage.csproj" />
+    <ProjectReference Include="../LandingStats.Models/LandingStats.Models.csproj" />
+    <ProjectReference Include="../LandingStats.Delivery/LandingStats.Delivery.csproj" />
+    <ProjectReference Include="../LandingStats.Runtime.Contracts/LandingStats.Runtime.Contracts.csproj" />
+    <ProjectReference Include="../LandingStats.Core/LandingStats.Core.csproj" />
+    <Compile Include="../LandingStats.App/Runtime/UploadWorkerRole.cs" Link="Runtime/UploadWorkerRole.cs" />
+    <InternalsVisibleTo Include="MSFS-Landing-Stats" />
+    <InternalsVisibleTo Include="LandingStats.App.RegressionTests" />
+    <InternalsVisibleTo Include="LandingStats.Workers.Testing" />
+    <InternalsVisibleTo Include="LandingStats.WorkerHost" />
+    <InternalsVisibleTo Include="LandingStats.Models" />
+    <InternalsVisibleTo Include="LandingStats.Persistence" />
+    <InternalsVisibleTo Include="LandingStats.Recording" />
+    <InternalsVisibleTo Include="LandingStats.Storage" />
+    <InternalsVisibleTo Include="LandingStats.Runtime" />
+    <InternalsVisibleTo Include="LandingStats.Delivery" />
+    <InternalsVisibleTo Include="LandingStats.Workers.Common" />
+    <InternalsVisibleTo Include="LandingStats.Workers.Simulator" />
+    <InternalsVisibleTo Include="LandingStats.Workers.Controllers" />
+    <InternalsVisibleTo Include="LandingStats.Workers.Analysis" />
+    <InternalsVisibleTo Include="LandingStats.Workers.Cloud" />
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies.net48" Version="1.0.3" PrivateAssets="all" />
+    <Reference Include="System.Runtime.Serialization" />
+    <Reference Include="System.IO.Compression" />
+    <Reference Include="System.Net.Http" />
+  </ItemGroup>
+</Project>

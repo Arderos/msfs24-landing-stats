@@ -6,6 +6,10 @@ captures/
 artifacts/
 security/
 test-output/
+# Local test copies of history, captures and third-party research binaries.
+/t/
+/output/
+/AirVirtuaTracker-*.zip
 src/LandingStats.App/*.zip
 server/telemetry-ingest/.env
 server/telemetry-ingest/secrets/
@@ -17,8 +21,17 @@ src/LandingStats.Analyzer/
 src/LandingStats.Probe/
 src/LandingStats.Probe.Launcher/
 docs/*
+!docs/integration-api.md
+!docs/examples/
+docs/examples/*
+!docs/examples/integration_client.py
 !docs/format-v7.md
 !docs/methodology.md
+!docs/runtime-refactoring-plan.md
+!docs/capture-archive-format.md
+!docs/telemetry-compression-validation.md
+!docs/source-observation-validation.md
+!docs/release-notes-0.9.5.ru.md
 build-community.ps1
 MsfsLandingStats.sln
 src/LandingStats.Core/ContactPointAnalysis.cs

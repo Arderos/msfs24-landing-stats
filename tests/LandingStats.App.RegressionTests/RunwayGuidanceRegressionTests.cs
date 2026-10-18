@@ -106,8 +106,8 @@ internal static class RunwayGuidanceRegressionTests
     private static RunwayFacility Runway() => new RunwayFacility { AirportIdent = "UUEE", AirportRegion = "UU", PrimaryName = "06C", SecondaryName = "24C",
         LengthMeters = 3555.661865234375, WidthMeters = 60, SurfaceType = 4 };
     private const BindingFlags Flags = BindingFlags.NonPublic | BindingFlags.Instance;
-    private static T Field<T>(object target, string name) => (T)target.GetType().GetField(name, Flags)!.GetValue(target)!;
-    private static void Set(object target, string name, object value) => target.GetType().GetField(name, Flags)!.SetValue(target, value);
-    private static void Call(object target, string name, params object[] args) => target.GetType().GetMethod(name, Flags)!.Invoke(target, args);
+    private static T Field<T>(object target, string name) => (T)RecorderTestAccess.Get(target, name)!;
+    private static void Set(object target, string name, object value) => RecorderTestAccess.Set(target, name, value);
+    private static void Call(object target, string name, params object[] args) => RecorderTestAccess.Call(target, name, args);
     private static void Require(bool condition, string message) { if (!condition) throw new InvalidOperationException(message); }
 }

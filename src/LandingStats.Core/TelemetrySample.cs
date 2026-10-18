@@ -36,6 +36,16 @@ public sealed class TelemetrySample
 
     public long FlightSegment { get; set; }
 
+    // Recording-owned catalog observation. Null means a legacy capture without
+    // provenance; empty means the controller source had no catalog. Numeric
+    // telemetry fingerprints intentionally retain their existing definition.
+    // Like the measured arrays, this buffer is read-only after publication.
+    public byte[]? ControllerCatalog { get; set; }
+
+    // Null in older captures. This optional observation is not a measured numeric
+    // channel and does not change existing telemetry fingerprints or CSV columns.
+    public ReplaySourceEvidence? SourceEvidence { get; set; }
+
     // Only an analysis-owned inactive sentinel sets this marker. It is not a
     // simulator observation and is deliberately absent from the raw CSV schema.
     public TelemetryPositionDiscontinuity? AnalysisDiscontinuity { get; internal set; }

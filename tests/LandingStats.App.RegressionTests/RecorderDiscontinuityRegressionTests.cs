@@ -69,7 +69,7 @@ internal static class RecorderDiscontinuityRegressionTests
     };
 
     private static void Call(object target, string method, params object[] arguments) =>
-        target.GetType().GetMethod(method, BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(target, arguments);
+        RecorderTestAccess.Call(target, method, arguments);
 
     private static void Assert(bool condition, string message)
     {

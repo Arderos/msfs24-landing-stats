@@ -3,8 +3,11 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
+using System.Threading;
+using LandingStats.App.Controls;
 using System.Windows;
 using LandingStats.App.Models;
+using LandingStats.App.Runtime;
 using LandingStats.App.Settings;
 using LandingStats.App.Storage;
 
@@ -17,6 +20,10 @@ public partial class MainWindow
     private readonly HashSet<string> _locallyRemovedHistoryIds = new HashSet<string>(StringComparer.Ordinal);
     private long _historyLoadVersion;
     private long _detailLoadVersion;
+    private CancellationTokenSource? _detailSelectionCancellation;
+    private readonly SemaphoreSlim _detailReadQueue = new SemaphoreSlim(1, 1);
+    private readonly LinkedList<string> _detailCacheRecency = new LinkedList<string>();
+    private const int DetailCacheCapacity = 24;
     private bool _historyLoading = true;
     private bool _detailLoading;
     private bool _historyStopped;
@@ -52,6 +59,7 @@ public partial class MainWindow
 
     private void StopHistoryOperations()
     {
+        _detailSelectionCancellation?.Cancel();
         _historyStopped = true;
         _historyLoadVersion++;
         _detailLoadVersion++;
@@ -61,8 +69,10 @@ public partial class MainWindow
 
     private void InvalidateLoadedHistoryDetails()
     {
+        _detailSelectionCancellation?.Cancel();
         _detailLoadVersion++;
         _loadedDetails.Clear();
+        _detailCacheRecency.Clear();
     }
 
     private async Task InitializeHistoryAsync()
@@ -72,13 +82,13 @@ public partial class MainWindow
         {
             var loading = Task.Run(() =>
             {
-                lock (_airportFacilityRepositoryGate) return _airportFacilityRepository.Load();
+                lock (_airportFacilityRepositoryGate)
+                { _lifetimeCancellation.Token.ThrowIfCancellationRequested(); return _airportFacilityRepository.Load(); }
             }, _lifetimeCancellation.Token);
             await TrackHistoryOperation(loading);
             if (_isClosed || _historyStopped) return;
             // Live simulator facilities received during startup are newer.
             _airportFacilities = MergeAirportFacilities(loading.Result, _airportFacilities);
-            _recorder?.SeedAirportFacilities(_airportFacilities);
         }
         catch (OperationCanceledException) when (_lifetimeCancellation.IsCancellationRequested)
         {
@@ -105,19 +115,8 @@ public partial class MainWindow
         RefreshHistoryLoadingPresentation();
         try
         {
-            var loading = Task.Run(() =>
-            {
-                lock (_landingRepositoryGate)
-                {
-                    _lifetimeCancellation.Token.ThrowIfCancellationRequested();
-                    // Repository summaries may already be displayed. Resolve on
-                    // private copies instead of mutating a DTO under WPF bindings.
-                    var records = _repository.LoadAll().Select(LandingRepository.CreateSummary).ToArray();
-                    var changed = records.Where(record => TryResolveAirport(record, facilities)).ToArray();
-                    _repository.UpdateSummaries(changed);
-                    return records;
-                }
-            }, _lifetimeCancellation.Token);
+            var loading = Task.Run(() => HistoryCommands.LoadSummaries(_repository, _landingRepositoryGate,
+                facilities, _lifetimeCancellation.Token), _lifetimeCancellation.Token);
             await TrackHistoryOperation(loading);
             if (_isClosed || _historyStopped || version != _historyLoadVersion) return;
 
@@ -178,6 +177,10 @@ public partial class MainWindow
     {
         if (_isClosed || _historyStopped || _locallyRemovedHistoryIds.Contains(selected.Id)) return;
         var version = ++_detailLoadVersion;
+        _detailSelectionCancellation?.Cancel();
+        using var selectionCancellation = CancellationTokenSource.CreateLinkedTokenSource(_lifetimeCancellation.Token);
+        _detailSelectionCancellation = selectionCancellation;
+        var selectionToken = selectionCancellation.Token;
         var siblings = LandingReplayContacts.ForEpisode(selected, _landings)
             .Where(record => !_locallyRemovedHistoryIds.Contains(record.Id)).ToArray();
         var cached = new Dictionary<string, LandingRecord>(_loadedDetails, StringComparer.Ordinal);
@@ -201,53 +204,16 @@ public partial class MainWindow
             }
             else
             {
-                var loading = Task.Run(() =>
+                var loading = Task.Run(async () =>
                 {
-                    var details = new List<LandingRecord>();
-                    lock (_landingRepositoryGate)
+                    await _detailReadQueue.WaitAsync(selectionToken).ConfigureAwait(false);
+                    try
                     {
-                        var storedSummaries = _repository.LoadAll().ToDictionary(record => record.Id,
-                            StringComparer.Ordinal);
-                        foreach (var summary in allRecords)
-                        {
-                            _lifetimeCancellation.Token.ThrowIfCancellationRequested();
-                            if (cached.TryGetValue(summary.Id, out var cachedDetail))
-                            {
-                                details.Add(cachedDetail);
-                                continue;
-                            }
-                            if (!summary.IsSummaryOnly)
-                            {
-                                details.Add(summary);
-                                continue;
-                            }
-                            // A cloud or scenery write can finish before this
-                            // worker obtains the gate. LoadDetail overlays its
-                            // summary metadata, so a captured UI summary would
-                            // roll that write back during the migration below.
-                            var detail = storedSummaries.TryGetValue(summary.Id, out var storedSummary)
-                                ? _repository.LoadDetail(storedSummary)
-                                : null;
-                            if (detail == null || detail.IsSummaryOnly)
-                            {
-                                if (summary.Id == selected.Id)
-                                    throw new IOException("The landing detail could not be read.");
-                                continue;
-                            }
-                            loadedFromStorage.Add(detail.Id);
-                            if (detail.FormatVersion >= 6 &&
-                                LandingRecordFactory.RefreshRawPitchInputSelection(detail) &&
-                                _repository.Contains(detail.Id))
-                            {
-                                // Read, migration and save share the deletion
-                                // gate: a deleted landing can never be recreated.
-                                _repository.Save(detail);
-                            }
-                            details.Add(detail);
-                        }
+                        return HistoryCommands.LoadDetails(_repository, _landingRepositoryGate, allRecords, selected.Id,
+                            cached, loadedFromStorage, selectionToken);
                     }
-                    return details;
-                }, _lifetimeCancellation.Token);
+                    finally { _detailReadQueue.Release(); }
+                }, selectionToken);
                 await TrackHistoryOperation(loading);
                 contacts = loading.Result;
             }
@@ -280,7 +246,17 @@ public partial class MainWindow
                     CopyRunwayMetadata(detail, summary);
                 }
                 _loadedDetails[detail.Id] = detail;
+                _detailCacheRecency.Remove(detail.Id);
+                _detailCacheRecency.AddLast(detail.Id);
             }
+            while (_detailCacheRecency.Count > DetailCacheCapacity)
+            {
+                var oldest = _detailCacheRecency.First!.Value;
+                _detailCacheRecency.RemoveFirst(); _loadedDetails.Remove(oldest);
+            }
+            var preparation = Task.Run(() => ReplayPresentationData.Prepare(selectedDetail, contacts), selectionToken);
+            await TrackHistoryOperation(preparation);
+            if (!IsCurrentHistorySelection(version, selected.Id)) return;
             if (ReferenceEquals(DataContext, selectedDetail) &&
                 _presentedReplayContacts.Select(record => record.Id).SequenceEqual(contacts.Select(record => record.Id)))
             {
@@ -301,9 +277,10 @@ public partial class MainWindow
                 _presentedReplayContacts = contacts;
             }
             _presentedReplayRunways = contacts.Select(record => record.RunwayGeometry).ToArray();
-            RefreshRunwayLoadingPresentation();
+            if (Guid.TryParse(selectedDetail.Id, out var presentedId))
+                RecordPresentationPhase(presentedId, EpisodeTimelinePhase.UiDetailApplied, contacts.Count);
         }
-        catch (OperationCanceledException) when (_lifetimeCancellation.IsCancellationRequested)
+        catch (OperationCanceledException) when (selectionToken.IsCancellationRequested)
         {
         }
         catch (Exception exception)
@@ -316,12 +293,21 @@ public partial class MainWindow
         }
         finally
         {
+            if (ReferenceEquals(_detailSelectionCancellation, selectionCancellation)) _detailSelectionCancellation = null;
             if (IsCurrentHistorySelection(version, selected.Id))
             {
                 _detailLoading = false;
                 RefreshHistoryLoadingPresentation();
             }
         }
+    }
+
+    private static void CopyRunwayMetadata(LandingRecord source, LandingRecord target)
+    {
+        target.RunwayGeometry = source.RunwayGeometry;
+        target.Runway = source.Runway;
+        target.Airport = source.Airport;
+        target.AirportDistanceNauticalMiles = source.AirportDistanceNauticalMiles;
     }
 
     private bool IsCurrentHistorySelection(long version, string id) =>

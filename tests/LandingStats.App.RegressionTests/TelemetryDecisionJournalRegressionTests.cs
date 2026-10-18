@@ -1,3 +1,4 @@
+using LandingStats.Archives;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -66,7 +67,7 @@ internal static class TelemetryDecisionJournalRegressionTests
             entry.Details.Sum(item => 48 + 6 * item.Key.Length));
         Assert(estimatedBytes <= 3600000, "journal escaped JSON bound exceeds its archive budget");
         using var memory = new MemoryStream();
-        using (var archive = new ZipArchive(memory, ZipArchiveMode.Create, true)) TelemetryDecisionArchive.Write(archive, 1, snapshot);
+        using (var archive = new CaptureArchiveWriter(memory, false, true)) TelemetryDecisionArchive.Write(archive, 1, snapshot);
         memory.Position = 0;
         using (var archive = new ZipArchive(memory, ZipArchiveMode.Read, true))
             Assert(archive.GetEntry("decisions.json")!.Length <= 4 * 1024 * 1024, "serialized worst-case journal exceeds server limit");
@@ -194,12 +195,10 @@ internal static class TelemetryDecisionJournalRegressionTests
     };
 
     private static void Feed(SimConnectLandingRecorder recorder, TelemetrySample sample) =>
-        typeof(SimConnectLandingRecorder).GetMethod("ProcessSample", BindingFlags.Instance | BindingFlags.NonPublic)!
-            .Invoke(recorder, new object[] { sample });
+        RecorderTestAccess.Call(recorder, "ProcessSample", new object[] { sample });
 
     private static TelemetryDecisionJournal? RecorderJournal(SimConnectLandingRecorder recorder) =>
-        (TelemetryDecisionJournal?)typeof(SimConnectLandingRecorder)
-            .GetField("_episodeDecisionJournal", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(recorder);
+        (TelemetryDecisionJournal?)RecorderTestAccess.Get(recorder, "_episodeDecisionJournal");
 
     private static TouchdownAnalysisOptions Options() => new TouchdownAnalysisOptions
     {

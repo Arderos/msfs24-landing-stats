@@ -240,21 +240,22 @@ internal static class RunwayMarkingRegressionTests
     {
         const BindingFlags flags = BindingFlags.NonPublic | BindingFlags.Instance;
         using var recorder = new SimConnectLandingRecorder(IntPtr.Zero);
-        var type = recorder.GetType();
-        var cache = (Dictionary<string, IReadOnlyList<RunwayFacility>>)type.GetField("_runways", flags)!.GetValue(recorder)!;
-        var requests = (Dictionary<uint, RunwayFacilityRequest>)type.GetField("_runwayRequests", flags)!.GetValue(recorder)!;
+        var native = recorder.NativeSource;
+        var type = native.GetType();
+        var cache = (Dictionary<string, IReadOnlyList<RunwayFacility>>)type.GetField("_runways", flags)!.GetValue(native)!;
+        var requests = (Dictionary<uint, RunwayFacilityRequest>)type.GetField("_runwayRequests", flags)!.GetValue(native)!;
         cache["EGLL"] = new[] { Runway(50, 3659) };
-        type.GetField("_runwayBatchKeys", flags)!.SetValue(recorder, new[] { "EGLL" });
-        type.GetField("_runwayBatchActive", flags)!.SetValue(recorder, true);
+        type.GetField("_runwayBatchKeys", flags)!.SetValue(native, new[] { "EGLL" });
+        type.GetField("_runwayBatchActive", flags)!.SetValue(native, true);
         requests[100] = new RunwayFacilityRequest(new AirportFacility { Ident = "EGLL" }, -1, true);
-        type.GetMethod("ExpireRunwayRequests", flags)!.Invoke(recorder, null);
+        type.GetMethod("ExpireRunwayRequests", flags)!.Invoke(native, null);
         Require(recorder.RunwayFacilities.Count == 1 && !recorder.RunwayFacilities[0].PrimaryThresholdOffsetMeters.HasValue, "optional timeout keeps exact geometry, not fake zero");
         var incoming = Runway(50, 3659); incoming.PrimaryThresholdOffsetMeters = 308;
         var merge = type.GetMethod("MergeRunwayThresholds", flags)!;
-        merge.Invoke(recorder, new object[] { "EGLL", new[] { incoming }, true });
+        merge.Invoke(native, new object[] { "EGLL", new[] { incoming }, true });
         Require(cache["EGLL"][0].PrimaryThresholdOffsetMeters == 308, "matching metadata attaches");
         incoming.WidthMeters = 60; incoming.PrimaryThresholdOffsetMeters = 600;
-        merge.Invoke(recorder, new object[] { "EGLL", new[] { incoming }, true });
+        merge.Invoke(native, new object[] { "EGLL", new[] { incoming }, true });
         Require(cache["EGLL"][0].PrimaryThresholdOffsetMeters == 308 && cache["EGLL"][0].WidthMeters == 50, "mismatched scene never changes real width/offset");
     }
 

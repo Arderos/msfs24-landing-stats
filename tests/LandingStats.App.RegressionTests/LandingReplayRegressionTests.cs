@@ -29,7 +29,7 @@ internal static class LandingReplayRegressionTests
         foreach (var heading in new[] { 0d, 90d, 180d, 270d })
         {
             var angle = heading * Math.PI / 180;
-            var offset = LandingReplayTrack.FrontLeftCameraOffset(heading, 100);
+            var offset = LandingReplayTrack.FrontLeftCameraOffset(heading, 100).ToWpf();
             Require(offset.Y > 0, "camera above aircraft");
             Require(Vector3D.DotProduct(offset, new Vector3D(Math.Sin(angle), 0, -Math.Cos(angle))) > 0, "camera ahead");
             Require(Vector3D.DotProduct(offset, new Vector3D(-Math.Cos(angle), 0, -Math.Sin(angle))) > 0, "camera on aircraft left, not world west");
@@ -37,7 +37,7 @@ internal static class LandingReplayRegressionTests
         var record = Record();
         Require(LandingReplayTrack.TryCreate(record, out var track), "new pose data usable");
         Require(track!.TrySample(.05, out var middle), "midpoint sample");
-        var direction = Matrix(middle.Orientation).Transform(new Vector3D(0, 0, -1));
+        var direction = Matrix(middle.Orientation.ToWpf()).Transform(new Vector3D(0, 0, -1));
         Near(direction.X, 0, .0001); Near(direction.Z, -1, .0001);
         Near(middle.Position.Y, 100 * .3048); Near(middle.Value(p => p.PilotPitchPercent), 50);
         Require(track.Frames[1].Position.Z < track.Frames[0].Position.Z, "northward GPS motion is negative Z");
@@ -81,6 +81,7 @@ internal static class LandingReplayRegressionTests
         Require(view.IsPlaybackAvailable, "WPF native scene accepts pose data"); Near(view.CurrentTimeSeconds, .05);
         Require(events == 0, "programmatic chart synchronization cannot recurse");
         view.Record = legacy; Require(!view.IsPlaybackAvailable, "record switch clears old scene");
+        ReplayPresentationRegressionTests.Run(Record());
     }
 
     private static LandingRecord Record()
@@ -93,7 +94,7 @@ internal static class LandingReplayRegressionTests
         PlaneAltitudeFeet = 1000, GroundAltitudeFeet = 900, HeadingTrueDegrees = heading,
         PitchDegrees = 0, BankDegrees = 0, GroundSpeedKnots = 140, GForce = 1, PilotPitchPercent = input,
     };
-    private static Vector3D Rotate(double heading, double pitch, double bank, Vector3D vector) => Matrix(LandingReplayTrack.Orientation(heading, pitch, bank)).Transform(vector);
+    private static Vector3D Rotate(double heading, double pitch, double bank, Vector3D vector) => Matrix(LandingReplayTrack.Orientation(heading, pitch, bank).ToWpf()).Transform(vector);
     private static Matrix3D Matrix(Quaternion rotation) { var matrix = Matrix3D.Identity; matrix.Rotate(rotation); return matrix; }
     private static void Near(double a, double b, double tolerance = .0000001) => Require(Math.Abs(a - b) <= tolerance, $"expected {b}, got {a}");
     private static void Require(bool value, string message) { if (!value) throw new InvalidOperationException(message); }

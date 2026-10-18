@@ -107,12 +107,14 @@ internal sealed class GoogleDriveApiClient : IGoogleDriveApi, IDisposable
             request.Fields = "nextPageToken,files(" + FileFields + ")";
             request.PageToken = pageToken;
             var response = await request.ExecuteAsync(cancellationToken).ConfigureAwait(false);
+            if (files.Count + (response.Files?.Count ?? 0) > 65536) throw new InvalidDataException("Cloud listing exceeds its bound.");
             files.AddRange((response.Files ?? new List<DriveFileResource>()).Select(ToFile));
             pageToken = response.NextPageToken;
         }
         while (!string.IsNullOrWhiteSpace(pageToken));
 
-        return files;
+        // files.list is not a snapshot: a changed file can occur on two pages.
+        return files.GroupBy(file => file.Id, StringComparer.Ordinal).Select(group => group.Last()).ToArray();
     }
 
     public async Task<GoogleDriveFile> CreateFolderAsync(
@@ -197,7 +199,7 @@ internal sealed class GoogleDriveApiClient : IGoogleDriveApi, IDisposable
             throw new ArgumentException("A Google Drive file id is required.", nameof(fileId));
         }
 
-        using var output = new MemoryStream();
+        using var output = new BoundedCloudDownload();
         var progress = await _driveService.Files.Get(fileId)
             .DownloadAsync(output, cancellationToken)
             .ConfigureAwait(false);

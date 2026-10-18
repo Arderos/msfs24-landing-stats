@@ -62,8 +62,8 @@ public sealed class TouchdownImpactResult
         TouchdownImpactAnalysis.IsFinite(EndOffsetSeconds) && EndOffsetSeconds >= PeakOffsetSeconds;
 
     public TouchdownImpactCategory Category => !IsComplete ? TouchdownImpactCategory.Unavailable :
-        PeakG < 1.2 ? TouchdownImpactCategory.Smooth :
-        PeakG < 1.5 ? TouchdownImpactCategory.Normal : TouchdownImpactCategory.Firm;
+        PeakG < AnalysisNumericPolicy.SmoothImpactG ? TouchdownImpactCategory.Smooth :
+        PeakG < AnalysisNumericPolicy.FirmImpactG ? TouchdownImpactCategory.Normal : TouchdownImpactCategory.Firm;
 }
 
 /// <summary>
@@ -83,16 +83,15 @@ public static class TouchdownImpactAnalysis
     public static TouchdownImpactResult Analyze(IReadOnlyList<TelemetrySample> samples, int contactIndex)
     {
         if (samples == null) throw new ArgumentNullException(nameof(samples));
-        if (contactIndex < 0 || contactIndex >= samples.Count || !IsFinite(samples[contactIndex].SimulationTimeSeconds))
+        double PhysicsTime(TelemetrySample sample) => IsFinite(sample.AnalysisTimeSeconds) ? sample.AnalysisTimeSeconds : sample.SimulationTimeSeconds;
+        if (contactIndex < 0 || contactIndex >= samples.Count || !IsFinite(PhysicsTime(samples[contactIndex])))
             return new TouchdownImpactResult();
         var input = new List<TouchdownImpactSample>(samples.Count);
         foreach (var sample in samples)
         {
             input.Add(new TouchdownImpactSample
             {
-                // Receipt time can change under a delivery backlog. Missing
-                // simulator time is unavailable here, not a new physical clock.
-                TimeSeconds = sample.SimulationTimeSeconds,
+                TimeSeconds = PhysicsTime(sample),
                 OnGround = sample.OnGround,
                 MotionSimulation = sample.MotionSimulation,
                 GForce = sample.GForce,
@@ -274,7 +273,7 @@ public static class TouchdownImpactAnalysis
     private static TouchdownImpactResult Result(TouchdownImpactStatus status, double peak, double peakTime) =>
         new TouchdownImpactResult(status, IsFinite(peak) ? peak : double.NaN, peakTime);
 
-    internal static bool IsFinite(double value) => !double.IsNaN(value) && !double.IsInfinity(value);
+    internal static bool IsFinite(double value) => AnalysisNumericPolicy.IsFinite(value);
 
     private readonly struct LinearFit
     {

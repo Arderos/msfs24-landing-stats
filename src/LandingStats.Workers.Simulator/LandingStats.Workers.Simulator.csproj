@@ -1,0 +1,47 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><TargetFramework>net48</TargetFramework><PlatformTarget>x64</PlatformTarget><MsfsSdkRoot Condition="'$(MsfsSdkRoot)' == '' and '$(MSFS_SDK)' != ''">$(MSFS_SDK)</MsfsSdkRoot><MsfsSdkRoot Condition="'$(MsfsSdkRoot)' == ''">D:\MSFS 2024 SDK</MsfsSdkRoot></PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../LandingStats.Workers.Common/LandingStats.Workers.Common.csproj" />
+    <ProjectReference Include="../LandingStats.Runtime/LandingStats.Runtime.csproj" />
+    <ProjectReference Include="../LandingStats.Recording/LandingStats.Recording.csproj" />
+    <ProjectReference Include="../LandingStats.Storage/LandingStats.Storage.csproj" />
+    <ProjectReference Include="../LandingStats.Models/LandingStats.Models.csproj" />
+    <ProjectReference Include="../LandingStats.Delivery/LandingStats.Delivery.csproj" />
+    <ProjectReference Include="../LandingStats.Runtime.Contracts/LandingStats.Runtime.Contracts.csproj" />
+    <ProjectReference Include="../LandingStats.Core/LandingStats.Core.csproj" />
+    <Compile Include="../LandingStats.App/Runtime/SimulatorWorkerRole.cs" Link="Runtime/SimulatorWorkerRole.cs" />
+    <Compile Include="../LandingStats.App/Telemetry/RunwayFacilityRequest.cs" Link="Telemetry/RunwayFacilityRequest.cs" />
+    <Compile Include="../LandingStats.App/Telemetry/RunwayIlsRequest.cs" Link="Telemetry/RunwayIlsRequest.cs" />
+    <Compile Include="../LandingStats.App/Telemetry/SimConnectOperationJournal.cs" Link="Telemetry/SimConnectOperationJournal.cs" />
+    <Compile Include="../LandingStats.App/Telemetry/SimConnectSource.cs" Link="Telemetry/SimConnectSource.cs" />
+    <Compile Include="../LandingStats.App/Telemetry/SimConnectSource.Effects.cs" Link="Telemetry/SimConnectSource.Effects.cs" />
+    <Compile Include="../LandingStats.App/Telemetry/SimConnectSource.Health.cs" Link="Telemetry/SimConnectSource.Health.cs" />
+    <Compile Include="../LandingStats.App/Telemetry/SimConnectSource.Lifecycle.cs" Link="Telemetry/SimConnectSource.Lifecycle.cs" />
+    <Compile Include="../LandingStats.App/Telemetry/SimConnectSource.Observations.cs" Link="Telemetry/SimConnectSource.Observations.cs" />
+    <Compile Include="../LandingStats.App/Telemetry/SimConnectSource.Runways.cs" Link="Telemetry/SimConnectSource.Runways.cs" />
+    <Compile Include="../LandingStats.App/Telemetry/SimConnectSource.SceneryPort.cs" Link="Telemetry/SimConnectSource.SceneryPort.cs" />
+    <Compile Include="../LandingStats.App/Telemetry/SimFrameData.cs" Link="Telemetry/SimFrameData.cs" />
+    <InternalsVisibleTo Include="MSFS-Landing-Stats" />
+    <InternalsVisibleTo Include="LandingStats.App.RegressionTests" />
+    <InternalsVisibleTo Include="LandingStats.Workers.Testing" />
+    <InternalsVisibleTo Include="LandingStats.WorkerHost" />
+    <InternalsVisibleTo Include="LandingStats.Models" />
+    <InternalsVisibleTo Include="LandingStats.Persistence" />
+    <InternalsVisibleTo Include="LandingStats.Recording" />
+    <InternalsVisibleTo Include="LandingStats.Storage" />
+    <InternalsVisibleTo Include="LandingStats.Runtime" />
+    <InternalsVisibleTo Include="LandingStats.Delivery" />
+    <InternalsVisibleTo Include="LandingStats.Workers.Common" />
+    <InternalsVisibleTo Include="LandingStats.Workers.Controllers" />
+    <InternalsVisibleTo Include="LandingStats.Workers.Analysis" />
+    <InternalsVisibleTo Include="LandingStats.Workers.Upload" />
+    <InternalsVisibleTo Include="LandingStats.Workers.Cloud" />
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies.net48" Version="1.0.3" PrivateAssets="all" />
+    <Reference Include="System.Runtime.Serialization" />
+    <Reference Include="System.IO.Compression" />
+    <Reference Include="System.Net.Http" />
+    <Reference Include="WindowsBase" /><Reference Include="PresentationCore" /><Reference Include="PresentationFramework" />
+    <Reference Include="Microsoft.FlightSimulator.SimConnect"><HintPath>$(MsfsSdkRoot)/SimConnect SDK/lib/managed/Microsoft.FlightSimulator.SimConnect.dll</HintPath><Private>true</Private></Reference>
+    <None Include="$(MsfsSdkRoot)/SimConnect SDK/lib/SimConnect.dll" Link="SimConnect.dll" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

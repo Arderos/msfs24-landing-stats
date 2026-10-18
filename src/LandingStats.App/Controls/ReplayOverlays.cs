@@ -22,7 +22,20 @@ internal static class ReplayOverlayStyle
     internal static readonly Brush Purple = Brush("#B58AF5");
     internal static readonly Brush Cyan = Brush("#6ECFD6");
     internal static Brush Brush(string color) { var b = new SolidColorBrush((Color)ColorConverter.ConvertFromString(color)); b.Freeze(); return b; }
-    internal static void Box(DrawingContext dc, Rect rect) => dc.DrawRoundedRectangle(Panel, new Pen(Line, 1), rect, 5, 5);
+    private static readonly System.Collections.Generic.Dictionary<(Brush Brush, double Width), Pen> Pens = new System.Collections.Generic.Dictionary<(Brush, double), Pen>();
+    internal static Pen Pen(Brush brush, double width)
+    {
+        var key = (brush, width);
+        if (!Pens.TryGetValue(key, out var pen)) { pen = new Pen(brush, width); pen.Freeze(); Pens.Add(key, pen); }
+        return pen;
+    }
+    internal static readonly Brush StickBackground = Brush("#1810100F");
+    internal static readonly Brush StickTrail = Brush("#66FF7A45");
+    internal static readonly Brush StickHalo = Brush("#28FF7A45");
+    internal static readonly Brush PedalBackground = Brush("#22211E1A");
+    internal static readonly Pen DashedLine = CreateDashed();
+    private static Pen CreateDashed() { var pen = new Pen(Line, 1) { DashStyle = DashStyles.Dash }; pen.Freeze(); return pen; }
+    internal static void Box(DrawingContext dc, Rect rect) => dc.DrawRoundedRectangle(Panel, ReplayOverlayStyle.Pen(Line, 1), rect, 5, 5);
     internal static void Text(Visual owner, DrawingContext dc, string text, double x, double y, Brush brush, double size = 10, bool right = false)
     {
         var formatted = new FormattedText(text, CultureInfo.CurrentCulture, FlowDirection.LeftToRight,
@@ -37,8 +50,27 @@ internal static class ReplayOverlayStyle
     internal static double Clamp(double value, double min, double max) => Math.Max(min, Math.Min(max, value));
 }
 
+internal abstract class ReplayOverlayElement : FrameworkElement
+{
+    private DrawingGroup? _background;
+    private string? _backgroundKey;
+    private double _backgroundDpi;
+    protected void InvalidateBackground() { _background = null; InvalidateVisual(); }
+    protected void DrawBackground(DrawingContext context, string key, Action<DrawingContext> draw)
+    {
+        var dpi = VisualTreeHelper.GetDpi(this).PixelsPerDip;
+        if (_background == null || _backgroundKey != key || _backgroundDpi != dpi)
+        {
+            _background = new DrawingGroup();
+            using (var drawing = _background.Open()) draw(drawing);
+            _background.Freeze(); _backgroundKey = key; _backgroundDpi = dpi;
+        }
+        context.DrawDrawing(_background);
+    }
+}
+
 /// <summary>Cached, gap-aware mini charts; only the cursor and current values change during playback.</summary>
-internal sealed class ReplayMetricsOverlay : FrameworkElement
+internal sealed class ReplayMetricsOverlay : ReplayOverlayElement
 {
     private readonly Func<LandingSeriesPoint, double>[] _values = { p => -p.PitchDegrees, p => p.BankDegrees,
         p => p.HeadingTrueDegrees ?? double.NaN, p => p.GroundSpeedKnots, p => -p.InertialFpm, p => p.GForce };
@@ -86,7 +118,7 @@ internal sealed class ReplayMetricsOverlay : FrameworkElement
             }
             path.Freeze(); _paths[i] = path;
         }
-        InvalidateVisual();
+        InvalidateBackground();
     }
 
     internal void Update(double time, LandingReplayPose? pose) { _time = time; _pose = pose; InvalidateVisual(); }
@@ -103,33 +135,44 @@ internal sealed class ReplayMetricsOverlay : FrameworkElement
     }
     protected override void OnRender(DrawingContext dc)
     {
+        DrawBackground(dc, ReplayOverlayStyle.L("Pitch"), background =>
+        {
+            for (var i = 0; i < _values.Length; i++)
+            {
+                var card = Card(i); var plot = Plot(i);
+                ReplayOverlayStyle.Box(background, card);
+                ReplayOverlayStyle.Text(this, background, ReplayOverlayStyle.L(_labels[i]), card.X + 10, card.Y + 8, ReplayOverlayStyle.Muted, 9);
+                if (_track == null || _paths[i] == null) continue;
+                var baseline = ChartPoint(i, _track.StartSeconds, i == 5 ? 1 : 0).Y;
+                if (baseline >= plot.Top && baseline <= plot.Bottom)
+                {
+                    background.DrawLine(ReplayOverlayStyle.Pen(ReplayOverlayStyle.Line, .7), new Point(plot.Left, baseline), new Point(plot.Right, baseline));
+                    ReplayOverlayStyle.Text(this, background, i == 5 ? "1" : "0", plot.Left, baseline - 10, ReplayOverlayStyle.Muted, 8);
+                }
+                background.PushOpacity(.25);
+                background.DrawGeometry(null, ReplayOverlayStyle.Pen(_colors[i], 1.3), _paths[i]); background.Pop();
+            }
+        });
         for (var i = 0; i < _values.Length; i++)
         {
             var card = Card(i); var plot = Plot(i); var color = _colors[i];
-            ReplayOverlayStyle.Box(dc, card);
-            ReplayOverlayStyle.Text(this, dc, ReplayOverlayStyle.L(_labels[i]), card.X + 10, card.Y + 8, ReplayOverlayStyle.Muted, 9);
             var value = i == 2 ? Yaw(_pose?.HeadingDegrees ?? double.NaN) : _pose?.Value(_values[i]) ?? double.NaN;
             var text = !LandingReplayTrack.Finite(value) ? "—" : value.ToString(i < 3 ? "+0.0;-0.0;0.0" : i == 4 ? "+0;-0;0" : i == 3 ? "0" : "0.00", CultureInfo.CurrentCulture) +
                 (i < 3 ? "°" : i == 3 ? " " + ReplayOverlayStyle.L("Knots") : i == 4 ? " fpm" : " G");
             ReplayOverlayStyle.Text(this, dc, text, card.Right - 10, card.Y + 6, color, 12, true);
             if (_track == null || _paths[i] == null) continue;
-            var baseline = ChartPoint(i, _track.StartSeconds, i == 5 ? 1 : 0).Y;
-            if (baseline >= plot.Top && baseline <= plot.Bottom)
-            {
-                dc.DrawLine(new Pen(ReplayOverlayStyle.Line, .7), new Point(plot.Left, baseline), new Point(plot.Right, baseline));
-                ReplayOverlayStyle.Text(this, dc, i == 5 ? "1" : "0", plot.Left, baseline - 10, ReplayOverlayStyle.Muted, 8);
-            }
-            dc.PushOpacity(.25); dc.DrawGeometry(null, new Pen(color, 1.3), _paths[i]); dc.Pop();
             var cursor = ChartPoint(i, _time, 0).X;
-            dc.PushClip(new RectangleGeometry(new Rect(plot.Left, plot.Top, ReplayOverlayStyle.Clamp(cursor - plot.Left, 0, plot.Width), plot.Height)));
-            dc.DrawGeometry(null, new Pen(color, 1.3), _paths[i]); dc.Pop();
-            dc.DrawLine(new Pen(ReplayOverlayStyle.Line, 1), new Point(cursor, plot.Top), new Point(cursor, plot.Bottom));
+            var clip = new RectangleGeometry(new Rect(plot.Left, plot.Top, ReplayOverlayStyle.Clamp(cursor - plot.Left, 0, plot.Width), plot.Height));
+            clip.Freeze(); dc.PushClip(clip);
+            dc.DrawGeometry(null, ReplayOverlayStyle.Pen(color, 1.3), _paths[i]); dc.Pop();
+            dc.DrawLine(ReplayOverlayStyle.Pen(ReplayOverlayStyle.Line, 1), new Point(cursor, plot.Top), new Point(cursor, plot.Bottom));
             if (LandingReplayTrack.Finite(value)) dc.DrawEllipse(color, null, ChartPoint(i, _time, value), 2.6, 2.6);
         }
     }
+
 }
 
-internal sealed class ReplayControlOverlay : FrameworkElement
+internal sealed class ReplayControlOverlay : ReplayOverlayElement
 {
     private ReplayControlInputs? _inputs;
     private ReplayControlSample _sample;
@@ -145,7 +188,15 @@ internal sealed class ReplayControlOverlay : FrameworkElement
             Source("Roll", _inputs?.Roll) + "\n" + Source("Pedals", _inputs?.Yaw));
         InvalidateVisual();
     }
-    internal void Update(double time, bool hasPose) { _sample = hasPose && _inputs != null ? _inputs.Sample(time) : default; InvalidateVisual(); }
+    internal void Update(double time, bool hasPose)
+    {
+        var revision = _inputs?.BindingRevision;
+        // Source attribution follows time even when recorded pose is missing.
+        var sample = _inputs?.Sample(time) ?? default;
+        _sample = hasPose ? sample : default;
+        if (_inputs?.BindingRevision != revision) RefreshLocalization();
+        else InvalidateVisual();
+    }
     internal static Point StickPoint(double pitch, double roll) => new Point(
         StickBounds.X + StickBounds.Width * (.5 + ReplayOverlayStyle.Clamp(roll, -100, 100) / 200),
         StickBounds.Y + StickBounds.Height * (.5 + ReplayOverlayStyle.Clamp(pitch, -100, 100) / 200));
@@ -157,41 +208,44 @@ internal sealed class ReplayControlOverlay : FrameworkElement
     }
     protected override void OnRender(DrawingContext dc)
     {
-        ReplayOverlayStyle.Box(dc, new Rect(0, 0, Width, Height));
-        ReplayOverlayStyle.Text(this, dc, ReplayOverlayStyle.L("Stick"), 14, 10, ReplayOverlayStyle.Muted, 10);
         var bounds = StickBounds; var center = StickPoint(0, 0);
-        dc.DrawRectangle(ReplayOverlayStyle.Brush("#1810100F"), new Pen(ReplayOverlayStyle.Line, 1), bounds);
-        var dashed = new Pen(ReplayOverlayStyle.Line, 1) { DashStyle = DashStyles.Dash };
-        dc.DrawLine(dashed, new Point(center.X, bounds.Top), new Point(center.X, bounds.Bottom));
-        dc.DrawLine(dashed, new Point(bounds.Left, center.Y), new Point(bounds.Right, center.Y));
-        dc.DrawEllipse(null, new Pen(ReplayOverlayStyle.Muted, 1), center, 3, 3);
-        ReplayOverlayStyle.Text(this, dc, ReplayOverlayStyle.L("Push"), bounds.Left + 6, bounds.Top + 5, ReplayOverlayStyle.Muted, 8);
-        ReplayOverlayStyle.Text(this, dc, ReplayOverlayStyle.L("Pull"), bounds.Left + 6, bounds.Bottom - 16, ReplayOverlayStyle.Muted, 8);
+        DrawBackground(dc, ReplayOverlayStyle.L("Stick"), background =>
+        {
+        ReplayOverlayStyle.Box(background, new Rect(0, 0, Width, Height));
+        ReplayOverlayStyle.Text(this, background, ReplayOverlayStyle.L("Stick"), 14, 10, ReplayOverlayStyle.Muted, 10);
+        background.DrawRectangle(ReplayOverlayStyle.StickBackground, ReplayOverlayStyle.Pen(ReplayOverlayStyle.Line, 1), bounds);
+        var dashed = ReplayOverlayStyle.DashedLine;
+        background.DrawLine(dashed, new Point(center.X, bounds.Top), new Point(center.X, bounds.Bottom));
+        background.DrawLine(dashed, new Point(bounds.Left, center.Y), new Point(bounds.Right, center.Y));
+        background.DrawEllipse(null, ReplayOverlayStyle.Pen(ReplayOverlayStyle.Muted, 1), center, 3, 3);
+        ReplayOverlayStyle.Text(this, background, ReplayOverlayStyle.L("Push"), bounds.Left + 6, bounds.Top + 5, ReplayOverlayStyle.Muted, 8);
+        ReplayOverlayStyle.Text(this, background, ReplayOverlayStyle.L("Pull"), bounds.Left + 6, bounds.Bottom - 16, ReplayOverlayStyle.Muted, 8);
+        ReplayOverlayStyle.Text(this, background, ReplayOverlayStyle.L("Pedals"), 14, 204, ReplayOverlayStyle.Muted, 9);
+        background.DrawRectangle(ReplayOverlayStyle.PedalBackground, ReplayOverlayStyle.Pen(ReplayOverlayStyle.Line, 1), PedalBounds);
+        background.DrawLine(ReplayOverlayStyle.Pen(ReplayOverlayStyle.Muted, 1), new Point(center.X, 217), new Point(center.X, 235));
+        ReplayOverlayStyle.Text(this, background, ReplayOverlayStyle.L("LeftShort"), 14, 242, ReplayOverlayStyle.Muted, 9);
+        ReplayOverlayStyle.Text(this, background, ReplayOverlayStyle.L("RightShort"), 162, 242, ReplayOverlayStyle.Muted, 9, true);
+        });
         if (_sample.PitchPercent.HasValue || _sample.RollPercent.HasValue)
         {
             // A missing dimension uses the centre guide for display only. Keep
             // the sample nullable and explicitly label the unavailable axis below.
             var position = StickPoint(_sample.PitchPercent ?? 0, _sample.RollPercent ?? 0);
-            dc.DrawLine(new Pen(ReplayOverlayStyle.Brush("#66FF7A45"), 1), center, position);
-            dc.DrawEllipse(ReplayOverlayStyle.Brush("#28FF7A45"), null, position, 11, 11);
-            dc.DrawEllipse(ReplayOverlayStyle.Orange, new Pen(ReplayOverlayStyle.Ink, 1), position, 4, 4);
+            dc.DrawLine(ReplayOverlayStyle.Pen(ReplayOverlayStyle.StickTrail, 1), center, position);
+            dc.DrawEllipse(ReplayOverlayStyle.StickHalo, null, position, 11, 11);
+            dc.DrawEllipse(ReplayOverlayStyle.Orange, ReplayOverlayStyle.Pen(ReplayOverlayStyle.Ink, 1), position, 4, 4);
         }
         else ReplayOverlayStyle.Text(this, dc, "—", center.X - 4, center.Y + 14, ReplayOverlayStyle.Muted, 12);
         var status = !_sample.PitchPercent.HasValue && !_sample.RollPercent.HasValue ? ReplayOverlayStyle.L("NoAxes") :
             !_sample.RollPercent.HasValue ? ReplayOverlayStyle.L("PitchOnly") : !_sample.PitchPercent.HasValue ? ReplayOverlayStyle.L("RollOnly") : "";
         ReplayOverlayStyle.Text(this, dc, status, 14, 185, ReplayOverlayStyle.Muted, 9);
-        ReplayOverlayStyle.Text(this, dc, ReplayOverlayStyle.L("Pedals"), 14, 204, ReplayOverlayStyle.Muted, 9);
-        dc.DrawRectangle(ReplayOverlayStyle.Brush("#22211E1A"), new Pen(ReplayOverlayStyle.Line, 1), PedalBounds);
         if (_sample.YawPercent.HasValue) dc.DrawRectangle(ReplayOverlayStyle.Purple, null, PedalFill(_sample.YawPercent.Value));
-        dc.DrawLine(new Pen(ReplayOverlayStyle.Muted, 1), new Point(center.X, 217), new Point(center.X, 235));
-        ReplayOverlayStyle.Text(this, dc, ReplayOverlayStyle.L("LeftShort"), 14, 242, ReplayOverlayStyle.Muted, 9);
-        ReplayOverlayStyle.Text(this, dc, ReplayOverlayStyle.L("RightShort"), 162, 242, ReplayOverlayStyle.Muted, 9, true);
         var yaw = _sample.YawPercent.HasValue ? _sample.YawPercent.Value.ToString("+0;-0;0", CultureInfo.CurrentCulture) + "%" : "—";
         ReplayOverlayStyle.Text(this, dc, yaw, 105, 240, _sample.YawPercent.HasValue ? ReplayOverlayStyle.Purple : ReplayOverlayStyle.Muted, 10, true);
     }
 }
 
-internal sealed class ReplayRunwayOverlay : FrameworkElement
+internal sealed class ReplayRunwayOverlay : ReplayOverlayElement
 {
     private double? _meters;
     private double _halfWidth;
@@ -214,8 +268,16 @@ internal sealed class ReplayRunwayOverlay : FrameworkElement
     }
     protected override void OnRender(DrawingContext dc)
     {
-        ReplayOverlayStyle.Box(dc, new Rect(0, 0, Width, Height));
-        ReplayOverlayStyle.Text(this, dc, ReplayOverlayStyle.L("Centerline"), 12, 8, ReplayOverlayStyle.Muted, 9);
+        DrawBackground(dc, ReplayOverlayStyle.L("Centerline") + _meters.HasValue, background =>
+        {
+            ReplayOverlayStyle.Box(background, new Rect(0, 0, Width, Height));
+            ReplayOverlayStyle.Text(this, background, ReplayOverlayStyle.L("Centerline"), 12, 8, ReplayOverlayStyle.Muted, 9);
+            if (!_meters.HasValue) return;
+            background.DrawLine(ReplayOverlayStyle.Pen(ReplayOverlayStyle.Line, 2), new Point(26, 41), new Point(214, 41));
+            foreach (var x in new[] { 26d, 120, 214 })
+                background.DrawLine(ReplayOverlayStyle.Pen(ReplayOverlayStyle.Muted, 1), new Point(x, 36), new Point(x, 46));
+            ReplayOverlayStyle.Text(this, background, "0", 117, 47, ReplayOverlayStyle.Muted, 8);
+        });
         if (!_meters.HasValue)
         {
             ReplayOverlayStyle.Text(this, dc, "—", Width - 12, 6, ReplayOverlayStyle.Amber, 13, true);
@@ -228,12 +290,8 @@ internal sealed class ReplayRunwayOverlay : FrameworkElement
             (meters < 0 ? " ←" : " →");
         ReplayOverlayStyle.Text(this, dc, label, Width - 12, 6, ReplayOverlayStyle.Amber, 13, true);
         const double center = 120; const double half = 94;
-        dc.DrawLine(new Pen(ReplayOverlayStyle.Line, 2), new Point(center - half, 41), new Point(center + half, 41));
-        foreach (var x in new[] { center - half, center, center + half })
-            dc.DrawLine(new Pen(ReplayOverlayStyle.Muted, 1), new Point(x, 36), new Point(x, 46));
         var position = center + ReplayOverlayStyle.Clamp(meters / _halfWidth, -1, 1) * half;
-        dc.DrawLine(new Pen(ReplayOverlayStyle.Amber, 2), new Point(center, 41), new Point(position, 41));
+        dc.DrawLine(ReplayOverlayStyle.Pen(ReplayOverlayStyle.Amber, 2), new Point(center, 41), new Point(position, 41));
         dc.DrawEllipse(ReplayOverlayStyle.Amber, null, new Point(position, 41), 3.5, 3.5);
-        ReplayOverlayStyle.Text(this, dc, "0", center - 3, 47, ReplayOverlayStyle.Muted, 8);
     }
 }

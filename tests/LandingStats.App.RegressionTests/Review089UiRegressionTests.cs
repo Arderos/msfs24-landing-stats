@@ -10,9 +10,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
-using System.Windows.Markup;
 using System.Windows.Threading;
-using System.Xml.Linq;
 using LandingStats.App.Models;
 using LandingStats.App.Settings;
 using LandingStats.App.Storage;
@@ -38,7 +36,7 @@ internal static class Review089UiRegressionTests
         {
             // Never show this window: no simulator, application startup, cloud,
             // updater or real user settings may run in this isolated fixture.
-            window = new MainWindow(new FlightModelGeometryResolver(Array.Empty<string>(), false));
+            window = new MainWindow();
             VerifySettingsOverlay(window);
             var repository = new LandingRepository(directory);
             var record = new LandingRecord { AircraftTitle = "Synthetic review landing" };
@@ -49,17 +47,28 @@ internal static class Review089UiRegressionTests
             Set(window, "_historyLoading", false);
             Set(window, "_startupReady", true);
             Invoke(window, "ApplySessionFilter", new object?[] { record.Id });
+            PumpUntil(() => window.DataContext is LandingRecord shown && shown.Id == record.Id);
+            var displayed = window.DataContext;
 
             var historyPanel = Get<FrameworkElement>(window, "HistoryLoadingPanel");
             var detailPanel = Get<FrameworkElement>(window, "DetailLoadingPanel");
             var content = Get<FrameworkElement>(window, "LandingContent");
+            Assert(content.DataContext is Presentation.LandingPresentation presentation && ReferenceEquals(presentation.Record, displayed),
+                "Only the visual root projects captions; selection and replay retain the exact persisted DTO.");
+            var history = Get<ListBox>(window, "LandingHistoryList");
+            // The template root receives its DTO from the parent content host.
+            var templateHost = new ContentPresenter { Content = history.Items[0], ContentTemplate = history.ItemTemplate };
+            templateHost.ApplyTemplate(); templateHost.Measure(new Size(500, 100)); templateHost.Arrange(new Rect(0, 0, 500, 100));
+            Assert(System.Windows.Media.VisualTreeHelper.GetChildrenCount(templateHost) > 0 &&
+                ((FrameworkElement)System.Windows.Media.VisualTreeHelper.GetChild(templateHost, 0)).DataContext is Presentation.LandingPresentation row &&
+                ReferenceEquals(row.Record, history.Items[0]), "History template did not project the original row DTO.");
             var historyRetry = Get<Button>(window, "RetryHistoryIndexLoadButton");
             var detailRetry = Get<Button>(window, "RetryHistoryLoadButton");
             Assert(historyRetry.Visibility == Visibility.Collapsed, "A healthy history has no retry button.");
 
             Set(window, "_historyLoadError", "Synthetic index read failure");
             Invoke(window, "RefreshHistoryLoadingPresentation");
-            Assert(ReferenceEquals(window.DataContext, record) && content.Visibility == Visibility.Visible && content.IsEnabled,
+            Assert(ReferenceEquals(window.DataContext, displayed) && content.Visibility == Visibility.Visible && content.IsEnabled,
                 "A failed history refresh retains the currently usable landing.");
             Assert(detailPanel.Visibility == Visibility.Collapsed && historyPanel.Visibility == Visibility.Visible &&
                 historyRetry.Visibility == Visibility.Visible && historyRetry.IsEnabled,
@@ -91,7 +100,7 @@ internal static class Review089UiRegressionTests
                 LocalizationManager.Apply(language);
                 foreach (var key in new[]
                 {
-                    "History.Loading", "History.DetailLoading", "History.LoadingRunway",
+                    "History.Loading", "History.DetailLoading",
                     "History.LoadFailed", "History.DetailLoadFailed", "History.RetryLoad",
                     "Lifecycle.Closing", "Settings.Applying", "Settings.Loading",
                 })
@@ -100,8 +109,6 @@ internal static class Review089UiRegressionTests
                     Assert(!string.IsNullOrWhiteSpace(text) && text != key && window.TryFindResource(key) is string,
                         "The " + language + " loading presentation resolves " + key + ".");
                 }
-                Assert(Get<TextBlock>(window, "RunwayLoadingText").Text == LocalizationManager.Text("History.LoadingRunway"),
-                    "The runway loading TextBlock resolves its " + language + " resource.");
             }
         }
         finally
@@ -165,18 +172,10 @@ internal static class Review089UiRegressionTests
             "A backdrop click closes settings and is consumed rather than passed to the underlying view.");
     }
 
-    private static ResourceDictionary LoadApplicationResources()
+    internal static ResourceDictionary LoadApplicationResources() => new ResourceDictionary
     {
-        var directory = new DirectoryInfo(AppDomain.CurrentDomain.BaseDirectory);
-        while (directory != null && !File.Exists(Path.Combine(directory.FullName, "src", "LandingStats.App", "App.xaml")))
-            directory = directory.Parent;
-        if (directory == null) throw new InvalidOperationException("Repository root not found.");
-        XNamespace ns = "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
-        var app = XDocument.Load(Path.Combine(directory.FullName, "src", "LandingStats.App", "App.xaml"));
-        var resources = app.Root!.Element(ns + "Application.Resources")!.Elements().Single();
-        resources.SetAttributeValue(XNamespace.Xmlns + "x", "http://schemas.microsoft.com/winfx/2006/xaml");
-        return (ResourceDictionary)XamlReader.Parse(resources.ToString());
-    }
+        Source = new Uri("/" + typeof(App).Assembly.GetName().Name + ";component/Controls/ApplicationResources.xaml", UriKind.Relative)
+    };
 
     private static void DrainHistory(MainWindow window)
     {

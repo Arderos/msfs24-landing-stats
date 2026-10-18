@@ -1,5 +1,6 @@
+param([string]$PackagePath = (Join-Path $PSScriptRoot '..\artifacts\MSFS-Landing-Stats.exe'))
 $ErrorActionPreference = 'Stop'
-Add-Type -Path (Join-Path $PSScriptRoot '..\src\LandingStats.UpdateProtocol\BundlePayload.cs')
+[Reflection.Assembly]::LoadFile([IO.Path]::GetFullPath($PackagePath)) | Out-Null
 
 function New-Fixture([bool]$Pe64, [int]$Padding = -1) {
     $stream = [IO.MemoryStream]::new()
@@ -39,7 +40,12 @@ function Assert-Rejected([byte[]]$Bytes, [string]$Name) {
     try {
         $rejected = $false
         try { $null = [LandingStats.Packaging.BundlePayload]::Locate($stream) }
-        catch { if ($_.Exception.InnerException -is [IO.InvalidDataException]) { $rejected = $true } else { throw } }
+        catch {
+            $cause = $_.Exception.InnerException
+            if ($cause -is [IO.InvalidDataException] -and $cause.Message -ceq 'The application bundle is missing, damaged, or has invalid PE bounds.') {
+                $rejected = $true
+            } else { throw "Wrong parser rejection for ${Name}: $($_.Exception.Message)" }
+        }
         if (-not $rejected) { throw "Invalid bundle accepted: $Name" }
     } finally { $stream.Dispose() }
 }

@@ -15,7 +15,8 @@ public static class TelemetryAnalysisFrames
     public static IReadOnlyList<TelemetrySample> Prepare(IReadOnlyList<TelemetrySample> samples,
         TelemetryDecisionJournal? journal = null)
     {
-        var prepared = new List<TelemetrySample>(samples.Count);
+        if (samples is AnalysisFrameList view && view.Prepared) return view;
+        var prepared = new AnalysisFrameList(samples.Count) { Prepared = true };
         TelemetrySample? previous = null;
         var paused = false;
         foreach (var source in samples)
@@ -84,5 +85,17 @@ public static class TelemetryAnalysisFrames
         return prepared;
     }
 
-    private static bool Finite(double value) => !double.IsNaN(value) && !double.IsInfinity(value);
+    private static bool Finite(double value) => AnalysisNumericPolicy.IsFinite(value);
+}
+
+// Analysis-owned views are never modified after publication. Reusing their
+// preparation and fits avoids cloning every frame at each geometry stage.
+internal sealed class AnalysisFrameList : List<TelemetrySample>
+{
+    internal AnalysisFrameList(int capacity) : base(capacity) { }
+    internal AnalysisFrameList(IEnumerable<TelemetrySample> values) : base(values) { }
+    internal bool Prepared, Deduplicated;
+    internal IReadOnlyList<TelemetrySample>? DeduplicatedView;
+    internal List<TelemetrySample>? NormalizedView;
+    internal double[]? SanitizedGround;
 }

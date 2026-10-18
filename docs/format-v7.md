@@ -67,13 +67,63 @@ contact-evidence checks or that reconstructed closure is available.
 
 The snapshot identifies the prepared, deduplicated physical segment by its sample
 count, first/last sequence and simulator time, plus SHA-256 of each canonical
-`TelemetryCsv.Format` row followed by LF (UTF-8 without BOM). Version 1 uses
+frozen CSV v7 row followed by LF (UTF-8 without BOM). Version 1 uses
 `InputFingerprintFormat=telemetry_csv_v7`. Restore requires that exact input;
 altered interior samples, other segments and unsupported coordinate frames are
 rejected. Reproduction requires the full raw capture and compatible analyzer
 version, not only the compact history. Snapshots contain no file paths or CFG text.
 Absent snapshots on older recordings remain absent; replay cannot invent the
 original installed aircraft's options. Older v7 readers ignore this additive field.
+
+New snapshots use version 2 and the additive `AnalysisGeometryV2` JSON member.
+The published `AnalysisGeometry` member is emitted only for version 1, so older
+readers do not attempt to interpret a version 2 snapshot. Summary indexes omit
+geometry; detail files retain unsupported future snapshots as opaque metadata.
+The optional integer `DatumCalibrationVersion` independently versions the
+geometry derivation: absent or zero means legacy revision 1; explicit 1 preserves
+that equation; revision 2 uses the corrected bank/yaw rigid-body projection.
+New captures explicitly write 2. Restoring either a v1 or v2 historical snapshot
+without this member selects revision 1, including telemetry-derived arms.
+Unknown revisions remain opaque and cannot be used for analysis. Reading or
+rewriting history retains stored metrics; it does not recalculate them.
+`GeometryFingerprintCsvV7` fixes the version 1 projection independently of the
+current CSV writer. Its numbers use invariant G17 and its engine, contact and
+controller counts are fixed at 4, 20 and 8 (6 axes per controller).
+
+Version 2 uses `InputFingerprintFormat=telemetry_binary64_v1_csv7`. The SHA-256
+input starts with ASCII `LS-GEOMETRY-INPUT/BINARY64/1` plus a zero byte, followed by
+the signed little-endian 32-bit sample count. Each 1869-byte sample follows the
+frozen `GeometryFingerprintV2` projection, independent of IPC version changes:
+
+- UInt16 version 1; Int64 sequence; four binary64 values (host, simulation,
+  delta and analysis time); Int32 simulator state and pause flags; Int64 flight
+  segment; one-byte ground and motion booleans.
+- The 39 binary64 measured values from touchdown normal velocity through CG
+  percent, in `GeometryFingerprintV2.Write` order; Int32 engine count; four
+  binary64 input values (roll, pitch, rudder, elevator axis); one-byte elevator
+  validity and binary64 elevator age.
+- Four arrays of four binary64 engine values (throttle, N1, RPM, reverse);
+  eight Int32 controller IDs; eight Y values, eight one-byte Y validities and
+  eight Y ages; 48 axis values, 48 one-byte validities and 48 ages in device-major
+  X/Y/Z/R/U/V order; 20 compressions, 20 positions and 20 one-byte ground flags.
+
+All numeric primitives are little-endian. Binary64 values use IEEE-754 bits,
+with both signed zeroes encoded as zero and every NaN encoded as
+`0x7ff8000000000000`. Booleans are exactly 0 or 1. Axis Y array entries are replaced
+by the backward-compatible Y prefix values, validities and ages. Optional source
+evidence, catalog metadata and analysis-only discontinuities are excluded. New
+numeric channels require a new fingerprint format, never changes to this one.
+The empty-input hash is
+`d4f2203be269bbaa016cc9ad6fab0d9540aec3f9dcd7505bfc887fc511dd61a8`.
+
+Controller catalogs use a separate `LCC1` archive record rather than the runtime
+wire envelope. It contains the four-byte magic, .NET-layout session and worker
+GUIDs, four Int64 values (generation, sequence, capture QPC, catalog revision),
+an Int32 device count, then each device's Int32 slot and ID, UTF-8 name/product
+strings prefixed by Int32 byte length, byte axis mask, and six interleaved UInt32
+minimum/maximum pairs. Readers retain support for the original wire catalog.
+Unknown later `LCC` versions are preserved without resolving controller identity;
+malformed known-version records remain errors.
 
 ### Discrete contact phases
 

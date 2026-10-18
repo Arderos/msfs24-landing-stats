@@ -111,11 +111,14 @@ internal sealed class TelemetryContactPointReconstruction
         var rows = Enumerable.Range(0, TelemetrySample.CapturedContactPointCount).Select(_ => new List<Row>()).ToArray();
         var valid = Enumerable.Repeat(true, rows.Length).ToArray();
         var extensions = samples[start].ContactPointPosition;
+        var localFirst = 0; var localLast = 0;
         for (var i = 0; i < window.Count; i++)
         {
             var s = window[i];
             var time = TouchdownAnalysis.TimeOf(s);
-            var local = window.Where(p => Math.Abs(TouchdownAnalysis.TimeOf(p) - time) <= .15).ToList();
+            while (localFirst < window.Count && time - TouchdownAnalysis.TimeOf(window[localFirst]) > .15) localFirst++;
+            while (localLast < window.Count && TouchdownAnalysis.TimeOf(window[localLast]) - time <= .15) localLast++;
+            var local = window.GetRange(localFirst, localLast - localFirst);
             // At a low frame rate the first/last centered windows can be too
             // short. They supply no slope observation, not a physics boundary.
             if (local.Count < 5) continue;
@@ -128,7 +131,7 @@ internal sealed class TelemetryContactPointReconstruction
             if (!trajectory.TryBasis(0, out var basis, out _, s.PitchDegrees * Math.PI / 180,
                     s.BankDegrees * Math.PI / 180, s.HeadingTrueDegrees * Math.PI / 180)) { CalibrationStopReason = "surface_projection_domain"; break; }
             var height = (s.PlaneAltitudeFeet - s.GroundAltitudeFeet) / basis[0];
-            if (!Finite(height) || basis[0] < .5) break;
+            if (!Finite(height) || basis[0] < .5) { CalibrationStopReason = "height_unavailable"; break; }
             CalibrationDurationSeconds = time - firstContactTime;
             for (var point = 0; point < rows.Length; point++)
             {
@@ -159,18 +162,20 @@ internal sealed class TelemetryContactPointReconstruction
     // boolean return is the sole availability decision.
     internal bool TryEstimate(double firstGroundTime, double contactTime, out Estimate estimate, out string decision)
     {
-        if (TryEstimateCore(firstGroundTime, contactTime, false, false, out estimate, out decision)) return true;
-        if (decision != "point_geometry_unavailable" && decision != "point_prediction_uncertain") return false;
-        var accepted = TryEstimateCore(firstGroundTime, contactTime, true, false, out var bounded, out var boundedDecision);
+        if (TryEstimateCore(firstGroundTime, contactTime, false, false, out estimate, out decision, out var failure)) return true;
+        if (failure != EstimateFailure.GeometryUnavailable && failure != EstimateFailure.PredictionUncertain) return false;
+        var accepted = TryEstimateCore(firstGroundTime, contactTime, true, false, out var bounded, out var boundedDecision, out failure);
         if (bounded != null) { estimate = bounded; decision = boundedDecision; }
-        if (accepted || boundedDecision != "point_prediction_uncertain") return accepted;
-        accepted = TryEstimateCore(firstGroundTime, contactTime, true, true, out var kinematic, out var kinematicDecision);
+        if (accepted || failure != EstimateFailure.PredictionUncertain) return accepted;
+        accepted = TryEstimateCore(firstGroundTime, contactTime, true, true, out var kinematic, out var kinematicDecision, out _);
         if (kinematic != null) { estimate = kinematic; decision = kinematicDecision; }
         return accepted;
     }
 
-    private bool TryEstimateCore(double firstGroundTime, double contactTime, bool useBounds, bool kinematicMotion, out Estimate estimate, out string decision)
+    private enum EstimateFailure { Other, GeometryUnavailable, PredictionUncertain }
+    private bool TryEstimateCore(double firstGroundTime, double contactTime, bool useBounds, bool kinematicMotion, out Estimate estimate, out string decision, out EstimateFailure failure)
     {
+        failure = EstimateFailure.Other;
         estimate = null!;
         decision = "point_datum_unavailable";
         if (datum == null) return false;
@@ -218,7 +223,9 @@ internal sealed class TelemetryContactPointReconstruction
         {
             decision = "point_geometry_unavailable";
             if (!(useBounds ? boundedModels : models).TryGetValue(point, out var model) || pre.Any(s =>
-                !Finite(s.ContactPointPosition[point]) || Math.Abs(s.ContactPointPosition[point] - model.Extension) > .01)) return false;
+                !Finite(s.ContactPointPosition[point]) || Math.Abs(s.ContactPointPosition[point] - model.Extension) > .01))
+            { failure = EstimateFailure.GeometryUnavailable; return false; }
+            decision = "point_temporal_prediction_nonfinite";
             var co = model.Full.Coefficients;
             var rotation = Dot(co, query);
             var deviation = useBounds ? 0 : model.Refits.Max(f => Math.Abs(Dot(f.Coefficients, query) - rotation));
@@ -247,63 +254,15 @@ internal sealed class TelemetryContactPointReconstruction
             var band = Math.Max(15, geometry + temporal + altitudeDisagreement + datum.StandardDeviationFeet * Math.Abs(weight));
             if (kinematicMotion)
             {
-                // Native body rates provide an independent observation of the
-                // attitude derivative. Both that observation and the integral
-                // of VY must agree with the original pre-contact samples.
-                var envelope = 0.0; altitudeDisagreement = 0;
-                bool IncludeKinematic(Polynomial candidate, double offset)
-                {
-                    if (!candidate.TryQuery(offset, out var candidateQuery, out _, true) ||
-                        !candidate.TryKinematicDisagreement(pre, contactTime, offset, datum.DatumOffsetFeet,
-                            out var angularError, out var heightError) ||
-                        !candidate.TryAngularGradients(offset, out var gradients, out _, out var datumGradient) ||
-                        !model.TryPredictionInterval(candidateQuery, out var lower, out var upper)) return false;
-                    var center = candidate.Closure(offset, co, datum.DatumOffsetFeet, true);
-                    var baseline = center - Dot(co, candidateQuery);
-                    var rotationError = 0.0;
-                    for (var axis = 0; axis < 3; axis++)
-                    {
-                        var direction = gradients[axis].Select(v => v * angularError[axis]).ToArray();
-                        if (!model.TryPredictionInterval(direction, out var lo, out var hi)) return false;
-                        var datumError = axis == 0 ? datum.DatumOffsetFeet * datumGradient * angularError[axis] : 0;
-                        rotationError += Math.Max(Math.Abs(lo + datumError), Math.Abs(hi + datumError));
-                    }
-                    var datumBand = datum.StandardDeviationFeet *
-                        (Math.Abs(candidate.DatumWeight(offset, true)) + Math.Abs(datumGradient * angularError[0]));
-                    var error = heightError + rotationError + datumBand;
-                    envelope = Math.Max(envelope, Math.Max(value - (baseline + lower - error), baseline + upper + error - value));
-                    altitudeDisagreement = Math.Max(altitudeDisagreement, heightError);
-                    return Finite(envelope) && Finite(error);
-                }
-                if (!IncludeKinematic(trajectory, 0)) return false;
-                foreach (var candidate in alternatives) if (!IncludeKinematic(candidate, 0)) return false;
-                foreach (var t in new[] { TouchdownAnalysis.TimeOf(samples[last]), firstGroundTime })
-                    if (!IncludeKinematic(trajectory, t - contactTime)) return false;
-                band = Math.Max(15, envelope);
-                if (!model.TryPredictionInterval(query, out var low, out var high)) return false;
-                geometry = Math.Max(rotation - low, high - rotation);
+                decision = "point_kinematic_evidence_unavailable";
+                if (!TryKinematicUncertainty(model, trajectory, alternatives, pre, contactTime, firstGroundTime, co, query,
+                    value, rotation, weight, ref band, ref geometry, ref altitudeDisagreement)) return false;
             }
             else if (useBounds)
             {
-                if (!model.TryPredictionInterval(query, out var low, out var high)) return false;
-                geometry = Math.Max(rotation - low, high - rotation);
-                var envelope = geometry; var datumBand = datum.StandardDeviationFeet * Math.Abs(weight);
-                bool Include(Polynomial candidate, double offset)
-                {
-                    if (!candidate.TryQuery(offset, out var candidateQuery, out _) ||
-                        !model.TryPredictionInterval(candidateQuery, out var lower, out var upper)) return false;
-                    var center = candidate.Closure(offset, co, datum.DatumOffsetFeet);
-                    var baseline = center - Dot(co, candidateQuery);
-                    envelope = Math.Max(envelope, Math.Max(value - (baseline + lower), baseline + upper - value));
-                    var independent = (-candidate.Derivative(Altitude, offset) + candidate.Derivative(Ground, offset)) * 60 + Dot(co, candidateQuery);
-                    altitudeDisagreement = Math.Max(altitudeDisagreement, Math.Abs(independent - center));
-                    datumBand = Math.Max(datumBand, datum.StandardDeviationFeet * Math.Abs(candidate.DatumWeight(offset)));
-                    return Finite(envelope) && Finite(altitudeDisagreement);
-                }
-                foreach (var candidate in alternatives) if (!Include(candidate, 0)) return false;
-                foreach (var t in new[] { TouchdownAnalysis.TimeOf(samples[last]), firstGroundTime })
-                    if (!Include(trajectory, t - contactTime)) return false;
-                band = Math.Max(15, envelope + altitudeDisagreement + datumBand);
+                decision = "point_prediction_bounds_unavailable";
+                if (!TryBoundedUncertainty(model, trajectory, alternatives, pre, contactTime, firstGroundTime, co, query,
+                    value, rotation, weight, ref band, ref geometry, ref altitudeDisagreement)) return false;
             }
             terms.Add(new Estimate { Closure = value, Inertial = inertial, Terrain = terrain, Rotation = rigidRotation,
                 Uncertainty = band, Arm = co[1] + datum.DatumOffsetFeet, GeometryUncertainty = geometry,
@@ -318,9 +277,85 @@ internal sealed class TelemetryContactPointReconstruction
             GeometryUncertainty = terms.Max(e => e.GeometryUncertainty), TemporalUncertainty = terms.Max(e => e.TemporalUncertainty),
             AltitudeDisagreement = terms.Max(e => e.AltitudeDisagreement) };
         decision = "point_prediction_uncertain";
-        if (!Finite(mean) || !Finite(uncertainty) || uncertainty > MaximumUncertaintyFpm || mean <= uncertainty) return false;
+        if (!Finite(mean) || !Finite(uncertainty) || uncertainty > MaximumUncertaintyFpm || mean <= uncertainty)
+        { failure = EstimateFailure.PredictionUncertain; return false; }
         decision = kinematicMotion ? "contact_point_kinematic_accepted" :
             useBounds ? "contact_point_bounds_accepted" : "contact_point_fit_accepted";
+        return true;
+    }
+
+
+    private bool TryKinematicUncertainty(PointModel model, Polynomial trajectory, IReadOnlyList<Polynomial> alternatives, List<TelemetrySample> pre,
+        double contactTime, double firstGroundTime, double[] co, double[] query, double value, double rotation, double weight,
+        ref double band, ref double geometry, ref double altitudeDisagreement)
+    {
+        var selectedDatum = datum!;
+        var localAltitudeDisagreement = altitudeDisagreement;
+        // Native body rates provide an independent observation of the
+        // attitude derivative. Both that observation and the integral
+        // of VY must agree with the original pre-contact samples.
+        var envelope = 0.0; localAltitudeDisagreement = 0;
+        bool IncludeKinematic(Polynomial candidate, double offset)
+        {
+            if (!candidate.TryQuery(offset, out var candidateQuery, out _, true) ||
+                !candidate.TryKinematicDisagreement(pre, contactTime, offset, selectedDatum.DatumOffsetFeet,
+                    out var angularError, out var heightError) ||
+                !candidate.TryAngularGradients(offset, out var gradients, out _, out var datumGradient) ||
+                !model.TryPredictionInterval(candidateQuery, out var lower, out var upper)) return false;
+            var center = candidate.Closure(offset, co, selectedDatum.DatumOffsetFeet, true);
+            var baseline = center - Dot(co, candidateQuery);
+            var rotationError = 0.0;
+            for (var axis = 0; axis < 3; axis++)
+            {
+                var direction = gradients[axis].Select(v => v * angularError[axis]).ToArray();
+                if (!model.TryPredictionInterval(direction, out var lo, out var hi)) return false;
+                var datumError = axis == 0 ? selectedDatum.DatumOffsetFeet * datumGradient * angularError[axis] : 0;
+                rotationError += Math.Max(Math.Abs(lo + datumError), Math.Abs(hi + datumError));
+            }
+            var datumBand = selectedDatum.StandardDeviationFeet *
+                (Math.Abs(candidate.DatumWeight(offset, true)) + Math.Abs(datumGradient * angularError[0]));
+            var error = heightError + rotationError + datumBand;
+            envelope = Math.Max(envelope, Math.Max(value - (baseline + lower - error), baseline + upper + error - value));
+            localAltitudeDisagreement = Math.Max(localAltitudeDisagreement, heightError);
+            return Finite(envelope) && Finite(error);
+        }
+        if (!IncludeKinematic(trajectory, 0)) return false;
+        foreach (var candidate in alternatives) if (!IncludeKinematic(candidate, 0)) return false;
+        foreach (var t in new[] { TouchdownAnalysis.TimeOf(pre[pre.Count - 1]), firstGroundTime })
+            if (!IncludeKinematic(trajectory, t - contactTime)) return false;
+        band = Math.Max(15, envelope);
+        if (!model.TryPredictionInterval(query, out var low, out var high)) return false;
+        geometry = Math.Max(rotation - low, high - rotation);
+        altitudeDisagreement = localAltitudeDisagreement;
+        return true;
+    }
+
+    private bool TryBoundedUncertainty(PointModel model, Polynomial trajectory, IReadOnlyList<Polynomial> alternatives, List<TelemetrySample> pre,
+        double contactTime, double firstGroundTime, double[] co, double[] query, double value, double rotation, double weight,
+        ref double band, ref double geometry, ref double altitudeDisagreement)
+    {
+        var selectedDatum = datum!;
+        var localAltitudeDisagreement = altitudeDisagreement;
+        if (!model.TryPredictionInterval(query, out var low, out var high)) return false;
+        geometry = Math.Max(rotation - low, high - rotation);
+        var envelope = geometry; var datumBand = selectedDatum.StandardDeviationFeet * Math.Abs(weight);
+        bool Include(Polynomial candidate, double offset)
+        {
+            if (!candidate.TryQuery(offset, out var candidateQuery, out _) ||
+                !model.TryPredictionInterval(candidateQuery, out var lower, out var upper)) return false;
+            var center = candidate.Closure(offset, co, selectedDatum.DatumOffsetFeet);
+            var baseline = center - Dot(co, candidateQuery);
+            envelope = Math.Max(envelope, Math.Max(value - (baseline + lower), baseline + upper - value));
+            var independent = (-candidate.Derivative(Altitude, offset) + candidate.Derivative(Ground, offset)) * 60 + Dot(co, candidateQuery);
+            localAltitudeDisagreement = Math.Max(localAltitudeDisagreement, Math.Abs(independent - center));
+            datumBand = Math.Max(datumBand, selectedDatum.StandardDeviationFeet * Math.Abs(candidate.DatumWeight(offset)));
+            return Finite(envelope) && Finite(localAltitudeDisagreement);
+        }
+        foreach (var candidate in alternatives) if (!Include(candidate, 0)) return false;
+        foreach (var t in new[] { TouchdownAnalysis.TimeOf(pre[pre.Count - 1]), firstGroundTime })
+            if (!Include(trajectory, t - contactTime)) return false;
+        band = Math.Max(15, envelope + localAltitudeDisagreement + datumBand);
+        altitudeDisagreement = localAltitudeDisagreement;
         return true;
     }
 
@@ -666,5 +701,5 @@ internal sealed class TelemetryContactPointReconstruction
         return sum;
     }
     private static double Angle(double value) => Math.Atan2(Math.Sin(value), Math.Cos(value));
-    private static bool Finite(double value) => !double.IsNaN(value) && !double.IsInfinity(value);
+    private static bool Finite(double value) => AnalysisNumericPolicy.IsFinite(value);
 }

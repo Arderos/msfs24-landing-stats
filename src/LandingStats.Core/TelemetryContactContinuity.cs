@@ -13,4 +13,6 @@ public sealed class TelemetryContactContinuity
     }
 
     public void Reset() => _airborne = false;
+    public bool HasAirborneWitness => _airborne;
+    public void RestoreAirborneWitness(bool airborne) => _airborne = airborne;
 }

@@ -4,6 +4,8 @@ using System.Text;
 using System.Windows;
 using System.Windows.Threading;
 using LandingStats.App.Settings;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace LandingStats.App;
 
@@ -11,16 +13,12 @@ public partial class App : Application
 {
     internal const string SimulatorAutoStartEnvironmentVariable = "MSFS_LANDING_STATS_SIMULATOR_AUTOSTART";
     private ApplicationInstanceGuard? _instanceGuard;
+    internal static readonly System.Collections.Concurrent.ConcurrentDictionary<string, long> RecoveryRequests = new System.Collections.Concurrent.ConcurrentDictionary<string, long>();
+    internal static void RequestRuntimeRecovery(string component, long generation)
+    { RecoveryRequests.AddOrUpdate(component, generation, (_, previous) => Math.Max(previous, generation)); }
 
-    protected override void OnStartup(StartupEventArgs e)
+    protected override async void OnStartup(StartupEventArgs e)
     {
-        if (!ApplicationInstanceGuard.TryAcquire(out _instanceGuard))
-        {
-            ShutdownMode = ShutdownMode.OnExplicitShutdown;
-            Shutdown(0);
-            return;
-        }
-
         // The updater and launcher inherit this process-only flag on restart.
         if (Array.IndexOf(e.Args, SimulatorAutoStartManager.LaunchArgument) >= 0)
         {
@@ -30,9 +28,23 @@ public partial class App : Application
         DispatcherUnhandledException += OnDispatcherUnhandledException;
         AppDomain.CurrentDomain.UnhandledException += OnDomainUnhandledException;
         base.OnStartup(e);
-
-        MainWindow = new MainWindow();
-        MainWindow.Show();
+        try
+        {
+            await ConnectGuardianAsync();
+            await Dispatcher.InvokeAsync(async () =>
+            {
+            if (!ApplicationInstanceGuard.TryAcquire(out _instanceGuard))
+            {
+                // A direct launch can race the outer single-instance check.
+                // Acknowledge this duplicate's exit instead of retrying forever.
+                await AcknowledgeExitAsync(Runtime.GuardianStopReason.UserExit);
+                ShutdownMode = ShutdownMode.OnExplicitShutdown; Shutdown(0); return;
+            }
+            var window = new MainWindow(); Volatile.Write(ref _runtimeWindow, window);
+            MainWindow = window; MainWindow.Show();
+            }).Task.Unwrap();
+        }
+        catch (Exception error) { WriteCrashLog("startup", error); await Dispatcher.InvokeAsync(() => Shutdown(70)); }
     }
 
     protected override void OnExit(ExitEventArgs e)
@@ -41,6 +53,7 @@ public partial class App : Application
         AppDomain.CurrentDomain.UnhandledException -= OnDomainUnhandledException;
         _instanceGuard?.Dispose();
         _instanceGuard = null;
+        _guardian?.Dispose();
         base.OnExit(e);
     }
 
@@ -63,6 +76,12 @@ public partial class App : Application
                 "MSFS Landing Stats");
             Directory.CreateDirectory(root);
             var path = Path.Combine(root, "crash.log");
+            if (File.Exists(path) && new FileInfo(path).Length >= 1024 * 1024)
+            {
+                var previous = path + ".previous";
+                if (File.Exists(previous)) File.Delete(previous);
+                File.Move(path, previous);
+            }
             var text = new StringBuilder()
                 .AppendLine(DateTime.UtcNow.ToString("O"))
                 .AppendLine($"source={source}")

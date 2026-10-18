@@ -91,7 +91,7 @@ internal sealed class FlightModelAnalysisResolution
     public string Outcome { get; }
 }
 
-internal sealed class FlightModelGeometryResolver
+internal sealed partial class FlightModelGeometryResolver
 {
     private sealed class Catalog
     {
@@ -107,17 +107,23 @@ internal sealed class FlightModelGeometryResolver
     private readonly object _catalogGate = new object();
     private Task<Catalog> _catalogTask;
     private DateTime _lastCatalogBuildUtc;
+    private readonly bool _preparedOnly;
 
-    public FlightModelGeometryResolver()
+    private FlightModelGeometryResolver(Task<Catalog> prepared)
+    { _catalogTask = prepared; _installedPackagesPaths = Array.Empty<string>(); _preparedOnly = true; }
+
+    public FlightModelGeometryResolver() : this(null, null) { }
+    internal FlightModelGeometryResolver(string? simulator, string? cacheDirectory)
     {
-        _installedPackagesPathProvider = FindInstalledPackagesPaths;
+        _persistentCacheDirectory = cacheDirectory;
+        _installedPackagesPathProvider = () => FindInstalledPackagesPaths(simulator);
         _installedPackagesPaths = Array.Empty<string>();
         _lastCatalogBuildUtc = DateTime.UtcNow;
         _catalogTask = Task.Run(() =>
         {
-            var paths = FindInstalledPackagesPaths().ToArray();
+            var paths = FindInstalledPackagesPaths(simulator).ToArray();
             lock (_catalogGate) _installedPackagesPaths = paths;
-            return BuildCatalog(paths);
+            return BuildFreshCatalog(paths);
         });
     }
 
@@ -129,8 +135,10 @@ internal sealed class FlightModelGeometryResolver
     internal FlightModelGeometryResolver(
         IEnumerable<string> installedPackagesPaths,
         bool buildAsync,
-        Func<IReadOnlyList<string>>? installedPackagesPathProvider)
+        Func<IReadOnlyList<string>>? installedPackagesPathProvider,
+        string? cacheDirectory = null)
     {
+        _persistentCacheDirectory = cacheDirectory;
         _installedPackagesPathProvider = installedPackagesPathProvider;
         _installedPackagesPaths = (installedPackagesPaths ?? Array.Empty<string>())
             .Where(path => !string.IsNullOrWhiteSpace(path))
@@ -140,8 +148,8 @@ internal sealed class FlightModelGeometryResolver
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToArray();
         _catalogTask = buildAsync
-            ? Task.Run(() => BuildCatalog(_installedPackagesPaths))
-            : Task.FromResult(BuildCatalog(_installedPackagesPaths));
+            ? Task.Run(() => BuildFreshCatalog(_installedPackagesPaths))
+            : Task.FromResult(BuildPersistentCatalog(_installedPackagesPaths));
         _lastCatalogBuildUtc = buildAsync ? DateTime.UtcNow : DateTime.MinValue;
     }
 
@@ -310,6 +318,11 @@ internal sealed class FlightModelGeometryResolver
     {
         lock (_catalogGate)
         {
+            if (!_preparedOnly && (_catalogTask.IsFaulted || _catalogTask.IsCanceled))
+            {
+                var paths = _installedPackagesPaths.ToArray();
+                _catalogTask = Task.Run(() => BuildFreshCatalog(paths));
+            }
             return _catalogTask;
         }
     }
@@ -318,6 +331,7 @@ internal sealed class FlightModelGeometryResolver
     {
         lock (_catalogGate)
         {
+            if (_preparedOnly) return _catalogTask;
             var now = DateTime.UtcNow;
             if (!_catalogTask.IsCompleted || now - _lastCatalogBuildUtc < minimumAge)
             {
@@ -338,27 +352,44 @@ internal sealed class FlightModelGeometryResolver
             }
 
             var refreshPaths = _installedPackagesPaths.ToArray();
-            _catalogTask = Task.Run(() => BuildCatalog(refreshPaths));
+            _catalogTask = Task.Run(() => BuildFreshCatalog(refreshPaths));
             return _catalogTask;
         }
     }
 
-    internal static IReadOnlyList<string> FindInstalledPackagesPaths()
+    private Catalog BuildFreshCatalog(IEnumerable<string> paths)
+    {
+        var catalog = BuildPersistentCatalog(paths.ToArray());
+        // A slow cold scan is fresh when it finishes. Measuring its age from
+        // startup would immediately repeat the scan for an unknown aircraft.
+        lock (_catalogGate) _lastCatalogBuildUtc = DateTime.UtcNow;
+        return catalog;
+    }
+
+    internal static IReadOnlyList<string> FindInstalledPackagesPaths(string? simulator = null)
     {
         var candidates = new List<string>();
         var roaming = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
         var local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-        AddUserConfig(candidates, Path.Combine(roaming, "Microsoft Flight Simulator 2024", "UserCfg.opt"));
-        AddUserConfig(candidates, Path.Combine(roaming, "Microsoft Flight Simulator", "UserCfg.opt"));
-        AddUserConfig(candidates, Path.Combine(local, "Packages", "Microsoft.Limitless_8wekyb3d8bbwe", "LocalCache", "UserCfg.opt"));
-        AddUserConfig(candidates, Path.Combine(local, "Packages", "Microsoft.FlightSimulator_8wekyb3d8bbwe", "LocalCache", "UserCfg.opt"));
-
-        candidates.Add(Path.Combine(roaming, "Microsoft Flight Simulator 2024", "Packages"));
-        candidates.Add(Path.Combine(roaming, "Microsoft Flight Simulator 2024", "StreamedPackages"));
-        candidates.Add(Path.Combine(roaming, "Microsoft Flight Simulator", "Packages"));
-        candidates.Add(Path.Combine(local, "Packages", "Microsoft.Limitless_8wekyb3d8bbwe", "LocalCache", "Packages"));
-        candidates.Add(Path.Combine(local, "Packages", "Microsoft.Limitless_8wekyb3d8bbwe", "LocalState", "StreamedPackages"));
-        candidates.Add(Path.Combine(local, "Packages", "Microsoft.FlightSimulator_8wekyb3d8bbwe", "LocalCache", "Packages"));
+        var is2024 = simulator?.IndexOf("2024", StringComparison.OrdinalIgnoreCase) >= 0;
+        var is2020 = simulator?.IndexOf("2020", StringComparison.OrdinalIgnoreCase) >= 0 ||
+            string.Equals(simulator, "Microsoft Flight Simulator", StringComparison.OrdinalIgnoreCase);
+        if (!is2020)
+        {
+            AddUserConfig(candidates, Path.Combine(roaming, "Microsoft Flight Simulator 2024", "UserCfg.opt"));
+            AddUserConfig(candidates, Path.Combine(local, "Packages", "Microsoft.Limitless_8wekyb3d8bbwe", "LocalCache", "UserCfg.opt"));
+            candidates.Add(Path.Combine(roaming, "Microsoft Flight Simulator 2024", "Packages"));
+            candidates.Add(Path.Combine(roaming, "Microsoft Flight Simulator 2024", "StreamedPackages"));
+            candidates.Add(Path.Combine(local, "Packages", "Microsoft.Limitless_8wekyb3d8bbwe", "LocalCache", "Packages"));
+            candidates.Add(Path.Combine(local, "Packages", "Microsoft.Limitless_8wekyb3d8bbwe", "LocalState", "StreamedPackages"));
+        }
+        if (!is2024)
+        {
+            AddUserConfig(candidates, Path.Combine(roaming, "Microsoft Flight Simulator", "UserCfg.opt"));
+            AddUserConfig(candidates, Path.Combine(local, "Packages", "Microsoft.FlightSimulator_8wekyb3d8bbwe", "LocalCache", "UserCfg.opt"));
+            candidates.Add(Path.Combine(roaming, "Microsoft Flight Simulator", "Packages"));
+            candidates.Add(Path.Combine(local, "Packages", "Microsoft.FlightSimulator_8wekyb3d8bbwe", "LocalCache", "Packages"));
+        }
         return candidates
             .Select(NormalizeFullPath)
             // Keep standard and configured roots even when they do not exist
@@ -507,24 +538,18 @@ internal sealed class FlightModelGeometryResolver
                 continue;
             }
 
-            var exactContainers = new[]
+            // base_container is relative to the aircraft configuration. Only
+            // fall back to a package-relative path when that location is absent;
+            // an unrelated existing directory is not a second aircraft candidate.
+            var exactContainer = new[]
                 {
                     SafeCombine(configDirectory, relative),
                     SafeCombine(packageRoot, relative),
-                }
-                .Where(container => container != null && Directory.Exists(container))
-                .Cast<string>()
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToArray();
-            if (exactContainers.Length == 1)
+                }.FirstOrDefault(container => container != null && Directory.Exists(container));
+            if (exactContainer != null)
             {
-                resolvedContainers.Add(exactContainers[0]);
+                resolvedContainers.Add(exactContainer);
                 continue;
-            }
-
-            if (exactContainers.Length > 1)
-            {
-                return Array.Empty<string>();
             }
 
             var containerName = Path.GetFileName(relative.TrimEnd(Path.DirectorySeparatorChar));
@@ -559,6 +584,7 @@ internal sealed class FlightModelGeometryResolver
         string attachedObjectsPath,
         HashSet<string> visitedAttachments)
     {
+        TrackCatalogPath(attachedObjectsPath, false);
         if (!File.Exists(attachedObjectsPath))
         {
             return true;
@@ -738,6 +764,7 @@ internal sealed class FlightModelGeometryResolver
 
     private static IReadOnlyList<AttachmentReference> ReadAttachmentReferences(string path)
     {
+        TrackCatalogPath(path, false);
         var result = new List<AttachmentReference>();
         var inAttachment = false;
         var alias = string.Empty;
@@ -811,6 +838,7 @@ internal sealed class FlightModelGeometryResolver
 
     private static string ReadSectionValue(string path, string expectedSection, string expectedKey)
     {
+        TrackCatalogPath(path, false);
         if (!File.Exists(path))
         {
             return string.Empty;
@@ -972,6 +1000,7 @@ internal sealed class FlightModelGeometryResolver
 
     private static IEnumerable<string> SafeEnumerateDirectories(string path)
     {
+        TrackCatalogPath(path, true);
         try
         {
             return Directory.Exists(path)
@@ -1058,8 +1087,10 @@ internal sealed class FlightModelGeometryResolver
 
     private static string? FindModularSimObjectRoot(string path)
     {
+        var simObjectRoot = FindSimObjectRoot(path);
+        if (simObjectRoot == null) return null;
         var directory = new DirectoryInfo(Path.GetDirectoryName(path)!);
-        while (directory != null)
+        while (directory != null && !string.Equals(directory.FullName, simObjectRoot, StringComparison.OrdinalIgnoreCase))
         {
             if (string.Equals(directory.Name, "presets", StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(directory.Name, "attachments", StringComparison.OrdinalIgnoreCase) ||
@@ -1188,6 +1219,7 @@ internal sealed class FlightModelGeometryResolver
         bool pruneKnownNonAircraftPackages = true)
     {
         var result = new List<string>();
+        TrackCatalogPath(root, true);
         if (!Directory.Exists(root))
         {
             return result;
@@ -1212,10 +1244,11 @@ internal sealed class FlightModelGeometryResolver
                 continue;
             }
 
-            if (!visited.Add(fullDirectory))
+            if (!visited.Add(DirectoryTraversalIdentity.Resolve(fullDirectory)))
             {
                 continue;
             }
+            TrackCatalogPath(fullDirectory, true);
 
             if (pruneKnownNonAircraftPackages && depth > 0 && IsKnownNonAircraftPackage(fullDirectory))
             {
@@ -1239,6 +1272,9 @@ internal sealed class FlightModelGeometryResolver
 
                 foreach (var child in Directory.EnumerateDirectories(fullDirectory))
                 {
+                    var name = Path.GetFileName(child).Split('.')[0];
+                    if (name.Equals("texture", StringComparison.OrdinalIgnoreCase) || name.Equals("model", StringComparison.OrdinalIgnoreCase) ||
+                        name.Equals("sound", StringComparison.OrdinalIgnoreCase) || name.Equals("panel", StringComparison.OrdinalIgnoreCase)) continue;
                     pending.Push(new KeyValuePair<string, int>(child, depth + 1));
                 }
             }
@@ -1253,6 +1289,7 @@ internal sealed class FlightModelGeometryResolver
     private static bool IsKnownNonAircraftPackage(string directory)
     {
         var manifest = Path.Combine(directory, "manifest.json");
+        TrackCatalogPath(manifest, false);
         if (!File.Exists(manifest))
         {
             return false;
@@ -1280,8 +1317,9 @@ internal sealed class FlightModelGeometryResolver
             // reports. Its base_container can point at geometry in a different
             // package, so livery packages must participate in the catalog even
             // though they do not carry their own flight_model.cfg.
-            return !string.Equals(contentType, "AIRCRAFT", StringComparison.OrdinalIgnoreCase) &&
-                   !string.Equals(contentType, "LIVERY", StringComparison.OrdinalIgnoreCase);
+            return !Directory.Exists(Path.Combine(directory, "SimObjects")) &&
+                   (string.Equals(contentType, "SCENERY", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(contentType, "MISSION", StringComparison.OrdinalIgnoreCase));
         }
         catch
         {
@@ -1291,6 +1329,7 @@ internal sealed class FlightModelGeometryResolver
 
     private static void AddIfFile(List<string> paths, string? path)
     {
+        if (path != null) TrackCatalogPath(path, false);
         if (path != null && File.Exists(path))
         {
             paths.Add(path);
@@ -1411,7 +1450,7 @@ internal static class FlightModelConfigParser
 
                     if (TryParseWheelPoint(pair.Value, out var point))
                     {
-                        layer[index] = point;
+                        layer[index] = point.WithContactPointIndex(index);
                     }
                     else
                     {
@@ -1430,7 +1469,7 @@ internal static class FlightModelConfigParser
                     // point.N values are only ordering keys within their layer.
                     foreach (var point in layer.Values)
                     {
-                        points.Add(point.WithContactPointIndex(points.Count));
+                        points.Add(paths.Length == 1 ? point : point.WithContactPointIndex(points.Count));
                     }
                     geometryConfigPath = path;
                 }
@@ -1515,6 +1554,7 @@ internal static class FlightModelConfigParser
 
     private static bool HasManualModularMerge(string path)
     {
+        FlightModelGeometryResolver.TrackCatalogPath(path, false);
         var section = string.Empty;
         foreach (var rawLine in File.ReadLines(path))
         {
@@ -1614,6 +1654,7 @@ internal sealed class IniValues
 
     public static IniValues Read(string path)
     {
+        FlightModelGeometryResolver.TrackCatalogPath(path, false);
         var result = new IniValues();
         foreach (var rawLine in File.ReadLines(path))
         {

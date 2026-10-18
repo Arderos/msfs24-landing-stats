@@ -1,0 +1,41 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><TargetFramework>net48</TargetFramework><PlatformTarget>x64</PlatformTarget></PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../LandingStats.Models/LandingStats.Models.csproj" />
+    <ProjectReference Include="../LandingStats.Persistence/LandingStats.Persistence.csproj" />
+    <ProjectReference Include="../LandingStats.Runtime.Contracts/LandingStats.Runtime.Contracts.csproj" />
+    <ProjectReference Include="../LandingStats.Core/LandingStats.Core.csproj" />
+    <Compile Include="../LandingStats.App/Telemetry/DirectoryTraversalIdentity.cs" Link="Telemetry/DirectoryTraversalIdentity.cs" />
+    <Compile Include="../LandingStats.App/Telemetry/EpisodeFacilityCoordinator.Checkpoint.cs" Link="Telemetry/EpisodeFacilityCoordinator.Checkpoint.cs" />
+    <Compile Include="../LandingStats.App/Telemetry/EpisodeFacilityCoordinator.cs" Link="Telemetry/EpisodeFacilityCoordinator.cs" />
+    <Compile Include="../LandingStats.App/Telemetry/FlightModelGeometryResolver.Cache.cs" Link="Telemetry/FlightModelGeometryResolver.Cache.cs" />
+    <Compile Include="../LandingStats.App/Telemetry/FlightModelGeometryResolver.cs" Link="Telemetry/FlightModelGeometryResolver.cs" />
+    <Compile Include="../LandingStats.App/Telemetry/LandingEpisodeCoordinator.Checkpoint.cs" Link="Telemetry/LandingEpisodeCoordinator.Checkpoint.cs" />
+    <Compile Include="../LandingStats.App/Telemetry/LandingEpisodeCoordinator.cs" Link="Telemetry/LandingEpisodeCoordinator.cs" />
+    <Compile Include="../LandingStats.App/Telemetry/LandingEpisodeCoordinator.Lifecycle.cs" Link="Telemetry/LandingEpisodeCoordinator.Lifecycle.cs" />
+    <Compile Include="../LandingStats.App/Telemetry/OptionalMetadataText.cs" Link="Telemetry/OptionalMetadataText.cs" />
+    <Compile Include="../LandingStats.App/Telemetry/PreRollBuffer.cs" Link="Telemetry/PreRollBuffer.cs" />
+    <Compile Include="../LandingStats.App/Telemetry/RejectedContactBatcher.cs" Link="Telemetry/RejectedContactBatcher.cs" />
+    <Compile Include="../LandingStats.App/Telemetry/RequiredTelemetrySubscription.cs" Link="Telemetry/RequiredTelemetrySubscription.cs" />
+    <Compile Include="../LandingStats.App/Telemetry/SimulatorStreamWatchdog.cs" Link="Telemetry/SimulatorStreamWatchdog.cs" />
+    <InternalsVisibleTo Include="MSFS-Landing-Stats" />
+    <InternalsVisibleTo Include="LandingStats.App.RegressionTests" />
+    <InternalsVisibleTo Include="LandingStats.Workers.Testing" />
+    <InternalsVisibleTo Include="LandingStats.WorkerHost" />
+    <InternalsVisibleTo Include="LandingStats.Models" />
+    <InternalsVisibleTo Include="LandingStats.Persistence" />
+    <InternalsVisibleTo Include="LandingStats.Storage" />
+    <InternalsVisibleTo Include="LandingStats.Runtime" />
+    <InternalsVisibleTo Include="LandingStats.Delivery" />
+    <InternalsVisibleTo Include="LandingStats.Workers.Common" />
+    <InternalsVisibleTo Include="LandingStats.Workers.Simulator" />
+    <InternalsVisibleTo Include="LandingStats.Workers.Controllers" />
+    <InternalsVisibleTo Include="LandingStats.Workers.Analysis" />
+    <InternalsVisibleTo Include="LandingStats.Workers.Upload" />
+    <InternalsVisibleTo Include="LandingStats.Workers.Cloud" />
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies.net48" Version="1.0.3" PrivateAssets="all" />
+    <Reference Include="System.Runtime.Serialization" />
+    <Reference Include="System.IO.Compression" />
+    <Reference Include="System.Net.Http" />
+  </ItemGroup>
+</Project>

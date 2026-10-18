@@ -9,7 +9,10 @@ public static class TelemetryDeduplicator
 
     public static IReadOnlyList<TelemetrySample> Deduplicate(IReadOnlyList<TelemetrySample> samples)
     {
-        var result = new List<TelemetrySample>(samples.Count);
+        var view = samples as AnalysisFrameList;
+        if (view?.Deduplicated == true) return samples;
+        if (view?.DeduplicatedView != null) return view.DeduplicatedView;
+        var result = new AnalysisFrameList(samples.Count) { Prepared = view?.Prepared == true, Deduplicated = true };
 
         foreach (var sample in samples)
         {
@@ -27,6 +30,7 @@ public static class TelemetryDeduplicator
             }
         }
 
+        if (view != null) view.DeduplicatedView = result;
         return result;
     }
 }

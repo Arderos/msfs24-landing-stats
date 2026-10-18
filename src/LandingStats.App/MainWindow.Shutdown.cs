@@ -2,10 +2,15 @@ using System;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Threading.Tasks;
+using System.Threading;
+using System.Runtime.InteropServices;
+using System.Windows.Interop;
+using System.Windows.Threading;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
-using LandingStats.App.TelemetryUpload;
+using LandingStats.App.Runtime;
+using LandingStats.App.Settings;
 
 namespace LandingStats.App;
 
@@ -13,27 +18,56 @@ public partial class MainWindow
 {
     private readonly AsyncWindowShutdown _windowShutdown = new AsyncWindowShutdown();
     private bool _shutdownResourcesDisposed;
-    private readonly DelayedBusyIndicator _closingBusyIndicator = new DelayedBusyIndicator();
+    private GuardianStopReason _stopReason = GuardianStopReason.UserExit;
 
     private async void OnWindowClosing(object? sender, CancelEventArgs eventArgs)
     {
         if (_windowShutdown.CanClose) return;
         eventArgs.Cancel = true;
         if (_windowShutdown.IsClosing) return;
-        var shutdown = _windowShutdown.BeginAsync(DrainWindowShutdownAsync);
+        var shutdown = BeginWindowShutdown();
+        try { await shutdown; }
+        catch (Exception error) { Debug.WriteLine(error); }
+        Close();
+    }
 
-        // Logical closing rejects callbacks/new work immediately, while the
-        // dispatcher and the actual window remain alive for accepted writes.
+    private Task BeginWindowShutdown()
+    {
+        var shutdown = _windowShutdown.BeginAsync(DrainWindowShutdownAsync);
         _isClosed = true;
         _settingsLoadingIndicator.Cancel();
         StopAcceptingSettingsOperations();
         StopHistoryOperations();
-        _runwayBusyIndicator.Cancel();
         ShowClosingPlaceholder();
-        await shutdown;
-        _closingBusyIndicator.Cancel();
-        Close();
+        return shutdown;
     }
+
+    internal bool DrainSessionEnding(TimeSpan budget)
+    {
+        _stopReason = GuardianStopReason.SessionEnd;
+        var handle = new WindowInteropHelper(this).Handle;
+        if (handle != IntPtr.Zero) ShutdownBlockReasonCreate(handle, LocalizationManager.Text("Lifecycle.Closing"));
+        try
+        {
+            var drain = BeginWindowShutdown();
+            if (!drain.IsCompleted)
+            {
+                // WM_QUERYENDSESSION is synchronous. Pump only for this bounded
+                // drain so already accepted dispatcher continuations can finish.
+                var frame = new DispatcherFrame(); var elapsed = Stopwatch.StartNew();
+                var timer = new DispatcherTimer(DispatcherPriority.Send) { Interval = TimeSpan.FromMilliseconds(20) };
+                timer.Tick += (_, __) => { if (drain.IsCompleted || elapsed.Elapsed >= budget) frame.Continue = false; };
+                timer.Start(); try { Dispatcher.PushFrame(frame); } finally { timer.Stop(); }
+            }
+            if (drain.IsFaulted) Debug.WriteLine(drain.Exception);
+            return drain.IsCompleted;
+        }
+        finally { if (handle != IntPtr.Zero) ShutdownBlockReasonDestroy(handle); }
+    }
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern bool ShutdownBlockReasonCreate(IntPtr window, string reason);
+    [DllImport("user32.dll")]
+    private static extern bool ShutdownBlockReasonDestroy(IntPtr window);
 
     private void ShowClosingPlaceholder()
     {
@@ -45,18 +79,16 @@ public partial class MainWindow
             }
         }
         Keyboard.ClearFocus();
-        _closingBusyIndicator.Update(true, null, () =>
-        {
-            ClosingOverlay.Visibility = Visibility.Visible;
-            ClosingOverlay.Focus();
-        });
+        ClosingOverlay.Visibility = Visibility.Visible;
+        ClosingOverlay.Focus();
     }
 
     private async Task DrainWindowShutdownAsync()
     {
+        App.ReportShutdownProgress();
+        var acknowledgement = App.AcknowledgeExitAsync(_stopReason);
         _googleDriveAuthorizationCancellation?.Cancel();
         Loaded -= OnWindowLoaded;
-        SourceInitialized -= OnSourceInitialized;
         ReplayView.TimeChanged -= OnChartHoverTimeChanged;
         foreach (var chart in _charts)
         {
@@ -64,96 +96,44 @@ public partial class MainWindow
             chart.ZoomRangeSelected -= OnChartZoomRangeSelected;
         }
 
-        if (_recorder != null)
-        {
-            var recorder = _recorder;
-            recorder.SimulatorExited -= OnSimulatorExited;
-            try
-            {
-                // Dispose completes an active rollout synchronously and queues
-                // its persistence. Snapshot the durable workers only AFTER it.
-                recorder.Dispose();
-            }
-            catch (Exception exception)
-            {
-                // Native cleanup failure must not skip already accepted writes.
-                Debug.WriteLine(exception);
-            }
-            finally
-            {
-                recorder.StatusChanged -= OnRecorderStatusChanged;
-                recorder.EpisodeStarted -= OnEpisodeStarted;
-                recorder.EpisodeCompleted -= OnEpisodeCompleted;
-                recorder.AirportFacilitiesUpdated -= OnAirportFacilitiesUpdated;
-                recorder.RunwayFacilitiesUpdated -= OnRunwayFacilitiesUpdated;
-                recorder.AircraftGroundStateChanged -= OnAircraftGroundStateChanged;
-                _recorder = null;
-            }
-        }
-        // Recorder disposal first freezes this episode's terminal facilities,
-        // including complete final base geometry with optional replies pending.
-        // Canceling the report wait earlier could race that snapshot and archive
-        // its older preliminary fallback permanently. This adds no native wait.
-        _lifetimeCancellation.Cancel();
-        if (_messageSource != null)
-        {
-            _messageSource.RemoveHook(WindowProcedure);
-            _messageSource = null;
-        }
-
-        Task episodes;
-        Task metadata;
+        try { _lifetimeCancellation.Cancel(); } catch (AggregateException error) { Debug.WriteLine(error); }
+        var runtimeShutdown = StopRuntimeAsync();
         Task reports;
-        lock (_episodeProcessingGate) episodes = _episodePersistenceTask;
-        lock (_airportMetadataPersistenceGate) metadata = _airportMetadataPersistenceTask;
         lock (_bugReportPersistenceGate) reports = _bugReportPersistenceTask;
 
-        // Local data has no arbitrary shutdown timeout. Network retries do not
-        // belong to this durability boundary and retain their on-disk backlog.
-        // Upload disposal has a bounded worker wait; keep even that off the UI.
-        var uploadDisposal = Task.Run(() =>
+        // Runtime owns source retirement, recording checkpoints and delivery.
+        // Accepted UI writes remain part of the same shutdown boundary.
+        var accepted = new[]
         {
-            TelemetryUploadClient? uploadClient;
-            // A startup retry can still be constructing its client (including
-            // the identity directory) under this gate. Take ownership off the
-            // dispatcher, after the same gate has published that client. New
-            // creation is already rejected by the close/cancellation guard.
-            lock (_telemetryUploadClientGate)
-            {
-                uploadClient = _telemetryUploadClient;
-                _telemetryUploadClient = null;
-            }
-            if (uploadClient == null) return;
-            uploadClient.StatusChanged -= OnTelemetryUploadStatusChanged;
-            uploadClient.Dispose();
-        });
-        await AsyncWindowShutdown.DrainAcceptedWorkAsync(
-            episodes,
-            metadata,
+            acknowledgement,
             reports,
             PendingSettingsOperations,
             PendingHistoryOperations,
             _initializationPersistenceTask,
             _localDeletionTask,
-            _runwayPersistenceTask,
-            uploadDisposal);
+            runtimeShutdown,
+            _runtimePolicyTask ?? Task.CompletedTask,
+        };
+        foreach (var operation in accepted)
+            _ = operation.ContinueWith(_ => App.ReportShutdownProgress(), CancellationToken.None,
+                TaskContinuationOptions.OnlyOnRanToCompletion | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+        await AsyncWindowShutdown.DrainAcceptedWorkAsync(accepted);
     }
 
     private void DisposeShutdownResources()
     {
         if (_shutdownResourcesDisposed) return;
         _shutdownResourcesDisposed = true;
+        _services.Settings.Changed -= OnCommittedSettingsChanged;
         _releaseUpdater.Dispose();
 
         // Canceled network continuations may still be unwinding. Do not dispose
         // their semaphore, HTTP clients or token source underneath those callers,
         // and do not hold shutdown hostage to an unresponsive remote service.
-        if (!GoogleDriveBusy && _googleDriveSyncTask.IsCompleted && _googleDriveDeleteTask.IsCompleted)
+        if (!GoogleDriveBusy && _googleDriveSyncTask.IsCompleted && _localDeletionTask.IsCompleted)
         {
             _googleDriveBackupService.Dispose();
-            _googleDriveApiClient.Dispose();
-            _googleOAuthClient.Dispose();
-            if (_initializationTask.IsCompleted && _bugReportRetryTask.IsCompleted && !_bugReportSubmitting)
+            if (_initializationTask.IsCompleted && !_bugReportSubmitting)
             {
                 _lifetimeCancellation.Dispose();
             }

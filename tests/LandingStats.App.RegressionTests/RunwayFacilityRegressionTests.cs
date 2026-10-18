@@ -134,7 +134,6 @@ internal static class RunwayFacilityRegressionTests
         var saved = Record(90); saved.RunwayGeometry = old;
         cache[Airport().Key] = new[] { old };
         Set(recorder, "_runwayEpisodeId", 101L);
-        Set(recorder, "_publishedRunways", new[] { old });
         Set(recorder, "_runwayLookupStarted", true);
         Set(recorder, "_runwayDefinitionReady", true);
         Set(recorder, "_runwayDefinitionAttempted", true);
@@ -157,6 +156,7 @@ internal static class RunwayFacilityRegressionTests
         void Complete(long id)
         {
             Set(recorder, "_activeEpisodeId", id);
+            Set(recorder, "_activePersistentId", Guid.NewGuid());
             Set(recorder, "_lastContactTime", 13.0);
             // Two contacts are still one completed recording / one refresh.
             Set(recorder, "_episodeSamples", new List<TelemetrySample> {
@@ -164,7 +164,7 @@ internal static class RunwayFacilityRegressionTests
                 new TelemetrySample { SimulationTimeSeconds = 11, MotionSimulation = true, OnGround = true },
                 new TelemetrySample { SimulationTimeSeconds = 12, MotionSimulation = true, OnGround = false },
                 new TelemetrySample { SimulationTimeSeconds = 13, MotionSimulation = true, OnGround = true } });
-            recorder.GetType().GetMethod("CompleteEpisode", PrivateInstance)!.Invoke(recorder, new object[] { false });
+            RecorderTestAccess.Call(recorder, "CompleteEpisode", new object[] { false });
         }
         Complete(102);
         Assert(completions == 1 && !packets.ContainsKey(7) && packets.ContainsKey(8), "Cancel old requests, not connection definitions.");
@@ -174,7 +174,7 @@ internal static class RunwayFacilityRegressionTests
         // Start the refresh transaction independently: this fixture has no native
         // connection, so completion above deliberately settled the unavailable
         // lookup. A live episode starts a fresh transaction before requesting replies.
-        recorder.GetType().GetMethod("BeginRunwayEpisode", PrivateInstance)!.Invoke(recorder, new object[] { 102L });
+        RecorderTestAccess.Call(recorder, "BeginRunwayEpisode", new object[] { 102L });
         Assert(!(bool)Field(recorder, "_runwayLookupStarted"), "A fresh batch is allowed even at the same airport.");
 
         // A fresh base reply with a timed-out optional query must not borrow
@@ -197,39 +197,26 @@ internal static class RunwayFacilityRegressionTests
 
         Complete(103);
         Assert(completions == 2 && (bool)Field(recorder, "_runwayLookupStarted"), "Second disconnected capture must also settle its lookup.");
-        recorder.GetType().GetMethod("BeginRunwayEpisode", PrivateInstance)!.Invoke(recorder, new object[] { 103L });
+        RecorderTestAccess.Call(recorder, "BeginRunwayEpisode", new object[] { 103L });
         Assert(!(bool)Field(recorder, "_runwayLookupStarted"), "Optional failure does not suppress the next landing's query.");
         var newest = Runway(); newest.WidthMeters = 60;
         cache[Airport().Key] = new[] { newest };
         var threshold = Runway(); threshold.WidthMeters = 60; threshold.PrimaryThresholdOffsetMeters = 100;
-        recorder.GetType().GetMethod("MergeRunwayThresholds", PrivateInstance)!.Invoke(recorder,
-            new object[] { Airport().Key, new[] { threshold }, true });
+        RecorderTestAccess.Call(recorder, "MergeRunwayThresholds", new object[] { Airport().Key, new[] { threshold }, true });
         Set(recorder, "_runwayBatchKeys", new[] { Airport().Key }); Set(recorder, "_runwayBatchActive", true);
         Call(recorder, "TryPublishRunwayBatch");
         Assert(publishedId == 103 && recorder.GetRunwayFacilities(103)[0].PrimaryThresholdOffsetMeters == 100 &&
             recorder.GetRunwayFacilities(102).Count == 0 && !current.PrimaryThresholdOffsetMeters.HasValue &&
             saved.RunwayGeometry.PrimaryThresholdOffsetMeters == 308, "Fresh threshold belongs only to the new episode.");
 
-        // Exercise the real UI handler without constructor/startup services. If
-        // it touches a browsed historical record it would attempt persistence.
-        var window = (MainWindow)FormatterServices.GetUninitializedObject(typeof(MainWindow));
-        Set(window, "_recorder", recorder);
-        Set(window, "_runwayRecordsEpisodeId", 103L);
-        Set(window, "_runwayRecords", Array.Empty<LandingRecord>());
-        var historicalWithoutRunway = Record(90);
-        Set(window, "_loadedDetails", new Dictionary<string, LandingRecord> { [historicalWithoutRunway.Id] = historicalWithoutRunway });
-        var handler = typeof(MainWindow).GetMethod("OnRunwayFacilitiesUpdated", PrivateInstance)!;
-        handler.Invoke(window, new object[] { recorder, new RunwayFacilitiesEventArgs(new[] { newest }, 103) });
-        Assert(historicalWithoutRunway.RunwayGeometry == null, "Browsing an old landing cannot enrich it with today's scenery.");
-        Set(window, "_runwayRecords", new[] { historicalWithoutRunway });
-        handler.Invoke(window, new object[] { recorder, new RunwayFacilitiesEventArgs(new[] { newest }, 102) });
-        Assert(historicalWithoutRunway.RunwayGeometry == null, "Wrong-episode event cannot attach a runway to the latest processed records.");
+        // Current report persistence is scoped by the committed episode identity.
+        EpisodeReportLifecycleRegressionTests.FacilitiesCannotEnrichAnotherEpisode();
     }
 
     private const BindingFlags PrivateInstance = BindingFlags.Instance | BindingFlags.NonPublic;
-    private static object Field(object owner, string name) => owner.GetType().GetField(name, PrivateInstance)!.GetValue(owner)!;
-    private static void Set(object owner, string name, object value) => owner.GetType().GetField(name, PrivateInstance)!.SetValue(owner, value);
-    private static void Call(object owner, string name) => owner.GetType().GetMethod(name, PrivateInstance)!.Invoke(owner, null);
+    private static object Field(object owner, string name) => RecorderTestAccess.Get(owner, name)!;
+    private static void Set(object owner, string name, object value) => RecorderTestAccess.Set(owner, name, value);
+    private static void Call(object owner, string name) => RecorderTestAccess.Call(owner, name, null);
 
     private static AirportFacility Airport() => new AirportFacility { Ident = "TEST", Region = "TT" };
     private static RunwayFacility Runway(string primary = "09L", string secondary = "27R") => new RunwayFacility

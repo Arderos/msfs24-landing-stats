@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net48</TargetFramework>
+    <PlatformTarget>x64</PlatformTarget>
+    <Prefer32Bit>false</Prefer32Bit>
+    <AutoGenerateBindingRedirects>true</AutoGenerateBindingRedirects>
+    <GenerateBindingRedirectsOutputType>true</GenerateBindingRedirectsOutputType>
+    <AssemblyName>LandingStats.WorkerHost</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Remove="WorkerChannel.cs" />
+    <ProjectReference Include="../LandingStats.Workers.Common/LandingStats.Workers.Common.csproj" />
+    <ProjectReference Include="../LandingStats.Workers.Simulator/LandingStats.Workers.Simulator.csproj" />
+    <ProjectReference Include="../LandingStats.Workers.Controllers/LandingStats.Workers.Controllers.csproj" />
+    <ProjectReference Include="../LandingStats.Workers.Analysis/LandingStats.Workers.Analysis.csproj" />
+    <ProjectReference Include="../LandingStats.Workers.Upload/LandingStats.Workers.Upload.csproj" />
+    <ProjectReference Include="../LandingStats.Workers.Cloud/LandingStats.Workers.Cloud.csproj" />
+    <ProjectReference Include="../LandingStats.Workers.IntegrationApi/LandingStats.Workers.IntegrationApi.csproj" />
+
+    <ProjectReference Include="..\LandingStats.Runtime.Contracts\LandingStats.Runtime.Contracts.csproj" />
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies.net48" Version="1.0.3" PrivateAssets="all" />
+    <InternalsVisibleTo Include="LandingStats.App.RegressionTests" />
+  </ItemGroup>
+  <Target Name="GetWorkerPayload" DependsOnTargets="GetTargetPath" Returns="@(WorkerPayload)">
+    <ItemGroup><WorkerPayload Include="$(TargetPath)" /><WorkerPayload Include="$(TargetPath).config" Condition="Exists('$(TargetPath).config')" /></ItemGroup>
+  </Target>
+</Project>

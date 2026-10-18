@@ -11,9 +11,10 @@ namespace LandingStats.App.Models;
 
 /// <summary>Exact, path-free geometry inputs for one prepared physical segment.</summary>
 [DataContract]
-public sealed class AnalysisGeometrySnapshot
+public sealed class AnalysisGeometrySnapshot : IExtensibleDataObject
 {
-    [DataMember(Order = 1)] public int Version { get; set; } = 1;
+    public ExtensionDataObject? ExtensionData { get; set; }
+    [DataMember(Order = 1)] public int Version { get; set; } = 2;
     [DataMember(Order = 2)] public string CoordinateFrame { get; set; } = "velocity_reference_longitudinal_feet";
     [DataMember(Order = 3)] public long FirstSequence { get; set; }
     [DataMember(Order = 4)] public long LastSequence { get; set; }
@@ -28,8 +29,10 @@ public sealed class AnalysisGeometrySnapshot
     [DataMember(Order = 13)] public int[] NoseIndices { get; set; } = Array.Empty<int>();
     [DataMember(Order = 14)] public bool RecoverFromTelemetry { get; set; }
     [DataMember(Order = 15)] public string ConfigOutcome { get; set; } = "unknown";
-    [DataMember(Order = 16)] public string InputFingerprintFormat { get; set; } = "telemetry_csv_v" + TelemetryCsv.SchemaVersion;
+    [DataMember(Order = 16)] public string InputFingerprintFormat { get; set; } = TelemetryBinaryCodec.FingerprintFormat;
     [DataMember(Order = 17)] public string InputSha256 { get; set; } = string.Empty;
+    // Zero is the absent pre-revision field and means the frozen legacy model.
+    [DataMember(Order = 18, EmitDefaultValue = false)] public int DatumCalibrationVersion { get; set; }
 
     public static AnalysisGeometrySnapshot Capture(IReadOnlyList<TelemetrySample> samples, TouchdownAnalysisOptions options, string configOutcome)
     {
@@ -46,7 +49,8 @@ public sealed class AnalysisGeometrySnapshot
             NoseIndices = options.NoseGearContactPointIndices.ToArray(),
             RecoverFromTelemetry = options.RecoverLongitudinalMainGearArmFromTelemetry,
             ConfigOutcome = configOutcome,
-            InputSha256 = Fingerprint(samples),
+            DatumCalibrationVersion = (int)options.DatumCalibrationVersion,
+            InputSha256 = TelemetryBinaryCodec.Fingerprint(samples),
         };
         snapshot.Validate();
         return snapshot;
@@ -58,10 +62,11 @@ public sealed class AnalysisGeometrySnapshot
         if (samples.Count != SampleCount || samples.Count == 0 || samples[0].Sequence != FirstSequence ||
             samples[samples.Count - 1].Sequence != LastSequence ||
             samples[0].SimulationTimeSeconds != FirstSimulationTime || samples[samples.Count - 1].SimulationTimeSeconds != LastSimulationTime ||
-            Fingerprint(samples) != InputSha256)
+            (Version == 1 ? LegacyFingerprint(samples) : TelemetryBinaryCodec.Fingerprint(samples)) != InputSha256)
             throw new InvalidDataException("Geometry snapshot belongs to another physical segment.");
         return new TouchdownAnalysisOptions
         {
+            DatumCalibrationVersion = DatumCalibrationVersion == 0 ? TelemetryDatumCalibrationVersion.Legacy : (TelemetryDatumCalibrationVersion)DatumCalibrationVersion,
             LongitudinalMainGearArmFeet = LongitudinalArmFeet,
             LongitudinalMainGearArmSource = (TouchdownGeometrySource)Enum.Parse(typeof(TouchdownGeometrySource), Source),
             LongitudinalMainGearArmQuality = Quality,
@@ -72,16 +77,24 @@ public sealed class AnalysisGeometrySnapshot
 
     public AnalysisGeometrySnapshot Copy()
     {
-        Validate();
+        // Copying display metadata must not invoke a version-specific analyzer.
+        // Unknown snapshots remain opaque evidence until Restore is requested.
         var copy = (AnalysisGeometrySnapshot)MemberwiseClone();
-        copy.MainIndices = (int[])MainIndices.Clone(); copy.MainArmsFeet = (double[])MainArmsFeet.Clone(); copy.NoseIndices = (int[])NoseIndices.Clone();
+        copy.MainIndices = MainIndices == null ? null! : (int[])MainIndices.Clone();
+        copy.MainArmsFeet = MainArmsFeet == null ? null! : (double[])MainArmsFeet.Clone();
+        copy.NoseIndices = NoseIndices == null ? null! : (int[])NoseIndices.Clone();
         return copy;
     }
 
+    public bool IsSupported => (DatumCalibrationVersion == 0 || DatumCalibrationVersion == 1 || DatumCalibrationVersion == 2) &&
+        (Version == 1 && InputFingerprintFormat == "telemetry_csv_v7" ||
+        Version == 2 && InputFingerprintFormat == TelemetryBinaryCodec.FingerprintFormat);
+
     public void Validate()
     {
-        if (Version != 1 || CoordinateFrame != "velocity_reference_longitudinal_feet" || SampleCount <= 0 ||
-            InputFingerprintFormat != "telemetry_csv_v" + TelemetryCsv.SchemaVersion || InputSha256 == null || InputSha256.Length != 64 ||
+        if (!IsSupported ||
+            CoordinateFrame != "velocity_reference_longitudinal_feet" || SampleCount <= 0 ||
+            InputSha256 == null || InputSha256.Length != 64 ||
             InputSha256.Any(c => !(c >= '0' && c <= '9') && !(c >= 'a' && c <= 'f')) ||
             !Finite(FirstSimulationTime) || !Finite(LastSimulationTime) || LastSimulationTime < FirstSimulationTime ||
             !Enum.GetNames(typeof(TouchdownGeometrySource)).Contains(Source) ||
@@ -97,12 +110,12 @@ public sealed class AnalysisGeometrySnapshot
 
     private static bool Finite(double value) => !double.IsNaN(value) && !double.IsInfinity(value);
 
-    private static string Fingerprint(IReadOnlyList<TelemetrySample> samples)
+    private static string LegacyFingerprint(IReadOnlyList<TelemetrySample> samples)
     {
         using var sha = SHA256.Create();
         using (var stream = new CryptoStream(Stream.Null, sha, CryptoStreamMode.Write))
         using (var writer = new StreamWriter(stream, new UTF8Encoding(false)))
-            foreach (var sample in samples) { writer.Write(TelemetryCsv.Format(sample)); writer.Write('\n'); }
+            foreach (var sample in samples) { writer.Write(GeometryFingerprintCsvV7.Format(sample)); writer.Write('\n'); }
         return BitConverter.ToString(sha.Hash!).Replace("-", string.Empty).ToLowerInvariant();
     }
 }

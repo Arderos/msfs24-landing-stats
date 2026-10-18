@@ -1,20 +1,41 @@
 using System;
 using System.Collections.Generic;
-using System.Globalization;
 using System.Runtime.Serialization;
-using LandingStats.App.Settings;
 using LandingStats.Core;
 
 namespace LandingStats.App.Models;
 
 [DataContract]
-public sealed class LandingRecord
+public sealed class LandingRecord : IExtensibleDataObject
 {
+    public ExtensionDataObject? ExtensionData { get; set; }
+    internal ExtensionDataObject? DetailExtensionData { get; set; }
     public const int CurrentFormatVersion = 7;
     public const double NonFiniteStorageSentinel = -1.7976931348623157E+308;
 
-    [DataMember(Order = 70, EmitDefaultValue = false)]
     public AnalysisGeometrySnapshot? AnalysisGeometry { get; set; }
+
+    // The published 0.9.4 reader validates the original member as v1. Keep it
+    // readable after downgrade; newer evidence is an additive detail member.
+    [DataMember(Name = "AnalysisGeometry", Order = 70, EmitDefaultValue = false)]
+    private AnalysisGeometrySnapshot? LegacyAnalysisGeometry
+    {
+        get => AnalysisGeometry?.Version == 1 ? AnalysisGeometry : null;
+        set { if (value != null) AnalysisGeometry = value; }
+    }
+
+    [DataMember(Name = "AnalysisGeometryV2", Order = 73, EmitDefaultValue = false)]
+    private AnalysisGeometrySnapshot? ExtendedAnalysisGeometry
+    {
+        get => AnalysisGeometry?.Version != 1 ? AnalysisGeometry : null;
+        set { if (value != null) AnalysisGeometry = value; }
+    }
+
+    [DataMember(Order = 71, EmitDefaultValue = false)]
+    public ControllerCatalogTimeline? ControllerTimeline { get; set; }
+
+    [DataMember(Order = 72, EmitDefaultValue = false)]
+    public string? SourceEvidenceTimeline { get; set; }
 
     [DataMember(Order = 1)]
     public int FormatVersion { get; set; } = CurrentFormatVersion;
@@ -228,123 +249,11 @@ public sealed class LandingRecord
     [IgnoreDataMember]
     public bool IsSummaryOnly { get; set; }
 
-    public string TimestampDisplay => TimestampUtc.ToLocalTime().ToString("dd MMM · HH:mm", CultureInfo.CurrentCulture);
-
-    public string LocationDisplay => Runway == "—"
-        ? Airport
-        : LocalizationManager.Format("Model.LocationRunwayFormat", Airport, Runway);
-
-    public string InertialDisplay => $"{-InertialFpm:+0;-0;0}";
-
     public bool HasSurfaceLatchData => !double.IsNaN(SurfaceFpm);
 
     public bool HasClosureReconstruction =>
         ClosureReconstructionAvailable &&
         IsFinite(ReconstructedClosureFpm);
-
-    public string ClosureModeledDisplay => HasClosureReconstruction
-        ? $"{-ReconstructedClosureFpm:+0;-0;0} fpm"
-        : LocalizationManager.Text("Model.NotAvailable");
-
-    public string ClosureResidualDisplay => HasClosureReconstruction && IsFinite(ClosureReconstructionResidualFpm)
-        ? $"{-ClosureReconstructionResidualFpm:+0;-0;0} fpm"
-        : LocalizationManager.Text("Model.NotAvailable");
-
-    public string ClosureComponentsDisplay => HasClosureReconstruction
-        ? LocalizationManager.Format(
-            ReconstructedRotationFpm.HasValue ? "Model.ContactComponentsFormat" : "Model.ComponentsFormat",
-            FormatSignedMetric(-ReconstructedInertialFpm),
-            FormatSignedMetric(-ReconstructedTerrainFpm),
-            FormatSignedMetric(-(ReconstructedRotationFpm ?? ReconstructedPitchFpm)))
-        : LocalizationManager.Text("Model.ReconstructionUnavailable");
-
-    public string ClosureUncertaintyDisplay => HasClosureReconstruction &&
-                                               IsFinite(ClosureReconstructionUncertaintyFpm)
-        ? $"±{Math.Abs(ClosureReconstructionUncertaintyFpm):0} fpm"
-        : LocalizationManager.Text("Model.NotAvailable");
-
-    public string ClosureGeometryDisplay
-    {
-        get
-        {
-            if (!HasClosureReconstruction || !IsFinite(ClosureReconstructionLongitudinalArmFeet))
-            {
-                return LocalizationManager.Text("Model.GeometryUnavailable");
-            }
-
-            var sourceKey = ClosureReconstructionGeometrySource;
-            if (string.IsNullOrWhiteSpace(sourceKey) ||
-                string.Equals(
-                    sourceKey,
-                    nameof(TouchdownGeometrySource.Unavailable),
-                    StringComparison.Ordinal))
-            {
-                sourceKey = ClosureReconstructionArmRecoveredFromTelemetry
-                    ? nameof(TouchdownGeometrySource.Telemetry)
-                    : nameof(TouchdownGeometrySource.Provided);
-            }
-
-            var source = LocalizationManager.Text(
-                string.Equals(sourceKey, nameof(TouchdownGeometrySource.FlightModelConfig), StringComparison.Ordinal)
-                    ? "Model.FlightModelConfig"
-                    : string.Equals(sourceKey, nameof(TouchdownGeometrySource.Telemetry), StringComparison.Ordinal)
-                        ? "Model.Telemetry"
-                        : "Model.Provided");
-            var quality = string.Equals(
-                              sourceKey,
-                              nameof(TouchdownGeometrySource.Telemetry),
-                              StringComparison.Ordinal) &&
-                          IsFinite(ClosureReconstructionGeometryQuality)
-                ? LocalizationManager.Format("Model.GeometryQualityFormat", ClosureReconstructionGeometryQuality)
-                : string.Empty;
-            if (ReconstructedRotationFpm.HasValue)
-                return LocalizationManager.Format("Model.ContactGeometryFormat", source, quality);
-            return LocalizationManager.Format(
-                "Model.GeometryFormat",
-                ClosureReconstructionLongitudinalArmFeet,
-                source,
-                quality);
-        }
-    }
-
-    public string ClosureModelDisplay => HasClosureReconstruction &&
-                                         !string.IsNullOrWhiteSpace(ClosureReconstructionModel)
-        ? ClosureReconstructionModel
-        : LocalizationManager.Text("Model.ReconstructionUnavailable");
-
-    public string SurfaceDisplay => HasSurfaceLatchData
-        ? $"{-SurfaceFpm:+0;-0;0} fpm"
-        : LocalizationManager.Text("Model.NotAvailable");
-
-    public string SurfaceValueDisplay => HasSurfaceLatchData
-        ? $"{-SurfaceFpm:+0;-0;0}"
-        : LocalizationManager.Text("Model.NotAvailable");
-
-    public string SurfaceUnitDisplay => HasSurfaceLatchData ? "fpm" : string.Empty;
-
-    public string DeltaDisplay => !double.IsNaN(SurfaceDeltaFpm)
-        ? $"{-SurfaceDeltaFpm:+0;-0;0} fpm"
-        : LocalizationManager.Text("Model.SurfaceDeltaNa");
-
-    public string TerrainMetricDisplay => LocalizationManager.Format("Model.TerrainFormat", FormatSignedMetric(-TerrainFpm));
-
-    public string UnresolvedMetricDisplay => LocalizationManager.Format("Model.UnresolvedFormat", FormatSignedMetric(-UnresolvedFpm));
-
-    public string G150Display => PeakG150Milliseconds.ToString("F2", CultureInfo.CurrentCulture);
-
-    public string G2SecondsDisplay => LocalizationManager.Format("Model.Peak2Format", PeakG2Seconds);
-
-    public string AttitudeDisplay => $"{-PitchDegrees:+0.0;-0.0;0.0}° / {BankDegrees:+0.0;-0.0;0.0}°";
-
-    public string AirspeedDisplay => LocalizationManager.Format("Model.SpeedKnotsFormat", AirspeedKnots);
-
-    public string GroundSpeedDisplay => LocalizationManager.Format("Model.SpeedKnotsFormat", GroundSpeedKnots);
-
-    public string AngleOfAttackDisplay => LocalizationManager.Format("Model.AoaFormat", AngleOfAttackDegrees);
-
-    public string ContactDisplay => ContactCount > 1
-        ? LocalizationManager.Format("Model.ContactMultipleFormat", ContactNumber, ContactCount)
-        : LocalizationManager.Text("Model.ContactSingle");
 
     public bool HasTouchdownCoordinates =>
         TouchdownLatitudeDegrees.HasValue && TouchdownLongitudeDegrees.HasValue;
@@ -354,17 +263,7 @@ public sealed class LandingRecord
         RawPitchInputSourceIndex >= 0 &&
         Math.Abs(RawPitchInputCorrelation) >= 0.75;
 
-    public string PitchInputSourceDisplay => HasRawPitchInput
-        ? LocalizationManager.Format("Model.RawPitchFormat", RawPitchInputSourceIndex, RawPitchInputLagSeconds * 1000.0)
-        : LocalizationManager.Text("Model.ProcessedCommand");
-
-    public string InertialQualityDisplay => FormatVersion < 4
-        ? LocalizationManager.Text("Model.LegacyQuality")
-        : InertialExtrapolated
-            ? LocalizationManager.Format("Model.ExtrapolatedFormat", InertialFitDurationSeconds)
-            : LocalizationManager.Text("Model.LastAirborne");
-
-    private TouchdownImpactResult ImpactResult =>
+    internal TouchdownImpactResult ImpactResult =>
         ImpactAnalysisVersion == TouchdownImpactAnalysis.CurrentVersion &&
         Enum.TryParse(ImpactStatus, out TouchdownImpactStatus status)
             ? new TouchdownImpactResult(status, ImpactPeakG ?? double.NaN,
@@ -372,106 +271,16 @@ public sealed class LandingRecord
             : new TouchdownImpactResult(TouchdownImpactStatus.Unavailable);
 
     private bool UsesLegacyImpact => ImpactAnalysisVersion == 0;
-    private double DisplayImpactPeak => UsesLegacyImpact ? PeakG150Milliseconds : ImpactResult.PeakG;
     private TouchdownImpactCategory ImpactCategory => UsesLegacyImpact
         ? !IsFinite(PeakG150Milliseconds) || PeakG150Milliseconds <= 0 ? TouchdownImpactCategory.Unavailable
-            : PeakG150Milliseconds < 1.2 ? TouchdownImpactCategory.Smooth
-            : PeakG150Milliseconds < 1.5 ? TouchdownImpactCategory.Normal : TouchdownImpactCategory.Firm
+            : PeakG150Milliseconds < AnalysisNumericPolicy.SmoothImpactG ? TouchdownImpactCategory.Smooth
+            : PeakG150Milliseconds < AnalysisNumericPolicy.FirmImpactG ? TouchdownImpactCategory.Normal : TouchdownImpactCategory.Firm
         : ImpactResult.Category;
 
     public bool HasImpactClassification => ImpactCategory != TouchdownImpactCategory.Unavailable;
     public bool IsSmoothLanding => ImpactCategory == TouchdownImpactCategory.Smooth;
     public bool IsNormalLanding => ImpactCategory == TouchdownImpactCategory.Normal;
     public bool IsFirmLanding => ImpactCategory == TouchdownImpactCategory.Firm;
-
-    public string LandingFeelDisplay => LocalizationManager.Text(IsSmoothLanding ? "Model.Smooth" :
-        IsNormalLanding ? "Model.Normal" : IsFirmLanding ? "Model.Firm" : "Model.NotAvailable");
-
-    public string ImpactPeakDisplay => IsFinite(DisplayImpactPeak) && DisplayImpactPeak > 0 &&
-        (UsesLegacyImpact || (ImpactResult.Status != TouchdownImpactStatus.InvalidTelemetry &&
-                             ImpactResult.Status != TouchdownImpactStatus.Unavailable))
-            ? DisplayImpactPeak.ToString("F2", CultureInfo.CurrentCulture)
-            : LocalizationManager.Text("Model.NotAvailable");
-
-    public string GDetailDisplay => UsesLegacyImpact ? G2SecondsDisplay :
-        ImpactResult.IsComplete && ImpactWindowSeconds.HasValue &&
-        IsFinite(ImpactWindowSeconds.Value) && ImpactWindowSeconds.Value > 0
-            ? LocalizationManager.Format("Model.ImpactWindowFormat", ImpactWindowSeconds.Value)
-            : LocalizationManager.Text(ImpactResult.Status == TouchdownImpactStatus.Incomplete
-                ? "Model.ImpactWindowIncomplete" : "Model.NotAvailable");
-
-    public string GDetailTooltip => LocalizationManager.Text(UsesLegacyImpact
-        ? "Help.PeakG2" : "Help.ImpactWindow");
-
-    public string LandingFeelTooltip => LocalizationManager.Format("Model.ImpactFeelHelpFormat",
-        LandingFeelDisplay,
-        IsFinite(DisplayImpactPeak) && DisplayImpactPeak > 0
-            ? DisplayImpactPeak.ToString("R", CultureInfo.CurrentCulture) + " G"
-            : LocalizationManager.Text("Model.NotAvailable"));
-
-    public string SurfaceQualityDisplay
-    {
-        get
-        {
-            if (FormatVersion < 4)
-            {
-                return LocalizationManager.Text("Model.LegacyLatch");
-            }
-
-            if (!LatchUpdateDetected)
-            {
-                return LocalizationManager.Text("Model.LatchNotVerified");
-            }
-
-            var milliseconds = LatchUpdateOffsetSeconds * 1000.0;
-            return Math.Abs(milliseconds) < 0.5
-                ? LocalizationManager.Text("Model.LatchSameFrame")
-                : LocalizationManager.Format("Model.LatchOffsetFormat", milliseconds);
-        }
-    }
-
-    public string WeightDisplay => WeightPounds > 0
-        ? LocalizationManager.Format("Unit.KilogramsFormat", WeightPounds * 0.45359237)
-        : LocalizationManager.Text("Model.NotAvailable");
-
-    public string CgDisplay => CgPercent > 0
-        ? LocalizationManager.Format("Model.CgFormat", CgPercent)
-        : LocalizationManager.Text("Model.CgNa");
-
-    public string WindDisplay
-    {
-        get
-        {
-            var speed = WindSpeedKnotsAtContact;
-            var direction = WindDirectionDegreesAtContact;
-            if ((FormatVersion < 7 || (Math.Abs(speed) < 0.000001 && Math.Abs(direction) < 0.000001)) &&
-                Series != null && Series.Count > 0)
-            {
-                var closest = Series[0];
-                for (var index = 1; index < Series.Count; index++)
-                {
-                    if (Math.Abs(Series[index].TimeSeconds) < Math.Abs(closest.TimeSeconds))
-                    {
-                        closest = Series[index];
-                    }
-                }
-
-                speed = closest.WindSpeedKnots;
-                direction = closest.WindDirectionDegrees;
-            }
-
-            if (double.IsNaN(speed) || double.IsInfinity(speed) ||
-                double.IsNaN(direction) || double.IsInfinity(direction))
-            {
-                return LocalizationManager.Text("Model.WindNa");
-            }
-
-            direction = (direction % 360.0 + 360.0) % 360.0;
-            return LocalizationManager.Format("Model.WindFormat", direction, speed);
-        }
-    }
-
-    public string RecordSummaryDisplay => LocalizationManager.Format("Model.RecordSummaryFormat", FormatVersion, Series.Count);
 
     [OnDeserialized]
     private void OnDeserialized(StreamingContext context)
@@ -487,20 +296,13 @@ public sealed class LandingRecord
 
     public double PitchInputPercent(LandingSeriesPoint point)
     {
-        var storedSourceIndex = StoredRawControllerIndex(RawPitchInputSourceIndex);
-        if (!HasRawPitchInput ||
-            storedSourceIndex < 0 ||
-            point.RawControllerYAxisPercent == null ||
-            point.RawControllerYAxisValid == null ||
-            storedSourceIndex >= point.RawControllerYAxisPercent.Length ||
-            storedSourceIndex >= point.RawControllerYAxisValid.Length ||
-            !point.RawControllerYAxisValid[storedSourceIndex])
-        {
-            return point.PilotPitchPercent;
-        }
-
+        if (!HasRawPitchInput) return point.PilotPitchPercent;
+        // A raw-labelled trace must retain unavailable samples as gaps. Apply
+        // the same validity, age and range contract as replay, including legacy files.
+        if (!ReplayControlInputs.Raw(point, StoredRawControllerIndex(RawPitchInputSourceIndex), true, out var value))
+            return double.NaN;
         var direction = RawPitchInputCorrelation < 0 ? -1.0 : 1.0;
-        return direction * point.RawControllerYAxisPercent[storedSourceIndex];
+        return direction * value;
     }
 
     public int StoredRawControllerIndex(int sourceIndex)
@@ -512,11 +314,6 @@ public sealed class LandingRecord
 
         return RawControllerSourceIndices.IndexOf(sourceIndex);
     }
-
-    private static string FormatSignedMetric(double value) =>
-        !IsFinite(value)
-            ? LocalizationManager.Text("Model.NotAvailable")
-            : value.ToString("+0;-0;0", CultureInfo.CurrentCulture);
 
     private static bool IsFinite(double value) => !double.IsNaN(value) && !double.IsInfinity(value);
 

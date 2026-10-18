@@ -15,6 +15,45 @@ internal static class SettingsOperationsRegressionTests
         QueueSerializesAndDrainsAcceptedWork().GetAwaiter().GetResult();
         SaveSnapshotsAndRollbackStayOffCaller().GetAwaiter().GetResult();
         CachedTokenStateDoesNotWaitForDiskWriter();
+        CommittedSettingsDoNotDependOnTheDispatcher();
+    }
+
+    private static void CommittedSettingsDoNotDependOnTheDispatcher()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "settings-owner-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root); var complete = false;
+        try
+        {
+            var repository = new ApplicationSettingsRepository(Path.Combine(root, "settings.json"));
+            var baseline = new ApplicationSettings { Language = "en", AutomaticTelemetryUpload = false };
+            repository.Save(baseline);
+            var owner = new ApplicationSettingsOwner(repository, new SimulatorAutoStartManager());
+            var read = owner.Read();
+            var cloud = owner.ReadCloudAsync().GetAwaiter().GetResult();
+            var expectedHash = GoogleDriveBackupService.Hash(GoogleDriveCloudSettings.Serialize(cloud.Settings));
+            // A failing view notification cannot roll back or falsely fail a committed transaction.
+            owner.Changed += () => throw new InvalidOperationException("fixture projection unavailable");
+            Assert(Task.Run(() => owner.ApplyCloudAsync(new GoogleDriveCloudSettings { Language = "ru" }, expectedHash)).GetAwaiter().GetResult(),
+                "cloud settings required a dispatcher or rejected the committed hash");
+            var local = baseline.Clone(); local.AutomaticTelemetryUpload = true;
+            owner.SaveAsync(baseline, local).GetAwaiter().GetResult();
+            var stored = repository.Load();
+            Assert(stored.Language == "ru" && stored.AutomaticTelemetryUpload && local.Language == "ru",
+                "a local edit based on an older view overwrote concurrent cloud settings");
+            using var entered = new ManualResetEventSlim(); using var release = new ManualResetEventSlim();
+            var next = owner.Snapshot.Settings.Clone(); next.GoogleDrivePromptAnswered = true;
+            var saving = owner.SaveAsync(owner.Snapshot.Settings, next, () => { entered.Set(); if (!release.Wait(TimeSpan.FromSeconds(5))) throw new TimeoutException(); });
+            Assert(entered.Wait(TimeSpan.FromSeconds(5)), "settings owner did not begin the accepted save");
+            var pendingRead = owner.ReadCloudAsync();
+            Assert(!pendingRead.IsCompleted, "cloud observed settings before an accepted save committed");
+            release.Set(); saving.GetAwaiter().GetResult();
+            Assert(pendingRead.GetAwaiter().GetResult().Settings.Language == "ru" && repository.Load().GoogleDrivePromptAnswered,
+                "cloud read or local save required an unavailable UI continuation");
+            Assert(!owner.ApplyCloudAsync(new GoogleDriveCloudSettings { Language = "en" }, expectedHash).GetAwaiter().GetResult(),
+                "cloud overwrote settings after its expected hash became stale");
+            complete = true;
+        }
+        finally { if (complete && Path.GetFullPath(root).StartsWith(Path.GetFullPath(Path.GetTempPath()), StringComparison.OrdinalIgnoreCase)) Directory.Delete(root, true); }
     }
 
     private static async Task QueueSerializesAndDrainsAcceptedWork()

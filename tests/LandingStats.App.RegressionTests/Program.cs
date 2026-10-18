@@ -34,14 +34,70 @@ internal static class Program
 {
     private const BindingFlags InstancePrivate = BindingFlags.Instance | BindingFlags.NonPublic;
     private static int _failures;
+    private static int _executed;
+    private static string? _filter;
 
     [STAThread]
-    private static int Main()
+    private static int Main(string[] args)
     {
+        if (args.Any(arg => arg.StartsWith("--fixture=adversarial-", StringComparison.Ordinal))) return AdversarialRuntimeRegressionTests.Fixture(args);
+        if (args.Length == 1 && args[0] == "--native-source-smoke")
+        {
+            _ = new System.Windows.Application(); LocalizationManager.Apply("en");
+            Run("simulator native process reports connection state and stops independently", SimulatorWorkerRegressionTests.RunNativeProcess);
+            return _failures == 0 ? 0 : 1;
+        }
+        if (args.Length == 3 && args[0] == "--app-guardian-probe") return GuardianApplicationRegressionTests.Probe(args[1], args[2]);
+        if (args.Length == 3 && args[0] == "--quota-writer") return RuntimeRetentionRegressionTests.Writer(args[1], args[2]);
+        if (args.Length == 2 && args[0] == "--history-load-probe")
+        { _ = new System.Windows.Application(); LocalizationManager.Apply("en"); return StartupHistoryProbe.Run(args[1]); }
+        if (args.Length == 2 && args[0] == "--runtime-startup-probe")
+        { _ = new System.Windows.Application(); LocalizationManager.Apply("en"); return StartupHistoryProbe.Run(args[1], true); }
+        if (args.Length == 2 && args[0] == "--parallel-startup-probe")
+        { _ = new System.Windows.Application(); LocalizationManager.Apply("en"); return StartupHistoryProbe.Run(args[1], slowRuntime: true); }
+        if (args.Length == 2 && args[0] == "--live-subscription-probe") return LiveSubscriptionProbe.Run(args[1]);
+        if (args.Length == 2 && args[0] == "--live-source-probe") return LiveSourceProbe.Run(args[1]);
+        if (args.Length == 2 && args[0] == "--live-stream-probe") return LiveStreamFreshnessProbe.Run(args[1]);
+        if (args.Length == 2 && args[0] == "--live-runtime-probe") return LiveRuntimeRecoveryProbe.Run(args[1]);
+        if (args.Length == 3 && args[0] == "--guardian-fixture") return GuardianRegressionTests.Fixture(args[1], args[2]);
+        if (args.Length == 5 && args[0] == "--guardian-update-helper") return GuardianUpdateRegressionTests.Helper(args[1], args[2], args[3], args[4]);
+        if (args.Length == 2 && args[0] == "--guardian-parent") return GuardianRegressionTests.Parent(args[1]);
+        if (args.Length == 2 && args[0] == "--job-parent") return ProcessWorkerHostRegressionTests.RunJobParent(args[1]);
+        if (args.Length != 0)
+        {
+            if (args.Length != 2 || args[0] != "--filter" || string.IsNullOrWhiteSpace(args[1])) return 2;
+            _filter = args[1];
+        }
         _ = new System.Windows.Application();
         LocalizationManager.Apply("en");
 
+        Run("delivery acknowledgements and OAuth failures preserve durable evidence", DeliveryRemediationRegressionTests.RunAll);
+        Run("behavior parity preserves lifecycle and simulator controls across gaps", BehaviorParityRegressionTests.Recording);
+        Run("behavior parity retries a deferred update only when safe", WindowStartupRegressionTests.DeferredUpdateResumes);
+        Run("integration API settings remain local and opt-in", IntegrationApiSettingsRegressionTests.RunAll);
+        Run("integration API transport isolates clients and replays subscriptions", IntegrationApiTransportRegressionTests.RunAll);
+        Run("integration API telemetry distinguishes stale guard and full observations", IntegrationTelemetryRegressionTests.RunAll);
+        Run("review integration recovery preserves deletion retention import and provenance", ReviewIntegrationRecoveryRegressionTests.DataTransactions);
+        Run("review integration recovery reflects resumed source connection", ReviewIntegrationRecoveryRegressionTests.TelemetryConnection);
+        Run("review integration recovery isolates API contention and retries terminal cleanup", ReviewIntegrationRecoveryRegressionTests.OwnerRecovery);
+        Run("review cloud download preserves concurrent local landing edits", GoogleDriveBackupRegressionTests.ConcurrentLocalEditDuringDownloadIsPreserved);
+        Run("review upload honors closed registration for existing and pruned identities", ReviewEnrollmentRegressionTests.ClosedRegistrationRefreshesExistingIdentityAndRejectsNewOrPruned);
+        Run("review UI policy preserves startup consent across construction and storage delays", ReviewUiPolicyRegressionTests.RunStartupPolicyRaces);
+        Run("review UI charts preserve raw availability gear membership loads and opaque metadata", ReviewUiPolicyRegressionTests.RunCharts);
+        Run("integration API lifecycle restarts workers and honors live opt-out", IntegrationApiLifecycleRegressionTests.RunAll);
+        Run("integration API data survives publication gaps and supports historical resync", IntegrationApiDataRegressionTests.RunAll);
+        Run("adversarial runtime protocol and command recovery retain accepted boundaries", AdversarialRuntimeRegressionTests.RunAll);
+        Run("App guardian observes real runtime escalation and production recovery budgets", GuardianApplicationRegressionTests.RunAll);
         Run("automatic report lifetime preserves shutdown captures and honors later opt-out", EpisodeReportLifecycleRegressionTests.RunAll);
+        Run("capture archives negotiate format and preserve immutable retry bytes", CaptureArchiveRegressionTests.RunAll);
+        Run("legacy engines cannot bypass shared storage quotas", LegacyEngineQuotaRegressionTests.RunAll);
+        Run("retained legacy engine enforces shared storage quotas", LegacyEngineQuotaRegressionTests.RunRetained);
+        Run("source evidence preserves legacy formats and scopes external control", ReplaySourceCoreRegressionTests.RunAll);
+        Run("source evidence survives recording recovery and legacy delivery", ReplaySourcePersistenceRegressionTests.RunAll);
+        Run("source evidence failures recover without stopping required telemetry", SourceObservationIsolationRegressionTests.RunAll);
+        Run("window startup loads local history while runtime is unavailable", WindowStartupRegressionTests.RunAll);
+        Run("loading indicators stop their hidden animation clocks", LoadingIndicatorRegressionTests.RunAll);
+        Run("guardian recovers application failures, defers UI recovery and honors acknowledged exits", GuardianRegressionTests.RunAll);
         Run("telemetry decisions record actual branches and stay capture-local and bounded", TelemetryDecisionJournalRegressionTests.RunAll);
         Run("deduplicator keeps the last same-time frame", DeduplicatorKeepsLastFrame);
         Run("physics continuity rejects paused contacts and preserves real landings and bounces", PhysicsContinuityRegressionTests.RunAll);
@@ -58,6 +114,47 @@ internal static class Program
         Run("automatic telemetry defaults migrate and serialize correctly", AutomaticTelemetrySettingsRegressionTests.RunAll);
         Run("3D reconstruction decisions are captured without opening its view", ReplayDecisionJournalTests.RunAll);
         Run("recorder connection retries never block the UI dispatcher", RecorderConnectionRegressionTests.RunAll);
+        Run("required subscriptions recover independently with correlated retries", RequiredSubscriptionRegressionTests.RunAll);
+        Run("silent simulator streams recover with independent evidence and suspension controls", StreamFreshnessRegressionTests.RunAll);
+        Run("suspended simulator connections recover when independent replies cease", StreamFreshnessRegressionTests.SuspendedTransportStillRecovers);
+        Run("geometry attachment cache invalidates roots inheritance and older catalogs", GeometryAttachmentCacheRegressionTests.RunAll);
+        Run("geometry catalog prepares after physics and reuses snapshots across aircraft", GeometryCatalogBackgroundRegressionTests.RunAll);
+        Run("controller provenance survives recovery history archive and receiver negotiation", ControllerProvenanceRegressionTests.RunAll);
+        Run("runtime retention shares its quota across processes and collects only completed dependencies", RuntimeRetentionRegressionTests.RunAll);
+        Run("binary telemetry preserves source bits and versioned geometry binding", BinaryTelemetryRegressionTests.RunAll);
+        Run("managed episode and facility owners survive source state loss without a dispatcher", CoordinatorOwnershipRegressionTests.RunAll);
+        Run("recovery journal ACKs only flushed prefixes and preserves torn or corrupted tails", RecoveryJournalRegressionTests.RunAll);
+        Run("rolling journal recovers checkpoints and rotation without collecting pinned or uncommitted input", RollingJournalRegressionTests.RunAll);
+        Run("coordinator recovery preserves every capture boundary, frozen metadata and source gaps", CoordinatorRecoveryRegressionTests.RunAll);
+        Run("durable dispatcher recovers committed publication failures without duplicate input or premature ACK", DurableDispatcherRegressionTests.RunAll);
+        Run("runtime sources recover independently through durable ingress and consumed retirement barriers", RuntimeSourceDispatchRegressionTests.RunAll);
+        Run("episode recovery preserves committed inputs, analysis, IDs, policy and user deletes", EpisodeTransactionRegressionTests.RunAll);
+        Run("durable outbox fences worker generations and consent while retaining immutable archives", DurableOutboxRegressionTests.RunAll);
+        Run("process worker host isolates roles, confirms exits and keeps owner probes independent of data backpressure", ProcessWorkerHostRegressionTests.RunAll);
+        Run("component supervision recovers every managed owner and fences hangs, checkpoints and expired operations", ComponentSupervisorRegressionTests.RunManaged);
+        Run("component supervision survives one hundred real worker failures across all roles", ComponentSupervisorRegressionTests.RunProcesses);
+        Run("controller runtime joins measured snapshots with durable catalog identity and age", ControllerRuntimeRegressionTests.RunJoiner);
+        Run("controller runtime owns enumeration, hotplug, polling and transport failures on one loop", ControllerRuntimeRegressionTests.RunWorker);
+        Run("controller runtime native process polls without loading the simulator SDK", ControllerRuntimeRegressionTests.RunNativeProcess);
+        Run("simulator worker retains one SDK owner and routes typed commands and acquisition", SimulatorWorkerRegressionTests.RunOwner);
+        Run("simulator scenery replies survive partial transfers and reject obsolete context", SimulatorWorkerRegressionTests.RunScenery);
+        if (_filter == null || "simulator native process".IndexOf(_filter, StringComparison.OrdinalIgnoreCase) >= 0)
+            Console.WriteLine("SKIP simulator native process smoke: use --native-source-smoke explicitly; default lifecycle tests use fake SDK.");
+        Run("recording runtime restores ordered sources and independently preserves contacts, scenery and joins", RecordingRuntimeStateRegressionTests.RunAll);
+        Run("recording owner recovers committed effects and avoids checkpoint deadlock under backpressure", RecordingRuntimeOwnerRegressionTests.RunAll);
+        Run("application runtime independently recovers source and recording owners and drains durable effects", ApplicationRuntimeRegressionTests.RunAll);
+        Run("landing runtime composes durable capture, independent presentation, upload and cold recovery", LandingRuntimeRegressionTests.RunAll);
+        Run("runtime window projection rebuilds all committed history and fences old reports", RuntimePresentationRegressionTests.RunAll);
+        Run("runtime landing publication preserves row, pending status and replay state", RuntimePresentationRegressionTests.RunLandingPublication);
+        Run("retained analysis engine survives cancellation and commits exactly its original episode", RetainedAnalysisRegressionTests.RunAll);
+        Run("cold recording recovery retains accepted contacts, RAW and original engine across adoption retries", ColdRecordingRecoveryRegressionTests.RunAll);
+        Run("RAW export recovers publication and mid-pre-roll checkpoints without duplicate delivery", RawExportRecoveryRegressionTests.RunAll);
+        Run("RAW batches isolate optional failures and preserve replay and consent", ReviewRawBatchRegressionTests.RunAll);
+        Run("isolated uploads restart hung HTTP, fence opt-out and drain accepted parent callbacks", UploadWorkerRegressionTests.RunAll);
+        Run("isolated cloud API recovers hangs and fences credential epochs without owning local history", CloudWorkerRegressionTests.RunAll);
+        Run("cloud runtime resumes lost remote replies and preserves parent history, deletion and acquisition", CloudRuntimeRegressionTests.RunAll);
+        Run("cloud presentation owner transitions", CloudPresentationRegressionTests.RunOwner);
+        Run("cloud presentation window states", CloudPresentationRegressionTests.RunWindow);
         Run("hidden replay defers visual work and restores the latest selection", ReplayVisibilityRegressionTests.RunAll);
         Run("airport metadata persistence is asynchronous, ordered, and deletion safe", AirportMetadataPersistenceRegressionTests.RunAll);
         Run("settings mutations stay asynchronous, serialized and drain on close", SettingsOperationsRegressionTests.RunAll);
@@ -95,13 +192,14 @@ internal static class Program
         Run("upload worker survives a read-only queue file", UploadWorkerSurvivesReadOnlyQueueFile);
         Run("corrupt telemetry identity does not fault the upload worker", CorruptTelemetryIdentityDoesNotFaultWorker);
         Run("telemetry enqueue is safe during disposal", TelemetryEnqueueIsSafeDuringDisposal);
+        Run("shutdown drains every upload resource owner before disposal", OperationLifetimeRegressionTests.RunAll);
         Run("permanently rejected telemetry is quarantined once", PermanentlyRejectedTelemetryIsQuarantined);
         Run("automatic reports are silent and do not consent to legacy captures", AutomaticTelemetryUploadRegressionTests.AutomaticReportsAreSilentAndDoNotConsentToLegacy);
         Run("automatic opt-out overrides legacy consent without blocking manual reports", AutomaticTelemetryUploadRegressionTests.DisabledAutomaticReportsRemainSeparateFromConsentedLegacyAndManual);
         Run("automatic opt-out cancels upload and preserves manual reporting", AutomaticTelemetryUploadRegressionTests.OptOutCancelsAutomaticUploadButNotManualReports);
         Run("automatic opt-out cancels consented legacy RAW but preserves manual reporting", AutomaticTelemetryUploadRegressionTests.OptOutCancelsConsentedLegacyUploadButNotManualReports);
         Run("automatic opt-out cancels automatic-only enrollment", AutomaticTelemetryUploadRegressionTests.OptOutCancelsAutomaticEnrollment);
-        Run("rapid automatic opt-out and opt-in cannot lose a pending retry", AutomaticTelemetryUploadRegressionTests.RapidOptOutAndInPreservesRequestedRetry);
+        Run("rapid automatic opt-out and opt-in cannot lose a pending retry", UploadWorkerRegressionTests.RapidOptOutAndInPreservesRequestedRetry);
         Run("old receivers defer new report formats until capability is deployed", AutomaticTelemetryUploadRegressionTests.OldReceiverDefersNewArchivesUntilCapabilityIsAvailable);
         Run("automatic request timeouts retry silently without terminating uploader", AutomaticTelemetryUploadRegressionTests.AutomaticTimeoutRetriesSilently);
         Run("offline automatic archive queue is bounded without deleting reports", AutomaticTelemetryArchiveRegressionTests.RunAll);
@@ -135,6 +233,11 @@ internal static class Program
         Run("landing history uses lazy columnar v7 details", LandingHistoryUsesLazyColumnarDetails);
         Run("new impact persistence and unchanged legacy landing measurements", LandingImpactStorageRegressionTests.RunAll);
         Run("physical controller axes preserve capability and schema contracts", PhysicalControllerAxesRegressionTests.RunAll);
+        Run("review UI replay fixes preserve input and source boundaries", ReviewUiReplayRegressionTests.RunAll);
+        Run("review source and format fixes preserve compatibility", ReviewSourcesFormatsRegressionTests.RunAll);
+        Run("review runtime storage boundaries recover without restart loops", ReviewRuntimeStorageRegressionTests.RunAll);
+        Run("permanent storage failure retains failures and stops every runtime owner", ReviewRuntimeStorageRegressionTests.PermanentStorageFailureStops);
+        Run("backend modules and production workers run without the UI assembly", ModuleBoundaryRegressionTests.RunAll);
         Run("physical input display supports legacy channels and localization", PhysicalInputStripRegressionTests.RunAll);
         Run("physical replay controls preserve source, polarity and gaps", ReplayControlInputsRegressionTests.RunAll);
         Run("physical bindings stay consistent across contacts of one landing episode", ReplayControlEpisodeRegressionTests.RunAll);
@@ -280,8 +383,9 @@ internal static class Program
         Run("localized whitespace survives WPF resource loading", LocalizedWhitespaceSurvivesWpfLoading);
         Run("landing feel severity is independent of translated text", LandingFeelSeverityIsLanguageIndependent);
 
+        if (_executed == 0) { Console.Error.WriteLine("No regression tests matched the filter."); return 2; }
         Console.WriteLine(_failures == 0
-            ? "All regression tests passed."
+            ? (_filter == null ? "All regression tests passed." : "Selected regression tests passed.")
             : $"{_failures} regression test(s) failed.");
         return _failures == 0 ? 0 : 1;
     }
@@ -679,7 +783,7 @@ internal static class Program
             Directory.CreateDirectory(root);
             File.WriteAllText(path, original, new UTF8Encoding(false));
             var manager = TestAutoStartManager(root, typeof(MainWindow).Assembly.Location);
-            manager.SetEnabled(false);
+            Throws<InvalidDataException>(() => manager.SetEnabled(false), "disabling reports unmanaged name collision");
             Equal(original, File.ReadAllText(path), "disabling does not claim an unmanaged entry");
             Throws<InvalidDataException>(() => manager.SetEnabled(true), "enabling refuses an unmanaged name collision");
             Equal(original, File.ReadAllText(path), "name collision remains untouched");
@@ -842,23 +946,23 @@ internal static class Program
             ImpactStatus = nameof(TouchdownImpactStatus.Settled)
         };
         LocalizationManager.Apply("ru");
-        Equal("ЖЁСТКАЯ", record.LandingFeelDisplay, "Russian firm label");
+        Equal("ЖЁСТКАЯ", new LandingStats.App.Presentation.LandingPresentation(record).LandingFeelDisplay, "Russian firm label");
         Equal(true, record.IsFirmLanding, "firm severity flag");
 
         record.InertialFpm = 600.0;
         record.ImpactPeakG = 1.19;
-        Equal("МЯГКАЯ", record.LandingFeelDisplay, "Russian smooth label");
+        Equal("МЯГКАЯ", new LandingStats.App.Presentation.LandingPresentation(record).LandingFeelDisplay, "Russian smooth label");
         Equal(false, record.IsFirmLanding, "smooth severity flag");
         Equal(true, record.IsSmoothLanding, "feel is independent of FPM");
         record.ImpactPeakG = 1.20;
-        Equal("ОБЫЧНАЯ", record.LandingFeelDisplay, "Russian normal label at exact boundary");
+        Equal("ОБЫЧНАЯ", new LandingStats.App.Presentation.LandingPresentation(record).LandingFeelDisplay, "Russian normal label at exact boundary");
         Equal(true, record.IsNormalLanding, "normal severity flag");
         record.ImpactStatus = nameof(TouchdownImpactStatus.Incomplete);
         Equal(false, record.HasImpactClassification, "incomplete observation is not classified");
         Equal(false, record.IsSmoothLanding, "unavailable feel is not green");
         LocalizationManager.Apply("en");
         record.ImpactStatus = nameof(TouchdownImpactStatus.Settled);
-        Equal("NORMAL", record.LandingFeelDisplay, "English normal label");
+        Equal("NORMAL", new LandingStats.App.Presentation.LandingPresentation(record).LandingFeelDisplay, "English normal label");
     }
 
     private static void LocalizedWhitespaceSurvivesWpfLoading()
@@ -1068,35 +1172,13 @@ internal static class Program
         }
     }
 
-    private static void BugReportPersistsBeforeNetworkPreparation()
-    {
-        var root = Path.Combine(Path.GetTempPath(), "landing-stats-offline-bug-report-test-" + Guid.NewGuid().ToString("N"));
-        try
-        {
-            var candidate = BugReportFixture(23, "offline-landing");
-            var buffer = new LastLandingBugReportBuffer();
-            buffer.BeginEpisode(candidate.EpisodeId);
-            Equal(true, buffer.TryRetain(candidate), "offline report retained before persistence");
-
-            var path = MainWindow.PersistBugReport(
-                new BugReportRepository(root),
-                buffer,
-                candidate,
-                new DateTime(2026, 8, 21, 8, 0, 0, DateTimeKind.Utc));
-
-            Equal(true, File.Exists(path), "offline report durable before any network operation");
-            Null(buffer.Available(), "persisted offline report is single-use in the UI");
-        }
-        finally
-        {
-            if (Directory.Exists(root)) Directory.Delete(root, true);
-        }
-    }
+    private static void BugReportPersistsBeforeNetworkPreparation() =>
+        EpisodeReportLifecycleRegressionTests.ManualIntentIsDurableBeforeNetworkPreparation();
 
     private static void WindowShutdownDrainsBugReportPersistence()
     {
         var persistence = new TaskCompletionSource<bool>();
-        var drain = Task.Run(() => AsyncWindowShutdown.DrainAcceptedWorkAsync(persistence.Task));
+        var drain = AsyncWindowShutdown.DrainAcceptedWorkAsync(persistence.Task);
         Equal(false, drain.IsCompleted, "shutdown asynchronously waits while local report write is incomplete");
         persistence.SetResult(true);
         Equal(true, drain.Wait(TimeSpan.FromSeconds(5)), "shutdown resumes only after report durability boundary");
@@ -1141,13 +1223,19 @@ internal static class Program
         {
             Directory.CreateDirectory(root);
             var abandoned = Path.Combine(root, "old_raw.zip.tmp");
+            var published = Path.Combine(root, "old_raw.zip");
+            var sole = Path.Combine(root, "sole_raw.zip.tmp");
             var active = Path.Combine(root, "active_raw.zip.tmp");
             File.WriteAllText(abandoned, "old");
+            File.WriteAllText(published, "old");
+            File.WriteAllText(sole, "only surviving bytes");
             File.WriteAllText(active, "active");
             File.SetLastWriteTimeUtc(abandoned, DateTime.UtcNow.AddDays(-2));
+            File.SetLastWriteTimeUtc(sole, DateTime.UtcNow.AddDays(-2));
 
             _ = new RawCaptureRepository(root);
-            Equal(false, File.Exists(abandoned), "abandoned temporary chunk removed");
+            Equal(false, File.Exists(abandoned), "byte-identical redundant temporary chunk removed");
+            Equal(true, File.Exists(sole), "sole interrupted recording survives regardless of age");
             Equal(true, File.Exists(active), "fresh temporary chunk retained");
         }
         finally
@@ -1914,19 +2002,17 @@ internal static class Program
         {
             Directory.CreateDirectory(root);
             File.WriteAllText(target, "old");
-            var search = new DirectoryInfo(AppDomain.CurrentDomain.BaseDirectory);
-            string? builtExecutable = null;
-            while (search != null && builtExecutable == null)
+            // Build the fixture from the exact assembly in this test output.
+            File.Copy(typeof(App).Assembly.Location, replacement);
+            using (var payload = new MemoryStream())
             {
-                var candidate = Path.Combine(search.FullName, "artifacts", "MSFS-Landing-Stats.exe");
-                if (File.Exists(candidate))
-                {
-                    builtExecutable = candidate;
-                }
-                search = search.Parent;
+                using (var zip = new ZipArchive(payload, ZipArchiveMode.Create, true))
+                using (var member = zip.CreateEntry("fixture.txt").Open()) member.WriteByte(1);
+                using var output = new FileStream(replacement, FileMode.Append, FileAccess.Write);
+                payload.Position = 0; payload.CopyTo(output);
+                var length = BitConverter.GetBytes(payload.Length); output.Write(length, 0, length.Length);
+                var marker = Encoding.ASCII.GetBytes("MSFSLSABUNDLE1"); output.Write(marker, 0, marker.Length);
             }
-            if (builtExecutable == null) throw new FileNotFoundException("Built single executable fixture is unavailable");
-            File.Copy(builtExecutable, replacement);
 
             var replacementVersion = AssemblyName.GetAssemblyName(replacement).Version
                                      ?? throw new InvalidDataException("replacement fixture version is unavailable");
@@ -1934,6 +2020,12 @@ internal static class Program
             Equal(false, File.Exists(replacement), "replacement moved into place");
             Equal(true, new FileInfo(target).Length > 100, "installed executable length");
             Equal(0, Directory.GetFiles(root, ".msfs-landing-stats-backup-*.exe").Length, "transaction backup removed");
+            File.Copy(target, replacement);
+            File.SetAttributes(target, FileAttributes.ReadOnly);
+            UpdaterProgram.InstallExecutableTransactionally(replacement, target, replacementVersion);
+            Equal(false, File.Exists(replacement), "verified replacement remained after backup collection failed");
+            Equal(1, Directory.GetFiles(root, ".msfs-landing-stats-backup-*.exe").Length, "read-only backup should remain without rolling back the verified new application");
+            foreach (var file in Directory.EnumerateFiles(root)) File.SetAttributes(file, FileAttributes.Normal);
         }
         finally
         {
@@ -2032,7 +2124,7 @@ internal static class Program
     private static void RecorderReportsAirborneState()
     {
         using var recorder = NewRecorder();
-        NotNull(RecorderType().GetEvent("AircraftGroundStateChanged"), "aircraft ground-state event");
+        NotNull(typeof(LandingEpisodeCoordinator).GetEvent("AircraftGroundStateChanged"), "production coordinator ground-state event");
 
         Invoke(recorder, "ProcessSample", new TelemetrySample
         {
@@ -2079,7 +2171,7 @@ internal static class Program
         });
 
         Equal(1, rawFrames, "replay frame excluded from raw stream");
-        Equal(true, Field(recorder, "_aircraftOnGround"), "replay frame cannot replace live ground state");
+        Equal<object?>(null, Field(recorder, "_aircraftOnGround"), "replay boundary clears prior flight ground state; replay frames cannot establish live state");
     }
 
     private static void ReplayKinematicInconsistenciesAreRejected()
@@ -2099,21 +2191,21 @@ internal static class Program
 
     private static void LegacyControllerPathIsAbsent()
     {
-        var type = RecorderType();
+        var type = typeof(SimConnectSource);
         Null(type.GetMethod("OnRecvControllersList", InstancePrivate), "legacy controller-list handler");
         Null(type.GetNestedType("InputGroups", BindingFlags.NonPublic), "legacy input-group enum");
     }
 
     private static void CompactFrameMatchesPayloadContract()
     {
-        var frameType = typeof(MainWindow).Assembly.GetType(
+        var frameType = typeof(SimConnectSource).Assembly.GetType(
                             "LandingStats.App.Telemetry.SimFrameData",
                             true)
                         ?? throw new TypeLoadException("SimFrameData");
         Equal(20, TelemetrySample.CapturedContactPointCount, "documented contact-point count");
         Equal(4, TelemetrySample.CapturedEngineCount, "documented SimConnect engine count");
         Equal(892, Marshal.SizeOf(frameType), "packed frame size");
-        var guardType = typeof(MainWindow).Assembly.GetType(
+        var guardType = typeof(SimConnectSource).Assembly.GetType(
                             "LandingStats.App.Telemetry.SimGuardData",
                             true)
                         ?? throw new TypeLoadException("SimGuardData");
@@ -2212,7 +2304,7 @@ internal static class Program
             WindSpeedKnots = 13.6,
         });
 
-        Equal("wind 275°/14 kt", record.WindDisplay, "contact wind display");
+        Equal("wind 275°/14 kt", new LandingStats.App.Presentation.LandingPresentation(record).WindDisplay, "contact wind display");
     }
 
     private static void LandingHistoryUsesLazyColumnarDetails()
@@ -2292,7 +2384,7 @@ internal static class Program
             var legacyDetail = rebuilt.LoadDetail(legacySummary) ?? throw new InvalidOperationException("legacy detail did not load");
             Equal(321.0, legacyDetail.Series[0].InertialFpm, "legacy v6 detail remains readable");
 
-            var columnsType = typeof(MainWindow).Assembly.GetType("LandingStats.App.Storage.LandingSeriesColumns", true)
+            var columnsType = typeof(LandingRepository).Assembly.GetType("LandingStats.App.Storage.LandingSeriesColumns", true)
                               ?? throw new TypeLoadException("LandingSeriesColumns");
             var columns = Activator.CreateInstance(columnsType, true) ?? throw new InvalidOperationException("columns construction failed");
             columnsType.GetProperty("Time")!.SetValue(columns, new double[1]);
@@ -2745,7 +2837,7 @@ internal static class Program
             Equal(true, record.HasClosureReconstruction, "factory reconstruction availability");
             Equal(result.ClosureReconstructionModel, record.ClosureReconstructionModel, "factory model id");
             Near(result.ReconstructedClosureFpm, record.ReconstructedClosureFpm, 1e-12, "factory modeled closure");
-            Equal(true, record.ClosureGeometryDisplay.Contains("telemetry"), "telemetry geometry provenance display");
+            Equal(true, new LandingStats.App.Presentation.LandingPresentation(record).ClosureGeometryDisplay.Contains("telemetry"), "telemetry geometry provenance display");
 
             var repository = new LandingRepository(root);
             repository.Save(record);
@@ -2780,7 +2872,7 @@ internal static class Program
             var rebuilt = new LandingRepository(root);
             var legacy = rebuilt.LoadAll().Single(item => item.Id == "legacy-missing-reconstruction");
             Equal(false, legacy.HasClosureReconstruction, "legacy reconstruction availability");
-            Equal("reconstruction unavailable", legacy.ClosureModelDisplay, "legacy reconstruction display");
+            Equal("reconstruction unavailable", new LandingStats.App.Presentation.LandingPresentation(legacy).ClosureModelDisplay, "legacy reconstruction display");
         }
         finally
         {
@@ -2813,11 +2905,11 @@ internal static class Program
                     Near(result.ClosureReconstructionUncertaintyFpm, item.ClosureReconstructionUncertaintyFpm, 1e-10, "stored sensitivity band");
                     Equal(true, item.ClosureReconstructionContactPointIndices!.SequenceEqual(result.ClosureReconstructionContactPointIndices!), "stored observed points");
                     Equal(true, double.IsNaN(item.ReconstructedPitchFpm), "full rotation does not become pitch");
-                    Equal(true, item.ClosureComponentsDisplay.Contains("rotation"), "honest component label");
-                    Equal(true, item.ClosureGeometryDisplay.Contains("Contact geometry"), "full geometry is not labeled as a main axis");
+                    Equal(true, new LandingStats.App.Presentation.LandingPresentation(item).ClosureComponentsDisplay.Contains("rotation"), "honest component label");
+                    Equal(true, new LandingStats.App.Presentation.LandingPresentation(item).ClosureGeometryDisplay.Contains("Contact geometry"), "full geometry is not labeled as a main axis");
                 }
                 LocalizationManager.Apply("ru");
-                Equal(true, detail.ClosureComponentsDisplay.Contains("вращение"), "Russian rotation label");
+                Equal(true, new LandingStats.App.Presentation.LandingPresentation(detail).ClosureComponentsDisplay.Contains("вращение"), "Russian rotation label");
             }
         }
         finally
@@ -2849,10 +2941,10 @@ internal static class Program
             nameof(TouchdownGeometrySource.Telemetry),
             record.ClosureReconstructionGeometrySource,
             "legacy factory geometry source");
-        Equal(true, record.ClosureGeometryDisplay.Contains("telemetry"), "legacy telemetry provenance display");
+        Equal(true, new LandingStats.App.Presentation.LandingPresentation(record).ClosureGeometryDisplay.Contains("telemetry"), "legacy telemetry provenance display");
 
         record.ClosureReconstructionGeometrySource = nameof(TouchdownGeometrySource.Unavailable);
-        Equal(true, record.ClosureGeometryDisplay.Contains("telemetry"), "stored unavailable source uses legacy provenance");
+        Equal(true, new LandingStats.App.Presentation.LandingPresentation(record).ClosureGeometryDisplay.Contains("telemetry"), "stored unavailable source uses legacy provenance");
     }
 
     private static void ClosureReconstructionKeepsRawLatchIndependent()
@@ -4267,13 +4359,7 @@ internal static class Program
         return (IDisposable)(recorder ?? throw new InvalidOperationException("Recorder construction failed."));
     }
 
-    private static Type RecorderType()
-    {
-        return typeof(MainWindow).Assembly.GetType(
-                   "LandingStats.App.Telemetry.SimConnectLandingRecorder",
-                   true)
-               ?? throw new TypeLoadException("SimConnectLandingRecorder");
-    }
+    private static Type RecorderType() => typeof(SimConnectLandingRecorder);
 
     private static object ReplayFlowEvent(string name)
     {
@@ -4294,6 +4380,7 @@ internal static class Program
 
     private static object? Field(object target, string name)
     {
+        target = RecorderTestAccess.Owner(target, name);
         return target.GetType().GetField(name, InstancePrivate)?.GetValue(target)
                ?? (target.GetType().GetField(name, InstancePrivate) == null
                    ? throw new MissingFieldException(target.GetType().FullName, name)
@@ -4308,6 +4395,7 @@ internal static class Program
 
     private static void SetField(object target, string name, object value)
     {
+        target = RecorderTestAccess.Owner(target, name);
         var field = target.GetType().GetField(name, InstancePrivate)
                     ?? throw new MissingFieldException(target.GetType().FullName, name);
         field.SetValue(target, value);
@@ -4315,6 +4403,7 @@ internal static class Program
 
     private static void Invoke(object target, string name, params object[] arguments)
     {
+        target = RecorderTestAccess.Owner(target, name);
         var method = target.GetType().GetMethod(name, InstancePrivate | BindingFlags.Public)
                      ?? throw new MissingMethodException(target.GetType().FullName, name);
         method.Invoke(target, arguments);
@@ -4322,11 +4411,25 @@ internal static class Program
 
     private static void Run(string name, Action test)
     {
+        if (_filter != null && name.IndexOf(_filter, StringComparison.OrdinalIgnoreCase) < 0) return;
+        _executed++;
+        Console.WriteLine($"START {name}"); Console.Out.Flush();
+        var culture = CultureInfo.CurrentCulture; var uiCulture = CultureInfo.CurrentUICulture;
+        var defaultCulture = CultureInfo.DefaultThreadCurrentCulture; var defaultUiCulture = CultureInfo.DefaultThreadCurrentUICulture;
+        var language = LocalizationManager.EffectiveLanguage;
+        // Retain the calling STA/dispatcher. A timed-out fixture cannot safely
+        // share this process with subsequent tests or leave its workers alive.
+        using var deadline = new Timer(_ =>
+        {
+            Console.Error.WriteLine($"TIMEOUT {name}: exceeded 180 seconds"); Console.Error.Flush();
+            Environment.Exit(124);
+        }, null, TimeSpan.FromSeconds(180), Timeout.InfiniteTimeSpan);
         try
         {
             test();
             Console.WriteLine($"PASS {name}");
         }
+        catch (RegressionTestSkipped skipped) { Console.WriteLine($"SKIP {name}: {skipped.Message}"); }
         catch (Exception exception)
         {
             _failures++;
@@ -4334,6 +4437,12 @@ internal static class Program
                 ? exception.InnerException
                 : exception;
             Console.Error.WriteLine($"FAIL {name}: {failure}");
+        }
+        finally
+        {
+            if (LocalizationManager.EffectiveLanguage != language) LocalizationManager.Apply(language);
+            CultureInfo.DefaultThreadCurrentCulture = defaultCulture; CultureInfo.DefaultThreadCurrentUICulture = defaultUiCulture;
+            Thread.CurrentThread.CurrentCulture = culture; Thread.CurrentThread.CurrentUICulture = uiCulture;
         }
     }
 
@@ -4520,7 +4629,7 @@ internal static class Program
                 return System.Threading.Tasks.Task.FromResult(new HttpResponseMessage(HttpStatusCode.Created)
                 {
                     RequestMessage = request,
-                    Content = new StringContent("{\"status\":\"accepted\"}", Encoding.UTF8, "application/json"),
+                    Content = new StringContent("{\"status\":\"accepted\",\"capture_id\":\"0123456789abcdef0123456789abcdef\"}", Encoding.UTF8, "application/json"),
                 });
             }
 
@@ -4601,7 +4710,7 @@ internal static class Program
                 return Task.FromResult(new HttpResponseMessage(HttpStatusCode.Created)
                 {
                     RequestMessage = request,
-                    Content = new StringContent("{\"status\":\"accepted\"}", Encoding.UTF8, "application/json"),
+                    Content = new StringContent("{\"status\":\"accepted\",\"capture_id\":\"0123456789abcdef0123456789abcdef\"}", Encoding.UTF8, "application/json"),
                 });
             }
 

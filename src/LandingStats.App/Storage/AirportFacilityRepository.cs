@@ -81,6 +81,7 @@ public sealed class AirportFacilityRepository
             .Select(group => group.Last())
             .OrderBy(facility => facility.Ident, StringComparer.OrdinalIgnoreCase)
             .ThenBy(facility => facility.Region, StringComparer.OrdinalIgnoreCase)
+            .Take(32768)
             .ToList();
 
         var directory = System.IO.Path.GetDirectoryName(Path);
@@ -89,31 +90,11 @@ public sealed class AirportFacilityRepository
             Directory.CreateDirectory(directory);
         }
 
-        var temporaryPath = Path + ".tmp";
-        try
+        LandingStats.App.Runtime.DurableFile.Write(Path, file =>
         {
-            using (var file = new FileStream(temporaryPath, FileMode.Create, FileAccess.Write, FileShare.None))
-            using (var gzip = new GZipStream(file, CompressionLevel.Optimal, false))
-            {
-                _serializer.WriteObject(gzip, merged);
-            }
-
-            if (File.Exists(Path))
-            {
-                File.Replace(temporaryPath, Path, null);
-            }
-            else
-            {
-                File.Move(temporaryPath, Path);
-            }
-        }
-        finally
-        {
-            if (File.Exists(temporaryPath))
-            {
-                File.Delete(temporaryPath);
-            }
-        }
+            using var gzip = new GZipStream(file, CompressionLevel.Optimal, true);
+            _serializer.WriteObject(gzip, merged);
+        });
 
         return merged;
     }

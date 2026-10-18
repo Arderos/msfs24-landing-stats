@@ -2,6 +2,12 @@ using System;
 
 namespace LandingStats.Core;
 
+public enum TelemetryDatumCalibrationVersion
+{
+    Legacy = 1,
+    BankedRotation = 2,
+}
+
 public enum TouchdownGeometrySource
 {
     Unavailable = 0,
@@ -32,6 +38,9 @@ public sealed class TouchdownMainGearContactPoint
 /// </summary>
 public sealed class TouchdownAnalysisOptions
 {
+    /// <summary>Geometry derivation revision. Archived snapshots explicitly retain their original revision.</summary>
+    public TelemetryDatumCalibrationVersion DatumCalibrationVersion { get; set; } = TelemetryDatumCalibrationVersion.BankedRotation;
+
     /// <summary>Optional diagnostic sink; it does not affect any analysis decision.</summary>
     public TelemetryDecisionJournal? DecisionJournal { get; set; }
 

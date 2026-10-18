@@ -19,17 +19,17 @@ internal static class Program
     [STAThread]
     private static int Main(string[] args)
     {
-        string? targetPath = null;
+        UpdateInvocation? invocation = null;
+        var committed = false;
         try
         {
-            var invocation = ParseInvocation(args);
-            targetPath = invocation.TargetPath;
-            ApplyAsync(invocation).GetAwaiter().GetResult();
+            invocation = ParseInvocation(args);
+            ApplyAsync(invocation, () => committed = true).GetAwaiter().GetResult();
             return 0;
         }
         catch (Exception exception)
         {
-            TryRestartExistingApplication(targetPath);
+            if (committed && invocation != null) TryRestartExistingApplication(invocation);
             MessageBox.Show(
                 "MSFS Landing Stats was not updated. The existing application was preserved.\r\n\r\n" + exception.Message,
                 "MSFS Landing Stats updater",
@@ -39,14 +39,19 @@ internal static class Program
         }
     }
 
-    private static async Task ApplyAsync(UpdateInvocation invocation)
+    private static async Task ApplyAsync(UpdateInvocation invocation, Action committed)
     {
         ServicePointManager.SecurityProtocol |= SecurityProtocolType.Tls12;
-        var ownPath = Path.GetFullPath(Application.ExecutablePath);
+        var ownPath = Path.GetFullPath(Assembly.GetExecutingAssembly().Location);
         var updateRoot = Path.GetDirectoryName(ownPath) ?? throw new InvalidDataException("Updater directory is unavailable");
         VerifyUpdateRoot(updateRoot);
-        VerifyTargetProcess(invocation);
+        using var target = VerifyTargetProcess(invocation);
+        // Own the commit object before advertising readiness; the guardian may
+        // signal and close its last handle immediately after ready.
+        using var commit = invocation.CommitEventName == null ? null : EventWaitHandle.OpenExisting(invocation.CommitEventName);
         SignalReady(invocation.ReadyEventName);
+        if (commit != null) await WaitForCommitAsync(commit, target).ConfigureAwait(false);
+        committed();
 
         using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(60) };
         client.DefaultRequestHeaders.UserAgent.ParseAdd("MSFS-Landing-Stats-Updater/3");
@@ -90,7 +95,7 @@ internal static class Program
         VerifySingleFileBundle(replacementPath);
         VerifyAssemblyVersion(replacementPath, manifest.Version, "MSFS-Landing-Stats");
 
-        WaitForTargetExit(invocation.ParentPid);
+        WaitForTargetExit(target);
         InstallExecutableTransactionally(replacementPath, invocation.TargetPath, invocation.Version);
 
         var cleanupArguments = string.Join(" ", new[]
@@ -184,13 +189,14 @@ internal static class Program
 
     private static UpdateInvocation ParseInvocation(string[] args)
     {
-        if ((args.Length != 9 && args.Length != 11) ||
+        if ((args.Length != 9 && args.Length != 11 && args.Length != 13) ||
             args[0] != "--apply" ||
             args[1] != "--parent-pid" ||
             args[3] != "--target" ||
             args[5] != "--version" ||
             args[7] != "--ready-event" ||
-            (args.Length == 11 && args[9] != "--manifest"))
+            (args.Length >= 11 && args[9] != "--manifest") ||
+            (args.Length == 13 && args[11] != "--commit-event"))
         {
             throw new InvalidDataException("Updater invocation is invalid");
         }
@@ -219,9 +225,13 @@ internal static class Program
             throw new InvalidDataException("Updater readiness event is invalid");
         }
 
-        var manifestName = args.Length == 11 ? args[10] : Protocol.ManifestName;
+        var manifestName = args.Length >= 11 ? args[10] : Protocol.ManifestName;
         SignatureNameFor(manifestName);
-        return new UpdateInvocation(parentPid, targetPath, version, readyEventName, manifestName);
+        var commit = args.Length == 13 ? args[12] : null;
+        if (commit != null && (!commit.StartsWith("Local\\MSFSLandingStatsUpdateCommit-", StringComparison.Ordinal) ||
+            !Guid.TryParseExact(commit.Substring("Local\\MSFSLandingStatsUpdateCommit-".Length), "N", out _)))
+            throw new InvalidDataException("Updater commit event is invalid");
+        return new UpdateInvocation(parentPid, targetPath, version, readyEventName, manifestName, commit);
     }
 
     private static string SignatureNameFor(string manifestName)
@@ -237,13 +247,16 @@ internal static class Program
         throw new InvalidDataException("Updater manifest channel is invalid");
     }
 
-    private static void VerifyTargetProcess(UpdateInvocation invocation)
+    private static Process VerifyTargetProcess(UpdateInvocation invocation)
     {
-        using var process = Process.GetProcessById(invocation.ParentPid);
+        var process = Process.GetProcessById(invocation.ParentPid);
+        try
+        {
+        _ = process.Handle; // Retain this exact process identity across downloads.
         var processPath = Path.GetFullPath(process.MainModule?.FileName ?? string.Empty);
         if (string.Equals(processPath, invocation.TargetPath, StringComparison.OrdinalIgnoreCase))
         {
-            return;
+            return process;
         }
 
         var runtimeRoot = Path.GetFullPath(Path.Combine(
@@ -257,21 +270,24 @@ internal static class Program
         }
 
         VerifySingleFileBundle(invocation.TargetPath);
+        return process;
+        }
+        catch { process.Dispose(); throw; }
     }
 
-    private static void WaitForTargetExit(int parentPid)
+    private static void WaitForTargetExit(Process process)
     {
-        try
+        if (!process.WaitForExit(150000)) throw new TimeoutException("The application did not close in time for the update");
+    }
+
+    private static async Task WaitForCommitAsync(EventWaitHandle commit, Process parent)
+    {
+        var watch = Stopwatch.StartNew();
+        while (!commit.WaitOne(0))
         {
-            using var process = Process.GetProcessById(parentPid);
-            if (!process.WaitForExit(60000))
-            {
-                throw new TimeoutException("The application did not close in time for the update");
-            }
-        }
-        catch (ArgumentException)
-        {
-            // The application exited between identity verification and this wait.
+            if (parent.HasExited) throw new OperationCanceledException("Guardian exited before committing the update");
+            if (watch.Elapsed >= TimeSpan.FromSeconds(20)) throw new TimeoutException("Guardian did not commit the prepared update");
+            await Task.Delay(20).ConfigureAwait(false);
         }
     }
 
@@ -300,7 +316,6 @@ internal static class Program
             File.Move(replacementPath, targetPath);
             VerifySingleFileBundle(targetPath);
             VerifyAssemblyVersion(targetPath, expectedVersion, "MSFS-Landing-Stats");
-            File.Delete(backupPath);
         }
         catch
         {
@@ -314,6 +329,9 @@ internal static class Program
             }
             throw;
         }
+        // Replacement is committed. Failure to collect the old executable must
+        // never roll a verified new executable back.
+        try { File.Delete(backupPath); } catch (IOException) { } catch (UnauthorizedAccessException) { }
     }
 
     private static void VerifySingleFileBundle(string path)
@@ -346,18 +364,25 @@ internal static class Program
         }
     }
 
-    private static void TryRestartExistingApplication(string? targetPath)
+    private static void TryRestartExistingApplication(UpdateInvocation invocation)
     {
         try
         {
+            // The target process is the guardian for a committed handoff. Its
+            // mutex must be gone before a new launcher can become resident.
+            try { using var parent = Process.GetProcessById(invocation.ParentPid); if (!parent.WaitForExit(150000)) return; }
+            catch (ArgumentException) { }
+            var targetPath = invocation.TargetPath;
             if (!string.IsNullOrEmpty(targetPath) && File.Exists(targetPath))
             {
-                Process.Start(new ProcessStartInfo
+                var start = new ProcessStartInfo
                 {
                     FileName = targetPath,
                     WorkingDirectory = Path.GetDirectoryName(targetPath) ?? Environment.CurrentDirectory,
                     UseShellExecute = false,
-                });
+                };
+                start.EnvironmentVariables["MSFS_LANDING_STATS_SKIP_UPDATE_ONCE"] = "1";
+                Process.Start(start);
             }
         }
         catch
@@ -400,13 +425,14 @@ internal static class Program
 
     private sealed class UpdateInvocation
     {
-        public UpdateInvocation(int parentPid, string targetPath, Version version, string readyEventName, string manifestName)
+        public UpdateInvocation(int parentPid, string targetPath, Version version, string readyEventName, string manifestName, string? commitEventName = null)
         {
             ParentPid = parentPid;
             TargetPath = targetPath;
             Version = version;
             ReadyEventName = readyEventName;
             ManifestName = manifestName;
+            CommitEventName = commitEventName;
         }
 
         public int ParentPid { get; }
@@ -414,5 +440,6 @@ internal static class Program
         public Version Version { get; }
         public string ReadyEventName { get; }
         public string ManifestName { get; }
+        public string? CommitEventName { get; }
     }
 }

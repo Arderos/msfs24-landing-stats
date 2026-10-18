@@ -1,15 +1,35 @@
+[CmdletBinding(DefaultParameterSetName = 'Unsigned')]
 param(
     [string]$Configuration = "Release",
     [string]$MsfsSdkRoot = "D:\MSFS 2024 SDK",
+    # Retained for existing release scripts; normal packages require OAuth now.
     [switch]$RequireGoogleOAuthCredentials,
-    [string]$SigningCertificateThumbprint,
-    [string]$SignToolPath = "signtool.exe"
+    [switch]$AllowMissingGoogleOAuthCredentials,
+    [Parameter(ParameterSetName = 'Unsigned')] [switch]$Unsigned,
+    [Parameter(Mandatory = $true, ParameterSetName = 'Signed')] [ValidateNotNullOrEmpty()] [string]$SigningCertificateThumbprint,
+    [Parameter(ParameterSetName = 'Signed')] [string]$SignToolPath = "signtool.exe",
+    [string]$OutputDirectory
 )
 
 $ErrorActionPreference = "Stop"
+$signingRequested = $PSCmdlet.ParameterSetName -eq 'Signed'
+if ($AllowMissingGoogleOAuthCredentials -and ($RequireGoogleOAuthCredentials -or $signingRequested)) {
+    throw 'AllowMissingGoogleOAuthCredentials is only for unsigned developer/test packages and cannot be combined with RequireGoogleOAuthCredentials or signing.'
+}
+$requireGoogleOAuth = -not $AllowMissingGoogleOAuthCredentials
+if ($requireGoogleOAuth) {
+    foreach ($name in @('GOOGLE_OAUTH_CLIENT_ID', 'GOOGLE_OAUTH_CLIENT_SECRET')) {
+        if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) {
+            throw "Google Drive configuration is required for a normal package. Set $name, or explicitly use -AllowMissingGoogleOAuthCredentials for an unsigned developer/test package."
+        }
+    }
+} else {
+    Write-Warning 'Building an unsigned developer/test package that may not support Google Drive sign-in.'
+}
 
 function Sign-ApplicationFile([string]$Path) {
-    if ([string]::IsNullOrWhiteSpace($SigningCertificateThumbprint)) { return }
+    if (-not $signingRequested) { return }
+    if ([string]::IsNullOrWhiteSpace($SigningCertificateThumbprint)) { throw 'A signing certificate thumbprint is required for a signed build.' }
     & $SignToolPath sign /sha1 $SigningCertificateThumbprint /tr http://time.certum.pl /td SHA256 /fd SHA256 $Path
     if ($LASTEXITCODE -ne 0) { throw "Code signing failed: $Path" }
     & $SignToolPath verify /pa /all /tw $Path
@@ -22,7 +42,12 @@ function Sign-ApplicationFile([string]$Path) {
 }
 
 $repositoryRoot = [IO.Path]::GetFullPath($PSScriptRoot)
-$artifactsDirectory = [IO.Path]::GetFullPath((Join-Path $repositoryRoot "artifacts"))
+if ($signingRequested -and [string]::IsNullOrWhiteSpace($SigningCertificateThumbprint)) { throw 'A signing certificate thumbprint is required for a signed build.' }
+$defaultArtifacts = [IO.Path]::GetFullPath((Join-Path $repositoryRoot "artifacts"))
+$artifactsDirectory = if ([string]::IsNullOrWhiteSpace($OutputDirectory)) { $defaultArtifacts } else { [IO.Path]::GetFullPath($OutputDirectory) }
+if ($artifactsDirectory -ne $defaultArtifacts -and -not $artifactsDirectory.StartsWith($defaultArtifacts.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)) {
+    throw 'Package output must stay within the repository artifacts directory.'
+}
 $workDirectory = [IO.Path]::GetFullPath((Join-Path $artifactsDirectory "app-package-work"))
 $packageDirectory = Join-Path $workDirectory "MSFS-Landing-Stats"
 $payloadPath = Join-Path $workDirectory "payload.zip"
@@ -44,15 +69,29 @@ $buildArguments = @(
     (Join-Path $repositoryRoot "MsfsLandingStats.App.sln"),
     "-c",
     $Configuration,
-    "/p:MsfsSdkRoot=$MsfsSdkRoot"
+    "/p:MsfsSdkRoot=$MsfsSdkRoot",
+    '-m:1', '/nodeReuse:false'
 )
-if ($RequireGoogleOAuthCredentials) {
-    $buildArguments += "/p:RequireGoogleOAuthCredentials=true"
-}
+$buildArguments += "/p:RequireGoogleOAuthCredentials=$($requireGoogleOAuth.ToString().ToLowerInvariant())"
 
 dotnet @buildArguments
 if ($LASTEXITCODE -ne 0) {
     throw "Solution build failed."
+}
+
+$applicationOutput = Join-Path $repositoryRoot "src\LandingStats.App\bin\$Configuration\net48"
+if ($requireGoogleOAuth) {
+    # Verify the actual runtime owner, before replacing any previous package or
+    # spending a signing operation. UI assembly metadata is not used by Drive.
+    # A fresh process avoids cached assembly identities across repeated builds,
+    # including Windows PowerShell's reflection-only load context.
+    $powershellName = if ($PSVersionTable.PSEdition -eq 'Desktop') { 'powershell.exe' } else { 'pwsh.exe' }
+    $global:LASTEXITCODE = $null
+    & (Join-Path $PSHOME $powershellName) -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+        -File (Join-Path $repositoryRoot 'verify-google-oauth-build.ps1') `
+        -AssemblyPath (Join-Path $applicationOutput 'LandingStats.Delivery.dll')
+    $verificationExitCode = $global:LASTEXITCODE
+    if ($verificationExitCode -ne 0) { throw 'Google Drive configuration verification failed. The previous package has been preserved.' }
 }
 
 if (Test-Path -LiteralPath $workDirectory) {
@@ -84,14 +123,9 @@ foreach ($oldArtifact in @(
     }
 }
 
-$applicationOutput = Join-Path $repositoryRoot "src\LandingStats.App\bin\$Configuration\net48"
-$requiredPackageFiles = @(
-    "MSFS-Landing-Stats.exe",
-    "MSFS-Landing-Stats.exe.config",
-    "LandingStats.Core.dll",
-    "Microsoft.FlightSimulator.SimConnect.dll",
-    "SimConnect.dll"
-)
+$payloadSource = Get-Content (Join-Path $repositoryRoot 'src\LandingStats.UpdateProtocol\RuntimePayload.cs') -Raw
+$requiredPackageFiles = @([regex]::Matches($payloadSource, '(?m)^\s*"([^"\r\n]+)",\s*$') | ForEach-Object { $_.Groups[1].Value })
+if ($requiredPackageFiles.Count -lt 10) { throw 'Runtime payload allowlist is invalid.' }
 
 foreach ($file in $requiredPackageFiles) {
     $source = Join-Path $applicationOutput $file
@@ -100,15 +134,7 @@ foreach ($file in $requiredPackageFiles) {
     }
 }
 
-$packageFiles = @(
-    Get-ChildItem -LiteralPath $applicationOutput -File |
-        Where-Object {
-            $_.Name -in @("MSFS-Landing-Stats.exe", "MSFS-Landing-Stats.exe.config") -or
-            $_.Extension -ieq ".dll"
-        } |
-        ForEach-Object Name |
-        Sort-Object -Unique
-)
+$packageFiles = @($requiredPackageFiles | Sort-Object -Unique)
 
 foreach ($file in $packageFiles) {
     $source = Join-Path $applicationOutput $file
@@ -120,9 +146,12 @@ if (-not (Test-Path -LiteralPath $updaterBuildPath)) {
     throw "Updater executable is missing: $updaterBuildPath"
 }
 Copy-Item -LiteralPath $updaterBuildPath -Destination $updaterArtifactPath
-Sign-ApplicationFile $updaterArtifactPath
-Sign-ApplicationFile (Join-Path $packageDirectory "MSFS-Landing-Stats.exe")
-Sign-ApplicationFile (Join-Path $packageDirectory "LandingStats.Core.dll")
+if ($signingRequested) {
+    Sign-ApplicationFile $updaterArtifactPath
+    foreach ($file in $packageFiles | Where-Object { $_ -eq 'MSFS-Landing-Stats.exe' -or $_ -match '^LandingStats\..*\.(dll|exe)$' }) {
+        Sign-ApplicationFile (Join-Path $packageDirectory $file)
+    }
+}
 
 $launcherBuildPath = Join-Path $repositoryRoot "src\LandingStats.App.Launcher\bin\$Configuration\net48\MSFS-Landing-Stats.exe"
 if (-not (Test-Path -LiteralPath $launcherBuildPath)) {
@@ -169,7 +198,7 @@ finally {
     $stream.Dispose()
 }
 
-Sign-ApplicationFile $singleFilePath
+if ($signingRequested) { Sign-ApplicationFile $singleFilePath }
 
 $verification = Start-Process `
     -FilePath $singleFilePath `

@@ -61,7 +61,7 @@ internal static class BacklogDiagnosticRegressionTests
             Assert(batcher.Flush() != null, "new context was suppressed");
         }
         batcher.Accept(Episode(104), now);
-        var normal = new LandingEpisodeEventArgs(105, new[] { Sample(210, true, true) }, "MSFS", "aircraft", "type", "model", Array.Empty<AirportFacility>(), Array.Empty<string>());
+        var normal = new LandingEpisodeEventArgs(105, new[] { Sample(210, true, true) }, "MSFS", "aircraft", "type", "model", Array.Empty<AirportFacility>(), Array.Empty<string>(), persistentId: System.Guid.NewGuid());
         var completed = batcher.Accept(normal, now);
         Assert(completed.Count == 2 && ReferenceEquals(completed[1], normal), "real landing was delayed or rewritten");
         var fullDetails = Episode(106);
@@ -107,7 +107,7 @@ internal static class BacklogDiagnosticRegressionTests
         journal.Record(id * 2, "recorder", "physics_discontinuity_rejected", change == "reason" ? "changed rejection" : "no active witness");
         journal.Record(id * 2 + 1, "recorder", "rejected_contact_diagnostics", "diagnostic completion");
         return new LandingEpisodeEventArgs(id, samples, "MSFS", change == "aircraft" ? "other" : "aircraft", "type", "model",
-            Array.Empty<AirportFacility>(), Array.Empty<string>(), journal, isDiagnosticOnly: true);
+            Array.Empty<AirportFacility>(), Array.Empty<string>(), journal, isDiagnosticOnly: true, persistentId: System.Guid.NewGuid());
     }
 
     private static TelemetrySample Sample(double t, bool ground, bool motion) => new TelemetrySample

@@ -59,7 +59,7 @@ try {
     $wrongVersion = [Version]::new($currentVersion.Major, $currentVersion.Minor, $currentVersion.Build + 1)
     $wrongVersionText = "$($wrongVersion.Major).$($wrongVersion.Minor).$($wrongVersion.Build)"
 
-    function Assert-Rejected([string]$Name, [string]$Manifest) {
+    function Assert-Rejected([string]$Name, [string]$Manifest, [string]$ExpectedMessage) {
         $candidatePath = Join-Path $testRoot ($Name + ".txt")
         [IO.File]::WriteAllBytes($candidatePath, [Text.UTF8Encoding]::new($false).GetBytes($Manifest))
         $rejected = $false
@@ -71,6 +71,7 @@ try {
                 -ExpectedVersion $currentVersion
         }
         catch {
+            if ($_.Exception.Message -notlike $ExpectedMessage) { throw "Wrong rejection for ${Name}: $($_.Exception.Message)" }
             $rejected = $true
         }
         if (-not $rejected) {
@@ -78,14 +79,13 @@ try {
         }
     }
 
-    Assert-Rejected "format2" ($original.Replace("format=3", "format=2"))
-    Assert-Rejected "wrong-version" ($original.Replace("version=$currentVersionText", "version=$wrongVersionText"))
-    Assert-Rejected "wrong-package-hash" ($original -replace '(?m)^package-sha256=.*$', ('package-sha256=' + ('0' * 64)))
+    Assert-Rejected "format2" ($original.Replace("format=3", "format=2")) 'Update manifest must use the exact format-3 contract.'
+    Assert-Rejected "wrong-version" ($original.Replace("version=$currentVersionText", "version=$wrongVersionText")) 'Update manifest version * does not match required version *.'
+    Assert-Rejected "wrong-package-hash" ($original -replace '(?m)^package-sha256=.*$', ('package-sha256=' + ('0' * 64))) 'Application executable does not match the update manifest.'
 
     # The current package becomes the previous client on the next release. Its
-    # expanded runtime now includes official Google client DLLs, so the
-    # previous-client verifier must accept safe flat DLL additions before it
-    # reaches signature validation.
+    # expanded runtime must accept the explicit current dependency list before
+    # the previous-client verifier reaches signature validation.
     $previousVerifier = Join-Path $repositoryRoot "verify-previous-client-update.ps1"
     $dummySignaturePath = Join-Path $testRoot "invalid-signature.txt"
     [IO.File]::WriteAllText(

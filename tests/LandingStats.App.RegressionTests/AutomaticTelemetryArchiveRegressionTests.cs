@@ -42,8 +42,10 @@ internal static class AutomaticTelemetryArchiveRegressionTests
             Parallel.For(0, 8, _ => AutomaticTelemetryArchive.TryCreate(repository, candidate, DateTime.UtcNow, maximumQueuedFiles: 3));
             Require(Directory.GetFiles(root, "*_auto_raw.zip").Length == 3, "Concurrent persistence cannot overrun automatic file-count budget.");
             File.Move(first!, first!.Substring(0, first.Length - 4) + ".rejected-422.zip");
-            Require(AutomaticTelemetryArchive.TryCreate(repository, candidate, DateTime.UtcNow, maximumQueuedFiles: 3) == null,
-                "Quarantined automatic diagnostics count towards retention budget too.");
+            Require(AutomaticTelemetryArchive.TryCreate(repository, candidate, DateTime.UtcNow, maximumQueuedFiles: 3) != null,
+                "Rejected diagnostics do not permanently block new deliverable captures.");
+            Require(File.ReadAllBytes(first!.Substring(0, first.Length - 4) + ".rejected-422.zip").SequenceEqual(original),
+                "Rejected evidence remains byte-for-byte intact outside the active delivery queue.");
         }
         finally { Directory.Delete(root, true); }
     }

@@ -4,6 +4,7 @@ param(
     [switch]$LaunchOnHostedRunner
 )
 $ErrorActionPreference = 'Stop'
+if ([string]::IsNullOrWhiteSpace($CertificateThumbprint)) { throw 'A signing certificate thumbprint is required.' }
 $artifacts = [IO.Path]::GetFullPath($ArtifactsDirectory)
 $package = Join-Path $artifacts 'MSFS-Landing-Stats.exe'
 $updater = Join-Path $artifacts 'MSFS-Landing-Stats.Updater.exe'
@@ -31,7 +32,7 @@ $scratch = Join-Path ([IO.Path]::GetTempPath()) ('msfs-signed-build-' + [Guid]::
 New-Item -ItemType Directory -Path $scratch | Out-Null
 $archive = [IO.Compression.ZipArchive]::new($payload, [IO.Compression.ZipArchiveMode]::Read)
 try {
-    foreach ($name in @('MSFS-Landing-Stats.exe','LandingStats.Core.dll')) {
+    foreach ($name in @($archive.Entries.FullName | Where-Object { $_ -eq 'MSFS-Landing-Stats.exe' -or $_ -match '^LandingStats\..*\.(dll|exe)$' })) {
         $entry = $archive.GetEntry($name)
         if ($null -eq $entry) { throw "Signed runtime missing: $name" }
         $path = Join-Path $scratch $name
@@ -74,4 +75,4 @@ try {
         Remove-Item -LiteralPath $scratch -Recurse -Force
     }
 }
-Write-Host 'Outer launcher, embedded application, Core and updater signatures verified.'
+Write-Host 'Outer launcher, embedded application, all first-party payload binaries and updater signatures verified.'

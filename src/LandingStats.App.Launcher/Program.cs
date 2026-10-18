@@ -8,7 +8,9 @@ using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Windows.Forms;
+using LandingStats.App.Runtime;
 
 namespace LandingStats.App.Launcher;
 
@@ -18,14 +20,7 @@ internal static class Program
     private const string ChildExecutable = "MSFS-Landing-Stats.exe";
     private const string LauncherPathEnvironmentVariable = "MSFS_LANDING_STATS_LAUNCHER_PATH";
 
-    private static readonly string[] RequiredFiles =
-    {
-        ChildExecutable,
-        "MSFS-Landing-Stats.exe.config",
-        "LandingStats.Core.dll",
-        "Microsoft.FlightSimulator.SimConnect.dll",
-        "SimConnect.dll",
-    };
+    private static readonly string[] RequiredFiles = LandingStats.Packaging.RuntimePayload.AllowedFiles;
 
     private static readonly string[][] LegacyRuntimeFileSets =
     {
@@ -52,21 +47,40 @@ internal static class Program
                 return 0;
             }
 
-            var runtimeDirectory = PrepareRuntime(payload, bundledFiles);
-            var childArguments = args
-                .Where(argument => !string.Equals(argument, VerifyArgument, StringComparison.OrdinalIgnoreCase))
-                .Select(QuoteArgument);
-            var startInfo = new ProcessStartInfo
+            if (!GuardianInstance.TryAcquire(out var instance)) return 0;
+            using (instance!)
             {
-                FileName = Path.Combine(runtimeDirectory, ChildExecutable),
-                WorkingDirectory = Path.GetDirectoryName(Application.ExecutablePath) ?? Environment.CurrentDirectory,
-                Arguments = string.Join(" ", childArguments),
-                UseShellExecute = false,
-            };
-            startInfo.EnvironmentVariables[LauncherPathEnvironmentVariable] = Application.ExecutablePath;
-            if (Process.Start(startInfo) == null)
-            {
-                throw new InvalidOperationException("The application process could not be started.");
+                // Preserve simulator-owned launch policy through the external
+                // updater and its replacement launcher as well as App retries.
+                if (Array.IndexOf(args, "--simulator-autostart") >= 0)
+                    Environment.SetEnvironmentVariable("MSFS_LANDING_STATS_SIMULATOR_AUTOSTART", "1");
+                // An older/direct runtime has its own mutex but no guardian.
+                // Do not replace its extracted files or repeatedly spawn duplicates.
+                if (GuardianInstance.ApplicationAlreadyRunning()) return 0;
+                var runtimeDirectory = RuntimeDirectoryPath();
+                var session = Guid.NewGuid();
+                var launcher = Assembly.GetExecutingAssembly().Location;
+                var updates = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "MSFS Landing Stats", "Updates");
+                var supervisor = new GuardianSupervisor(generation =>
+                {
+                    // The previous process tree has exited before this factory
+                    // runs. Repair deleted/corrupted cached binaries from the
+                    // same embedded payload before admitting the next owner.
+                    PrepareRuntime(payload, bundledFiles);
+                    return new GuardianGeneration(session, generation,
+                        (request, token) => GuardianUpdater.PrepareAsync(request, launcher, updates, token));
+                });
+                instance!.StartActivation(() => supervisor.Current!.ActivateAsync(), () => supervisor.Current?.Health?.Ready == true);
+                supervisor.Changed += LogGuardian;
+                Microsoft.Win32.SessionEndingEventHandler ending = (_, _) => supervisor.Stop();
+                Microsoft.Win32.SystemEvents.SessionEnding += ending;
+                try
+                {
+                    supervisor.RunAsync(Path.Combine(runtimeDirectory, ChildExecutable), args,
+                        Path.GetDirectoryName(launcher) ?? Environment.CurrentDirectory,
+                        new Dictionary<string, string> { [LauncherPathEnvironmentVariable] = launcher }).GetAwaiter().GetResult();
+                }
+                finally { Microsoft.Win32.SystemEvents.SessionEnding -= ending; }
             }
 
             return 0;
@@ -87,17 +101,24 @@ internal static class Program
         }
     }
 
+    private static void LogGuardian(long generation, string state)
+    {
+        try
+        {
+            var directory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "MSFS Landing Stats", "Runtime");
+            Directory.CreateDirectory(directory); var path = Path.Combine(directory, "guardian.log");
+            if (File.Exists(path) && new FileInfo(path).Length >= 1024 * 1024)
+            { var previous = path + ".previous"; if (File.Exists(previous)) File.Delete(previous); File.Move(path, previous); }
+            File.AppendAllText(path, DateTime.UtcNow.ToString("o") + " generation=" + generation + " " + state + Environment.NewLine);
+        }
+        catch { /* Diagnostics cannot prevent ownership and recovery. */ }
+    }
+
     private static string PrepareRuntime(byte[] payload, IReadOnlyCollection<string> bundledFiles)
     {
-        var version = Assembly.GetExecutingAssembly().GetName().Version
-                      ?? throw new InvalidDataException("Bootstrap version is unavailable.");
-        var versionText = $"{version.Major}.{version.Minor}.{version.Build}";
-        var runtimeRoot = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "MSFS Landing Stats",
-            "Runtime",
-            "App");
-        var runtimeDirectory = Path.Combine(runtimeRoot, versionText);
+        var runtimeDirectory = RuntimeDirectoryPath();
+        var runtimeRoot = Path.GetDirectoryName(runtimeDirectory)!;
+        var versionText = Path.GetFileName(runtimeDirectory);
         var markerPath = Path.Combine(runtimeDirectory, ".bootstrap");
         var payloadIdentity = PayloadIdentity(payload);
         var mutexName = "Local\\MSFSLandingStatsBootstrap-" + versionText.Replace('.', '-');
@@ -121,11 +142,11 @@ internal static class Program
                     throw new TimeoutException("Timed out while preparing the application runtime.");
                 }
 
-                // The signed external updater replaces the private runtime in place. Once this
-                // bootstrap has created it, never restore the embedded version over an update.
+                // Reuse only the exact embedded payload; a new launcher repairs
+                // a missing or altered cache after the previous job has retired.
                 if (File.Exists(markerPath) &&
                     string.Equals(File.ReadAllText(markerPath).Trim(), payloadIdentity, StringComparison.Ordinal) &&
-                    RuntimeIsComplete(runtimeDirectory, bundledFiles))
+                    RuntimeMatchesPayload(runtimeDirectory, payload, bundledFiles))
                 {
                     CleanupOldRuntimeDirectories(runtimeRoot, runtimeDirectory);
                     CleanupLegacyRuntimeRoot(runtimeRoot);
@@ -137,7 +158,7 @@ internal static class Program
                 try
                 {
                     ExtractArchive(payload, stagingDirectory);
-                    if (!RuntimeIsComplete(stagingDirectory, bundledFiles))
+                    if (!RuntimeMatchesPayload(stagingDirectory, payload, bundledFiles))
                     {
                         throw new InvalidDataException("The application bundle is incomplete.");
                     }
@@ -175,9 +196,16 @@ internal static class Program
         }
     }
 
+    private static string RuntimeDirectoryPath()
+    {
+        var version = Assembly.GetExecutingAssembly().GetName().Version ?? throw new InvalidDataException("Bootstrap version is unavailable.");
+        return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "MSFS Landing Stats", "Runtime", "App",
+            $"{version.Major}.{version.Minor}.{version.Build}-guardian");
+    }
+
     private static byte[] ReadPayload()
     {
-        using (var executable = File.OpenRead(Application.ExecutablePath))
+        using (var executable = File.OpenRead(Assembly.GetExecutingAssembly().Location))
         using (var reader = new BinaryReader(executable, Encoding.UTF8, true))
         {
             var bounds = LandingStats.Packaging.BundlePayload.Locate(executable);
@@ -222,10 +250,7 @@ internal static class Program
         return seen.OrderBy(value => value, StringComparer.OrdinalIgnoreCase).ToArray();
     }
 
-    private static bool IsAllowedBundleFile(string name) =>
-        string.Equals(name, ChildExecutable, StringComparison.OrdinalIgnoreCase) ||
-        string.Equals(name, "MSFS-Landing-Stats.exe.config", StringComparison.OrdinalIgnoreCase) ||
-        string.Equals(Path.GetExtension(name), ".dll", StringComparison.OrdinalIgnoreCase);
+    private static bool IsAllowedBundleFile(string name) => LandingStats.Packaging.RuntimePayload.IsAllowed(name);
 
     private static void ExtractArchive(byte[] payload, string destinationDirectory)
     {
@@ -270,6 +295,27 @@ internal static class Program
         return string.Concat(sha256.ComputeHash(payload).Select(value => value.ToString("x2")));
     }
 
+    private static bool RuntimeMatchesPayload(string runtimeDirectory, byte[] payload, IReadOnlyCollection<string> bundledFiles)
+    {
+        if (!RuntimeIsComplete(runtimeDirectory, bundledFiles)) return false;
+        try
+        {
+            using var memory = new MemoryStream(payload, false);
+            using var archive = new ZipArchive(memory, ZipArchiveMode.Read, false);
+            using var sha = SHA256.Create();
+            foreach (var entry in archive.Entries)
+            {
+                using var actual = File.OpenRead(Path.Combine(runtimeDirectory, entry.Name));
+                if (actual.Length != entry.Length) return false;
+                using var expected = entry.Open();
+                if (!sha.ComputeHash(actual).SequenceEqual(sha.ComputeHash(expected))) return false;
+            }
+            return true;
+        }
+        catch (IOException) { return false; }
+        catch (UnauthorizedAccessException) { return false; }
+    }
+
     private static void CleanupOldRuntimeDirectories(string runtimeRoot, string currentRuntimeDirectory)
     {
         if (!Directory.Exists(runtimeRoot))
@@ -304,12 +350,13 @@ internal static class Program
                 if (!string.Equals(parent, resolvedRoot, StringComparison.OrdinalIgnoreCase) ||
                     string.Equals(resolvedCandidate, resolvedCurrent, StringComparison.OrdinalIgnoreCase) ||
                     (File.GetAttributes(resolvedCandidate) & FileAttributes.ReparsePoint) != 0 ||
-                    (!Version.TryParse(name, out _) && !IsLegacyHashRuntimeDirectory(resolvedCandidate, name)))
+                    (!Version.TryParse(name, out _) && !Version.TryParse(name.Replace("-guardian", ""), out _) &&
+                        !IsStalePreparation(resolvedCandidate, name) && !IsLegacyHashRuntimeDirectory(resolvedCandidate, name)))
                 {
                     continue;
                 }
 
-                Directory.Delete(resolvedCandidate, true);
+                CollectRuntimeDirectory(resolvedCandidate);
             }
             catch (IOException)
             {
@@ -363,7 +410,7 @@ internal static class Program
                     continue;
                 }
 
-                Directory.Delete(resolvedCandidate, true);
+                CollectRuntimeDirectory(resolvedCandidate);
             }
             catch (IOException)
             {
@@ -412,38 +459,33 @@ internal static class Program
         }
     }
 
-    private static string QuoteArgument(string argument)
+    private static bool IsStalePreparation(string directory, string name) =>
+        (name.StartsWith(".staging-", StringComparison.Ordinal) || name.StartsWith(".retired-", StringComparison.Ordinal)) &&
+        Directory.GetLastWriteTimeUtc(directory) < DateTime.UtcNow.AddDays(-1);
+
+    private static void CollectRuntimeDirectory(string directory)
     {
-        if (argument.Length != 0 && argument.IndexOfAny(new[] { ' ', '\t', '"' }) < 0)
+        // Probe every file before deleting any. Keeping handles without read
+        // sharing also excludes a loader racing the collection. Loaded images
+        // refuse this write/exclusive access, so their whole cache survives.
+        if (Directory.EnumerateDirectories(directory).Any()) return;
+        var held = new List<FileStream>();
+        var files = Directory.EnumerateFiles(directory).ToArray();
+        try
         {
-            return argument;
-        }
-
-        var result = new StringBuilder("\"");
-        var backslashes = 0;
-        foreach (var character in argument)
-        {
-            if (character == '\\')
+            foreach (var path in files)
             {
-                backslashes++;
-                continue;
+                if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0) return;
+                held.Add(new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.Delete));
             }
-
-            if (character == '"')
-            {
-                result.Append('\\', backslashes * 2 + 1);
-                result.Append('"');
-                backslashes = 0;
-                continue;
-            }
-
-            result.Append('\\', backslashes);
-            backslashes = 0;
-            result.Append(character);
+            // Windows cannot rename a directory while these child handles are
+            // open, even with delete sharing. Unlink only after every file was
+            // proven unused; holding all handles prevents a loader entering
+            // between the preflight and removal of the complete file set.
+            foreach (var path in files) File.Delete(path);
         }
-
-        result.Append('\\', backslashes * 2);
-        result.Append('"');
-        return result.ToString();
+        finally { foreach (var file in held) file.Dispose(); }
+        Directory.Delete(directory, false);
     }
+
 }

@@ -183,7 +183,7 @@ internal static class PhysicsContinuityRegressionTests
         Feed(recorder, Frame(10, false));
         for (var i = 0; i < 1000; i++) Feed(recorder, Frame(10, false, false));
         Feed(recorder, Frame(10, true));
-        typeof(SimConnectLandingRecorder).GetMethod("FlushRejectedContacts", PrivateInstance)!.Invoke(recorder, null);
+        RecorderTestAccess.Call(recorder, "FlushRejectedContacts", null);
         Assert(diagnostic != null && diagnostic.IsDiagnosticOnly, "rejected contact did not preserve a diagnostic-only capture");
         Assert(diagnostic!.RunwayFacilitiesTask.IsCompleted && diagnostic.RunwayFacilitiesTask.Result.Count == 0,
             "diagnostic-only capture waits for landing runway facilities");
@@ -192,7 +192,7 @@ internal static class PhysicsContinuityRegressionTests
             "recorder lost a physics boundary or retained every duplicate pause frame");
         Assert(TouchdownAnalysis.Analyze(TelemetryDeduplicator.Deduplicate(samples)).Count == 0,
             "recorder coalescing recreated a contact across a pause");
-        Assert(typeof(SimConnectLandingRecorder).GetField("_lastContactTime", PrivateInstance)!.GetValue(recorder) == null,
+        Assert(RecorderTestAccess.Get(recorder, "_lastContactTime") == null,
             "invalid contact restarted the recorder's post-contact timer");
     }
 
@@ -206,14 +206,14 @@ internal static class PhysicsContinuityRegressionTests
         Feed(recorder, Frame(10, false, false));
         Feed(recorder, Frame(11, true, false));
         Assert(started == 0, "inactive ground flicker announced a real landing episode");
-        typeof(SimConnectLandingRecorder).GetMethod("FlushRejectedContacts", PrivateInstance)!.Invoke(recorder, null);
+        RecorderTestAccess.Call(recorder, "FlushRejectedContacts", null);
         Assert(captures.Count == 0, "inactive ground flicker created an automatic capture without flight evidence");
     }
 
     private static void RawDebugStillReceivesNonMotionFrames()
     {
         using var recorder = new SimConnectLandingRecorder(IntPtr.Zero);
-        typeof(SimConnectLandingRecorder).GetField("_rawDebugEnabled", PrivateInstance)!.SetValue(recorder, true);
+        RecorderTestAccess.Set(recorder, "_rawDebugEnabled", true);
         var received = new List<TelemetrySample>();
         recorder.RawDebugSampleReceived += (_, args) => received.Add(args.Sample);
         var samples = new[] { Frame(10, false, false), Frame(11, true, false), Frame(12, true) };
@@ -226,9 +226,11 @@ internal static class PhysicsContinuityRegressionTests
         using var recorder = new SimConnectLandingRecorder(IntPtr.Zero);
         var previous = new[] { new RunwayFacility { AirportIdent = "TEST", PrimaryName = "09" } };
         var pending = new TaskCompletionSource<IReadOnlyList<RunwayFacility>>();
-        typeof(SimConnectLandingRecorder).GetField("_runwayEpisodeId", PrivateInstance)!.SetValue(recorder, 42L);
-        typeof(SimConnectLandingRecorder).GetField("_publishedRunways", PrivateInstance)!.SetValue(recorder, previous);
-        typeof(SimConnectLandingRecorder).GetField("_runwaySnapshotCompletion", PrivateInstance)!.SetValue(recorder, pending);
+        RecorderTestAccess.Set(recorder, "_runwayEpisodeId", 42L);
+        var sourceCache = (Dictionary<string, IReadOnlyList<RunwayFacility>>)RecorderTestAccess.Get(recorder.NativeSource, "_runways")!;
+        sourceCache["TEST"] = previous;
+        RecorderTestAccess.Set(recorder.NativeSource, "_runwayBatchKeys", new[] { "TEST" });
+        RecorderTestAccess.Set(recorder, "_runwaySnapshotCompletion", pending);
         LandingEpisodeEventArgs? diagnostic = null;
         recorder.EpisodeCompleted += (_, args) => diagnostic = args;
         var airborne = Frame(9, false);
@@ -236,10 +238,10 @@ internal static class PhysicsContinuityRegressionTests
         Feed(recorder, airborne);
         Feed(recorder, Frame(10, false, false));
         Feed(recorder, Frame(11, true, false));
-        typeof(SimConnectLandingRecorder).GetMethod("FlushRejectedContacts", PrivateInstance)!.Invoke(recorder, null);
+        RecorderTestAccess.Call(recorder, "FlushRejectedContacts", null);
         Assert(diagnostic != null && diagnostic.IsDiagnosticOnly && diagnostic.RunwayFacilitiesTask.IsCompleted &&
                diagnostic.RunwayFacilitiesTask.Result.Count == 0, "diagnostic capture inherited a real landing's runway task");
-        Assert(ReferenceEquals(recorder.GetRunwayFacilities(42), previous) && !pending.Task.IsCompleted,
+        Assert(recorder.GetRunwayFacilities(42).Count == 1 && recorder.GetRunwayFacilities(42)[0].AirportIdent == "TEST" && !pending.Task.IsCompleted,
             "rejected diagnostic capture reset or completed another landing's runway metadata");
     }
 
@@ -252,8 +254,8 @@ internal static class PhysicsContinuityRegressionTests
         var captures = new List<LandingEpisodeEventArgs>();
         recorder.EpisodeCompleted += (_, args) => captures.Add(args);
         foreach (var sample in samples) Feed(recorder, sample);
-        typeof(SimConnectLandingRecorder).GetMethod("CompleteEpisode", PrivateInstance)!.Invoke(recorder, new object[] { false });
-        typeof(SimConnectLandingRecorder).GetMethod("FlushRejectedContacts", PrivateInstance)!.Invoke(recorder, null);
+        RecorderTestAccess.Call(recorder, "CompleteEpisode", new object[] { false });
+        RecorderTestAccess.Call(recorder, "FlushRejectedContacts", null);
         var recorderContacts = captures.SelectMany(capture => capture.DecisionJournal!.Snapshot().Entries)
             .Where(entry => entry.Code == "contact_flag_transition").Select(entry => entry.TimeSeconds).ToArray();
         Assert(recorderContacts.SequenceEqual(expectedTimes), name + ": recorder accepted the wrong contact sequence");
@@ -276,7 +278,7 @@ internal static class PhysicsContinuityRegressionTests
         Assert(contacts.Select(contact => contact.SimulationTimeSeconds).SequenceEqual(expectedTimes), name + ": unexpected contacts");
 
     private static void Feed(SimConnectLandingRecorder recorder, TelemetrySample sample) =>
-        typeof(SimConnectLandingRecorder).GetMethod("ProcessSample", PrivateInstance)!.Invoke(recorder, new object[] { sample });
+        RecorderTestAccess.Call(recorder, "ProcessSample", new object[] { sample });
 
     private static void Assert(bool condition, string message)
     {

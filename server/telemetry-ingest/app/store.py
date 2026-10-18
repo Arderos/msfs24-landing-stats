@@ -2,6 +2,7 @@ import os
 import json
 import re
 import sqlite3
+import stat
 import threading
 import time
 from contextlib import contextmanager
@@ -18,6 +19,8 @@ class Store:
         self.database_path = root / "telemetry.sqlite3"
         self._schema_lock = threading.Lock()
         self._rejection_lock = threading.Lock()
+        self._maintenance_lock = threading.Lock()
+        self._next_orphan_sweep = 0.0
 
     def initialize(self) -> None:
         self.root.mkdir(parents=True, exist_ok=True)
@@ -74,6 +77,10 @@ class Store:
                     window_start INTEGER NOT NULL,
                     bytes INTEGER NOT NULL,
                     PRIMARY KEY (scope, subject, window_start)
+                );
+                CREATE TABLE IF NOT EXISTS capture_deletions (
+                    relative_path TEXT PRIMARY KEY,
+                    scheduled_at INTEGER NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS idx_nonces_seen_at ON nonces(seen_at);
                 CREATE INDEX IF NOT EXISTS idx_rate_limits_window_start ON rate_limits(window_start);
@@ -203,6 +210,12 @@ class Store:
             self._prune_installations(connection, now - idle_retention_days * 86400)
             count = connection.execute("SELECT COUNT(*) FROM installations").fetchone()[0]
             if count >= maximum_installations:
+                # Unused registrations must not reserve the complete registry
+                # for thirty days. Keep recent enrollment/upload races intact;
+                # captured identities and revoked keys are never evicted here.
+                self._prune_installations(connection, now - 3600, use_created_at=True)
+                count = connection.execute("SELECT COUNT(*) FROM installations").fetchone()[0]
+            if count >= maximum_installations:
                 raise InstallationRegistryFullError("installation registry capacity is active")
 
             connection.execute(
@@ -220,12 +233,14 @@ class Store:
             return self._prune_installations(connection, cutoff)
 
     @staticmethod
-    def _prune_installations(connection: sqlite3.Connection, cutoff: int) -> int:
-        stale = """
+    def _prune_installations(connection: sqlite3.Connection, cutoff: int, *, use_created_at: bool = False) -> int:
+        # Under pressure, refresh requests cannot retain unused slots forever.
+        age_column = "created_at" if use_created_at else "last_seen"
+        stale = f"""
             SELECT install_id
             FROM installations
             WHERE status='active'
-              AND last_seen < ?
+              AND {age_column} < ?
               AND NOT EXISTS (
                   SELECT 1 FROM captures WHERE captures.install_id=installations.install_id
               )
@@ -241,10 +256,35 @@ class Store:
         return cursor.rowcount
 
     def capture_by_hash(self, sha256: str):
-        with self.connect() as connection:
-            return connection.execute(
-                "SELECT capture_id FROM captures WHERE sha256=?", (sha256,)
-            ).fetchone()
+        with self.connect(immediate=True) as connection:
+            return self._retained_capture(connection, sha256)
+
+    def _retained_capture(self, connection, sha256: str):
+        row = connection.execute(
+            "SELECT capture_id, relative_path, compressed_bytes FROM captures WHERE sha256=?", (sha256,)
+        ).fetchone()
+        if row is None:
+            return None
+        path = self.root / row["relative_path"]
+        try:
+            info = path.stat()
+            if (not path.is_symlink() and path.resolve().is_relative_to((self.root / "accepted").resolve())
+                    and stat.S_ISREG(info.st_mode) and info.st_size == row["compressed_bytes"]):
+                return row
+        except FileNotFoundError:
+            pass
+        # Reconcile older interrupted prune runs (and missing/damaged files) so
+        # the same digest can be accepted again rather than falsely receipted.
+        self._schedule_deletion(connection, row["relative_path"])
+        connection.execute("DELETE FROM captures WHERE capture_id=?", (row["capture_id"],))
+        return None
+
+    @staticmethod
+    def _schedule_deletion(connection, relative_path: str):
+        connection.execute(
+            "INSERT OR IGNORE INTO capture_deletions(relative_path, scheduled_at) VALUES(?, ?)",
+            (relative_path, int(time.time())),
+        )
 
     def quarantine_capture(self, incoming: Path, sha256: str, metadata: dict,
                            retention_days: int, quota_bytes: int) -> str:
@@ -300,8 +340,10 @@ class Store:
             ).fetchone()
             return int(row["total"])
 
-    def add_capture(self, values: tuple) -> None:
-        with self.connect() as connection:
+    def add_capture(self, values: tuple) -> str:
+        """Return the winning capture identity, including concurrent duplicates."""
+        with self.connect(immediate=True) as connection:
+            self._retained_capture(connection, values[2])
             connection.execute(
                 """
                 INSERT INTO captures(
@@ -309,6 +351,7 @@ class Store:
                     compressed_bytes, uncompressed_bytes, sample_count,
                     schema_version, app_version, capture_kind, source_address_hash)
                 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(sha256) DO NOTHING
                 """,
                 values,
             )
@@ -316,20 +359,62 @@ class Store:
                 "UPDATE installations SET last_seen=? WHERE install_id=?",
                 (int(time.time()), values[1]),
             )
+            return connection.execute("SELECT capture_id FROM captures WHERE sha256=?", (values[2],)).fetchone()["capture_id"]
+
+    def prune_orphans(self, grace_seconds: int = 86400) -> int:
+        # Only old, server-generated archives qualify. The grace interval keeps
+        # an in-flight rename/INSERT pair out of reconciliation.
+        cutoff = time.time() - grace_seconds
+        with self.connect(immediate=True) as connection:
+            known = {row["relative_path"] for row in connection.execute("SELECT relative_path FROM captures")}
+            removed = 0
+            for path in (self.root / "accepted").glob("*/*/*/*.zip"):
+                if not re.fullmatch(r"[a-f0-9]{32}\.zip", path.name) or path.is_symlink():
+                    continue
+                if path.relative_to(self.root).as_posix() in known:
+                    continue
+                try:
+                    if path.stat().st_mtime < cutoff:
+                        path.unlink(missing_ok=True)
+                        removed += 1
+                except FileNotFoundError:
+                    pass
+            return removed
+
+    def installation_count(self) -> int:
+        with self.connect() as connection:
+            return connection.execute("SELECT COUNT(*) FROM installations").fetchone()[0]
 
     def prune(self, retention_days: int, quota_bytes: int) -> None:
-        cutoff = int(time.time()) - retention_days * 86400
+        # A crash followed by an immediate restart leaves fresh orphan files
+        # inside the grace interval. Revisit them on later accepted uploads.
+        with self._maintenance_lock:
+            if time.monotonic() >= self._next_orphan_sweep:
+                self.prune_orphans()
+                self._next_orphan_sweep = time.monotonic() + 3600
+            cutoff = int(time.time()) - retention_days * 86400
+            with self.connect(immediate=True) as connection:
+                rows = connection.execute(
+                    "SELECT capture_id, relative_path, compressed_bytes, received_at FROM captures ORDER BY received_at"
+                ).fetchall()
+                total = sum(row["compressed_bytes"] for row in rows)
+                for row in rows:
+                    if row["received_at"] >= cutoff and total <= quota_bytes:
+                        continue
+                    self._schedule_deletion(connection, row["relative_path"])
+                    connection.execute("DELETE FROM captures WHERE capture_id=?", (row["capture_id"],))
+                    total -= row["compressed_bytes"]
+            # First durably withdraw receipts and journal every deletion. An
+            # unlink or later DB failure can only leave retryable garbage, never
+            # a rollback-restored receipt for a file we already deleted.
+            self._finish_capture_deletions()
+
+    def _finish_capture_deletions(self) -> None:
         with self.connect() as connection:
-            rows = connection.execute(
-                "SELECT capture_id, relative_path, compressed_bytes, received_at FROM captures ORDER BY received_at"
-            ).fetchall()
-            total = sum(row["compressed_bytes"] for row in rows)
-            for row in rows:
-                if row["received_at"] >= cutoff and total <= quota_bytes:
-                    continue
-                candidate = (self.root / row["relative_path"]).resolve()
-                accepted_root = (self.root / "accepted").resolve()
-                if candidate.is_relative_to(accepted_root) and candidate.is_file():
-                    candidate.unlink()
-                connection.execute("DELETE FROM captures WHERE capture_id=?", (row["capture_id"],))
-                total -= row["compressed_bytes"]
+            pending = connection.execute("SELECT relative_path FROM capture_deletions").fetchall()
+        for row in pending:
+            path = self.root / row["relative_path"]
+            if (not path.is_symlink() and path.resolve().is_relative_to((self.root / "accepted").resolve())):
+                path.unlink(missing_ok=True)
+            with self.connect(immediate=True) as connection:
+                connection.execute("DELETE FROM capture_deletions WHERE relative_path=?", (row["relative_path"],))

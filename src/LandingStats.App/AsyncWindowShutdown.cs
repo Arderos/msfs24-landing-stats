@@ -36,7 +36,7 @@ internal sealed class AsyncWindowShutdown
         // Even an idle application must leave the first Closing event before
         // requesting its final Close. This also lets the placeholder render.
         await Task.Yield();
-        await drain();
-        CanClose = true;
+        try { await drain(); }
+        finally { CanClose = true; }
     }
 }
