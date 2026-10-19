@@ -2,6 +2,12 @@
 
 All notable changes to MSFS Landing Stats are documented in this file.
 
+## [Unreleased]
+
+### Fixed
+
+- Reduce stutter when rotating the 3D landing view or seeking through a recording by reusing rendered mini-chart curves.
+
 ## [0.9.5] - 2026-10-18
 
 ### Added

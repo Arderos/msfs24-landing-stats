@@ -74,6 +74,19 @@ internal static class ReplayOverlayRegressionTests
         Require(track!.TrySample(0, out var pose), "Overlay fixture contact pose.");
         metrics.Update(0, pose);
         drawings = Draw(metrics);
+        var curveImages = drawings.OfType<ImageDrawing>().Distinct().ToArray();
+        Require(curveImages.Length == 6, "Each complete mini-chart curve is rasterized once, including its future portion.");
+        foreach (var image in curveImages)
+        {
+            var bitmap = (BitmapSource)image.ImageSource;
+            var pixels = new byte[bitmap.PixelWidth * bitmap.PixelHeight * 4];
+            bitmap.CopyPixels(pixels, bitmap.PixelWidth * 4, 0);
+            var card = ReplayMetricsOverlay.Card(Array.IndexOf(curveImages, image));
+            var gapX = card.X + 10 + (.65 + .2) / 1.4 * 144;
+            var column = (int)((gapX - image.Rect.Left) * bitmap.DpiX / 96);
+            Require(Enumerable.Range(0, bitmap.PixelHeight).All(y => pixels[(y * bitmap.PixelWidth + column) * 4 + 3] == 0),
+                "Rasterized curves preserve the transparent telemetry gap without bridging it.");
+        }
         var text = Text(drawings);
         Require(text.Contains((3.5).ToString("+0.0;-0.0;0.0", CultureInfo.CurrentCulture)) &&
                 text.Contains((1.25).ToString("0.00", CultureInfo.CurrentCulture)) && text.Contains("123") && text.Contains("-321 fpm") &&
@@ -81,12 +94,23 @@ internal static class ReplayOverlayRegressionTests
             "Numeric mini-chart readouts use recorded pose values and the active culture.");
         metrics.Update(.65, null);
         drawings = Draw(metrics);
+        Require(drawings.OfType<ImageDrawing>().Distinct().SequenceEqual(curveImages),
+            "Seeking changes cursor/readouts while reusing the rasterized curves.");
         Require(Text(drawings).Count(c => c == '—') == 6, "Each metric clears its current numeric value inside a telemetry gap.");
         Require(((Geometry?[])Get(metrics, "_paths")).Select((path, i) => ReferenceEquals(path, paths[i])).All(value => value),
             "Playback updates reuse chart geometry, including gap frames.");
+        var setDpi = typeof(VisualTreeHelper).GetMethod("SetRootDpi", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic)!;
+        setDpi.Invoke(null, new object[] { metrics, new DpiScale(1.5, 1.5) }); metrics.InvalidateVisual();
+        var highDpiImages = Draw(metrics).OfType<ImageDrawing>().Distinct().ToArray();
+        Require(highDpiImages.Length == 6 && highDpiImages.All(image => ((BitmapSource)image.ImageSource).DpiX == 144) &&
+                !highDpiImages.Any(curveImages.Contains), "Moving to 150% DPI regenerates sharp curves at native pixel resolution.");
+        setDpi.Invoke(null, new object[] { metrics, new DpiScale(1, 1) }); metrics.InvalidateVisual();
         metrics.SetTrack(track); metrics.Update(0, pose);
         Require(Text(Draw(metrics)).Count(c => c == '—') == 1 && ((Geometry?[])Get(metrics, "_paths"))[2] == null,
             "Missing runway direction leaves yaw unavailable, not a heading or fabricated zero.");
+        Require(Draw(metrics).OfType<ImageDrawing>().Distinct().Count() == 5 &&
+                !Draw(metrics).OfType<ImageDrawing>().Any(curveImages.Contains),
+            "Changing the track replaces cached curves and removes an unavailable yaw curve.");
         var wrap = Record(); wrap.Series.RemoveAll(p => p.TimeSeconds > -.1);
         wrap.Series[0].HeadingTrueDegrees = 359; wrap.Series[1].HeadingTrueDegrees = 1;
         Require(LandingReplayTrack.TryCreate(wrap, out var wrapTrack) && wrapTrack!.TrySample(-.15, out _), "Yaw wrap fixture.");

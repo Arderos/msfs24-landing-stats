@@ -4,6 +4,7 @@ using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
+using System.Windows.Media.Imaging;
 using LandingStats.App.Models;
 using LandingStats.App.Settings;
 
@@ -78,6 +79,8 @@ internal sealed class ReplayMetricsOverlay : ReplayOverlayElement
     private readonly Brush[] _colors = { ReplayOverlayStyle.Orange, ReplayOverlayStyle.Blue, ReplayOverlayStyle.Purple,
         ReplayOverlayStyle.Amber, ReplayOverlayStyle.Cyan, ReplayOverlayStyle.Green };
     private readonly Geometry?[] _paths = new Geometry?[6];
+    private readonly ImageDrawing?[] _chartImages = new ImageDrawing?[6];
+    private DpiScale? _chartDpi;
     private readonly double[] _minimum = new double[6];
     private readonly double[] _maximum = new double[6];
     private double? _runwayHeading;
@@ -89,6 +92,7 @@ internal sealed class ReplayMetricsOverlay : ReplayOverlayElement
     internal void SetTrack(LandingReplayTrack? track, double? runwayHeading = null)
     {
         _track = track; _runwayHeading = runwayHeading;
+        _chartDpi = null;
         for (var i = 0; i < _values.Length; i++)
         {
             _paths[i] = null;
@@ -135,6 +139,7 @@ internal sealed class ReplayMetricsOverlay : ReplayOverlayElement
     }
     protected override void OnRender(DrawingContext dc)
     {
+        PrepareChartImages();
         DrawBackground(dc, ReplayOverlayStyle.L("Pitch"), background =>
         {
             for (var i = 0; i < _values.Length; i++)
@@ -150,7 +155,7 @@ internal sealed class ReplayMetricsOverlay : ReplayOverlayElement
                     ReplayOverlayStyle.Text(this, background, i == 5 ? "1" : "0", plot.Left, baseline - 10, ReplayOverlayStyle.Muted, 8);
                 }
                 background.PushOpacity(.25);
-                background.DrawGeometry(null, ReplayOverlayStyle.Pen(_colors[i], 1.3), _paths[i]); background.Pop();
+                background.DrawDrawing(_chartImages[i]); background.Pop();
             }
         });
         for (var i = 0; i < _values.Length; i++)
@@ -164,10 +169,43 @@ internal sealed class ReplayMetricsOverlay : ReplayOverlayElement
             var cursor = ChartPoint(i, _time, 0).X;
             var clip = new RectangleGeometry(new Rect(plot.Left, plot.Top, ReplayOverlayStyle.Clamp(cursor - plot.Left, 0, plot.Width), plot.Height));
             clip.Freeze(); dc.PushClip(clip);
-            dc.DrawGeometry(null, ReplayOverlayStyle.Pen(color, 1.3), _paths[i]); dc.Pop();
+            dc.DrawDrawing(_chartImages[i]); dc.Pop();
             dc.DrawLine(ReplayOverlayStyle.Pen(ReplayOverlayStyle.Line, 1), new Point(cursor, plot.Top), new Point(cursor, plot.Bottom));
             if (LandingReplayTrack.Finite(value)) dc.DrawEllipse(color, null, ChartPoint(i, _time, value), 2.6, 2.6);
         }
+    }
+
+    private void PrepareChartImages()
+    {
+        var dpi = VisualTreeHelper.GetDpi(this);
+        if (_chartDpi.HasValue && _chartDpi.Value.Equals(dpi)) return;
+        // Frozen geometry still gets widened and rasterized by WPF on every
+        // scene frame. Rasterize the unchanged curves once at the display DPI;
+        // playback only changes their clip, cursor and numeric readouts.
+        for (var i = 0; i < _paths.Length; i++)
+        {
+            _chartImages[i] = null;
+            if (_paths[i] == null) continue;
+            var pen = ReplayOverlayStyle.Pen(_colors[i], 1.3);
+            var bounds = _paths[i]!.GetRenderBounds(pen);
+            if (bounds.IsEmpty) continue;
+            var left = Math.Floor(bounds.Left * dpi.DpiScaleX);
+            var top = Math.Floor(bounds.Top * dpi.DpiScaleY);
+            var width = Math.Max(1, (int)(Math.Ceiling(bounds.Right * dpi.DpiScaleX) - left));
+            var height = Math.Max(1, (int)(Math.Ceiling(bounds.Bottom * dpi.DpiScaleY) - top));
+            var rect = new Rect(left / dpi.DpiScaleX, top / dpi.DpiScaleY, width / dpi.DpiScaleX, height / dpi.DpiScaleY);
+            var visual = new DrawingVisual();
+            using (var drawing = visual.RenderOpen())
+            {
+                drawing.PushTransform(new TranslateTransform(-rect.X, -rect.Y));
+                drawing.DrawGeometry(null, pen, _paths[i]);
+            }
+            var bitmap = new RenderTargetBitmap(width, height, dpi.PixelsPerInchX, dpi.PixelsPerInchY, PixelFormats.Pbgra32);
+            bitmap.Render(visual); bitmap.Freeze();
+            var image = new ImageDrawing(bitmap, rect); image.Freeze(); _chartImages[i] = image;
+        }
+        _chartDpi = dpi;
+        InvalidateBackground();
     }
 
 }

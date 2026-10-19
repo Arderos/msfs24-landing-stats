@@ -143,3 +143,20 @@ and exact tool/aircraft versions for:
 P11 still requires final resource/flight/update/rollback acceptance and removal
 of the remaining legacy production-only compatibility entry points after their
 test coverage is migrated. LS-001 remains closed best effort and is outside this work.
+
+## Controlled normal-replay comparison, 2026-10-19
+
+The user performed one manual Fenix A320 landing with a bounce, then replayed it
+using FlightEcho 3.0.1.184 and SkyDolly 0.19.2. Retained Core version
+`0.9.5+6f6eff789e0bc4811974f1c6e406940702184436` reproduced the saved diagnostics:
+live 0/2857 external frames, FlightEcho 3127/3137, SkyDolly 2996/3004. Both replay
+phases had all three freeze flags, fresh available observations, slew zero, and
+movement; the initial observation-pair delay was 0.224/0.147 seconds. SDK replay
+state remained unknown. All six saved contacts retained exact source evidence.
+
+This supersedes the earlier statement that no controlled replay comparison has
+been performed. It does not close the remaining pause/seek/stop, replay-to-live,
+manual-control/formation, external-flight-model and lifecycle matrix. Acceptance
+still uses the old kinematic filter and saved both replays as ordinary contacts;
+no production filtering policy was changed in this investigation. Full evidence:
+[controlled replay validation](ls008-controlled-replay-validation-2026-10-19.md).

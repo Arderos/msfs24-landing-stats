@@ -3,9 +3,19 @@
 ## Backlog
 
 - Keep discovered unresolved issues and deferred improvements in `BACKLOG.md`.
+- Write every new or updated entry in plain Russian, briefly and in language
+  understandable without reading the code. Use a short card, not pages of text
+  or a running investigation diary.
+- Every entry must clearly state: **Defect** (what fails and under which
+  conditions), **Impact** (the concrete consequence for the user or operation),
+  and **Priority** (P0-P3 with a short reason). If impact is not established,
+  say so explicitly; do not present a hypothesis as an observed failure.
+- Keep status and verification criteria brief. Put detailed technical analysis,
+  logs, capture IDs, hashes, measurements, and investigation history in linked
+  reports or artifacts rather than expanding the backlog entry.
 - Before adding an issue, check for an existing entry and update it rather than
-  creating a duplicate. Preserve reproduction data, distinguish confirmed causes
-  from hypotheses, and include verification criteria.
+  creating a duplicate. Preserve reproduction data in the linked evidence,
+  distinguish confirmed causes from hypotheses, and include verification criteria.
 - A backlog entry is not authorization to implement, deploy, or release a change.
 - When resolved, record verification and the published version without deleting
   the issue's history.
