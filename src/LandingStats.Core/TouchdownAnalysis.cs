@@ -211,6 +211,13 @@ public static class TouchdownAnalysis
         for (var index = 0; index < candidates.Count; index++)
         {
             var candidate = candidates[index];
+            if (options?.RequirePreContactHistory == true && !HasPreContactHistory(samples, candidate))
+            {
+                journal?.Record(TimeOf(samples[candidate.ContactIndex]), "analysis", "insufficient_live_history",
+                    "Live capture does not cover the pre-contact fit window: require 325 ms of continuous airborne history and five finite fit samples before the final 75 ms.",
+                    new Dictionary<string, double> { ["contact_number"] = candidate.ContactNumber });
+                continue;
+            }
             var exclusiveEndTime = double.PositiveInfinity;
             if (index + 1 < candidates.Count && candidates[index + 1].EpisodeNumber == candidate.EpisodeNumber)
             {
@@ -572,6 +579,34 @@ public static class TouchdownAnalysis
         return estimates.Count % 2 == 0
             ? (estimates[middle - 1] + estimates[middle]) / 2.0
             : estimates[middle];
+    }
+
+    private static bool HasPreContactHistory(IReadOnlyList<TelemetrySample> samples, TelemetryContactCandidate candidate)
+    {
+        var contact = samples[candidate.ContactIndex];
+        var contactTime = TimeOf(contact);
+        var nextTime = contactTime;
+        var firstTime = double.NaN;
+        var fitFirst = double.NaN;
+        var fitLast = double.NaN;
+        var count = 0;
+        for (var i = candidate.PreviousAirborneIndex; i >= 0; i--)
+        {
+            var sample = samples[i];
+            var time = TimeOf(sample);
+            if (!sample.MotionSimulation || sample.OnGround || sample.FlightSegment != contact.FlightSegment ||
+                !IsFinite(time) || time >= nextTime || nextTime - time > .15 ||
+                !IsFinite(sample.VelocityWorldYFps) || !IsFinite(sample.PlaneAltitudeFeet) ||
+                !IsFinite(sample.GroundAltitudeFeet) || !IsFinite(sample.PitchDegrees) || !IsFinite(sample.BankDegrees)) break;
+            firstTime = time; nextTime = time;
+            if (time <= contactTime - .075 && time >= contactTime - .325 - 1e-9)
+            {
+                if (count == 0) fitLast = time;
+                fitFirst = time; count++;
+            }
+            if (contactTime - time >= .325 - 1e-9) break;
+        }
+        return IsFinite(firstTime) && contactTime - firstTime >= .325 - 1e-9 && count >= 5 && fitLast - fitFirst >= MinimumAirborneFitSeconds - 1e-9;
     }
 
     private static double EstimateInertialVerticalFpm(

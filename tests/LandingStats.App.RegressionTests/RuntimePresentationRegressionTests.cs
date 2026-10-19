@@ -258,14 +258,26 @@ internal static class RuntimePresentationRegressionTests
             var pendingEpisode = Guid.NewGuid();
             foreach (var failed in new[] { false, true })
             foreach (var source in new[] { status, new RecorderStatusEventArgs(RecorderState.Recording, "Recorder.ContactRollout"),
+                new RecorderStatusEventArgs(RecorderState.Connected, "Recorder.ReplayActive"),
+                new RecorderStatusEventArgs(RecorderState.Connected, "Recorder.ReplayChecking"),
                 new RecorderStatusEventArgs(RecorderState.Waiting, "Recorder.WaitingRetry") })
             {
                 var snapshot = new RuntimePresentationSnapshot(8, source, false, pendingEpisode, 3, false, new[] { final },
                     Array.Empty<SupervisionSnapshot>(), Guid.Empty, null, analysisPending: true, analysisFailed: failed);
                 var applying = Task.Run(() => apply(snapshot, CancellationToken.None)); Pump(() => applying.IsCompleted); applying.GetAwaiter().GetResult();
-                Check(Get<string>(window, "_connectionStatusKey") == (source.State == RecorderState.Connected
+                var replayStatus = source.MessageKey == "Recorder.ReplayActive" || source.MessageKey == "Recorder.ReplayChecking";
+                Check(Get<string>(window, "_connectionStatusKey") == (source.State == RecorderState.Connected && !replayStatus
                     ? failed ? "Recorder.AnalysisIncomplete" : "Recorder.AnalyzingLanding" : source.MessageKey),
                     "Pending/failed analysis was invisible or overrode current recording/disconnection status.");
+                if (replayStatus)
+                {
+                    Check(Get<System.Windows.Controls.Grid>(window, "ReplayUnsupportedOverlay").Visibility == Visibility.Collapsed,
+                        "Live replay status opened a blocking overlay.");
+                    var savedDuringReplay = new RuntimePresentationSnapshot(8, source, false, episode, 3, false, new[] { final },
+                        Array.Empty<SupervisionSnapshot>(), Guid.Empty, null);
+                    applying = Task.Run(() => apply(savedDuringReplay, CancellationToken.None)); Pump(() => applying.IsCompleted); applying.GetAwaiter().GetResult();
+                    Check(Get<string>(window, "_connectionStatusKey") == source.MessageKey, "Saved landing replaced ongoing replay status.");
+                }
             }
             Present(9, pendingEpisode, final, Notice(pendingEpisode, newlySaved, true));
             DrainDetails();

@@ -160,6 +160,7 @@
     <Compile Remove="Telemetry/LandingEpisodeCoordinator.Checkpoint.cs" />
     <Compile Remove="Telemetry/LandingEpisodeCoordinator.cs" />
     <Compile Remove="Telemetry/LandingEpisodeCoordinator.Lifecycle.cs" />
+    <Compile Remove="Telemetry/LandingEpisodeCoordinator.Replay.cs" />
     <Compile Remove="Telemetry/OptionalMetadataText.cs" />
     <Compile Remove="Telemetry/PreRollBuffer.cs" />
     <Compile Remove="Telemetry/RejectedContactBatcher.cs" />

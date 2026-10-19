@@ -16,6 +16,7 @@ internal sealed partial class LandingEpisodeCoordinator
             var maximum = Math.Max(_lastKinematicFrame?.Sequence ?? 0, _lastActiveSdkFrame?.Sequence ?? 0);
             foreach (var sample in _preRoll) maximum = Math.Max(maximum, sample.Sequence);
             if (_episodeSamples != null) foreach (var sample in _episodeSamples) maximum = Math.Max(maximum, sample.Sequence);
+            foreach (var sample in _pendingReplayFrames) maximum = Math.Max(maximum, sample.Sequence);
             return Math.Max(maximum, _rejectedContactBatcher.MaximumRetainedSequence);
         }
     }
@@ -24,7 +25,7 @@ internal sealed partial class LandingEpisodeCoordinator
     internal byte[] CaptureCheckpoint()
     {
         using var stream = new MemoryStream(); using var writer = new BinaryWriter(stream);
-        writer.Write(0x3243454c); writer.Write(_captureSessionId.ToByteArray()); writer.Write(_stopped);
+        writer.Write(0x3343454c); writer.Write(_captureSessionId.ToByteArray()); writer.Write(_stopped);
         writer.Write(_nextEpisodeId); writer.Write(_activeEpisodeId); writer.Write(_activePersistentId.ToByteArray());
         writer.Write(_episodeSamples != null); if (_episodeSamples != null) RuntimeCheckpointCodec.WriteSamples(writer, _episodeSamples);
         RuntimeCheckpointCodec.WriteJournal(writer, _episodeDecisionJournal);
@@ -42,6 +43,11 @@ internal sealed partial class LandingEpisodeCoordinator
         writer.Write(_multiplePausedFrames); writer.Write(_pausedClockOffset); RuntimeCheckpointCodec.WriteSample(writer, _lastActiveSdkFrame);
         writer.Write(_flightSegment); RuntimeCheckpointCodec.WriteJournal(writer, _pendingLifecycleJournal);
         writer.Write(_axisElevatorResetHostSeconds);
+        writer.Write(_externalReplayActive); writer.Write(_resumeCaptureBelowGate);
+        writer.Write(_lastReplayEvidence != null);
+        if (_lastReplayEvidence != null) Core.ReplaySourceEvidenceCodec.Write(writer, _lastReplayEvidence);
+        RuntimeCheckpointCodec.WriteSamples(writer, _pendingReplayFrames, PreRollMaximumSamples);
+        writer.Write(_pendingReplayCoalesced);
         return stream.ToArray();
     }
     internal static LandingEpisodeCoordinator RestoreCheckpoint(byte[] bytes, IEpisodeFacilityPort facilities, Func<double> hostSeconds,
@@ -57,7 +63,7 @@ internal sealed partial class LandingEpisodeCoordinator
         if (bytes == null || bytes.Length > 192 * 1024 * 1024) throw new InvalidDataException("Coordinator checkpoint exceeds its bound.");
         using var stream = new MemoryStream(bytes, false); using var reader = new BinaryReader(stream);
         var version = reader.ReadInt32();
-        if (version != 0x3143454c && version != 0x3243454c) throw new InvalidDataException("Unsupported coordinator checkpoint.");
+        if (version != 0x3143454c && version != 0x3243454c && version != 0x3343454c) throw new InvalidDataException("Unsupported coordinator checkpoint.");
         var capture = new Guid(RuntimeCheckpointCodec.ReadBytes(reader, 16));
         if (capture == Guid.Empty) throw new InvalidDataException("Coordinator checkpoint has no capture session.");
         var value = new LandingEpisodeCoordinator(facilities, hostSeconds, controlSources, utcNow, capture)
@@ -88,6 +94,21 @@ internal sealed partial class LandingEpisodeCoordinator
         value._pausedClockOffset = reader.ReadDouble(); value._lastActiveSdkFrame = RuntimeCheckpointCodec.ReadSample(reader); value._flightSegment = reader.ReadInt64();
         value._pendingLifecycleJournal = RuntimeCheckpointCodec.ReadJournal(reader) ?? throw new InvalidDataException("Missing lifecycle journal.");
         if (version >= 0x3243454c) value._axisElevatorResetHostSeconds = reader.ReadDouble();
+        if (version >= 0x3343454c)
+        {
+            value._externalReplayActive = RuntimeCheckpointCodec.ReadBoolean(reader);
+            value._resumeCaptureBelowGate = RuntimeCheckpointCodec.ReadBoolean(reader);
+            if (RuntimeCheckpointCodec.ReadBoolean(reader))
+            {
+                value._lastReplayEvidence = Core.ReplaySourceEvidenceCodec.Read(reader);
+                value._replaySourceAssessor.Observe(value._lastReplayEvidence);
+            }
+            value._pendingReplayFrames.AddRange(RuntimeCheckpointCodec.ReadSamples(reader, PreRollMaximumSamples));
+            value._pendingReplayCoalesced = RuntimeCheckpointCodec.ReadCount(reader, int.MaxValue);
+            if (value._replayActive != (value._externalReplayActive || (value._flightBlock & FlightBlock.Replay) != 0) ||
+                (value._replayActive && value._pendingReplayFrames.Count != 0))
+                throw new InvalidDataException("Invalid replay capture checkpoint state.");
+        }
         if (double.IsInfinity(value._axisElevatorResetHostSeconds) || value._axisElevatorResetHostSeconds < 0)
             throw new InvalidDataException("Invalid simulator control reset boundary.");
         if (stream.Position != stream.Length || value._nextEpisodeId < 0 || value._activeEpisodeId < 0 || value._activeEpisodeId > value._nextEpisodeId || value._flightSegment < 0 ||

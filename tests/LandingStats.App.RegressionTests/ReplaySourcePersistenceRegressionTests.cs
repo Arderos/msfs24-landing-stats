@@ -85,8 +85,10 @@ internal static class ReplaySourcePersistenceRegressionTests
         }
         RecordingRuntimeEffects Feed(RuntimePayload payload) => Apply(JournalRecordKind.SourceMessage,
             RuntimeWire.Encode(new RuntimeEnvelope(worker, payload is WorkerHello ? 0 : connection, ++sequence, 1000 + (order + 1) * 100, payload)));
+        // Source joining is independent of capture policy. Frozen observations
+        // can now be held before RAW while the next USER reply proves movement.
         TelemetrySample Frame() => Feed(new TelemetryFrameMessage(new TelemetrySample { Sequence = order, SimulationTimeSeconds = order,
-            MotionSimulation = true, OnGround = true })).RawCapture.OfType<RawDebugSampleEventArgs>().Single().Sample;
+            MotionSimulation = true, OnGround = true })).SourceSample ?? throw new InvalidOperationException("Joined source frame missing.");
         Feed(new WorkerHello("fixture", new string('a', 64), 1, clock.Id, 1000)); Feed(new LifecycleMessage(SourceLifecycle.Connected));
         Apply(JournalRecordKind.RuntimeCommand, new RecordingCommand(RecordingCommandKind.RawCapture, true).Encode());
         Check(Frame().SourceEvidence!.Observation.FreezeMask == -1, "New connection fabricated initial flags.");

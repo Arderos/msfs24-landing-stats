@@ -10,6 +10,20 @@ namespace LandingStats.Core;
 /// </summary>
 public static class ReplayTelemetryDetector
 {
+    /// <summary>Recording policy also suppresses externally driven USER pose.
+    /// This does not rename external control as authoritative SDK replay.</summary>
+    public static bool HasReplaySourceEvidence(IReadOnlyList<TelemetrySample> samples)
+    {
+        if (samples == null) return false;
+        var assessor = new ReplaySourceAssessor();
+        foreach (var sample in samples)
+        {
+            var kind = assessor.Observe(sample?.SourceEvidence).Kind;
+            if (kind == ReplaySourceKind.ConfirmedSdkReplay || kind == ReplaySourceKind.ExternallyDrivenPose) return true;
+        }
+        return false;
+    }
+
     private const double EvidenceWindowSeconds = 15.0;
     private const double EndBeforeContactSeconds = 0.50;
     private const double MinimumPairDurationSeconds = 0.50;

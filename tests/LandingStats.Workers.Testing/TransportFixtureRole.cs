@@ -50,11 +50,21 @@ internal sealed class TransportFixtureRole : IWorkerRole
                 if (mode == "source-flood" && !context.Transport.TryPublish(new TelemetryFrameMessage(new TelemetrySample
                         { Sequence = progress, SimulationTimeSeconds = progress / 40.0, MotionSimulation = true }), 1, Stopwatch.GetTimestamp()))
                     throw new IOException("Fixture source output overflow.");
-                if (mode == "landing" && progress <= 220 && !context.Transport.TryPublish(new TelemetryFrameMessage(new TelemetrySample
-                    { Sequence = progress, SimulationTimeSeconds = progress / 10.0, SimulationDeltaSeconds = .1, MotionSimulation = true,
-                        OnGround = progress >= 20, AboveGroundLevelFeet = progress < 20 ? 100 : 0, VelocityWorldYFps = progress < 20 ? -3 : 0,
-                        LatitudeDegrees = 42, LongitudeDegrees = 23, GForce = 1 }), 1, Stopwatch.GetTimestamp()))
-                    throw new IOException("Fixture source output overflow.");
+                if (mode == "landing" && progress <= 220)
+                {
+                    // Keep the same 22-second accelerated flight, with enough
+                    // actual frames for the live pre-contact fitting window.
+                    for (var frame = 1; frame <= 5; frame++)
+                    {
+                        var time = ((progress - 1) * 5 + frame) / 50.0;
+                        var grounded = time >= 2;
+                        if (!context.Transport.TryPublish(new TelemetryFrameMessage(new TelemetrySample
+                            { Sequence = (progress - 1) * 5 + frame, SimulationTimeSeconds = time, SimulationDeltaSeconds = .02, MotionSimulation = true,
+                                OnGround = grounded, AboveGroundLevelFeet = grounded ? 0 : 100, VelocityWorldYFps = grounded ? 0 : -3,
+                                LatitudeDegrees = 42, LongitudeDegrees = 23, GForce = 1 }), 1, Stopwatch.GetTimestamp()))
+                            throw new IOException("Fixture source output overflow.");
+                    }
+                }
             }
             if (!context.Transport.TryPublish(new ComponentHealthMessage(ComponentPhase.Running, DependencyWait.Idle,
                     progress, progress, mode != "owner-stall" ? Stopwatch.GetTimestamp() : initial, 0, 0, Guid.Empty), 0, Stopwatch.GetTimestamp()))

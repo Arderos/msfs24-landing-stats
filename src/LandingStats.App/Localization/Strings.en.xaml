@@ -246,7 +246,8 @@
     <system:String x:Key="Recorder.SetupFailedFormat">Telemetry setup failed: {0}</system:String>
     <system:String x:Key="Recorder.SimConnectErrorFormat">SimConnect error {0} · send {1} · index {2}{3}</system:String>
     <system:String x:Key="Recorder.GoAround">Go-around — waiting for 500 ft AGL</system:String>
-    <system:String x:Key="Recorder.ReplayActive">Replay active — landing capture disabled</system:String>
+    <system:String x:Key="Recorder.ReplayActive">Replay detected — not recording</system:String>
+    <system:String x:Key="Recorder.ReplayChecking">Checking replay state — recording paused</system:String>
     <system:String x:Key="Recorder.ReplayIgnored">Replay telemetry detected — landing not saved</system:String>
     <system:String x:Key="Recorder.LateStart">Late start — contact capture in progress</system:String>
     <system:String x:Key="Recorder.ModeChangeFailedFormat">Telemetry mode change failed: {0}</system:String>

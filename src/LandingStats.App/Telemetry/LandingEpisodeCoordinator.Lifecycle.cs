@@ -109,15 +109,18 @@ internal sealed partial class LandingEpisodeCoordinator
             case SimulatorFlowEvent.RTC_START: BeginFlightBlock(FlightBlock.Rtc, "rtc_started"); break;
             case SimulatorFlowEvent.RTC_END: EndFlightBlock(FlightBlock.Rtc, "rtc_finished"); break;
             case SimulatorFlowEvent.REPLAY_START:
+                ClearPendingReplayFrames();
                 BeginFlightBlock(FlightBlock.Replay, "replay_started");
                 _replayActive = true;
+                _resumeCaptureBelowGate = false;
                 _armed = false;
                 SetStatus(RecorderState.Connected, "Recorder.ReplayActive");
                 break;
             case SimulatorFlowEvent.REPLAY_END:
                 EndFlightBlock(FlightBlock.Replay, "replay_finished");
-                _replayActive = false;
-                SetStatus(RecorderState.Connected, "Recorder.ConnectedGate");
+                _replayActive = _externalReplayActive;
+                _resumeCaptureBelowGate = !_replayActive;
+                PublishCaptureStatus();
                 break;
             case SimulatorFlowEvent.BACK_TO_MAIN_MENU:
             case SimulatorFlowEvent.FLIGHT_END:
@@ -134,6 +137,7 @@ internal sealed partial class LandingEpisodeCoordinator
     private void BeginFlightBlock(FlightBlock block, string reason)
     {
         if ((_flightBlock & block) != 0) return;
+        ClearPendingReplayFrames();
         _cancelledFlightBlocks &= ~block;
         EndFlightSegment(reason);
         if (block == FlightBlock.Ended)
@@ -142,7 +146,10 @@ internal sealed partial class LandingEpisodeCoordinator
             // repositioning. Their completion callbacks need not follow an abort.
             _cancelledFlightBlocks |= _flightBlock & ~FlightBlock.Ended;
             _flightBlock = block;
+            _externalReplayActive = false;
             _replayActive = false;
+            _resumeCaptureBelowGate = false;
+            ResetReplayObservation();
         }
         else
         {
@@ -193,6 +200,8 @@ internal sealed partial class LandingEpisodeCoordinator
 
     internal void ResetSdkLifecycle()
     {
+        ResetReplayObservation();
+        _replayActive = _externalReplayActive;
         _sdkStateKnown = false;
         _sdkSimRunning = null;
         _sdkPauseFlags = -1;
@@ -211,7 +220,7 @@ internal sealed partial class LandingEpisodeCoordinator
         _sdkStateKnown = state.Known; _sdkSimRunning = state.Running < 0 ? (bool?)null : state.Running != 0;
         _sdkPauseFlags = state.Pause; _flightBlock = (FlightBlock)state.Blocks;
         _cancelledFlightBlocks = (FlightBlock)state.Cancelled;
-        _replayActive = (_flightBlock & FlightBlock.Replay) != 0;
+        _replayActive = _externalReplayActive || (_flightBlock & FlightBlock.Replay) != 0;
         _armed = !_replayActive;
         PublishCaptureStatus();
     }

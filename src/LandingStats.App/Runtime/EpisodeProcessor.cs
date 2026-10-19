@@ -25,7 +25,7 @@ internal sealed class EpisodeProcessor
             foreach (var rawSegment in TelemetryKinematicDiscontinuity.SplitPhysicalSegments(input.Episode.Samples))
             {
                 var segment = TelemetryDeduplicator.Deduplicate(TelemetryAnalysisFrames.Prepare(rawSegment));
-                if (segment.Count == 0 || ReplayTelemetryDetector.IsReplayLike(segment)) { snapshots.Add(null); continue; }
+                if (segment.Count == 0 || ReplayTelemetryDetector.HasReplaySourceEvidence(rawSegment) || ReplayTelemetryDetector.IsReplayLike(segment)) { snapshots.Add(null); continue; }
                 var resolution = await _flightModelGeometryResolver.ResolveAnalysisAsync(input.Episode.AircraftTitle, input.Episode.AircraftType,
                     input.Episode.AircraftModel, segment, journal).ConfigureAwait(false);
                 snapshots.Add(AnalysisGeometrySnapshot.Capture(segment, resolution.Options ?? new TouchdownAnalysisOptions(), resolution.Outcome));
@@ -75,12 +75,15 @@ internal sealed class EpisodeProcessor
                 rawSegment.Count == 0 ? 0 : rawSegment[0].Sequence, segmentOrdinal++);
             var segment = TelemetryDeduplicator.Deduplicate(TelemetryAnalysisFrames.Prepare(rawSegment, journal));
             if (segment.Count == 0) continue;
-            var replayLike = ReplayTelemetryDetector.IsReplayLike(segment);
-            RecordSourceObservations(rawSegment, journal, replayLike);
+            var sourceReplay = ReplayTelemetryDetector.HasReplaySourceEvidence(rawSegment);
+            var kinematicReplay = ReplayTelemetryDetector.IsReplayLike(segment);
+            var replayLike = sourceReplay || kinematicReplay;
+            RecordSourceObservations(rawSegment, journal, kinematicReplay);
             if (replayLike)
             {
                 journal.Record(TelemetryAnalysisFrames.TimeOf(segment[0]), "analysis", "replay_rejected",
-                    "Kinematic consistency check rejected this physical segment as replay-like; other segments remain independent.");
+                    sourceReplay ? "SDK replay or externally driven USER pose excludes this physical segment from landing analysis."
+                        : "Kinematic consistency check rejected this physical segment as replay-like; other segments remain independent.");
                 anyReplay = true;
                 continue;
             }
@@ -104,6 +107,7 @@ internal sealed class EpisodeProcessor
                 geometrySnapshot = AnalysisGeometrySnapshot.Capture(segment, analysisOptions, resolution.Outcome);
             }
             analysisOptions.DecisionJournal = journal;
+            analysisOptions.RequirePreContactHistory = rawSegment.Any(sample => sample.SourceEvidence != null);
             var touchdowns = TouchdownAnalysis.Analyze(segment, analysisOptions);
             var segmentIdentity = segmentId.ToString("N");
             foreach (var touchdown in touchdowns)
@@ -111,7 +115,7 @@ internal sealed class EpisodeProcessor
                 var aircraftType = eventArgs.AircraftType == "unknown" ? eventArgs.AircraftModel : eventArgs.AircraftType;
                 var record = LandingRecordFactory.Create(
                     touchdown, rawSegment, eventArgs.AircraftTitle, aircraftType,
-                    contactCount: touchdowns.Count(contact => contact.EpisodeNumber == touchdown.EpisodeNumber),
+                    contactCount: touchdowns.Where(contact => contact.EpisodeNumber == touchdown.EpisodeNumber).Max(contact => contact.ContactNumber),
                     timestampUtc: episodeTimestampUtc,
                     episodeEndSimulationTimeSeconds: TelemetryAnalysisFrames.TimeOf(segment[segment.Count - 1]));
                 record.RecordingEpisodeId = segmentIdentity + ":" + touchdown.EpisodeNumber.ToString(System.Globalization.CultureInfo.InvariantCulture);
@@ -157,6 +161,6 @@ internal sealed class EpisodeProcessor
                 counts["unavailable_observation"]++;
         }
         journal.Record(TelemetryAnalysisFrames.TimeOf(samples[samples.Count - 1]), "analysis.source", "source_observations",
-            "Observed USER source control and evidence availability. External pose control remains diagnostic until controlled live validation; existing landing acceptance is preserved.", counts);
+            "Observed USER source control and evidence availability; SDK replay and externally driven pose are excluded by recording policy.", counts);
     }
 }

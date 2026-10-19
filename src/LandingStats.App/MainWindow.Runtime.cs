@@ -112,6 +112,7 @@ public partial class MainWindow
         {
             if (_isClosed || _historyStopped) return;
             var status = snapshot.Status;
+            var captureSuppressed = status?.MessageKey == "Recorder.ReplayActive" || status?.MessageKey == "Recorder.ReplayChecking";
             var activeEpisodeChanged = _runtimeActiveEpisode != snapshot.ActiveEpisode;
             var sourceStatusChanged = status != null && (_runtimeStatus == null || status.State != _runtimeStatus.State || status.MessageKey != _runtimeStatus.MessageKey ||
                 !status.MessageArguments.SequenceEqual(_runtimeStatus.MessageArguments));
@@ -168,7 +169,7 @@ public partial class MainWindow
                 // Runtime triggers backup on committed report changes; a cloud
                 // refresh must not recursively schedule another identical sync.
             }
-            if (status?.State == RecorderState.Connected && snapshot.AnalysisPending)
+            if (status?.State == RecorderState.Connected && !captureSuppressed && snapshot.AnalysisPending)
             {
                 if (snapshot.AnalysisFailed) SetConnectionWarning("Recorder.AnalysisIncomplete");
                 else
@@ -178,7 +179,7 @@ public partial class MainWindow
                     SetConnectionStatus("Recorder.AnalyzingLanding");
                 }
             }
-            foreach (var episode in snapshot.Episodes.Where(value => status?.State == RecorderState.Connected && !snapshot.AnalysisPending &&
+            foreach (var episode in snapshot.Episodes.Where(value => status?.State == RecorderState.Connected && !captureSuppressed && !snapshot.AnalysisPending &&
                 !value.DiagnosticOnly && value.Episode == snapshot.ActiveEpisode &&
                 (activeEpisodeChanged || sourceStatusChanged || changed.Any(item => item.Episode == value.Episode))))
             {

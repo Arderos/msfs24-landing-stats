@@ -13,6 +13,7 @@
     <Compile Include="../LandingStats.App/Telemetry/LandingEpisodeCoordinator.Checkpoint.cs" Link="Telemetry/LandingEpisodeCoordinator.Checkpoint.cs" />
     <Compile Include="../LandingStats.App/Telemetry/LandingEpisodeCoordinator.cs" Link="Telemetry/LandingEpisodeCoordinator.cs" />
     <Compile Include="../LandingStats.App/Telemetry/LandingEpisodeCoordinator.Lifecycle.cs" Link="Telemetry/LandingEpisodeCoordinator.Lifecycle.cs" />
+    <Compile Include="../LandingStats.App/Telemetry/LandingEpisodeCoordinator.Replay.cs" Link="Telemetry/LandingEpisodeCoordinator.Replay.cs" />
     <Compile Include="../LandingStats.App/Telemetry/OptionalMetadataText.cs" Link="Telemetry/OptionalMetadataText.cs" />
     <Compile Include="../LandingStats.App/Telemetry/PreRollBuffer.cs" Link="Telemetry/PreRollBuffer.cs" />
     <Compile Include="../LandingStats.App/Telemetry/RejectedContactBatcher.cs" Link="Telemetry/RejectedContactBatcher.cs" />

@@ -105,7 +105,7 @@ internal sealed partial class LandingEpisodeCoordinator
             DiscardEpisode();
         }
         _facilities.CompleteWithoutRefresh("Source generation ended: " + reason);
-        _replayActive = false;
+        _replayActive = _externalReplayActive;
         ResetFlightDetection();
         ResetSdkLifecycle();
         _aircraftOnGround = null;
@@ -116,6 +116,7 @@ internal sealed partial class LandingEpisodeCoordinator
     {
         if (_stopped) return;
         _stopped = true;
+        ClearPendingReplayFrames();
         if (_lastContactTime.HasValue) CompleteEpisodeWithReason("recorder_disposed", false);
         else DiscardEpisode();
         _facilities.CompleteWithoutRefresh("Recorder stopped; settle this episode's remaining scenery lookup.");
@@ -132,6 +133,7 @@ internal sealed partial class LandingEpisodeCoordinator
         // Acquisition may be a process behind on its FullTelemetry command.
         // Only this owner knows whether the current capture is still active.
         if (_replayActive) SetStatus(RecorderState.Connected, "Recorder.ReplayActive");
+        else if (_pendingReplayFrames.Count != 0) SetStatus(RecorderState.Connected, "Recorder.ReplayChecking");
         else if (IsRecording) SetStatus(RecorderState.Recording, HasContact ? "Recorder.ContactRollout" : "Recorder.BelowGate");
         else SetStatus(RecorderState.Connected, "Recorder.ConnectedGate");
     }
@@ -174,6 +176,14 @@ internal sealed partial class LandingEpisodeCoordinator
     internal void ProcessSample(TelemetrySample sample)
     {
         if (_stopped) throw new ObjectDisposedException(nameof(LandingEpisodeCoordinator));
+        // Decide before clocks, contact witnesses, pre-roll or RAW can consume a
+        // replay frame. The first frozen observation waits for movement proof.
+        if (ProcessReplaySource(sample)) return;
+        ProcessLiveSample(sample);
+    }
+
+    private void ProcessLiveSample(TelemetrySample sample)
+    {
         // The native owner may still report its cached event after a boundary
         // inferred here. Its age identifies the original observation, so a new
         // event survives even if it arrives before a source could process a reset.
@@ -263,7 +273,10 @@ internal sealed partial class LandingEpisodeCoordinator
         var diagnosticContact = rejectedContact && HasActiveAirbornePreRoll(sample);
         var wasRecording = _episodeSamples != null;
         var startedNow = false;
-        if (_episodeSamples == null && _armed && (ShouldStartEpisode(sample) || isContact || diagnosticContact))
+        var resumedBelowGate = _resumeCaptureBelowGate && sample.MotionSimulation && !sample.OnGround &&
+            sample.AboveGroundLevelFeet >= -50 && sample.AboveGroundLevelFeet <= CaptureStartAglFeet;
+        if (sample.MotionSimulation && !sample.OnGround) _resumeCaptureBelowGate = false;
+        if (_episodeSamples == null && _armed && (resumedBelowGate || ShouldStartEpisode(sample) || isContact || diagnosticContact))
         {
             StartEpisode(sample, isContact, diagnosticContact);
             startedNow = true;

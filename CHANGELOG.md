@@ -4,6 +4,10 @@ All notable changes to MSFS Landing Stats are documented in this file.
 
 ## [Unreleased]
 
+### Improved
+
+- Recognize external replays, pause capture, and start fresh when pilot control returns. Keep the live rollout and skip captures without enough pre-touchdown data.
+
 ### Fixed
 
 - Reduce stutter when rotating the 3D landing view or seeking through a recording by reusing rendered mini-chart curves.

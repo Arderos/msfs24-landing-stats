@@ -141,6 +141,7 @@ internal static class Program
         if (_filter == null || "simulator native process".IndexOf(_filter, StringComparison.OrdinalIgnoreCase) >= 0)
             Console.WriteLine("SKIP simulator native process smoke: use --native-source-smoke explicitly; default lifecycle tests use fake SDK.");
         Run("recording runtime restores ordered sources and independently preserves contacts, scenery and joins", RecordingRuntimeStateRegressionTests.RunAll);
+        Run("replay recording gates external control, handoff, rollout and recovery", ReplayRecordingRegressionTests.RunAll);
         Run("recording owner recovers committed effects and avoids checkpoint deadlock under backpressure", RecordingRuntimeOwnerRegressionTests.RunAll);
         Run("application runtime independently recovers source and recording owners and drains durable effects", ApplicationRuntimeRegressionTests.RunAll);
         Run("landing runtime composes durable capture, independent presentation, upload and cold recovery", LandingRuntimeRegressionTests.RunAll);

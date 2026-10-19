@@ -246,7 +246,8 @@
     <system:String x:Key="Recorder.SetupFailedFormat">Ошибка настройки телеметрии: {0}</system:String>
     <system:String x:Key="Recorder.SimConnectErrorFormat">Ошибка SimConnect {0} · отправка {1} · индекс {2}{3}</system:String>
     <system:String x:Key="Recorder.GoAround">Уход на второй круг — ожидание снижения ниже 500 фт AGL</system:String>
-    <system:String x:Key="Recorder.ReplayActive">Идёт реплей — запись посадки отключена</system:String>
+    <system:String x:Key="Recorder.ReplayActive">Обнаружен реплей — запись отключена</system:String>
+    <system:String x:Key="Recorder.ReplayChecking">Проверка реплея — запись приостановлена</system:String>
     <system:String x:Key="Recorder.ReplayIgnored">Обнаружена телеметрия реплея — посадка не сохранена</system:String>
     <system:String x:Key="Recorder.LateStart">Поздний запуск — идёт запись касания</system:String>
     <system:String x:Key="Recorder.ModeChangeFailedFormat">Не удалось изменить режим телеметрии: {0}</system:String>

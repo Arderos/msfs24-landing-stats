@@ -83,8 +83,13 @@ internal static class RecordingRuntimeStateRegressionTests
             var blob = reader.ReadBytes(reader.ReadInt32());
             if (i == 3)
             {
-                Check(BitConverter.ToInt32(blob, 0) == 0x3243454c, "Update the explicit legacy coordinator fixture.");
-                blob = blob.Take(blob.Length - sizeof(double)).ToArray(); // v2 axis-event cutoff
+                Check(BitConverter.ToInt32(blob, 0) == 0x3343454c, "Update the explicit legacy coordinator fixture.");
+                // This fixture has one final observation, no pending frozen
+                // frames and no replay. Remove v3 state and the v2 axis cutoff.
+                const int replayTail = 3 + ReplaySourceEvidenceCodec.EvidenceSize + 2 * sizeof(int);
+                Check(blob[blob.Length - replayTail] == 0 && blob[blob.Length - replayTail + 1] == 0 &&
+                    blob[blob.Length - replayTail + 2] == 1 && blob.Skip(blob.Length - 8).All(b => b == 0), "Legacy fixture has unexpected replay state.");
+                blob = blob.Take(blob.Length - replayTail - sizeof(double)).ToArray();
                 Array.Copy(BitConverter.GetBytes(0x3143454c), blob, sizeof(int));
             }
             writer.Write(blob.Length); writer.Write(blob);

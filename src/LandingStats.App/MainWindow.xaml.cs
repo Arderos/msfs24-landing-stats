@@ -1537,11 +1537,9 @@ public partial class MainWindow : Window
     {
         SetConnectionStatus(eventArgs.MessageKey, eventArgs.MessageArguments);
         UpdateRecorderPresentation(eventArgs.State);
-        if (string.Equals(eventArgs.MessageKey, "Recorder.ReplayActive", StringComparison.Ordinal))
-        {
-            ShowReplayUnsupportedOverlay();
-        }
-        else if (_runtime?.Snapshot.Airborne == true)
+        // Live replay detection belongs in the persistent status bar; do not
+        // interrupt browsing an earlier landing with a modal overlay.
+        if (!string.Equals(eventArgs.MessageKey, "Recorder.ReplayActive", StringComparison.Ordinal))
         {
             HideReplayUnsupportedOverlay();
         }
