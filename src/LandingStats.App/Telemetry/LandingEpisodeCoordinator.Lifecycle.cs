@@ -109,17 +109,19 @@ internal sealed partial class LandingEpisodeCoordinator
             case SimulatorFlowEvent.RTC_START: BeginFlightBlock(FlightBlock.Rtc, "rtc_started"); break;
             case SimulatorFlowEvent.RTC_END: EndFlightBlock(FlightBlock.Rtc, "rtc_finished"); break;
             case SimulatorFlowEvent.REPLAY_START:
+                foreach (var pending in _pendingReplayFrames) ObserveReplayFrame(pending);
                 ClearPendingReplayFrames();
                 BeginFlightBlock(FlightBlock.Replay, "replay_started");
                 _replayActive = true;
                 _resumeCaptureBelowGate = false;
+                _requireReplayHandoffHistory = false;
                 _armed = false;
                 SetStatus(RecorderState.Connected, "Recorder.ReplayActive");
                 break;
             case SimulatorFlowEvent.REPLAY_END:
-                EndFlightBlock(FlightBlock.Replay, "replay_finished");
+                if (!EndFlightBlock(FlightBlock.Replay, "replay_finished")) break;
                 _replayActive = _externalReplayActive;
-                _resumeCaptureBelowGate = !_replayActive;
+                if (!_replayActive) ResumeAfterReplay();
                 PublishCaptureStatus();
                 break;
             case SimulatorFlowEvent.BACK_TO_MAIN_MENU:
@@ -137,6 +139,10 @@ internal sealed partial class LandingEpisodeCoordinator
     private void BeginFlightBlock(FlightBlock block, string reason)
     {
         if ((_flightBlock & block) != 0) return;
+        if (block != FlightBlock.Replay && block != FlightBlock.Rtc)
+        {
+            _replayApproachDiscarded = _requireReplayHandoffHistory = _resumeCaptureBelowGate = false;
+        }
         ClearPendingReplayFrames();
         _cancelledFlightBlocks &= ~block;
         EndFlightSegment(reason);
@@ -158,13 +164,13 @@ internal sealed partial class LandingEpisodeCoordinator
         }
     }
 
-    private void EndFlightBlock(FlightBlock block, string reason)
+    private bool EndFlightBlock(FlightBlock block, string reason)
     {
         if ((_flightBlock & block) == 0 && (_cancelledFlightBlocks & block) != 0)
         {
             _cancelledFlightBlocks &= ~block;
             RecordLifecycle("cancelled_flow_completed", "Ignore a late completion from a flow cancelled by leaving its flight.");
-            return;
+            return false;
         }
         // A completion received without its start still changes aircraft state.
         if ((_flightBlock & block) == 0) EndFlightSegment(reason);
@@ -173,6 +179,7 @@ internal sealed partial class LandingEpisodeCoordinator
         _armed = true;
         MetadataRequested?.Invoke(this, EventArgs.Empty);
         RecordLifecycle(reason, "State replacement completed; begin with fresh physical contact evidence.");
+        return true;
     }
 
     private void EndFlightSegment(string reason)

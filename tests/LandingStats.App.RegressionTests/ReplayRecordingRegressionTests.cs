@@ -20,6 +20,8 @@ internal static class ReplayRecordingRegressionTests
         RolloutStopsBeforeTheFirstFrozenFrame();
         HandoffStartsFreshBelowGateAndNormallyAboveIt();
         GroundHandoffCannotFabricateContact();
+        ReplayLandingDiscardsEveryBounceUntilANewApproach();
+        ReplayLandingDuringSourceGapIsNotForgotten();
         UncertainObservationsCannotReleaseReplay();
         StationaryFreezeDoesNotProveReplay();
         SdkReplayAndExternalControlRemainIndependent();
@@ -39,9 +41,10 @@ internal static class ReplayRecordingRegressionTests
         Check(!h.Coordinator.IsRecording && h.Captures.Count == 0, "Replay preserved the unfinished approach.");
         Check(h.Status == "Recorder.ReplayActive", "Replay warning is absent.");
         Check(h.Raw.All(x => x.SourceEvidence!.Observation.FreezeMask == 0), "Replay leaked into RAW.");
+        h.Feed(Frame(1.8, agl: 1100));
         h.Live(2, 2.8); h.Feed(Frame(2.82, true)); h.Live(2.84, 18, true);
         var saved = h.Captures.Single();
-        Check(saved.Samples.All(x => x.SimulationTimeSeconds >= 2), "Handoff borrowed the earlier approach or replay.");
+        Check(saved.Samples.All(x => x.SimulationTimeSeconds >= 1.8), "Handoff borrowed the earlier approach or replay.");
         Check(TouchdownAnalysis.Analyze(saved.Samples).Count == 1, "Handoff lost the real new contact.");
     }
 
@@ -99,8 +102,53 @@ internal static class ReplayRecordingRegressionTests
     {
         var h = new Harness(); h.Replay(0); h.Live(.5, 17, true);
         Check(h.Captures.Count == 0 && !h.Coordinator.IsRecording, "Replay-to-ground fabricated a landing.");
+        h.Feed(Frame(17.5, agl: 1100));
         h.Live(18, 18.8); h.Feed(Frame(18.82, true)); h.Live(18.84, 34, true);
         Check(h.Captures.Count == 1 && TouchdownAnalysis.Analyze(h.Captures[0].Samples).Count == 1, "A fresh live flight could not land after ground handoff.");
+
+        var paused = new Harness(); paused.Replay(0);
+        paused.Coordinator.SetSdkPauseFlags(1);
+        paused.Feed(Frame(.5, true));
+        paused.Coordinator.SetSdkPauseFlags(0);
+        paused.Live(.6, 1.4); paused.Feed(Frame(1.42, true)); paused.Live(1.44, 18, true);
+        Check(paused.Captures.Count == 0 && !paused.Coordinator.HasContact,
+            "Handoff paused on the ground turned its subsequent bounce into a new landing.");
+    }
+
+    private static void ReplayLandingDiscardsEveryBounceUntilANewApproach()
+    {
+        foreach (var sdk in new[] { false, true })
+        foreach (var releaseInAir in new[] { false, true })
+        {
+            var h = new Harness(); h.Live(0, .8);
+            if (sdk) h.Coordinator.HandleFlowEvent(SimulatorFlowEvent.REPLAY_START);
+            // A ground frame pending movement confirmation must also latch the drop.
+            h.Feed(Frame(1, true, sdk ? 0 : 7, sdk: sdk ? SdkReplayState.Active : SdkReplayState.Unknown));
+            h.Feed(Frame(1.25, mask: sdk ? 0 : 7, sdk: sdk ? SdkReplayState.Active : SdkReplayState.Unknown));
+            h.Restore(h.Coordinator.CaptureCheckpoint());
+            h.Coordinator.HandleFlowEvent(SimulatorFlowEvent.RTC_START);
+            h.Coordinator.HandleFlowEvent(SimulatorFlowEvent.RTC_END);
+            if (sdk) h.Coordinator.HandleFlowEvent(SimulatorFlowEvent.REPLAY_END);
+            h.Feed(Frame(1.5, !releaseInAir, sdk: sdk ? SdkReplayState.Inactive : SdkReplayState.Unknown));
+            h.Coordinator.SourceInterrupted("fixture_gap");
+            h.Coordinator.RestoreTransportLifecycle(new LandingStats.Runtime.Contracts.SimulatorLifecycleSnapshotMessage(
+                connected: true, known: true, running: 1, pause: 0));
+            h.Restore(h.Coordinator.CaptureCheckpoint());
+            for (var bounce = 0; bounce < 3; bounce++)
+            {
+                h.Live(2 + bounce, 2.6 + bounce);
+                h.Feed(Frame(2.62 + bounce, true));
+            }
+            h.Live(5, 21, true);
+            Check(h.Captures.Count == 0 && !h.Coordinator.IsRecording && !h.Coordinator.HasContact,
+                "A replay landing's live bounces survived handoff, checkpoint or source recovery.");
+            // Existing go-around boundary starts a genuinely new approach.
+            h.Feed(Frame(22, agl: 1100));
+            h.Live(23, 23.8); h.Feed(Frame(23.82, true)); h.Live(23.84, 40, true);
+            Check(h.Captures.Count == 1 && !h.Captures[0].IsDiagnosticOnly &&
+                TouchdownAnalysis.Analyze(h.Captures[0].Samples).Count == 1,
+                "Discarding a replay landing blocked the next approach.");
+        }
     }
 
     private static void UncertainObservationsCannotReleaseReplay()
@@ -116,6 +164,16 @@ internal static class ReplayRecordingRegressionTests
         h.Feed(missing);
         Check(h.Status == "Recorder.ReplayActive" && !h.Coordinator.IsRecording, "A source gap erased external replay.");
         h.Feed(Frame(1)); Check(h.Coordinator.IsRecording, "Fresh released source did not restore capture.");
+    }
+
+    private static void ReplayLandingDuringSourceGapIsNotForgotten()
+    {
+        var h = new Harness(); h.Replay(0);
+        var ground = Frame(.5, true); ground.SourceEvidence = null;
+        h.Feed(ground); h.Restore(h.Coordinator.CaptureCheckpoint());
+        h.Live(.6, 1.4); h.Feed(Frame(1.42, true)); h.Live(1.44, 18, true);
+        Check(h.Captures.Count == 0 && !h.Coordinator.HasContact,
+            "Ground reached during an active replay's source-evidence gap was forgotten.");
     }
 
     private static void StationaryFreezeDoesNotProveReplay()
@@ -166,14 +224,42 @@ internal static class ReplayRecordingRegressionTests
 
     private static void InsufficientLiveHistoryIsNotScored()
     {
-        var options = new TouchdownAnalysisOptions { RequirePreContactHistory = true, DecisionJournal = new TelemetryDecisionJournal() };
-        var shortCapture = new[] { Frame(0), Frame(.02, true), Frame(.04, true) };
-        Check(TouchdownAnalysis.Analyze(shortCapture, options).Count == 0, "Two-frame live handoff was scored.");
-        Check(options.DecisionJournal.Snapshot().Entries.Any(x => x.Code == "insufficient_live_history"), "Short capture rejection has no reason.");
-        var enough = Enumerable.Range(0, 41).Select(i => Frame(i * .02)).Concat(new[] { Frame(.82, true), Frame(.84, true) }).ToArray();
-        Check(TouchdownAnalysis.Analyze(enough, options).Count == 1, "Sufficient airborne history required a full 15-second rollout.");
-        Check(TouchdownAnalysis.Analyze(shortCapture).Count == 1, "Historical best-effort behavior changed.");
+        var shortHandoff = new Harness(); shortHandoff.Replay(0);
+        shortHandoff.Feed(Frame(.5)); shortHandoff.Restore(shortHandoff.Coordinator.CaptureCheckpoint());
+        shortHandoff.Feed(Frame(.52, true)); shortHandoff.Live(.54, .7, true);
+        shortHandoff.Live(.72, 1.5); shortHandoff.Feed(Frame(1.52, true)); shortHandoff.Live(1.54, 18, true);
+        var rejected = shortHandoff.Captures.Single();
+        Check(rejected.IsDiagnosticOnly && !shortHandoff.Coordinator.HasContact,
+            "Short replay handoff or its later bounce was scored.");
+        Check(rejected.DecisionJournal!.Snapshot().Entries.Any(x => x.Code == "insufficient_live_history"),
+            "Short handoff rejection has no reason.");
+
+        foreach (var handoff in new[] { false, true })
+        {
+            var h = new Harness();
+            if (handoff) h.Replay(0);
+            h.Live(.5, handoff ? 1.3 : .5); h.Feed(Frame(handoff ? 1.32 : .52, true));
+            h.Restore(h.Coordinator.CaptureCheckpoint()); // Do not reapply history after the first accepted contact.
+            h.Live(1.4, 1.5); h.Feed(Frame(1.52, true)); h.Live(1.54, 18, true);
+            var capture = h.Captures.Single();
+            Check(!capture.IsDiagnosticOnly && TouchdownAnalysis.Analyze(capture.Samples).Count == 2,
+                "Ordinary first contact or short live bounce incorrectly required replay handoff history.");
+            Check(!capture.DecisionJournal!.Snapshot().Entries.Any(x => x.Code == "insufficient_live_history"),
+                "An ordinary contact was checked for handoff history.");
+        }
         Check(ReplayTelemetryDetector.HasReplaySourceEvidence(new[] { Frame(0, mask: 7), Frame(.25, mask: 7) }), "Offline replay source guard missed moving freeze.");
+        foreach (var end in new[] { .8, .84 }) // 300 ms rejects, 340 ms passes; same 50 Hz input.
+        {
+            var h = new Harness(); h.Replay(0); h.Live(.5, end - .02);
+            h.Feed(Frame(end, true)); h.Live(end + .02, end + 16, true);
+            Check(h.Captures.Single().IsDiagnosticOnly == (end < .825),
+                "The first live contact no longer respects the unchanged 325 ms threshold.");
+        }
+        var sparse = new Harness(); sparse.Replay(0);
+        foreach (var time in new[] { .5, .6, .7, .8, .9 }) sparse.Feed(Frame(time));
+        sparse.Feed(Frame(1, true));
+        Check(sparse.Captures.Single().IsDiagnosticOnly,
+            "Long elapsed history replaced the required number of finite fit measurements.");
     }
 
     private static void ControlledInputs()
@@ -193,8 +279,7 @@ internal static class ReplayRecordingRegressionTests
                 copy.SourceEvidence = frame.SourceEvidence; copy.ControllerCatalog = frame.ControllerCatalog; h.Feed(copy);
             }
             h.Coordinator.Stop();
-            var contacts = h.Captures.Where(x => !x.IsDiagnosticOnly).SelectMany(x => TouchdownAnalysis.Analyze(x.Samples,
-                new TouchdownAnalysisOptions { RequirePreContactHistory = true })).ToArray();
+            var contacts = h.Captures.Where(x => !x.IsDiagnosticOnly).SelectMany(x => TouchdownAnalysis.Analyze(x.Samples)).ToArray();
             Check(contacts.Length == (i == 0 ? 2 : 0), "Controlled recording saved replay or lost the manual bounce.");
             Console.WriteLine("CONTROLLED " + identities[i] + " frames=" + input.Samples.Count + " contacts=" + contacts.Length);
         }
@@ -220,8 +305,8 @@ internal static class ReplayRecordingRegressionTests
             var shortCapture = new LandingEpisodeEventArgs(2, new[] { Frame(0), Frame(.02, true), Frame(.04, true) },
                 "MSFS", "Fixture", "jet", "model", Array.Empty<AirportFacility>(), Array.Empty<string>(), persistentId: Guid.NewGuid());
             var shortResult = processor.ProcessAsync(shortCapture, Array.Empty<AirportFacility>(), DateTime.UtcNow).GetAwaiter().GetResult();
-            Check(!shortResult.ReplayLike && shortResult.Records.Count == 0 && repository.LoadAll().Count == 0,
-                "Analysis persisted a modern capture without the minimum live fit history.");
+            Check(!shortResult.ReplayLike && shortResult.Records.Count == 1 && repository.LoadAll().Count == 1,
+                "Analysis rejected an ordinary modern contact using the replay handoff history gate.");
         }
         finally
         {

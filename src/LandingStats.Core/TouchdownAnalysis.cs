@@ -211,13 +211,6 @@ public static class TouchdownAnalysis
         for (var index = 0; index < candidates.Count; index++)
         {
             var candidate = candidates[index];
-            if (options?.RequirePreContactHistory == true && !HasPreContactHistory(samples, candidate))
-            {
-                journal?.Record(TimeOf(samples[candidate.ContactIndex]), "analysis", "insufficient_live_history",
-                    "Live capture does not cover the pre-contact fit window: require 325 ms of continuous airborne history and five finite fit samples before the final 75 ms.",
-                    new Dictionary<string, double> { ["contact_number"] = candidate.ContactNumber });
-                continue;
-            }
             var exclusiveEndTime = double.PositiveInfinity;
             if (index + 1 < candidates.Count && candidates[index + 1].EpisodeNumber == candidate.EpisodeNumber)
             {
@@ -581,16 +574,18 @@ public static class TouchdownAnalysis
             : estimates[middle];
     }
 
-    private static bool HasPreContactHistory(IReadOnlyList<TelemetrySample> samples, TelemetryContactCandidate candidate)
+    /// <summary>Checks the first live contact after replay handoff, using prepared active-time frames.</summary>
+    public static bool HasPreContactHistory(IReadOnlyList<TelemetrySample> samples, int contactIndex)
     {
-        var contact = samples[candidate.ContactIndex];
+        if (contactIndex < 1 || contactIndex >= samples.Count) return false;
+        var contact = samples[contactIndex];
         var contactTime = TimeOf(contact);
         var nextTime = contactTime;
         var firstTime = double.NaN;
         var fitFirst = double.NaN;
         var fitLast = double.NaN;
         var count = 0;
-        for (var i = candidate.PreviousAirborneIndex; i >= 0; i--)
+        for (var i = contactIndex - 1; i >= 0; i--)
         {
             var sample = samples[i];
             var time = TimeOf(sample);

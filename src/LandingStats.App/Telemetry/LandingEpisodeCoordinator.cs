@@ -212,6 +212,15 @@ internal sealed partial class LandingEpisodeCoordinator
             RawDebugSampleReceived?.Invoke(this, new RawDebugSampleEventArgs(sample));
         }
 
+        // Handoff may first be observed while paused on the ground. A later
+        // airborne bounce must not hide the fact that this landing is over.
+        if (_resumeCaptureBelowGate && sample.OnGround && sample.SimulatorState != TelemetrySimulatorState.Inactive)
+        {
+            _replayApproachDiscarded = true;
+            _resumeCaptureBelowGate = _requireReplayHandoffHistory = false;
+            RecordLifecycle("replay_landing_discarded", "The first live frame after replay is already grounded; discard the remaining approach, including bounces.");
+        }
+
         if (sample.SimulatorState == TelemetrySimulatorState.Paused ||
             sample.SimulatorState == TelemetrySimulatorState.Inactive)
         {
@@ -255,6 +264,22 @@ internal sealed partial class LandingEpisodeCoordinator
         }
         _lastKinematicFrame = sample.MotionSimulation ? sample.CopyForAnalysis() : null;
         _lastSimulationTime = sample.SimulationTimeSeconds;
+
+        if (_replayApproachDiscarded)
+        {
+            _resumeCaptureBelowGate = _requireReplayHandoffHistory = false;
+            if (!sample.MotionSimulation || sample.OnGround || !IsFinite(sample.AboveGroundLevelFeet) ||
+                sample.AboveGroundLevelFeet < GoAroundResetAglFeet)
+            {
+                _armed = false;
+                _preRoll.Clear();
+                _contactContinuity.Reset();
+                _previousOnGround = sample.OnGround;
+                return;
+            }
+            _replayApproachDiscarded = false;
+            RecordLifecycle("replay_approach_reset", "A new airborne approach above the go-around reset height may be recorded.");
+        }
         AddToPreRoll(sample);
 
         if (sample.MotionSimulation && !sample.OnGround)
@@ -289,6 +314,23 @@ internal sealed partial class LandingEpisodeCoordinator
 
         if (isContact)
         {
+            if (_requireReplayHandoffHistory)
+            {
+                _requireReplayHandoffHistory = false;
+                var history = TelemetryDeduplicator.Deduplicate(TelemetryAnalysisFrames.Prepare(_episodeSamples!));
+                if (!TouchdownAnalysis.HasPreContactHistory(history, history.Count - 1))
+                {
+                    _episodeDecisionJournal?.Record(sampleTime, "analysis", "insufficient_live_history",
+                        "First live contact after replay lacks 325 ms of continuous airborne history and five finite fit samples spanning 150 ms before the final 75 ms; discard this approach including bounces.",
+                        new Dictionary<string, double> { ["contact_number"] = 1 });
+                    CompleteEpisodeWithReason("replay_handoff_rejected", false);
+                    _replayApproachDiscarded = true;
+                    _armed = false;
+                    _contactContinuity.Reset();
+                    _previousOnGround = sample.OnGround;
+                    return;
+                }
+            }
             _lastContactTime = sampleTime;
             _episodeDecisionJournal?.Record(sampleTime, "recorder", "contact_flag_transition",
                 "Observed an airborne-to-ground flag transition; restart post-contact capture from this contact.",

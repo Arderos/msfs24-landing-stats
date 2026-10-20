@@ -107,7 +107,6 @@ internal sealed class EpisodeProcessor
                 geometrySnapshot = AnalysisGeometrySnapshot.Capture(segment, analysisOptions, resolution.Outcome);
             }
             analysisOptions.DecisionJournal = journal;
-            analysisOptions.RequirePreContactHistory = rawSegment.Any(sample => sample.SourceEvidence != null);
             var touchdowns = TouchdownAnalysis.Analyze(segment, analysisOptions);
             var segmentIdentity = segmentId.ToString("N");
             foreach (var touchdown in touchdowns)

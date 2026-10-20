@@ -25,7 +25,7 @@ internal sealed partial class LandingEpisodeCoordinator
     internal byte[] CaptureCheckpoint()
     {
         using var stream = new MemoryStream(); using var writer = new BinaryWriter(stream);
-        writer.Write(0x3343454c); writer.Write(_captureSessionId.ToByteArray()); writer.Write(_stopped);
+        writer.Write(0x3443454c); writer.Write(_captureSessionId.ToByteArray()); writer.Write(_stopped);
         writer.Write(_nextEpisodeId); writer.Write(_activeEpisodeId); writer.Write(_activePersistentId.ToByteArray());
         writer.Write(_episodeSamples != null); if (_episodeSamples != null) RuntimeCheckpointCodec.WriteSamples(writer, _episodeSamples);
         RuntimeCheckpointCodec.WriteJournal(writer, _episodeDecisionJournal);
@@ -48,6 +48,7 @@ internal sealed partial class LandingEpisodeCoordinator
         if (_lastReplayEvidence != null) Core.ReplaySourceEvidenceCodec.Write(writer, _lastReplayEvidence);
         RuntimeCheckpointCodec.WriteSamples(writer, _pendingReplayFrames, PreRollMaximumSamples);
         writer.Write(_pendingReplayCoalesced);
+        writer.Write(_replayApproachDiscarded); writer.Write(_requireReplayHandoffHistory);
         return stream.ToArray();
     }
     internal static LandingEpisodeCoordinator RestoreCheckpoint(byte[] bytes, IEpisodeFacilityPort facilities, Func<double> hostSeconds,
@@ -63,7 +64,7 @@ internal sealed partial class LandingEpisodeCoordinator
         if (bytes == null || bytes.Length > 192 * 1024 * 1024) throw new InvalidDataException("Coordinator checkpoint exceeds its bound.");
         using var stream = new MemoryStream(bytes, false); using var reader = new BinaryReader(stream);
         var version = reader.ReadInt32();
-        if (version != 0x3143454c && version != 0x3243454c && version != 0x3343454c) throw new InvalidDataException("Unsupported coordinator checkpoint.");
+        if (version != 0x3143454c && version != 0x3243454c && version != 0x3343454c && version != 0x3443454c) throw new InvalidDataException("Unsupported coordinator checkpoint.");
         var capture = new Guid(RuntimeCheckpointCodec.ReadBytes(reader, 16));
         if (capture == Guid.Empty) throw new InvalidDataException("Coordinator checkpoint has no capture session.");
         var value = new LandingEpisodeCoordinator(facilities, hostSeconds, controlSources, utcNow, capture)
@@ -108,6 +109,11 @@ internal sealed partial class LandingEpisodeCoordinator
             if (value._replayActive != (value._externalReplayActive || (value._flightBlock & FlightBlock.Replay) != 0) ||
                 (value._replayActive && value._pendingReplayFrames.Count != 0))
                 throw new InvalidDataException("Invalid replay capture checkpoint state.");
+        }
+        if (version >= 0x3443454c)
+        {
+            value._replayApproachDiscarded = RuntimeCheckpointCodec.ReadBoolean(reader);
+            value._requireReplayHandoffHistory = RuntimeCheckpointCodec.ReadBoolean(reader);
         }
         if (double.IsInfinity(value._axisElevatorResetHostSeconds) || value._axisElevatorResetHostSeconds < 0)
             throw new InvalidDataException("Invalid simulator control reset boundary.");

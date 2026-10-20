@@ -38,10 +38,6 @@ public sealed class TouchdownMainGearContactPoint
 /// </summary>
 public sealed class TouchdownAnalysisOptions
 {
-    /// <summary>Live source-aware capture must cover the pre-contact fit window.
-    /// Historical/offline callers retain their existing best-effort behavior.</summary>
-    public bool RequirePreContactHistory { get; set; }
-
     /// <summary>Geometry derivation revision. Archived snapshots explicitly retain their original revision.</summary>
     public TelemetryDatumCalibrationVersion DatumCalibrationVersion { get; set; } = TelemetryDatumCalibrationVersion.BankedRotation;
 

@@ -10,6 +10,8 @@ internal sealed partial class LandingEpisodeCoordinator
     private ReplaySourceEvidence? _lastReplayEvidence;
     private bool _externalReplayActive;
     private bool _resumeCaptureBelowGate;
+    private bool _replayApproachDiscarded;
+    private bool _requireReplayHandoffHistory;
     private readonly List<TelemetrySample> _pendingReplayFrames = new List<TelemetrySample>();
     private int _pendingReplayCoalesced;
 
@@ -26,16 +28,19 @@ internal sealed partial class LandingEpisodeCoordinator
 
         if ((_flightBlock & FlightBlock.Replay) != 0)
         {
+            ObserveReplayApproach(sample);
             ClearPendingReplayFrames();
             return true;
         }
         if (assessment.Kind == ReplaySourceKind.ExternallyDrivenPose)
         {
+            ObserveReplayApproach(sample);
             ClearPendingReplayFrames();
             if (!_externalReplayActive)
             {
                 _externalReplayActive = _replayActive = true;
                 _resumeCaptureBelowGate = false;
+                _requireReplayHandoffHistory = false;
                 // Pending frames have never entered the episode. Keep a real
                 // contact's available rollout; discard an unfinished approach.
                 EndFlightSegment("external_replay_started");
@@ -48,10 +53,14 @@ internal sealed partial class LandingEpisodeCoordinator
         {
             // A missing, old, partial or slewing observation is not evidence
             // that the replay ended. A fresh release of all three axes is.
-            if (!HasFreshReleasedSource(evidence)) return true;
+            if (!HasFreshReleasedSource(evidence))
+            {
+                ObserveReplayApproach(sample);
+                return true;
+            }
             _externalReplayActive = _replayActive = false;
             EndFlightSegment("external_replay_finished");
-            _resumeCaptureBelowGate = true;
+            ResumeAfterReplay();
             MetadataRequested?.Invoke(this, EventArgs.Empty);
             PublishCaptureStatus();
         }
@@ -87,6 +96,29 @@ internal sealed partial class LandingEpisodeCoordinator
             PublishCaptureStatus();
         }
         return false;
+    }
+
+    private void ObserveReplayApproach(TelemetrySample sample)
+    {
+        foreach (var pending in _pendingReplayFrames) ObserveReplayFrame(pending);
+        ObserveReplayFrame(sample);
+    }
+
+    private void ObserveReplayFrame(TelemetrySample frame)
+    {
+        if (frame.OnGround) _replayApproachDiscarded = true;
+        else if (frame.MotionSimulation && IsFinite(frame.AboveGroundLevelFeet) &&
+            frame.AboveGroundLevelFeet >= GoAroundResetAglFeet)
+            _replayApproachDiscarded = false;
+    }
+
+    private void ResumeAfterReplay()
+    {
+        _armed = !_replayApproachDiscarded;
+        _resumeCaptureBelowGate = !_replayApproachDiscarded;
+        _requireReplayHandoffHistory = !_replayApproachDiscarded;
+        if (_replayApproachDiscarded)
+            RecordLifecycle("replay_landing_discarded", "Replay already reached the ground; discard the remaining approach, including live rollout and bounces.");
     }
 
     private static bool HasFreshReleasedSource(ReplaySourceEvidence? evidence) => evidence != null &&
