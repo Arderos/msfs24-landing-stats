@@ -36,13 +36,14 @@ internal sealed class GuardianStatus
 }
 internal sealed class GuardianUpdateRequest
 {
-    public GuardianUpdateRequest(string executable, string target, string version, string readyEvent, string manifest, long size, string hash, long deadlineQpc = 0)
+    public GuardianUpdateRequest(string executable, string target, string version, string readyEvent, string manifest, long size, string hash, long deadlineQpc = 0, bool restartInBackground = false)
     {
         GuardianWire.CheckText(executable, 4096); GuardianWire.CheckText(target, 4096); GuardianWire.CheckText(version, 64);
         GuardianWire.CheckText(readyEvent, 128); GuardianWire.CheckText(manifest, 128); GuardianWire.CheckText(hash, 64);
         if (!Path.IsPathRooted(executable) || !Path.IsPathRooted(target) || !System.Version.TryParse(version, out _) || size <= 0 || !GuardianWire.IsToken(hash))
             throw new InvalidDataException("Invalid updater request.");
         Executable = executable; Target = target; Version = version; ReadyEvent = readyEvent; Manifest = manifest; Size = size; Hash = hash;
+        RestartInBackground = restartInBackground;
         DeadlineQpc = deadlineQpc == 0 ? checked(Stopwatch.GetTimestamp() + Stopwatch.Frequency * 12) : deadlineQpc;
     }
     public string Executable { get; }
@@ -53,6 +54,7 @@ internal sealed class GuardianUpdateRequest
     public long Size { get; }
     public string Hash { get; }
     public long DeadlineQpc { get; }
+    public bool RestartInBackground { get; }
 }
 internal sealed class GuardianPacket
 {
@@ -136,7 +138,7 @@ internal sealed class GuardianWire : IDisposable
                 case GuardianMessageKind.Update:
                     var update = packet.Update ?? throw new InvalidDataException("Missing update request.");
                     Text(writer, update.Executable, 4096); Text(writer, update.Target, 4096); Text(writer, update.Version, 64);
-                    Text(writer, update.ReadyEvent, 128); Text(writer, update.Manifest, 128); writer.Write(update.Size); Text(writer, update.Hash, 64); writer.Write(update.DeadlineQpc); break;
+                    Text(writer, update.ReadyEvent, 128); Text(writer, update.Manifest, 128); writer.Write(update.Size); Text(writer, update.Hash, 64); writer.Write(update.DeadlineQpc); writer.Write(update.RestartInBackground); break;
                 case GuardianMessageKind.Activate: case GuardianMessageKind.PrepareRecovery: case GuardianMessageKind.RecoveryReady: case GuardianMessageKind.RecoveryDeferred: break;
                 default: throw new InvalidDataException("Unknown guardian packet.");
             }
@@ -172,7 +174,7 @@ internal sealed class GuardianWire : IDisposable
             case GuardianMessageKind.Ack: var accepted = Flag(reader); packet = new GuardianPacket(kind, request, Text(reader, 256), accepted: accepted); break;
             case GuardianMessageKind.Update:
                 packet = new GuardianPacket(kind, request, update: new GuardianUpdateRequest(Text(reader, 4096), Text(reader, 4096), Text(reader, 64),
-                    Text(reader, 128), Text(reader, 128), reader.ReadInt64(), Text(reader, 64), reader.ReadInt64())); break;
+                    Text(reader, 128), Text(reader, 128), reader.ReadInt64(), Text(reader, 64), reader.ReadInt64(), memory.Position < memory.Length && Flag(reader))); break;
             case GuardianMessageKind.Activate: case GuardianMessageKind.PrepareRecovery: case GuardianMessageKind.RecoveryReady: case GuardianMessageKind.RecoveryDeferred: packet = new GuardianPacket(kind, request); break;
             default: throw new InvalidDataException("Unknown guardian packet.");
         }

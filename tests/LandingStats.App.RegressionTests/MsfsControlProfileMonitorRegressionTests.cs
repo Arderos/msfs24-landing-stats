@@ -14,6 +14,7 @@ internal static class MsfsControlProfileMonitorRegressionTests
         OldAircraftCompletionIsDiscarded();
         ProfileReadFailureRemainsOptional();
         ResetDiscardsPendingRead();
+        SimulatorVersionChangeInvalidatesCachedStore();
         NoSimulatorDoesNotStartDiscovery();
         MissingStoreCanBeDiscoveredOnNextIdentity();
         ReloadSurvivesAircraftChange();
@@ -37,12 +38,12 @@ internal static class MsfsControlProfileMonitorRegressionTests
                 if (load == 2) { entered.Set(); release.Wait(); }
                 return load == 1 ? oldStore : changedStore;
             });
-            monitor.Update("MSFS 2024", "aircraft-A", "AIRPLANE");
+            monitor.Update(12, "aircraft-A", "AIRPLANE");
             Require(SpinWait.SpinUntil(() => monitor.TryTake(out _), TimeSpan.FromSeconds(5)), "Initial profile snapshot did not arrive.");
             Invalidate(monitor);
             monitor.TryTake(out _);
             Require(entered.Wait(TimeSpan.FromSeconds(5)), "Profile reload did not start.");
-            monitor.Update("MSFS 2024", "aircraft-B", "AIRPLANE");
+            monitor.Update(12, "aircraft-B", "AIRPLANE");
             release.Set();
             AircraftControlsMessage? observed = null;
             Require(SpinWait.SpinUntil(() => monitor.TryTake(out observed), TimeSpan.FromSeconds(5)), "Current aircraft did not receive its profile snapshot.");
@@ -70,13 +71,13 @@ internal static class MsfsControlProfileMonitorRegressionTests
             var discoveries = 0; var loads = 0;
             monitor = new MsfsControlProfileMonitor(_ => Interlocked.Increment(ref discoveries) == 1 ? initial : changed,
                 _ => Interlocked.Increment(ref loads) == 1 ? initial : throw new IOException("Changed profile unavailable"));
-            monitor.Update("MSFS 2024", "aircraft-A", "AIRPLANE");
+            monitor.Update(12, "aircraft-A", "AIRPLANE");
             Require(SpinWait.SpinUntil(() => monitor.TryTake(out _), TimeSpan.FromSeconds(5)), "Initial profile snapshot did not arrive.");
             Invalidate(monitor); monitor.TryTake(out _);
             Require(SpinWait.SpinUntil(() => !monitor.IsRefreshing && monitor.Diagnostics.Any(value => value.Contains("Changed profile unavailable")),
                 TimeSpan.FromSeconds(5)), "Profile reload error was not reported.");
             monitor.TryTake(out _);
-            monitor.Update("MSFS 2024", "aircraft-B", "AIRPLANE");
+            monitor.Update(12, "aircraft-B", "AIRPLANE");
             AircraftControlsMessage? observed = null;
             Require(SpinWait.SpinUntil(() => monitor.TryTake(out observed), TimeSpan.FromSeconds(5)), "Profile rediscovery did not finish.");
             Require(discoveries == 2 && observed!.Bindings.Single().AxisIndex == 3, "A later aircraft reused the old cached store after a failed reload.");
@@ -106,7 +107,7 @@ internal static class MsfsControlProfileMonitorRegressionTests
         }, MsfsControlProfileStore.Load);
         for (var i = 0; i < 2; i++)
         {
-            monitor.Update("MSFS 2024", "aircraft", "AIRPLANE");
+            monitor.Update(12, "aircraft", "AIRPLANE");
             Require(SpinWait.SpinUntil(() => monitor.TryTake(out _), TimeSpan.FromSeconds(5)), "Unavailable discovery did not return diagnostics.");
         }
         Require(reads == 2, "A missing profile store remained cached after a new identity update.");
@@ -123,9 +124,9 @@ internal static class MsfsControlProfileMonitorRegressionTests
             if (Interlocked.Increment(ref discoveries) == 1) { entered.Set(); release.Wait(); }
             return MsfsControlProfileStore.Load(missing);
         }, MsfsControlProfileStore.Load);
-        monitor.Update("MSFS 2024", "aircraft-A", "AIRPLANE");
+        monitor.Update(12, "aircraft-A", "AIRPLANE");
         Require(entered.Wait(TimeSpan.FromSeconds(5)), "The asynchronous profile load did not start.");
-        monitor.Update("MSFS 2024", "aircraft-B", "AIRPLANE"); release.Set();
+        monitor.Update(12, "aircraft-B", "AIRPLANE"); release.Set();
         AircraftControlsMessage? observed = null;
         Require(SpinWait.SpinUntil(() =>
         {
@@ -134,10 +135,10 @@ internal static class MsfsControlProfileMonitorRegressionTests
             observed = value; return true;
         }, TimeSpan.FromSeconds(5)), "The current aircraft profile was not published.");
         Require(observed!.AircraftPath == "aircraft-B", "Only the current loaded aircraft may publish a profile.");
-        monitor.Update("MSFS 2024", "aircraft-C", "AIRPLANE");
+        monitor.Update(12, "aircraft-C", "AIRPLANE");
         Require(SpinWait.SpinUntil(() => monitor.TryTake(out observed), TimeSpan.FromSeconds(5)), "The cached profile did not resolve another aircraft.");
         Require(discoveries == 2, "Changing aircraft must reuse the immutable profile snapshot after discovery completes.");
-        monitor.Update("MSFS 2024", "aircraft-C", "AIRPLANE");
+        monitor.Update(12, "aircraft-C", "AIRPLANE");
         Require(SpinWait.SpinUntil(() => monitor.TryTake(out observed), TimeSpan.FromSeconds(5)), "A repeated identity request must republish after an input-stream gap.");
         Require(discoveries == 2 && observed!.Context.Contains("aircraft-C"), "Republishing must retain the aircraft identity and reuse the loaded snapshot.");
     }
@@ -145,10 +146,35 @@ internal static class MsfsControlProfileMonitorRegressionTests
     private static void ProfileReadFailureRemainsOptional()
     {
         using var monitor = new MsfsControlProfileMonitor(_ => throw new IOException("Profile store locked"), _ => throw new IOException());
-        monitor.Update("MSFS 2024", "aircraft", "AIRPLANE");
+        monitor.Update(12, "aircraft", "AIRPLANE");
         AircraftControlsMessage? observed = null;
         Require(SpinWait.SpinUntil(() => monitor.TryTake(out observed), TimeSpan.FromSeconds(5)), "A failed profile read did not publish fallback availability.");
         Require(observed!.Bindings.Count == 0 && monitor.Diagnostics.Any(d => d.Contains("Profile store locked")), "A read failure must expose an empty mapping and its reason.");
+    }
+
+    private static void SimulatorVersionChangeInvalidatesCachedStore()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "msfs-version-monitor-" + Guid.NewGuid().ToString("N"));
+        var oldPath = Path.Combine(root, "old"); var newPath = Path.Combine(root, "new");
+        Directory.CreateDirectory(oldPath); Directory.CreateDirectory(newPath);
+        MsfsControlProfileMonitor? monitor = null;
+        try
+        {
+            var oldStore = MsfsControlProfileRegressionTests.StoreFixture(oldPath, "Joystick L-Axis Y");
+            var newStore = MsfsControlProfileRegressionTests.StoreFixture(newPath, "Joystick R-Axis X");
+            var versions = new System.Collections.Generic.List<uint>();
+            monitor = new MsfsControlProfileMonitor(version =>
+            { lock (versions) versions.Add(version); return version == 11 ? oldStore : newStore; }, MsfsControlProfileStore.Load);
+            AircraftControlsMessage? observed = null;
+            foreach (var version in new uint[] { 11, 12, 11 })
+            {
+                monitor.Update(version, "same-aircraft", "AIRPLANE");
+                Require(SpinWait.SpinUntil(() => monitor.TryTake(out observed), TimeSpan.FromSeconds(5)), "Simulator version change did not publish its profile.");
+                Require(observed!.Bindings.Single().AxisIndex == (version == 11 ? 1 : 3), "Simulator version change reused the other installation's cached bindings.");
+            }
+            lock (versions) Require(versions.SequenceEqual(new uint[] { 11, 12, 11 }), "Authoritative application version did not reach discovery.");
+        }
+        finally { monitor?.Dispose(); Directory.Delete(root, true); }
     }
 
     private static void ResetDiscardsPendingRead()
@@ -157,7 +183,7 @@ internal static class MsfsControlProfileMonitorRegressionTests
         var missing = Path.Combine(Path.GetTempPath(), "absent-msfs-profiles-" + Guid.NewGuid().ToString("N"));
         using var monitor = new MsfsControlProfileMonitor(_ =>
         { entered.Set(); release.Wait(); return MsfsControlProfileStore.Load(missing); }, MsfsControlProfileStore.Load);
-        monitor.Update("MSFS 2024", "previous-flight", "AIRPLANE");
+        monitor.Update(12, "previous-flight", "AIRPLANE");
         Require(entered.Wait(TimeSpan.FromSeconds(5)), "The asynchronous profile load did not start.");
         monitor.Reset(); release.Set();
         Require(SpinWait.SpinUntil(() => !monitor.IsRefreshing, TimeSpan.FromSeconds(5)), "The discarded profile load did not finish.");

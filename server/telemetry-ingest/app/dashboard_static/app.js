@@ -10,7 +10,7 @@
   const svgNS = "http://www.w3.org/2000/svg";
   const kindLabels = { automatic_landing: "Automatic upload", bug_report: "Bug report", raw_debug: "Raw diagnostics", raw_recording: "Raw recording", raw_telemetry: "Raw recording", manual: "Manual" };
   const outcomeLabels = { contacts: "Recorded contacts", diagnostic: "Diagnostic capture · no landing", no_contacts: "No contacts detected", results_unavailable: "Landing results unavailable", invalid_contacts: "Invalid historical contacts", unreadable: "Archive unreadable" };
-  const filterLabels = { airport: "Airport", aircraft: "Aircraft", version: "Version", kind: "Type", outcome: "Outcome", q: "Search" };
+  const filterLabels = { airport: "Airport", aircraft: "Aircraft", version: "Uploader version", creator_version: "Creator version", uploader_version: "Uploader version", kind: "Type", outcome: "Outcome", q: "Search" };
   const metricLabels = { aircraft_fpm: ["Aircraft descent (+ down)", "fpm"], surface_fpm: ["Surface closure (+ down)", "fpm"], peak_g: ["Peak vertical G", "G"], legacy_peak_2s_g: ["Legacy 2-second peak", "G"], impact_window_s: ["Contact assessment window", "s"], reconstruction_residual_fpm: ["Reconstruction residual", "fpm"], reconstruction_uncertainty_fpm: ["Reconstruction uncertainty", "fpm"], sample_rate_hz: ["Telemetry sample rate", "Hz"], duration_s: ["Recording duration", "s"], max_gap_s: ["Maximum sample interval", "s"], compression_ratio: ["Compression ratio", "×"] };
   const contactMetricLabels = { ...metricLabels, pitch_deg: ["Pitch (+ nose down)", "°"], bank_deg: ["Roll", "°"], ground_speed_kt: ["Ground speed", "kt"], airspeed_kt: ["Indicated airspeed", "kt"] };
   metricLabels.axis_correlation = ["Selected axis correlation (absolute)", "coefficient"];
@@ -189,7 +189,7 @@
       const shown = expanded ? items : items.slice(0, 7);
       list.classList.toggle("expanded", expanded);
       list.replaceChildren(...shown.map((item) => {
-        const clickable = filter && item.name && (item.name !== "Unknown" || filter === "airport");
+        const clickable = filter && item.name && (item.name !== "Unknown" || ["airport", "creator_version", "uploader_version"].includes(filter));
         const r = el(clickable ? "button" : "div", `breakdown-row ${color || ""} ${clickable ? "clickable" : ""}`);
         if (clickable) { r.type = "button"; r.addEventListener("click", () => setFilter(filter, String(item.name))); }
         const bar = el("span", "bar"); bar.style.width = `${Math.max(1, 100 * item.count / max)}%`;
@@ -211,7 +211,8 @@
     $("breakdowns").replaceChildren(
       breakdown("Airports · unique contacts", arr(b.airports), "airport", "orange"),
       breakdown("Aircraft · unique contacts", arr(b.aircraft), "aircraft", ""),
-      breakdown("App versions", arr(b.versions), "version", "green"),
+      breakdown("Recording creator versions", arr(b.creator_versions), "creator_version", "green"),
+      breakdown("Uploader versions", arr(b.uploader_versions), "uploader_version", "green"),
       breakdown("Runways · unique contacts", arr(b.runways), null, "orange"),
       breakdown("Upload types", arr(b.kinds), "kind", "green"),
       breakdown("Capture outcomes", arr(b.outcomes), "outcome", "orange"),
@@ -293,7 +294,8 @@
       const airportText = arr(capture.airports).join(", ") || (capture.unresolved_contact_count > 0 ? "Unresolved airport" : outcomeLabels[capture.capture_outcome] || "Awaiting analysis");
       const identity = el("td"); identity.append(el("span", "airport", airportText), el("small", "aircraft", capture.aircraft || "Unknown aircraft")); identity.title = `${airportText} · ${capture.aircraft || "—"}`;
       const type = el("td", "", kindLabels[capture.capture_kind] || capture.capture_kind || "—");
-      const version = el("td", "mono", capture.app_version || "—"); version.append(el("small", "", `schema ${capture.schema_version ?? "—"}`));
+      const version = el("td", "mono", `Created: ${capture.creator_version || "Unknown"}`);
+      version.append(el("small", "", `Uploaded: ${capture.uploader_version || "Unknown"}`), el("small", "", `schema ${capture.schema_version ?? "—"}`));
       const samples = el("td", "numeric mono", fmt(capture.sample_count)); samples.append(el("small", "", duration(capture.duration_s)));
       const size = el("td", "numeric mono", bytes(capture.compressed_bytes));
       const flags = el("td");
@@ -325,7 +327,7 @@
   function renderDetail(data) {
     $("detail-title").textContent = `${arr(data.airports).join(" / ") || (data.unresolved_contact_count > 0 ? "Unresolved airport" : outcomeLabels[data.capture_outcome] || "Telemetry archive")} · ${data.aircraft || "unknown aircraft"}`;
     const nodes = [el("p", "detail-id", `${data.capture_id}\nSHA-256: ${data.sha256 || "—"}`)];
-    nodes.push(detailGrid([["Uploaded", date(data.received_at, true)], ["Application", data.app_version || "—"], ["Upload type", kindLabels[data.capture_kind] || data.capture_kind || "—"], ["Raw schema", data.schema_version ?? "—"], ["Compressed archive", bytes(data.compressed_bytes)], ["Uncompressed size", bytes(data.uncompressed_bytes)], ["Samples", fmt(data.sample_count)], ["Duration", duration(data.duration_s)], ["Sample rate", `${fmt(data.sample_rate_hz, true)} Hz`], ["Maximum interval", `${fmt(data.max_gap_s, true)} s`], ["Contacts", fmt(data.landing_count)], ["Decision entries", fmt(data.journal_entries)]]));
+    nodes.push(detailGrid([["Uploaded", date(data.received_at, true)], ["Creator version", data.creator_version || "Unknown"], ["Uploader version", data.uploader_version || "Unknown"], ["Upload type", kindLabels[data.capture_kind] || data.capture_kind || "—"], ["Raw schema", data.schema_version ?? "—"], ["Compressed archive", bytes(data.compressed_bytes)], ["Uncompressed size", bytes(data.uncompressed_bytes)], ["Samples", fmt(data.sample_count)], ["Duration", duration(data.duration_s)], ["Sample rate", `${fmt(data.sample_rate_hz, true)} Hz`], ["Maximum interval", `${fmt(data.max_gap_s, true)} s`], ["Contacts", fmt(data.landing_count)], ["Decision entries", fmt(data.journal_entries)]]));
     const warnings = arr(data.warnings).slice(); if (data.index_error) warnings.unshift(data.index_error);
     nodes.push(el("p", "help-note", outcomeLabels[data.capture_outcome] || "Capture outcome unavailable"));
     warnings.forEach((warning) => nodes.push(el("p", "detail-warning", warning)));

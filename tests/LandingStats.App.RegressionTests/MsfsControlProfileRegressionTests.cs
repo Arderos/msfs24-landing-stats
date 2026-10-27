@@ -17,6 +17,8 @@ internal static class MsfsControlProfileRegressionTests
     {
         LayersAndGeneralFallback();
         SharedThrottleAndAxes();
+        LocalizedAxisIds();
+        SimulatorVersionAndAccountDiscovery();
         AmbiguousAndConditionalInputs();
         IdentityAndMissingFiles();
         MalformedSelectionFails();
@@ -168,8 +170,71 @@ internal static class MsfsControlProfileRegressionTests
         File.WriteAllText(Path.Combine(directory, "inputprofile_1"), Xml(Action("KEY_AXIS_ELEVATOR_SET", pitchAxis)), Encoding.UTF8);
         return MsfsControlProfileStore.Load(directory);
     }
-    private static string Action(string name, string axis, int flag = 4) =>
-        "<Action ActionName=\"" + name + "\" Flag=\"" + flag + "\"><Primary><KEY Information=\"" + axis + "\">1042</KEY></Primary></Action>";
+    private static string Action(string name, string axis, int flag = 4, int? key = null) =>
+        "<Action ActionName=\"" + name + "\" Flag=\"" + flag + "\"><Primary><KEY Information=\"" + axis + "\">" + (key ?? AxisKey(axis)) + "</KEY></Primary></Action>";
+    private static int AxisKey(string label) => label switch
+    {
+        "Joystick L-Axis X" => 1026, "Joystick L-Axis Y" => 1042, "Joystick L-Axis Z" => 1058,
+        "Joystick R-Axis X" => 770, "Joystick R-Axis Y" => 786, "Joystick R-Axis Z" => 802,
+        "Joystick Slider X" => 514, "Joystick Slider Y" => 530, _ => -1
+    };
+
+    internal static MsfsControlProfileResolution LocalizedThrottleFixture() => Single(
+        Action("KEY_THROTTLE1_AXIS_SET_EX1", "Джойстик: ось вращения X", 132, 770) +
+        Action("KEY_THROTTLE2_AXIS_SET_EX1", "Джойстик: ось вращения Y", 4, 786)).Resolve(Aircraft);
+
+    private static void LocalizedAxisIds()
+    {
+        // Full-axis IDs from the MSFS Input Profile Editor and Asobo profiles.
+        // Localized, absent and misleading labels must not change their meaning.
+        var keys = new[] { 1026, 1042, 1058, 770, 786, 802, 514, 530 };
+        foreach (var label in new[] { "Ось джойстика", "Axe de manette", "Joystick-Achse", "ジョイスティック軸", "Joystick L-Axis Y", "" })
+        for (var axis = 0; axis < keys.Length; axis++)
+        foreach (var inverted in new[] { false, true })
+        {
+            var binding = Single(Action("KEY_AXIS_ELEVATOR_SET", label, inverted ? 132 : 4, keys[axis])).Resolve(Aircraft).Bindings.Single();
+            Require(binding.AxisIndex == axis && binding.DeviceInstanceId == Stick && binding.Inverted == inverted,
+                "A display label changed the physical axis, inversion or device identity.");
+        }
+        foreach (var key in new[] { 0, 1, 768, 769, 771, 1024, 1025, 1027, 9999, -1 })
+            Require(Single(Action("KEY_AXIS_ELEVATOR_SET", "Joystick L-Axis Y", key: key)).Resolve(Aircraft).Bindings.Count == 0,
+                "An unsupported button, split axis or malformed ID was accepted using its display label.");
+        foreach (var key in new[] { "", "1042.0", "not-a-number", "2147483648", "<KEY>1042</KEY>" })
+            Require(Single(Action("KEY_AXIS_ELEVATOR_SET", "Joystick L-Axis Y").Replace(">1042</KEY>", ">" + key + "</KEY>")).Resolve(Aircraft).Bindings.Count == 0,
+                "Malformed physical KEY was accepted.");
+        var throttles = LocalizedThrottleFixture().Bindings;
+        Require(throttles.Count == 2 && throttles.Single(b => b.EngineIndex == 0).AxisIndex == 3 &&
+            throttles.Single(b => b.EngineIndex == 1).AxisIndex == 4, "Localized Rx and Ry throttle assignments were conflated.");
+    }
+
+    private static void SimulatorVersionAndAccountDiscovery()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "msfs-profile-discovery-" + Guid.NewGuid().ToString("N"));
+        string Folder(string account, string app) => Path.Combine(root, "userdata", account, app, "remote");
+        void Add(string account, string app, string axis)
+        { var folder = Folder(account, app); Directory.CreateDirectory(folder); StoreFixture(folder, axis); }
+        try
+        {
+            Add("1", "2537590", "Joystick R-Axis X");
+            Require(MsfsControlProfileStore.DiscoverSteam(12, root, 0).DirectoryPath == Folder("1", "2537590"), "A single installed version was not discovered.");
+            Require(MsfsControlProfileStore.DiscoverSteam(11, root, 1).Resolve(Aircraft).Bindings.Count == 0, "Missing MSFS 2020 borrowed MSFS 2024 assignments.");
+            Add("1", "1250410", "Joystick L-Axis Y");
+            foreach (var account in new uint[] { 0, 1 })
+            {
+                Require(MsfsControlProfileStore.DiscoverSteam(11, root, account).DirectoryPath == Folder("1", "1250410"), "Application version 11 did not select MSFS 2020.");
+                Require(MsfsControlProfileStore.DiscoverSteam(12, root, account).DirectoryPath == Folder("1", "2537590"), "Application version 12 did not select MSFS 2024.");
+            }
+            Add("2", "2537590", "Joystick R-Axis Y");
+            var ambiguous = MsfsControlProfileStore.DiscoverSteam(12, root, 0);
+            Require(ambiguous.Resolve(Aircraft).Bindings.Count == 0 && ambiguous.Diagnostics.Any(d => d.Contains("ambiguous")), "Unknown active account selected an arbitrary store.");
+            Require(MsfsControlProfileStore.DiscoverSteam(12, root, 2).Resolve(Aircraft).Bindings.Single().AxisIndex == 4, "Active Steam account was ignored.");
+            Require(MsfsControlProfileStore.DiscoverSteam(12, root, 3).Resolve(Aircraft).Bindings.Count == 0, "Missing active account borrowed another account's profile.");
+            foreach (var version in new uint[] { 0, 10, 13, uint.MaxValue })
+                Require(MsfsControlProfileStore.DiscoverSteam(version, root, 1).Resolve(Aircraft).Bindings.Count == 0, "Unknown application version selected an installed profile.");
+        }
+        finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
+    }
+
     private static string Xml(string actions, Guid? device = null) =>
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?><Version Num=\"-1\"/><FriendlyName>Arbitrary display name</FriendlyName>" +
         "<Device GUID=\"" + (device ?? Stick) + "\" ProductID=\"123\"><Context ContextName=\"AIRCRAFT\">" + actions + "</Context></Device>";

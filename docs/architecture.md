@@ -38,6 +38,20 @@ profile selections and XML files on a background task, away from SimConnect
 dispatch and the UI. A generation check rejects stale results after an aircraft
 change; file changes request a fresh snapshot.
 
+Profile discovery uses `SIMCONNECT_RECV_OPEN.dwApplicationVersionMajor`: 11
+selects MSFS 2020 and 12 selects MSFS 2024. The display name is never used for
+version selection. Unknown versions and ambiguous Steam accounts leave profiles
+unavailable. This follows the [SimConnect version contract](https://devsupport.flightsimulator.com/t/documentation-for-simconnect-recv-exception-is-incorrect/13555/4).
+
+Physical axes use the numeric `KEY` in the
+[MSFS input configuration](https://docs.flightsimulator.com/msfs2024/retail/content-configuration/input/input-configuration-xml-properties/).
+Full-axis IDs are `1026/1042/1058` for X/Y/Z, `770/786/802` for Rx/Ry/Rz,
+and `514/530` for slider X/Y, as emitted by the Input Profile Editor and the
+Asobo `asobo-input-profiles-pc` category profiles. These simulator IDs map to
+our eight semantic DirectInput axes; they are not DirectInput object IDs.
+Localized `Information` labels are display metadata. Unknown IDs, split axes
+and conditional assignments remain unavailable.
+
 Aircraft selection uses the normalized SimObject configuration path. Device
 instance GUIDs identify controllers. Selected General, Category and Aircraft
 layers are resolved in that order, with a more specific binding overriding the

@@ -50,6 +50,7 @@ internal static class ReleaseUpdateProtocol
     public const string PackageAssetName = "MSFS-Landing-Stats.exe";
     public const string LegacyPackageAssetName = "MSFS-Landing-Stats.zip";
     public const string UpdaterAssetName = "MSFS-Landing-Stats.Updater.exe";
+    public const string BackgroundRestartEnvironmentVariable = "MSFS_LANDING_STATS_UPDATE_BACKGROUND";
     public const long MaximumPackageBytes = 128L * 1024 * 1024;
     public const long MaximumUpdaterBytes = 16L * 1024 * 1024;
 
