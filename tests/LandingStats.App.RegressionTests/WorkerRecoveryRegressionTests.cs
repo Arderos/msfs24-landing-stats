@@ -211,8 +211,9 @@ internal static class WorkerRecoveryRegressionTests
         var root = Path.Combine(Path.GetTempPath(), "worker-isolation-" + Guid.NewGuid().ToString("N"));
         var id = new RecoveryJournalIdentity(Guid.NewGuid(), Guid.NewGuid(), new RuntimeClockEpoch(Guid.NewGuid(), Stopwatch.GetTimestamp(), Stopwatch.Frequency));
         var effects = 0; var failures = new ConcurrentQueue<string>();
-        var options = new ComponentRecoveryOptions { OwnerStall = TimeSpan.FromMilliseconds(500), Probe = TimeSpan.FromMilliseconds(150),
-            Stop = TimeSpan.FromMilliseconds(300), CheckInterval = TimeSpan.FromMilliseconds(20), StableUsefulProgress = TimeSpan.FromMilliseconds(150),
+        // Keep production liveness/stop budgets for the real composed runtime:
+        // its healthy clock owner normally waits 500 ms between ticks.
+        var options = new ComponentRecoveryOptions { StableUsefulProgress = TimeSpan.FromMilliseconds(150),
             InitialBackoff = TimeSpan.FromMilliseconds(10), MaximumBackoff = TimeSpan.FromMilliseconds(30) };
         using var runtime = new ApplicationRuntime(root, id, Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "LandingStats.WorkerHost.exe"),
             (_, __) => { Interlocked.Increment(ref effects); return Task.CompletedTask; }, (_, _) => failures.Enqueue("Runtime escalation"),
@@ -226,8 +227,8 @@ internal static class WorkerRecoveryRegressionTests
                 "Real hung controller did not recover independently.", 20);
             var before = effects;
             await Until(() => effects > before + 2, "Recording/clock stopped after controller recovery.");
-            Check(runtime.Source(ComponentRole.Simulator).Snapshot.Generation == 1 && runtime.Health.Single(item => item.Component == "recording").Generation == 1,
-                "Controller failure replaced simulator or recording owner.");
+            Check(runtime.Health.Where(item => item.Component != "source.controllers").All(item => item.Generation == 1),
+                "Controller failure replaced an independent owner: " + string.Join(", ", runtime.Health.Select(item => item.Component + "=" + item.Generation)));
             Check(failures.IsEmpty, string.Join("; ", failures));
         }
         catch (Exception error) { Console.WriteLine(error); throw; }

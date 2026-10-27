@@ -29,8 +29,10 @@ internal static class WorkerStatusUiRegressionTests
         MainWindow? window = null;
         try
         {
-            LocalizationManager.Apply("ru");
             window = new MainWindow(); // Never Show: this test starts no runtime or real settings IO.
+            // Construction applies the default (system) language. Select the
+            // fixture language afterwards so the host locale cannot change it.
+            LocalizationManager.Apply("ru");
             var names = new[] { "Simulator", "Controllers", "Analysis", "Recording", "Upload", "Cloud", "Api" };
             var statuses = names.Select((name, i) => new WorkerHealthItem(name,
                 i == 1 ? WorkerIndicator.Failed : i == 2 ? WorkerIndicator.Recovering : WorkerIndicator.Healthy,
