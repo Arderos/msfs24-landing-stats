@@ -2,7 +2,7 @@
 
 All notable changes to MSFS Landing Stats are documented in this file.
 
-## [Unreleased]
+## [0.9.8] - 2026-10-27
 
 ### Fixed
 
