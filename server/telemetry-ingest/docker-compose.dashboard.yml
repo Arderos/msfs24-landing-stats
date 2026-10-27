@@ -12,10 +12,10 @@ services:
       DATA_ROOT: /data
       CACHE_ROOT: /cache
       DASHBOARD_SNAPSHOT_PATH: /snapshot/metadata.json
-      DASHBOARD_ALLOWED_HOSTS: "${DASHBOARD_ALLOWED_HOSTS:-astr-scad-01,172.16.20.32,localhost,127.0.0.1}"
-      DASHBOARD_ALLOWED_NETWORKS: "${DASHBOARD_ALLOWED_NETWORKS:-172.16.0.0/16,127.0.0.0/8,::1/128}"
+      DASHBOARD_ALLOWED_HOSTS: "${DASHBOARD_ALLOWED_HOSTS:?Set the dashboard host allowlist in the local .env}"
+      DASHBOARD_ALLOWED_NETWORKS: "${DASHBOARD_ALLOWED_NETWORKS:?Set the dashboard network allowlist in the local .env}"
     ports:
-      - "${DASHBOARD_BIND_ADDRESS:-172.16.20.32}:8091:8091"
+      - "${DASHBOARD_BIND_ADDRESS:?Set the dashboard listen address in the local .env}:8091:8091"
     volumes:
       - /srv/msfs-landing-telemetry/data/accepted:/data/accepted:ro
       - dashboard-cache:/cache
