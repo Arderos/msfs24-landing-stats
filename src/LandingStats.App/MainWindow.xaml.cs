@@ -130,6 +130,7 @@ public partial class MainWindow : Window
     {
         if (_initializationStarted) return;
         _initializationStarted = true;
+        StartWorkerHealthPresentation();
         _initializationTask = InitializeWindowAsync();
     }
 
@@ -1271,6 +1272,7 @@ public partial class MainWindow : Window
 
     private void RefreshLocalizedPresentation()
     {
+        RefreshWorkerHealthPresentation();
         _googleDriveWarningDetail = CloudWarnings(_googleDriveWarningSummary);
         if (_googleDriveErrorKey != null) _googleDriveErrorDetail = LocalizationManager.Text(_googleDriveErrorKey);
         if (_telemetrySettingsError != null) SettingsTelemetryErrorText.Text = LocalizationManager.Format("Settings.SaveErrorFormat", _telemetrySettingsError);
@@ -1704,6 +1706,7 @@ public partial class MainWindow : Window
     private void OnWindowClosed(object? sender, EventArgs eventArgs)
     {
         _isClosed = true;
+        StopWorkerHealthPresentation();
         DisposeShutdownResources();
     }
 

@@ -103,8 +103,10 @@ internal static class Program
         }
     }
 
+    private static readonly object GuardianLogGate = new object();
     private static void LogGuardian(long generation, string state)
     {
+        lock (GuardianLogGate)
         try
         {
             var directory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "MSFS Landing Stats", "Runtime");

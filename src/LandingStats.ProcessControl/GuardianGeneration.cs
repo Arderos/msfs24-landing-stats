@@ -30,6 +30,7 @@ internal sealed class GuardianGeneration : IDisposable
         try { _pipe = GuardianPipes.Create(_descriptor.Pipe); _wire = new GuardianWire(_pipe, _descriptor); }
         catch { _signals.Dispose(); throw; }
     }
+    public event Action<string>? Diagnostic;
     public int ProcessId => _process?.Id ?? 0;
     public Task<int> Exit => _process?.Exit ?? Task.FromResult(0);
     public Task Completion => _completion;
@@ -80,6 +81,21 @@ internal sealed class GuardianGeneration : IDisposable
     }
     private async Task ReadPumpAsync()
     {
+        try { await ReadPacketsAsync().ConfigureAwait(false); }
+        catch (Exception error) when (!_lifetime.IsCancellationRequested)
+        {
+            // EOF after an acknowledged exit is the expected pipe teardown.
+            // Other failures retain their original message and stack before
+            // retirement observes and consumes the completed read task.
+            if (!(error is EndOfStreamException && StopIntent != GuardianStopReason.None))
+                Report("channel_failed error=" + error);
+            throw;
+        }
+    }
+    private void Report(string message)
+    { try { Diagnostic?.Invoke(message); } catch { /* Diagnostics cannot interrupt process ownership. */ } }
+    private async Task ReadPacketsAsync()
+    {
         while (true)
         {
             var packet = await _wire.ReadAsync(_lifetime.Token).ConfigureAwait(false);
@@ -129,7 +145,8 @@ internal sealed class GuardianGeneration : IDisposable
                             }
                         }
                     }
-                    catch (Exception) when (!_lifetime.IsCancellationRequested) { /* Rejected handoff leaves the application running. */ }
+                    catch (Exception error) when (!_lifetime.IsCancellationRequested)
+                    { Report("update_handoff_rejected error=" + error); }
                     finally { if (prepared != null) await prepared.RetireAsync().ConfigureAwait(false); }
                 }
                 await _wire.SendAsync(new GuardianPacket(GuardianMessageKind.Ack, packet.Request, accepted: accepted), _lifetime.Token).ConfigureAwait(false);
@@ -182,12 +199,14 @@ internal sealed class GuardianSupervisor
             try { prepared = _factory(++generation); }
             catch (Exception error)
             {
-                Publish(generation, "prepare_failed:" + error.GetType().Name);
+                Publish(generation, "prepare_failed error=" + error);
                 failures = Math.Min(1000000, failures + 1);
                 if (++startupFailures >= _policy.MaximumStartupFailures) throw new IOException("The application repeatedly failed during runtime preparation.", error);
                 await Task.Delay(_policy.Backoff(failures)).ConfigureAwait(false); continue;
             }
             using var child = prepared;
+            var childGeneration = generation;
+            child.Diagnostic += message => Publish(childGeneration, message);
             lock (_lifecycle)
             {
                 if (Volatile.Read(ref _stop) != 0) return;
@@ -231,7 +250,7 @@ internal sealed class GuardianSupervisor
                     await Task.Delay(_policy.CheckInterval).ConfigureAwait(false);
                 }
             }
-            catch (Exception error) { Publish(generation, "failed:" + error.GetType().Name); }
+            catch (Exception error) { Publish(generation, "failed error=" + error); }
             finally
             {
                 // Never abandon an unconfirmed tree and continue the outer
@@ -240,7 +259,7 @@ internal sealed class GuardianSupervisor
                 {
                     try { await child.RetireAsync(TimeSpan.FromSeconds(3)).ConfigureAwait(false); break; }
                     catch (Exception error) when (error is IOException || error is TimeoutException || error is System.ComponentModel.Win32Exception)
-                    { Publish(generation, "retirement_pending:" + error.GetType().Name); await Task.Delay(250).ConfigureAwait(false); }
+                    { Publish(generation, "retirement_pending error=" + error); await Task.Delay(250).ConfigureAwait(false); }
                 }
                 Volatile.Write(ref _current, null);
             }

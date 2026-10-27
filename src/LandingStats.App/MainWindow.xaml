@@ -338,7 +338,7 @@
     </WindowChrome.WindowChrome>
     <Grid Background="{StaticResource AppBackgroundBrush}">
         <Grid.RowDefinitions>
-            <RowDefinition Height="44" />
+            <RowDefinition Height="70" />
             <RowDefinition Height="*" />
             <RowDefinition Height="28" />
         </Grid.RowDefinitions>
@@ -353,12 +353,14 @@
                 BorderThickness="0,0,0,1"
                 MouseLeftButtonDown="OnTitleBarMouseDown">
             <Grid Margin="16,0,8,0">
+                <Grid.RowDefinitions><RowDefinition Height="44" /><RowDefinition Height="26" /></Grid.RowDefinitions>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
+                <StackPanel x:Name="WorkerStatusItems" Grid.Row="1" Grid.ColumnSpan="4" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,0,5" />
                 <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
                     <Image Source="Assets/AppIcon.ico" Width="18" Height="18" SnapsToDevicePixels="True" />
                     <TextBlock Text="{DynamicResource Product.Name}" FontSize="13" FontWeight="SemiBold" Margin="9,0,0,0" />
@@ -1099,6 +1101,28 @@
                            TextTrimming="CharacterEllipsis" MaxWidth="310" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />
             </Grid>
         </Border>
+
+        <Grid x:Name="WorkerWarningOverlay" Grid.Row="1" Grid.ColumnSpan="2" Panel.ZIndex="125"
+              Background="#90000000" Visibility="Collapsed">
+            <Border Width="620" MaxHeight="600" Padding="24" Margin="20" HorizontalAlignment="Center" VerticalAlignment="Center"
+                    Background="{StaticResource SurfaceRaisedBrush}" BorderBrush="{StaticResource DangerBrush}" BorderThickness="1" CornerRadius="10">
+                <Grid>
+                    <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+                    <TextBlock Text="{DynamicResource Workers.WarningTitle}" FontSize="18" FontWeight="SemiBold" Margin="0,0,0,14" />
+                    <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" MaxHeight="390">
+                        <TextBlock x:Name="WorkerWarningText" TextWrapping="Wrap" FontSize="13" LineHeight="20" Foreground="{StaticResource MutedTextBrush}" />
+                    </ScrollViewer>
+                    <StackPanel Grid.Row="2" Margin="0,18,0,0">
+                        <TextBlock Text="{DynamicResource Workers.AutomaticRecovery}" TextWrapping="Wrap" FontSize="12" Foreground="{StaticResource MutedTextBrush}" />
+                        <DockPanel Margin="0,12,0,0" LastChildFill="False">
+                            <TextBlock VerticalAlignment="Center"><Hyperlink Click="OnWorkerSupportClick">support@landingstats.app</Hyperlink></TextBlock>
+                            <Button DockPanel.Dock="Right" Content="OK" MinWidth="80" Height="34" Style="{StaticResource OutlineButtonStyle}" Click="OnWorkerWarningOk" />
+                        </DockPanel>
+                        <TextBlock x:Name="WorkerSupportError" Visibility="Collapsed" TextWrapping="Wrap" FontSize="12" Margin="0,8,0,0" Foreground="{StaticResource MutedTextBrush}" />
+                    </StackPanel>
+                </Grid>
+            </Border>
+        </Grid>
 
         <Grid x:Name="ReplayUnsupportedOverlay"
               Grid.RowSpan="3" Grid.ColumnSpan="2"

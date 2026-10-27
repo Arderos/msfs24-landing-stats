@@ -59,14 +59,15 @@ internal static class ProcessJobExecutor
                 var drained = callbacks.Stop();
                 try
                 {
+                    using var retirement = ManagedComponentContext.Current.Value?.TrackProcessRetirement();
                     while (true)
                     {
                         try { await host.StopAsync(TimeSpan.FromSeconds(1)).ConfigureAwait(false); break; }
                         catch (Exception error) when (error is IOException || error is InvalidDataException || error is TimeoutException || error is System.ComponentModel.Win32Exception)
                         {
-                            // An unconfirmed tree exit cannot become an ordinary
-                            // retry. Keep ownership; the common supervisor will
-                            // escalate this blocked managed owner to the App.
+                            retirement?.ReportDelayedExit();
+                            // Retain the claim and engine until native exit. The
+                            // supervisor contains this wait at the child boundary.
                             await Task.Delay(250).ConfigureAwait(false);
                         }
                     }

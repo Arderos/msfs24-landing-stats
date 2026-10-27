@@ -2,6 +2,18 @@
 
 All notable changes to MSFS Landing Stats are documented in this file.
 
+## [0.9.9] - 2026-10-27
+
+### Added
+
+- Worker health indicators in the header, with dismissible warnings explaining persistent failures, their impact, and how to contact support.
+
+### Fixed
+
+- Discover game controllers without querying unrelated HID device identities that can hang in a device driver.
+- Recover isolated workers without restarting the application or interrupting recording when another worker fails.
+- Preserve Guardian communication and update handoff errors in diagnostic logs.
+
 ## [0.9.8] - 2026-10-27
 
 ### Fixed

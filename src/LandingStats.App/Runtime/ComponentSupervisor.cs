@@ -18,16 +18,24 @@ internal interface IComponentGeneration : IDisposable
     Task StopAsync(TimeSpan deadline);
     Task TerminateAsync(TimeSpan deadline);
 }
+// An isolated generation owns an OS process tree, not mutable state on an App thread.
+// Its delayed termination must be contained at that boundary.
+internal interface IIsolatedComponentGeneration : IComponentGeneration { }
 internal enum SupervisionState { Stopped, Starting, Recovering, Running, Waiting, Stopping, Escalating }
 internal sealed class SupervisionSnapshot
 {
-    public SupervisionSnapshot(string component, long generation, SupervisionState state, int failures, string reason)
-    { Component = component; Generation = generation; State = state; Failures = failures; Reason = reason; }
+    public SupervisionSnapshot(string component, long generation, SupervisionState state, int failures, string reason,
+        bool settled = false, long unavailableSinceQpc = 0, string failure = "")
+    { Component = component; Generation = generation; State = state; Failures = failures; Reason = reason;
+        Settled = settled; UnavailableSinceQpc = unavailableSinceQpc; Failure = failure; }
     public string Component { get; }
     public long Generation { get; }
     public SupervisionState State { get; }
     public int Failures { get; }
     public string Reason { get; }
+    public bool Settled { get; }
+    public long UnavailableSinceQpc { get; }
+    public string Failure { get; }
 }
 internal sealed class ComponentRecoveryOptions
 {
@@ -62,6 +70,10 @@ internal sealed class ComponentSupervisor : IDisposable
     private Task _completion = Task.CompletedTask;
     private SupervisionSnapshot _snapshot;
     private long _generation;
+    private long _unavailableSinceQpc;
+    private bool _settled;
+    private bool _requiresStabilization;
+    private string _failure = "";
     private long _escalatedGeneration = -1;
     private int _started, _stopped, _disposed, _failures;
     private long _observationQpc = Stopwatch.GetTimestamp();
@@ -83,7 +95,7 @@ internal sealed class ComponentSupervisor : IDisposable
         lock (_lifecycleGate)
         {
             if (_stopped != 0 || _started != 0) throw new InvalidOperationException("Component supervisor is already started or stopped.");
-            _started = 1; _completion = Task.Run(RunAsync);
+            _started = 1; _unavailableSinceQpc = Stopwatch.GetTimestamp(); _completion = Task.Run(RunAsync);
         }
     }
     public Task StopAsync()
@@ -118,6 +130,7 @@ internal sealed class ComponentSupervisor : IDisposable
                 catch (Exception error)
                 {
                     failed = true; if (_failures < int.MaxValue) _failures++;
+                    MarkUnavailable(error.GetType().Name + ": " + Bound(error.Message));
                     Publish(SupervisionState.Recovering, error.GetType().Name + ": " + Bound(error.Message));
                 }
                 finally
@@ -138,7 +151,7 @@ internal sealed class ComponentSupervisor : IDisposable
         catch (OperationCanceledException) when (_shutdown.IsCancellationRequested) { }
         catch (Exception error)
         {
-            fatal = true;
+            fatal = true; MarkUnavailable(error.GetType().Name + ": " + Bound(error.Message));
             Publish(SupervisionState.Escalating, "supervision_failed: " + Bound(error.Message));
             Escalate(); throw;
         }
@@ -148,12 +161,21 @@ internal sealed class ComponentSupervisor : IDisposable
     {
         var ownerObserved = Stopwatch.StartNew();
         var usefulStable = Stopwatch.StartNew();
+        var liveStable = Stopwatch.StartNew(); var observations = 0;
         long ownerCounter = -1, usefulCounter = 0;
         var sawUseful = false;
         while (!_shutdown.IsCancellationRequested)
         {
             Interlocked.Exchange(ref _observationQpc, Stopwatch.GetTimestamp());
             if (owner.Completion.IsCompleted) { await owner.Completion.ConfigureAwait(false); return; }
+            if (owner is ManagedComponentGeneration managed && managed.ProcessExitDelayed)
+            {
+                MarkUnavailable("Windows has not yet confirmed the worker process tree exit.");
+                liveStable.Restart(); observations = 0; ownerObserved.Restart();
+                Publish(SupervisionState.Recovering, "worker_exit_pending");
+                await Task.Delay(_options.CheckInterval, _shutdown.Token).ConfigureAwait(false);
+                continue;
+            }
             var health = owner.Health;
             if (health != null)
             {
@@ -162,7 +184,17 @@ internal sealed class ComponentSupervisor : IDisposable
                     throw new TimeoutException("The active component operation exceeded its deadline.");
                 if (health.OwnerProgress < ownerCounter || health.UsefulProgress < usefulCounter)
                     throw new InvalidOperationException("Component counters reversed within a generation.");
-                if (health.OwnerProgress != ownerCounter) { ownerCounter = health.OwnerProgress; ownerObserved.Restart(); }
+                if (health.OwnerProgress != ownerCounter)
+                {
+                    ownerCounter = health.OwnerProgress; ownerObserved.Restart(); observations++;
+                    // First readiness is immediate, including an idle owner or absent simulator.
+                    // Only recovery needs sustained progress; a transport handshake is not readiness.
+                    var ready = health.OwnerProgress > 0 &&
+                        (health.Phase == ComponentPhase.Running || health.Phase == ComponentPhase.Waiting);
+                    if (!_settled && ready && (!_requiresStabilization ||
+                        observations > 1 && liveStable.Elapsed >= _options.StableUsefulProgress))
+                    { _settled = true; _requiresStabilization = false; _unavailableSinceQpc = 0; _failure = ""; }
+                }
                 if (health.UsefulProgress > usefulCounter)
                 {
                     if (!sawUseful) { sawUseful = true; usefulStable.Restart(); }
@@ -171,6 +203,7 @@ internal sealed class ComponentSupervisor : IDisposable
                     Publish(SupervisionState.Running, "useful_progress");
                 }
                 else if (health.WaitingFor != DependencyWait.None) Publish(SupervisionState.Waiting, health.WaitingFor.ToString());
+                else Publish(SupervisionState.Running, "owner_progress");
             }
             var boundedOperation = health != null && health.OperationId != Guid.Empty && health.OldestPendingQpc > 0;
             if (!boundedOperation && ownerObserved.Elapsed >= _options.OwnerStall)
@@ -189,24 +222,70 @@ internal sealed class ComponentSupervisor : IDisposable
     }
     private async Task EndOwnerAsync(IComponentGeneration owner)
     {
-        Interlocked.Exchange(ref _observationQpc, Stopwatch.GetTimestamp());
         Publish(SupervisionState.Stopping, _shutdown.IsCancellationRequested ? "shutdown" : "retiring_generation");
-        try { await AwaitDeadline(owner.StopAsync(_options.Stop), _options.Stop, CancellationToken.None, "Owner stop expired.").ConfigureAwait(false); }
-        catch (Exception) { /* Stop deadline does not transfer ownership. Escalate to its isolation boundary. */ }
-        if (!ConfirmedExit(owner))
+        try { await ObserveStopAsync(() => owner.StopAsync(_options.Stop), "Owner stop expired.").ConfigureAwait(false); }
+        catch (Exception error) { RetirementFailure("stop", error); }
+        var attempts = 0;
+        while (!ConfirmedExit(owner))
         {
-            try { await AwaitDeadline(owner.TerminateAsync(_options.Stop), _options.Stop, CancellationToken.None, "Owner termination expired.").ConfigureAwait(false); }
-            catch (Exception) { }
+            if (WaitingForChildExit(owner))
+            {
+                Publish(SupervisionState.Recovering, "worker_exit_pending");
+                Interlocked.Exchange(ref _observationQpc, Stopwatch.GetTimestamp());
+                await Task.Delay(_options.CheckInterval).ConfigureAwait(false);
+                continue;
+            }
+            try { await ObserveStopAsync(() => owner.TerminateAsync(_options.Stop), "Owner termination expired.").ConfigureAwait(false); }
+            catch (Exception error) { RetirementFailure("termination", error); }
+            if (ConfirmedExit(owner)) break;
+            if (!(owner is IIsolatedComponentGeneration))
+            {
+                Publish(SupervisionState.Escalating, "owner_exit_unconfirmed");
+                Escalate();
+                await owner.Exit.ConfigureAwait(false);
+                if (!ConfirmedExit(owner)) throw new InvalidOperationException("Owner exit remains unconfirmed.");
+                break;
+            }
+            // The OS may still be releasing native I/O. Keep the process pinned and
+            // the supervisor observable; never create a second owner or restart the App.
+            Publish(SupervisionState.Recovering, "worker_exit_pending");
+            var delay = Backoff(Math.Min(++attempts, 6));
+            var watch = Stopwatch.StartNew();
+            while (!ConfirmedExit(owner) && watch.Elapsed < delay)
+            {
+                Interlocked.Exchange(ref _observationQpc, Stopwatch.GetTimestamp());
+                await Task.Delay(_options.CheckInterval).ConfigureAwait(false);
+            }
         }
-        if (!ConfirmedExit(owner))
+    }
+    private async Task ObserveStopAsync(Func<Task> action, string failure)
+    {
+        // Even a native termination call can block before returning a Task.
+        var operation = Task.Run(action);
+        var watch = Stopwatch.StartNew();
+        while (!operation.IsCompleted && watch.Elapsed < _options.Stop)
         {
-            Publish(SupervisionState.Escalating, "owner_exit_unconfirmed");
-            Escalate();
-            // A noncooperative managed owner requires the App process boundary.
-            // There is deliberately no cancellation path that starts a successor.
-            await owner.Exit.ConfigureAwait(false);
-            if (!ConfirmedExit(owner)) throw new InvalidOperationException("Owner exit remains unconfirmed.");
+            Interlocked.Exchange(ref _observationQpc, Stopwatch.GetTimestamp());
+            await Task.WhenAny(operation, Task.Delay(_options.CheckInterval)).ConfigureAwait(false);
         }
+        if (!operation.IsCompleted)
+        {
+            _ = operation.ContinueWith(task => { _ = task.Exception; }, CancellationToken.None,
+                TaskContinuationOptions.OnlyOnFaulted, TaskScheduler.Default);
+            throw new TimeoutException(failure);
+        }
+        await operation.ConfigureAwait(false);
+    }
+    private void RetirementFailure(string phase, Exception error)
+    {
+        if (!_shutdown.IsCancellationRequested) MarkUnavailable(_failure.Length == 0 ? error.Message : _failure);
+        Publish(SupervisionState.Recovering, phase + ": " + Bound(error.Message));
+        System.Diagnostics.Trace.TraceError("{0} generation={1} {2}: {3}", _name, _generation, phase, error);
+    }
+    private void MarkUnavailable(string failure)
+    {
+        if (_unavailableSinceQpc == 0) _unavailableSinceQpc = Stopwatch.GetTimestamp();
+        _settled = false; _requiresStabilization = true; _failure = failure;
     }
     private async Task RetireAsync()
     {
@@ -254,6 +333,7 @@ internal sealed class ComponentSupervisor : IDisposable
         }
     }
     private static bool ConfirmedExit(IComponentGeneration owner) => owner.Exit.Status == TaskStatus.RanToCompletion;
+    private static bool WaitingForChildExit(IComponentGeneration owner) => owner is ManagedComponentGeneration managed && managed.WaitingForProcessExit;
     private static async Task AwaitDeadline(Task operation, TimeSpan deadline, CancellationToken cancellationToken, string failure)
     {
         using var timer = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -272,8 +352,8 @@ internal sealed class ComponentSupervisor : IDisposable
     private void Publish(SupervisionState state, string reason)
     {
         var previous = Snapshot;
-        if (previous.Generation == _generation && previous.State == state && previous.Failures == _failures && previous.Reason == reason) return;
-        var snapshot = new SupervisionSnapshot(_name, _generation, state, _failures, reason);
+        if (previous.Generation == _generation && previous.State == state && previous.Failures == _failures && previous.Reason == reason && previous.Settled == _settled && previous.UnavailableSinceQpc == _unavailableSinceQpc && previous.Failure == _failure) return;
+        var snapshot = new SupervisionSnapshot(_name, _generation, state, _failures, reason, _settled, _unavailableSinceQpc, _failure);
         Volatile.Write(ref _snapshot, snapshot);
         // Presentation/diagnostics are observers, not owners of supervision.
         try { Changed?.Invoke(snapshot); } catch { }

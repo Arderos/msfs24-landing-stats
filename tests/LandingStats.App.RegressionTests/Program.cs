@@ -56,6 +56,10 @@ internal static class Program
         {
             DirectInputControllerRegressionTests.RunNativeSmoke(); return 0;
         }
+        if (args.Length == 1 && args[0] == "--directinput-source-soak")
+        {
+            DirectInputControllerRegressionTests.RunNativeSmoke(3000); return 0;
+        }
         if (args.Length == 1 && args[0] == "--native-source-smoke")
         {
             _ = new System.Windows.Application(); LocalizationManager.Apply("en");
@@ -147,6 +151,7 @@ internal static class Program
         Run("profile evidence RAW storage deduplicates and recovers diagnostic snapshots", ProfileEvidenceRawRegressionTests.RunAll);
         Run("profile control mapping preserves explicit assignments and missing devices", ProfileControlMappingRegressionTests.RunAll);
         Run("controller binding observations survive profile changes and recovery", ControllerBindingObservationRegressionTests.RunAll);
+        Run("directinput HID discovery selects live game controllers before reading identities", HidControllerDiscoveryRegressionTests.RunAll);
         Run("directinput discovers every controller and preserves native axes", DirectInputControllerRegressionTests.RunAll);
         Run("dynamic controller data survives binary CSV catalog checkpoint and history", DynamicControllerDataRegressionTests.RunAll);
         Run("controller provenance survives recovery history archive and receiver negotiation", ControllerProvenanceRegressionTests.RunAll);
@@ -161,6 +166,10 @@ internal static class Program
         Run("episode recovery preserves committed inputs, analysis, IDs, policy and user deletes", EpisodeTransactionRegressionTests.RunAll);
         Run("durable outbox fences worker generations and consent while retaining immutable archives", DurableOutboxRegressionTests.RunAll);
         Run("process worker host isolates roles, confirms exits and keeps owner probes independent of data backpressure", ProcessWorkerHostRegressionTests.RunAll);
+        Run("worker readiness is immediate on first startup and stabilizes after every failure", WorkerRecoveryRegressionTests.RunReadiness);
+        Run("isolated worker recovery preserves App liveness and recording across delayed exit", WorkerRecoveryRegressionTests.RunIsolation);
+        Run("worker status spans restarts, settles idle owners and acknowledges one outage", WorkerRecoveryRegressionTests.RunStatus);
+        Run("worker status UI shows cause impact support and all header groups", WorkerStatusUiRegressionTests.RunAll);
         Run("component supervision recovers every managed owner and fences hangs, checkpoints and expired operations", ComponentSupervisorRegressionTests.RunManaged);
         Run("component supervision survives one hundred real worker failures across all roles", ComponentSupervisorRegressionTests.RunProcesses);
         Run("controller runtime joins measured snapshots with durable catalog identity and age", ControllerRuntimeRegressionTests.RunJoiner);

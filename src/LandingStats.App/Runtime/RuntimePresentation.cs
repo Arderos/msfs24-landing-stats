@@ -146,7 +146,7 @@ internal sealed class RuntimePresentation
             if (_health.Count >= 64 && previous == null) throw new InvalidOperationException("Runtime component registry exceeds its presentation bound.");
             _health[value.Component] = value;
             bool Healthy(SupervisionState state) => state == SupervisionState.Running || state == SupervisionState.Waiting;
-            if (previous != null && previous.Generation == value.Generation && previous.Failures == value.Failures && Healthy(previous.State) && Healthy(value.State)) return;
+            if (previous != null && previous.Generation == value.Generation && previous.Failures == value.Failures && Healthy(previous.State) && Healthy(value.State) && previous.Settled == value.Settled && previous.UnavailableSinceQpc == value.UnavailableSinceQpc && previous.Failure == value.Failure) return;
             Changed();
         }
     }
