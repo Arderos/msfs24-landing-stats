@@ -104,13 +104,7 @@ internal static class Program
             Process.GetCurrentProcess().Id.ToString(System.Globalization.CultureInfo.InvariantCulture),
             QuoteArgument(updateRoot),
         });
-        var started = Process.Start(new ProcessStartInfo
-        {
-            FileName = invocation.TargetPath,
-            WorkingDirectory = Path.GetDirectoryName(invocation.TargetPath) ?? Environment.CurrentDirectory,
-            Arguments = cleanupArguments,
-            UseShellExecute = false,
-        });
+        var started = Process.Start(CreateRestartStartInfo(invocation.TargetPath, cleanupArguments, invocation.RestartInBackground));
         if (started == null)
         {
             throw new InvalidOperationException("The updated application could not be restarted");
@@ -187,8 +181,13 @@ internal static class Program
         }
     }
 
-    private static UpdateInvocation ParseInvocation(string[] args)
+    internal static UpdateInvocation ParseInvocation(string[] args)
     {
+        // Older clients cannot report focus. Their first upgrade uses passive
+        // startup too, so the fix also protects clients receiving this updater.
+        var activation = args.Length == 0 ? "" : args[args.Length - 1];
+        var restartInBackground = activation != "--foreground";
+        if (activation == "--background" || activation == "--foreground") args = args.Take(args.Length - 1).ToArray();
         if ((args.Length != 9 && args.Length != 11 && args.Length != 13) ||
             args[0] != "--apply" ||
             args[1] != "--parent-pid" ||
@@ -231,7 +230,7 @@ internal static class Program
         if (commit != null && (!commit.StartsWith("Local\\MSFSLandingStatsUpdateCommit-", StringComparison.Ordinal) ||
             !Guid.TryParseExact(commit.Substring("Local\\MSFSLandingStatsUpdateCommit-".Length), "N", out _)))
             throw new InvalidDataException("Updater commit event is invalid");
-        return new UpdateInvocation(parentPid, targetPath, version, readyEventName, manifestName, commit);
+        return new UpdateInvocation(parentPid, targetPath, version, readyEventName, manifestName, commit, restartInBackground);
     }
 
     private static string SignatureNameFor(string manifestName)
@@ -375,12 +374,7 @@ internal static class Program
             var targetPath = invocation.TargetPath;
             if (!string.IsNullOrEmpty(targetPath) && File.Exists(targetPath))
             {
-                var start = new ProcessStartInfo
-                {
-                    FileName = targetPath,
-                    WorkingDirectory = Path.GetDirectoryName(targetPath) ?? Environment.CurrentDirectory,
-                    UseShellExecute = false,
-                };
+                var start = CreateRestartStartInfo(targetPath, "", invocation.RestartInBackground);
                 start.EnvironmentVariables["MSFS_LANDING_STATS_SKIP_UPDATE_ONCE"] = "1";
                 Process.Start(start);
             }
@@ -389,6 +383,22 @@ internal static class Program
         {
             // The visible error still tells the user the update did not complete.
         }
+    }
+
+    internal static ProcessStartInfo CreateRestartStartInfo(string targetPath, string arguments, bool restartInBackground)
+    {
+        var start = new ProcessStartInfo
+        {
+            FileName = targetPath,
+            WorkingDirectory = Path.GetDirectoryName(targetPath) ?? Environment.CurrentDirectory,
+            Arguments = arguments,
+            UseShellExecute = false,
+        };
+        // The launcher inherits this launch-scoped setting and passes it to WPF.
+        // Both successful updates and rollback use the same activation policy.
+        start.EnvironmentVariables.Remove(Protocol.BackgroundRestartEnvironmentVariable);
+        if (restartInBackground) start.EnvironmentVariables[Protocol.BackgroundRestartEnvironmentVariable] = "1";
+        return start;
     }
 
     private static string QuoteArgument(string value)
@@ -423,9 +433,9 @@ internal static class Program
         return result.ToString();
     }
 
-    private sealed class UpdateInvocation
+    internal sealed class UpdateInvocation
     {
-        public UpdateInvocation(int parentPid, string targetPath, Version version, string readyEventName, string manifestName, string? commitEventName = null)
+        public UpdateInvocation(int parentPid, string targetPath, Version version, string readyEventName, string manifestName, string? commitEventName = null, bool restartInBackground = false)
         {
             ParentPid = parentPid;
             TargetPath = targetPath;
@@ -433,6 +443,7 @@ internal static class Program
             ReadyEventName = readyEventName;
             ManifestName = manifestName;
             CommitEventName = commitEventName;
+            RestartInBackground = restartInBackground;
         }
 
         public int ParentPid { get; }
@@ -441,5 +452,6 @@ internal static class Program
         public string ReadyEventName { get; }
         public string ManifestName { get; }
         public string? CommitEventName { get; }
+        public bool RestartInBackground { get; }
     }
 }

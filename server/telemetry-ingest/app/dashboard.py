@@ -82,12 +82,15 @@ def create_app(index=None, allowed_networks=None, allowed_hosts=None):
                  airport: str = Query("", max_length=128),
                  aircraft: str = Query("", max_length=256),
                  version: str = Query("", max_length=64),
+                 creator_version: str = Query("", max_length=64),
+                 uploader_version: str = Query("", max_length=64),
                  kind: str = Query("", max_length=64),
                  outcome: str = Query("", max_length=64),
                  page: int = Query(1, ge=1, le=100000),
                  page_size: int = Query(50, ge=1, le=100)):
         return index.list_captures(days=days, q=q, airport=airport, aircraft=aircraft,
-                                   version=version, kind=kind, outcome=outcome, page=page, page_size=page_size)
+                                   version=version, kind=kind, outcome=outcome, page=page, page_size=page_size,
+                                   creator_version=creator_version, uploader_version=uploader_version)
 
     @app.get("/api/captures/{capture_id}")
     def capture(capture_id: str):

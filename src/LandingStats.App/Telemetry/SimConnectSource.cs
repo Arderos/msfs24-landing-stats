@@ -23,6 +23,7 @@ internal sealed partial class SimConnectSource : ISimulatorSource, IAircraftConf
     public ISceneryQueryPort SceneryQuery { get; }
     public bool IsConnected => _simConnect != null && _connectionSetupComplete;
     public long SceneryRevision { get; private set; }
+    public uint ApplicationVersionMajor { get; private set; }
     public event Action<string>? Connected;
     public event Action<SourceDisconnectionReason>? Disconnected;
     public event Action<TelemetrySample>? SampleReceived;
@@ -262,6 +263,7 @@ internal sealed partial class SimConnectSource : ISimulatorSource, IAircraftConf
             TrySubscribeToFlowEvents(sender);
             SubscribeToLifecycle(sender);
 
+            ApplicationVersionMajor = data.dwApplicationVersionMajor;
             _connectionSetupComplete = true;
             Connected?.Invoke(string.IsNullOrWhiteSpace(data.szApplicationName) ? "MSFS" : data.szApplicationName.Trim());
             StartAircraftConfiguration();
@@ -558,6 +560,7 @@ internal sealed partial class SimConnectSource : ISimulatorSource, IAircraftConf
         // until every nested ReceiveMessage invocation has returned.
         _simConnect = null;
         _connectionSetupComplete = false;
+        ApplicationVersionMajor = 0;
         StopSourceObservation();
         try
         {

@@ -4,6 +4,7 @@ extern alias ApplicationHost;
 using System;
 using System.Diagnostics;
 using System.Globalization;
+using System.Collections.Generic;
 using System.IO;
 using System.Reflection;
 using System.Security.Cryptography;
@@ -23,11 +24,14 @@ internal static class GuardianUpdater
     {
         using var verified = Verify(request, launcher, updatesRoot);
         var commit = "Local\\MSFSLandingStatsUpdateCommit-" + Guid.NewGuid().ToString("N");
-        return await GuardianUpdateLease.PrepareAsync(request.Executable, new[]
+        var arguments = new List<string>
         {
             "--apply", "--parent-pid", Process.GetCurrentProcess().Id.ToString(CultureInfo.InvariantCulture), "--target", launcher,
             "--version", request.Version, "--ready-event", request.ReadyEvent, "--manifest", request.Manifest, "--commit-event", commit,
-        }, Path.GetDirectoryName(request.Executable)!, request.ReadyEvent, commit, token).ConfigureAwait(false);
+        };
+        arguments.Add(request.RestartInBackground ? "--background" : "--foreground");
+        return await GuardianUpdateLease.PrepareAsync(request.Executable, arguments.ToArray(),
+            Path.GetDirectoryName(request.Executable)!, request.ReadyEvent, commit, token).ConfigureAwait(false);
     }
     internal static FileStream Verify(GuardianUpdateRequest request, string launcher, string updatesRoot)
     {

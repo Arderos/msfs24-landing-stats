@@ -6,6 +6,7 @@ using System.IO;
 using System.Net;
 using System.Net.Http;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
@@ -148,12 +149,15 @@ internal sealed class ReleaseUpdater : IDisposable
                     waitingNoticeSent = false;
                     continue;
                 }
+                // Capture the foreground owner at handoff, after downloads/readiness.
+                // A background update must not activate the replacement application.
+                var restartInBackground = !IsCurrentProcessForeground();
                 var guardian = App.Guardian;
                 if (guardian != null)
                 {
                     var request = new Runtime.GuardianUpdateRequest(updaterPath, targetPath,
                         $"{manifest.Version.Major}.{manifest.Version.Minor}.{manifest.Version.Build}", readyEventName,
-                        Protocol.ChannelManifestName, manifest.UpdaterSize, manifest.UpdaterSha256);
+                        Protocol.ChannelManifestName, manifest.UpdaterSize, manifest.UpdaterSha256, restartInBackground: restartInBackground);
                     if (!await guardian.UpdateAsync(request, cancellationToken).ConfigureAwait(false))
                         throw new IOException("The application guardian rejected the verified updater handoff");
                 }
@@ -174,6 +178,7 @@ internal sealed class ReleaseUpdater : IDisposable
                     "--manifest",
                     Protocol.ChannelManifestName,
                 });
+                arguments += restartInBackground ? " --background" : " --foreground";
                 using var readyEvent = new EventWaitHandle(false, EventResetMode.ManualReset, readyEventName);
                 using var started = Process.Start(new ProcessStartInfo
                 {
@@ -250,6 +255,19 @@ internal sealed class ReleaseUpdater : IDisposable
             }
         }
     }
+
+    internal static bool IsCurrentProcessForeground()
+    {
+        var foreground = GetForegroundWindow();
+        if (foreground == IntPtr.Zero) return false;
+        GetWindowThreadProcessId(foreground, out var processId);
+        using var current = Process.GetCurrentProcess();
+        return processId == current.Id;
+    }
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")]
+    private static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
 
     public static void BeginCompletedUpdateCleanup(string[] commandLineArgs)
     {

@@ -8,6 +8,7 @@ namespace LandingStats.App.Telemetry;
 
 internal interface IAircraftConfigurationSource
 {
+    uint ApplicationVersionMajor { get; }
     event Action<string, string>? AircraftConfigurationReceived;
 }
 

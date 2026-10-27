@@ -47,12 +47,14 @@ internal static class Program
                 return 0;
             }
 
-            if (!GuardianInstance.TryAcquire(out var instance)) return 0;
+            var simulatorAutoStart = Array.IndexOf(args, "--simulator-autostart") >= 0;
+            var background = simulatorAutoStart || Environment.GetEnvironmentVariable(UpdateProtocol.ReleaseUpdateProtocol.BackgroundRestartEnvironmentVariable) == "1";
+            if (!GuardianInstance.TryAcquire(out var instance, activateExisting: !background)) return 0;
             using (instance!)
             {
                 // Preserve simulator-owned launch policy through the external
                 // updater and its replacement launcher as well as App retries.
-                if (Array.IndexOf(args, "--simulator-autostart") >= 0)
+                if (simulatorAutoStart)
                     Environment.SetEnvironmentVariable("MSFS_LANDING_STATS_SIMULATOR_AUTOSTART", "1");
                 // An older/direct runtime has its own mutex but no guardian.
                 // Do not replace its extracted files or repeatedly spawn duplicates.

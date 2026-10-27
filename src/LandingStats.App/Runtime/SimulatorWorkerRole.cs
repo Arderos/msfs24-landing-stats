@@ -83,7 +83,7 @@ internal sealed class SimulatorWorkerRole : IWorkerRole
                 aircraftSource.AircraftConfigurationReceived += (path, category) =>
                 {
                     Publish(new AircraftControlsMessage(path, category, Array.Empty<ControllerBinding>()));
-                    profiles.Update(simulator, path, category);
+                    profiles.Update(aircraftSource.ApplicationVersionMajor, path, category);
                 };
             source.SampleReceived += sample => { FlushDiagnostics(); Physics(sample.SimulationTimeSeconds, sample.MotionSimulation); capture.LastSimulationTime = sample.SimulationTimeSeconds; Publish(new TelemetryFrameMessage(sample)); };
             // Guard is acquisition-local: the recording reducer never consumes it.

@@ -78,9 +78,12 @@ public partial class MainWindow
                 if (!ReferenceEquals(child, ClosingOverlay)) child.IsEnabled = false;
             }
         }
-        Keyboard.ClearFocus();
         ClosingOverlay.Visibility = Visibility.Visible;
-        ClosingOverlay.Focus();
+        if (IsActive)
+        {
+            Keyboard.ClearFocus();
+            ClosingOverlay.Focus();
+        }
     }
 
     private async Task DrainWindowShutdownAsync()

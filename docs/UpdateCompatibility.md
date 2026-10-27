@@ -30,6 +30,28 @@ Both manifests use format 3 and authorize one `MSFS-Landing-Stats.exe` plus one
 manifest signature is verified with the public key embedded in both the client
 and updater. ZIP transport is no longer part of the release protocol.
 
+## Window activation after an update
+
+The client captures whether its process owns the foreground window immediately
+before handing the update to the guardian or standalone updater. The optional
+final `--background` / `--foreground` argument carries this policy to the updater.
+Legacy invocations remain accepted and default to background startup because
+they cannot report the original focus state.
+
+The updater passes the background policy through a process-scoped environment
+variable to the replacement launcher and application. WPF consumes it before
+showing the main window with `ShowActivated = false`; asynchronous startup
+prompts and shutdown overlays do not request focus while the window is inactive.
+A background launch also leaves an already running instance inactive. Simulator
+autostart (`--simulator-autostart`) uses the same non-activating window behavior,
+including when an instance is already running; existing `exe.xml` registrations
+need no changes. Explicit user launches retain the usual activation behavior. The same launch policy is
+used when restarting the preserved application after an update failure; the
+updater's existing error dialog remains visible on failure.
+
+This policy controls window activation only. The separate flight-state gate
+still determines whether an automatic update may restart the application.
+
 ## Release gate
 
 `verify-update-chain.ps1` is mandatory for every tagged release after v0.7.5.

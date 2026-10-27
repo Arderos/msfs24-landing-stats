@@ -24,7 +24,8 @@ class FakeIndex:
         return {"test_archive_count": 3}
 
     def list_captures(self, days=0, q="", airport="", aircraft="", version="", kind="",
-                      outcome="", page=1, page_size=50):
+                      outcome="", page=1, page_size=50, creator_version="", uploader_version=""):
+        self.version_filters = (creator_version, uploader_version)
         self.calls.append(("list", days, q, airport, aircraft, version, kind, page, page_size, outcome))
         return {"items": [], "total": 0, "page": page, "page_size": page_size}
 
@@ -132,6 +133,12 @@ class DashboardAccessTests(unittest.TestCase):
                 with self.subTest(path=path):
                     self.assertIn(client.get(path).status_code, (400, 422))
         self.assertEqual([], self.index.calls)
+
+    def test_version_filters_reach_the_index_with_explicit_roles(self):
+        with self.client() as client:
+            response = client.get("/api/captures?creator_version=0.9.4&uploader_version=0.9.7")
+            self.assertEqual(200, response.status_code)
+        self.assertEqual(("0.9.4", "0.9.7"), self.index.version_filters)
 
     def test_outcome_filter_reaches_the_read_only_index(self):
         with self.client() as client:

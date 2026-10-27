@@ -41,10 +41,19 @@ public partial class App : Application
                 ShutdownMode = ShutdownMode.OnExplicitShutdown; Shutdown(0); return;
             }
             var window = new MainWindow(); Volatile.Write(ref _runtimeWindow, window);
+            ConfigureStartupWindow(window, e.Args);
             MainWindow = window; MainWindow.Show();
             }).Task.Unwrap();
         }
         catch (Exception error) { WriteCrashLog("startup", error); await Dispatcher.InvokeAsync(() => Shutdown(70)); }
+    }
+
+    internal static void ConfigureStartupWindow(Window window, string[] arguments)
+    {
+        var variable = UpdateProtocol.ReleaseUpdateProtocol.BackgroundRestartEnvironmentVariable;
+        if (Array.IndexOf(arguments, SimulatorAutoStartManager.LaunchArgument) >= 0 ||
+            Environment.GetEnvironmentVariable(variable) == "1") window.ShowActivated = false;
+        Environment.SetEnvironmentVariable(variable, null);
     }
 
     protected override void OnExit(ExitEventArgs e)

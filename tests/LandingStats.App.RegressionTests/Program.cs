@@ -89,6 +89,7 @@ internal static class Program
         Run("delivery acknowledgements and OAuth failures preserve durable evidence", DeliveryRemediationRegressionTests.RunAll);
         Run("behavior parity preserves lifecycle and simulator controls across gaps", BehaviorParityRegressionTests.Recording);
         Run("restart readiness wakes without UI events and revokes stale permissions", RestartReadinessRegressionTests.RunAll);
+        Run("update activation preserves background updates, simulator autostart and explicit launches", UpdateActivationRegressionTests.RunAll);
         Run("update readiness retains one verified download until safe handoff", UpdateReadinessRegressionTests.PreparedUpdateWaitsForReadiness);
         Run("update readiness resumes naturally without presentation events", UpdateReadinessRegressionTests.NaturalReadinessResumesWithoutPresentation);
         Run("update readiness rechecks safety immediately before handoff", UpdateReadinessRegressionTests.UnsafeHandoffResumesPreparedUpdate);

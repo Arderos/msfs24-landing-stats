@@ -4,6 +4,12 @@ All notable changes to MSFS Landing Stats are documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- Preserve explicit controller assignments in localized MSFS profiles and select the profile store for the connected simulator version.
+- Show recording creator and uploader versions separately in the telemetry dashboard, and index large landing results already accepted by the receiver.
+- Keep the application in the background after a background update and when starting automatically with the simulator.
+
 ## [0.9.7] - 2026-10-27
 
 ### Added

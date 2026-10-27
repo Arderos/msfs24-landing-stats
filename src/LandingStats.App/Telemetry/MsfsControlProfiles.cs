@@ -107,39 +107,53 @@ internal sealed class MsfsControlProfileStore
         return result.ToArray();
     }
 
-    /// <summary>Locates the active Steam account. Ambiguous accounts are never resolved by timestamp.</summary>
-    public static MsfsControlProfileStore Discover(string? simulator = null)
+    /// <summary>Uses the connected application's SimConnect version, never its display name.
+    /// Ambiguous accounts are never resolved by timestamp.</summary>
+    public static MsfsControlProfileStore Discover(uint applicationVersionMajor)
     {
-        var diagnostics = new List<string>(); var candidates = new List<string>();
-        var is2020 = simulator?.IndexOf("2020", StringComparison.OrdinalIgnoreCase) >= 0;
-        var is2024 = simulator?.IndexOf("2024", StringComparison.OrdinalIgnoreCase) >= 0;
         try
         {
             using var steam = Registry.CurrentUser.OpenSubKey(@"Software\Valve\Steam");
             var path = steam?.GetValue("SteamPath") as string;
             using var active = Registry.CurrentUser.OpenSubKey(@"Software\Valve\Steam\ActiveProcess");
             var userValue = active?.GetValue("ActiveUser");
-            var user = userValue is int number && number != 0 ? unchecked((uint)number).ToString(CultureInfo.InvariantCulture) : null;
-            if (!string.IsNullOrWhiteSpace(path))
+            var user = userValue is int number ? unchecked((uint)number) : 0;
+            return DiscoverSteam(applicationVersionMajor, path, user);
+        }
+        catch (Exception error) when (IsReadError(error))
+        { return Unavailable("Steam input-profile discovery failed: " + error.Message); }
+    }
+
+    internal static MsfsControlProfileStore DiscoverSteam(uint applicationVersionMajor, string? steamPath, uint activeUser)
+    {
+        // SIMCONNECT_RECV_OPEN application major 11 = MSFS 2020, 12 = MSFS 2024.
+        // Unknown/future versions must not borrow another installation's settings.
+        var appId = applicationVersionMajor == 11 ? "1250410" : applicationVersionMajor == 12 ? "2537590" : null;
+        if (appId == null) return Unavailable("The active simulator version is unknown or unsupported; saved input profiles cannot be selected.");
+        var candidates = new List<string>();
+        try
+        {
+            if (!string.IsNullOrWhiteSpace(steamPath))
             {
-                var userdata = Path.Combine(path!, "userdata");
+                var userdata = Path.Combine(steamPath!, "userdata");
                 if (Directory.Exists(userdata))
                 {
-                    var accounts = user == null ? Directory.GetDirectories(userdata) : new[] { Path.Combine(userdata, user) };
+                    var accounts = activeUser == 0 ? Directory.GetDirectories(userdata) :
+                        new[] { Path.Combine(userdata, activeUser.ToString(CultureInfo.InvariantCulture)) };
                     foreach (var account in accounts)
                     {
-                        if (!is2020) Add(Path.Combine(account, "2537590", "remote"));
-                        if (!is2024) Add(Path.Combine(account, "1250410", "remote"));
+                        var folder = Path.Combine(account, appId, "remote");
+                        if (File.Exists(Path.Combine(folder, "profile_00"))) candidates.Add(folder);
                     }
                 }
             }
+            if (candidates.Count == 1) return Load(candidates[0]);
+            return Unavailable(candidates.Count > 1
+                ? "Multiple MSFS input-profile stores are present; the active account is ambiguous: " + string.Join("; ", candidates) + "."
+                : "No readable MSFS input-profile store was found for the active simulator/account. Store/WGS input selections require a supported container reader.");
         }
-        catch (Exception error) when (IsReadError(error)) { diagnostics.Add("Steam input-profile discovery failed: " + error.Message); }
-        if (candidates.Count == 1) return Load(candidates[0]);
-        if (candidates.Count > 1) diagnostics.Add("Multiple MSFS input-profile stores are present; the active simulator/account is ambiguous: " + string.Join("; ", candidates) + ".");
-        else diagnostics.Add("No readable MSFS input-profile store was found. Store/WGS input selections require a supported container reader.");
-        return Unavailable(string.Join(" ", diagnostics));
-        void Add(string folder) { if (File.Exists(Path.Combine(folder, "profile_00"))) candidates.Add(folder); }
+        catch (Exception error) when (IsReadError(error))
+        { return Unavailable("Steam input-profile discovery failed: " + error.Message); }
     }
 
     public MsfsControlProfileResolution Resolve(string? aircraftConfigPath, string? aircraftCategory = "AIRPLANE")
@@ -374,12 +388,22 @@ internal sealed class MsfsControlProfileStore
     }
     private static bool TryAxis(XElement key, out int axis)
     {
-        // Information names the physical input. Numeric KEY is a simulator identifier,
-        // not a DirectInput object ID (rY is 786 in MSFS, not DirectInput's 1026).
-        var information = ((string?)key.Attribute("Information") ?? "").Trim();
-        var names = new[] { "Joystick L-Axis X", "Joystick L-Axis Y", "Joystick L-Axis Z", "Joystick R-Axis X",
-            "Joystick R-Axis Y", "Joystick R-Axis Z", "Joystick Slider X", "Joystick Slider Y" };
-        axis = Array.FindIndex(names, n => string.Equals(n, information, StringComparison.OrdinalIgnoreCase));
+        // MSFS Input Profile Editor full-axis KEY IDs, verified against Asobo's
+        // input profiles. These are simulator IDs, not DirectInput object IDs.
+        // Information is a localized display label and cannot identify an axis.
+        axis = -1;
+        if (key.HasElements || !int.TryParse(key.Value, NumberStyles.None, CultureInfo.InvariantCulture, out var id)) return false;
+        switch (id)
+        {
+            case 1026: axis = 0; break; // X
+            case 1042: axis = 1; break; // Y
+            case 1058: axis = 2; break; // Z
+            case 770: axis = 3; break;  // Rx
+            case 786: axis = 4; break;  // Ry
+            case 802: axis = 5; break;  // Rz
+            case 514: axis = 6; break;  // Slider X
+            case 530: axis = 7; break;  // Slider Y
+        }
         return axis >= 0;
     }
 }

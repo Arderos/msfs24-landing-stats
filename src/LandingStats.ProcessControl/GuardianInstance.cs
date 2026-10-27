@@ -16,14 +16,14 @@ internal sealed class GuardianInstance : IDisposable
     private readonly CancellationTokenSource _shutdown = new CancellationTokenSource();
     private Task _pump = Task.CompletedTask;
     private GuardianInstance(Mutex mutex, EventWaitHandle activate) { _mutex = mutex; _activate = activate; }
-    public static bool TryAcquire(out GuardianInstance? instance, string name = Name)
+    public static bool TryAcquire(out GuardianInstance? instance, string name = Name, bool activateExisting = true)
     {
         Mutex mutex; bool created;
         try { mutex = new Mutex(true, name, out created); }
-        catch (UnauthorizedAccessException) { ActivateExisting(name); instance = null; return false; }
+        catch (UnauthorizedAccessException) { if (activateExisting) ActivateExisting(name); instance = null; return false; }
         if (!created)
         {
-            mutex.Dispose(); ActivateExisting(name);
+            mutex.Dispose(); if (activateExisting) ActivateExisting(name);
             instance = null; return false;
         }
         try { instance = new GuardianInstance(mutex, GuardianSignals.CreateEvent(name + ".Activate", EventResetMode.AutoReset, allowMediumIntegrity: true)); return true; }

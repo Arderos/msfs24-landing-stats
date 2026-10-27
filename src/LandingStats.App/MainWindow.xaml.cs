@@ -810,8 +810,11 @@ public partial class MainWindow : Window
         AutoStartPromptErrorText.Visibility = Visibility.Collapsed;
         SetAutoStartPromptBusy(false);
         AutoStartPromptOverlay.Visibility = Visibility.Visible;
-        AutoStartPromptOverlay.Focus();
-        Keyboard.Focus(DeclineAutoStartButton);
+        if (IsActive)
+        {
+            AutoStartPromptOverlay.Focus();
+            Keyboard.Focus(DeclineAutoStartButton);
+        }
     }
 
     private void HideAutoStartPrompt()
@@ -1019,8 +1022,11 @@ public partial class MainWindow : Window
         GoogleDrivePromptErrorText.Visibility = Visibility.Collapsed;
         SetGoogleDrivePromptBusy(false);
         GoogleDrivePromptOverlay.Visibility = Visibility.Visible;
-        GoogleDrivePromptOverlay.Focus();
-        Keyboard.Focus(DeclineGoogleDriveButton);
+        if (IsActive)
+        {
+            GoogleDrivePromptOverlay.Focus();
+            Keyboard.Focus(DeclineGoogleDriveButton);
+        }
     }
 
     internal static bool ShouldShowGoogleDrivePrompt(

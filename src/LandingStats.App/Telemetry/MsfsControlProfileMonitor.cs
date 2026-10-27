@@ -12,9 +12,10 @@ namespace LandingStats.App.Telemetry;
 internal sealed class MsfsControlProfileMonitor : IDisposable
 {
     private readonly object _gate = new object();
-    private readonly Func<string, MsfsControlProfileStore> _discover;
+    private readonly Func<uint, MsfsControlProfileStore> _discover;
     private readonly Func<string, MsfsControlProfileStore> _load;
-    private string _simulator = "", _path = "", _category = "";
+    private uint _applicationVersionMajor;
+    private string _path = "", _category = "";
     private long _generation;
     private bool _dirty, _reload, _working, _disposed;
     private MsfsControlProfileStore? _store;
@@ -23,19 +24,19 @@ internal sealed class MsfsControlProfileMonitor : IDisposable
     private string[] _diagnostics = Array.Empty<string>();
 
     public MsfsControlProfileMonitor() : this(MsfsControlProfileStore.Discover, MsfsControlProfileStore.Load) { }
-    internal MsfsControlProfileMonitor(Func<string, MsfsControlProfileStore> discover, Func<string, MsfsControlProfileStore> load)
+    internal MsfsControlProfileMonitor(Func<uint, MsfsControlProfileStore> discover, Func<string, MsfsControlProfileStore> load)
     { _discover = discover; _load = load; }
 
     public IReadOnlyList<string> Diagnostics { get { lock (_gate) return Array.AsReadOnly(_diagnostics); } }
     internal bool IsRefreshing { get { lock (_gate) return _working; } }
 
-    public void Update(string simulator, string aircraftConfigPath, string category)
+    public void Update(uint applicationVersionMajor, string aircraftConfigPath, string category)
     {
         lock (_gate)
         {
             if (_disposed) return;
-            if (_simulator != simulator) { _store = null; DisposeWatcher(); }
-            _simulator = simulator; _path = aircraftConfigPath; _category = category;
+            if (_applicationVersionMajor != applicationVersionMajor) { _store = null; DisposeWatcher(); }
+            _applicationVersionMajor = applicationVersionMajor; _path = aircraftConfigPath; _category = category;
             _generation++; _dirty = true; _pending = null;
         }
         Start();
@@ -51,7 +52,7 @@ internal sealed class MsfsControlProfileMonitor : IDisposable
     {
         lock (_gate)
         {
-            _generation++; _simulator = _path = _category = ""; _dirty = _reload = false;
+            _generation++; _applicationVersionMajor = 0; _path = _category = ""; _dirty = _reload = false;
             _pending = null; _store = null; _diagnostics = Array.Empty<string>(); DisposeWatcher();
         }
     }
@@ -62,22 +63,22 @@ internal sealed class MsfsControlProfileMonitor : IDisposable
         {
             if (_disposed || _working || !_dirty) return;
             _working = true; _dirty = false;
-            var generation = _generation; var simulator = _simulator; var path = _path; var category = _category;
+            var generation = _generation; var version = _applicationVersionMajor; var path = _path; var category = _category;
             // Keep the reload request until its result is accepted. An aircraft
             // change can supersede this read while the cached store is still old.
             var store = _store; var reload = _reload;
-            Task.Run(() => Read(generation, simulator, path, category, store, reload));
+            Task.Run(() => Read(generation, version, path, category, store, reload));
         }
     }
 
-    private void Read(long generation, string simulator, string path, string category, MsfsControlProfileStore? store, bool reload)
+    private void Read(long generation, uint applicationVersionMajor, string path, string category, MsfsControlProfileStore? store, bool reload)
     {
         MsfsControlProfileResolution? resolution = null;
         string? error = null;
         var evidence = "";
         try
         {
-            store = store == null || store.DirectoryPath.Length == 0 ? _discover(simulator) : reload ? _load(store.DirectoryPath) : store;
+            store = store == null || store.DirectoryPath.Length == 0 ? _discover(applicationVersionMajor) : reload ? _load(store.DirectoryPath) : store;
             // Install before the final read so a profile saved during the read invalidates its generation.
             var reread = false;
             lock (_gate)

@@ -13,6 +13,7 @@ internal static class ProfileControlMappingRegressionTests
     internal static void RunAll()
     {
         ConstantHighAxesAndSharedThrottle();
+        LocalizedThrottleProfilesRemainExplicit();
         MissingProfilesUseCorrelation();
         AmbiguousRoleUsesRemainingAxes();
         ExplicitStickAxesCannotBecomeThrottles();
@@ -25,6 +26,30 @@ internal static class ProfileControlMappingRegressionTests
         StrideEightContactRemapping();
         CatalogSamplesUseLatestDuplicateTime();
         CatalogSamplesRejectInvalidTime();
+    }
+
+    private static void LocalizedThrottleProfilesRemainExplicit()
+    {
+        var resolved = MsfsControlProfileRegressionTests.LocalizedThrottleFixture().Bindings;
+        var device = new ControllerDescriptor(0, 0, "Throttle", "product", 255, new uint[8],
+            Enumerable.Repeat(65535u, 8).ToArray(), resolved[0].DeviceInstanceId, Guid.NewGuid());
+        var bindings = resolved.Select(b => new ControllerBinding((ControllerControlKind)b.Control, b.EngineIndex,
+            b.DeviceInstanceId, b.AxisIndex, b.Inverted, b.ActionName)).ToArray();
+        // A third axis follows the engine command perfectly. The two saved
+        // assignments must still win, including when their device disappears.
+        var record = Record(new[] { 3, 4, 5 }, i => new[] { -40.0, 60.0, Throttle(i) });
+        Attach(record, (0, Catalog(new[] { device }, bindings)));
+        var inputs = ReplayControlInputs.Resolve(record);
+        Check(inputs.Throttle(0)?.IsExplicitBinding == true && inputs.Throttle(0)?.SourceIndex == 3 &&
+            inputs.Throttle(1)?.IsExplicitBinding == true && inputs.Throttle(1)?.SourceIndex == 4,
+            "Correlation replaced localized explicit throttle assignments.");
+        Equal(inputs.SampleThrottle(1, 0), 70, "Localized inverted Rx throttle");
+        Equal(inputs.SampleThrottle(1, 1), 80, "Localized Ry throttle");
+        Attach(record, (0, Catalog(Array.Empty<ControllerDescriptor>(), bindings)));
+        inputs = ReplayControlInputs.Resolve(record);
+        Check(inputs.HasPhysicalThrottle(0) && inputs.HasPhysicalThrottle(1) &&
+            inputs.SampleThrottle(1, 0) == null && inputs.SampleThrottle(1, 1) == null,
+            "A missing assigned device silently selected another physical source.");
     }
 
     private static void CatalogSamplesUseLatestDuplicateTime()
