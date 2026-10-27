@@ -9,7 +9,7 @@ The only logical members are `telemetry.csv`, `session.txt`,
 `landing-results.json`, `decisions.json`, `controller-catalogs.json` and the optional
 `source-state.bin` observation timeline.
 Capture-kind validation decides which optional members are required. Both formats
-remain readable. This is independent of CSV schema 5, 6 or 7.
+remain readable. This is independent of CSV schema 5, 6, 7 or 8.
 
 In format 2, `session.txt` retains its original physical name and ZIP compression.
 Each other member is stored as `<logical-name>.zst`, containing exactly one
@@ -42,8 +42,8 @@ central-directory padding is accepted. The directory is inspected before
 materializing entries: at most seven entries and 32 KiB of directory data.
 
 Readers require seekable input no larger than 256 MiB. Total decoded bytes are
-bounded by the caller (receiver default 64 MiB, dashboard 128 MiB, library ceiling
-256 MiB); session is at most 2 MiB, decisions 4 MiB, controller metadata 8 MiB,
+bounded by the caller (standalone receiver 64 MiB, Compose receiver and dashboard
+128 MiB, library ceiling 256 MiB); session is at most 2 MiB, decisions 4 MiB, controller metadata 8 MiB,
 source-state member 16 MiB (its version-1 structure has a tighter 8,454,152-byte bound).
 The Zstd window is at most 128 MiB, reads are at most 64 KiB, and accumulated
 decoder-read time is at most ten seconds per member. The independent frame scan
@@ -74,15 +74,43 @@ source archives.
 
 Server/controller-metadata compatibility remains an independent capability gate.
 The same applies to `source_state_formats: [1]`: only an archive actually carrying
-`source-state.bin` waits for that capability. Existing ZIP/CSV 5–7 archives without
+`source-state.bin` waits for that capability. Existing ZIP/CSV 5–8 archives without
 this member follow their previous validation and delivery paths. Missing evidence
 means unknown; it does not mean a malformed capture, replay, or a reason to defer.
 An older application has no format-2 reader; retained new-runtime archives must
 remain available to the compatible runtime on application rollback. No legacy
 queue/archive migration rewrites their format.
 
-These changes are local and unsigned. No receiver deployment or public format
-activation was performed as part of the runtime refactor.
+Archive format 2 and the source observation timeline are supported by the
+published client and receiver. CSV schema 8 and extended controller metadata
+were added with client 0.9.7; readers retain support for schemas 5–7.
+
+## CSV schema 8 and controller provenance
+
+The receiver accepts exact schema 5, 6, 7 and 8 headers. Schema 8 appends
+`controller_data_v2` to schema 7. The existing fixed controller columns remain
+a legacy projection; the appended Base64 field stores the complete controller
+sample when its dimensions differ from the legacy eight-device/six-axis layout.
+An empty field means the legacy projection is complete.
+
+The decoded field uses little-endian encoding:
+
+- UInt16 version `2`, Int32 device count, Int32 axes per device (6 or 8);
+- for each device: Int32 ID, binary64 legacy Y value, byte validity (0/1),
+  binary64 age in seconds;
+- then, for each axis: binary64 value, byte validity and binary64 age.
+
+The byte count must be exactly `10 + devices * (21 + 17 * axes)`.
+The current DirectInput axis order is X, Y, Z, Rx, Ry, Rz, slider 0, slider 1.
+The writer discovers device count dynamically; the sample remains subject to
+payload byte bounds. See `ControllerSampleCodec` for the executable contract.
+
+`controller-catalogs.json` supplies the versioned catalog timeline independently
+of numeric samples. `LCC2` catalogs include instance/product GUIDs, axis ranges,
+resolved control assignments, binding context and profile-read evidence.
+Both legacy `LCC1` and current `LCC2` catalogs remain readable. The outer catalog
+timeline version remains 1; it is not the `LCC` record version.
+See [landing record format](format-v7.md) for history persistence.
 
 ## Optional source observation timeline
 
@@ -111,14 +139,3 @@ classification must treat them as unavailable evidence.
 The source uses a separate optional USER definition and distinct ONCE requests.
 An SDK replay event does not refresh the age of freeze observations. Any external
 pose-control classification is diagnostic; these flags alone do not prove replay.
-
-## Verification
-
-`LandingStats.Archives.RegressionTests` runs on net48 and net10. It tests byte
-roundtrip, damaged descriptors/checksums, truncated/trailing/concatenated frames,
-oversized windows and expansion, forged directory counts, both ZIP methods and
-unfinished writer retirement. Application tests exercise production report/RAW
-writers, endpoint/expiry/downgrade handling and immutable upload retries.
-Python tests cover the same framing policy, real net48 output, server validation
-and dashboard indexing. Full-corpus evidence is recorded separately in
-`telemetry-compression-validation.md`.

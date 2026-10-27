@@ -116,13 +116,17 @@ numeric channels require a new fingerprint format, never changes to this one.
 The empty-input hash is
 `d4f2203be269bbaa016cc9ad6fab0d9540aec3f9dcd7505bfc887fc511dd61a8`.
 
-Controller catalogs use a separate `LCC1` archive record rather than the runtime
+Legacy controller catalogs use a separate `LCC1` archive record rather than the runtime
 wire envelope. It contains the four-byte magic, .NET-layout session and worker
 GUIDs, four Int64 values (generation, sequence, capture QPC, catalog revision),
 an Int32 device count, then each device's Int32 slot and ID, UTF-8 name/product
 strings prefixed by Int32 byte length, byte axis mask, and six interleaved UInt32
 minimum/maximum pairs. Readers retain support for the original wire catalog.
-Unknown later `LCC` versions are preserved without resolving controller identity;
+Current `LCC2` catalogs additionally retain dynamic device/axis dimensions, device
+instance and product GUIDs, control assignments, binding context and MSFS profile
+evidence. The catalog timeline remains version 1. The authoritative metadata
+serializer is `ControllerCatalogMessage.WriteMetadata` in Runtime.Contracts.
+Unknown `LCC` versions later than 2 are preserved without resolving controller identity;
 malformed known-version records remain errors.
 
 ### Discrete contact phases
@@ -176,11 +180,20 @@ New recordings add two optional root members without changing `layout: 7`:
   non-finite observations. Zero latitude/longitude is valid, not a sentinel.
 - `inputs`: `value`, `valid`, `age` arrays aligned with `series.t`. Every row has
   exactly `summary.RawControllerAxesSourceIndices.Count` entries. The source mapping
-  uses `deviceSlot * 6 + axis`, where the axis order is X, Y, Z, R, U, V and slots
-  correspond to `ControlInputSources`. Values are normalized physical travel
+  uses `deviceSlot * summary.ControllerAxisCount + axis`. A missing or zero
+  `ControllerAxisCount` means the legacy six-axis X, Y, Z, R, U, V layout.
+  Current DirectInput records use eight axes: X, Y, Z, Rx, Ry, Rz, slider 0,
+  slider 1. Slots correspond to `ControlInputSources`. Values are normalized physical travel
   from -100 to +100 percent; age is seconds. Unsupported/disconnected axes are
   unavailable, never inferred from a centered value. Only axes with a valid sample
   are included. These new numeric arrays use JSON `null` for non-finite values.
+
+The optional root `controller_catalogs` block retains the saved controller catalogs and their
+transitions. A sample value and its assignment are separate recorded facts;
+replay resolves them from that timeline without reading current MSFS profiles
+or polling attached devices. Missing profile assignments use the recorded
+correlation fallback. Legacy geometry fingerprints still use their frozen
+eight-device/six-axis contract; new controller dimensions do not redefine it.
 
 The optional `summary.RunwayGeometry` is a snapshot from the installed simulator
 scenery: airport identity, runway center in degrees, altitude/length/width in metres,

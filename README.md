@@ -34,7 +34,8 @@ behind them:
 The result is not a landing score or a structural inspection verdict. It is an
 engineering view of what the simulator published, how the result was derived,
 and where uncertainty remains. See the [measurement methodology](docs/methodology.md)
-for the formulas, timing rules, validation traces, and known limitations. See
+for formulas, timing rules, validation traces and known limitations. The
+[documentation index](docs/README.md) covers architecture and data contracts. See
 the [privacy policy](PRIVACY.md) for Google Drive backup and diagnostic-report
 data handling.
 
@@ -58,11 +59,15 @@ data handling.
   moving with recorded position and attitude, and runway geometry from MSFS when
   it can be identified confidently. Orbit/zoom the camera, play the landing, or
   scrub time. Older files without recorded coordinates retain their charts.
-- Flight-control inputs and surfaces, engine power and throttles, flare,
+- Height-above-ground charts in landing details and 3D playback; a 3D wind compass
+  with cardinal directions, downwind arrow and direction/speed.
+- Flight-control inputs and surfaces, engine N1 or actual RPM, thrust commands,
+  physical throttles, reverser position, flare,
   attitude, wind, gear compression, and rollout data.
 - All available physical joystick axes, including separate pedal devices, shown
-  independently from simulator commands. Legacy raw pitch-source matching is
-  retained; an axis name never implies a particular simulator binding.
+  independently from simulator commands. Recorded MSFS profile assignments identify
+  flight controls and throttles; correlation is used when assignments are unavailable.
+  Saved playback works without connected controllers or a running simulator.
 - Automatic diagnostic reports (switchable in Settings) that securely bundle landing telemetry with
   its calculated results; no full-flight recording mode is exposed in the UI.
 - Compact local landing history containing only the data used by the dashboard.
@@ -127,6 +132,15 @@ When started with the simulator, Landing Stats also closes when MSFS exits.
 Manually launched sessions stay open. Existing auto-start entries are updated
 when the app runs; the new behavior applies from the next simulator launch.
 
+## Development workflow
+
+Work on a task branch and open a pull request into `main`. Keep documentation
+current with behavior changes. Documentation-only commits and PR titles include
+`[skip ci]`; retain that marker in a squash commit. Do not dispatch builds or
+signing for documentation. See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution rules.
+Current defects and requested improvements are tracked in
+[GitHub Issues](https://github.com/Arderos/msfs24-landing-stats/issues).
+
 ## Automated builds
 
 GitHub Actions resolves the current MSFS 2024 Core SDK from Microsoft's public
@@ -186,9 +200,10 @@ quarantined files); a full queue skips new diagnostic copies, not saved landings
 New-format reports remain queued until the server advertises support.
 
 The receiver accepts signed, automatically enrolled installations and exact
-schema-v5/v6 archives, including user-initiated bug-report bundles with calculated
+schema-v5/v6/v7/v8 archives, including user-initiated bug-report bundles with calculated
 landing results.
-It limits one upload to 16 MiB compressed and 64 MiB expanded, one installation
+The Compose deployment limits one upload to 16 MiB compressed and 128 MiB
+expanded (standalone default: 64 MiB), one installation
 to 512 MiB per day (counting rejected signed attempts too), one source address
 to 1 GiB/day, and all ingress to 4 GiB/day. The retained corpus is capped at
 20 GiB while preserving a 2 GiB disk reserve. Automatic enrollment is limited
@@ -198,12 +213,13 @@ capped at 100,000 identities and removes stale unreferenced identities after
 corpus. The receiver checks replay kinematics independently of the client by
 requiring recorded position and altitude motion to agree with the reported
 flight velocities.
-New captures use telemetry schema v6 with the documented 20 numeric contact
-points and all six WinMM axes per controller; the parser remains compatible with
-earlier schema v4/v5 captures. The v5/v6 receiver must be deployed before releasing
-the v6 client; older queued captures retain their original signed schema. Landing
-details use the documented [columnar v7 format](docs/format-v7.md), while v1-v6
-record files remain readable.
+New captures use telemetry schema v8 with the documented 20 numeric contact
+points, dynamic DirectInput device samples and saved control-profile assignments.
+The receiver continues to accept schemas v5–v7; the local reader also supports
+older capture layouts. Archive compression, CSV schema and landing-history layout
+are separate versions. See the [capture format](docs/capture-archive-format.md)
+and [columnar v7 history format](docs/format-v7.md). History versions v1–v6 remain
+readable.
 
 ## Local integrations
 

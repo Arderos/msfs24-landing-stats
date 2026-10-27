@@ -171,10 +171,22 @@ use `immutable=1` to bypass this: it can omit transactions still in the WAL.
 
 ## Private telemetry dashboard
 
-The optional `docker-compose.dashboard.yml` adds a LAN-only web dashboard at
-`http://astr-scad-01:8091` (`http://172.16.20.32:8091`). It has no connection to
+The optional `docker-compose.dashboard.yml` adds a private web dashboard on
+port 8091 of the configured host. It has no connection to
 the public ingress network or Cloudflare Tunnel. No application release or code
-signing is involved. The existing API and tunnel must not be restarted to deploy it:
+signing is involved. The existing API and tunnel must not be restarted to deploy it.
+
+Before running Compose, set these values in the deployment's untracked `.env`:
+
+- `DASHBOARD_BIND_ADDRESS`: the specific local interface address to publish;
+- `DASHBOARD_ALLOWED_HOSTS`: a comma-separated list of exact browser hostnames/IPs,
+  including `127.0.0.1` for the container health check;
+- `DASHBOARD_ALLOWED_NETWORKS`: comma-separated client CIDRs, including
+  `127.0.0.0/8,::1/128` for local health checks.
+
+Compose refuses to start when a value is missing or empty. Use the deployment's
+actual addresses only in that local file; do not commit them. Restrict the
+listener and allowlists to the intended private clients.
 
 ```sh
 docker compose -f docker-compose.yml -f docker-compose.dashboard.yml build telemetry-dashboard
@@ -185,8 +197,8 @@ There are two isolated companion containers:
 
 - `telemetry-dashboard`: read-only archive and metadata mounts; its own writable
   hash-keyed index cache; a background indexer; 0.5 CPU and 384 MiB limit. The HTTP
-  listener binds only to `172.16.20.32:8091` and accepts actual socket peers in
-  `172.16.0.0/16` plus loopback. Host validation and a self-only CSP are enabled;
+  listener binds to `DASHBOARD_BIND_ADDRESS:8091` and accepts actual socket peers
+  in `DASHBOARD_ALLOWED_NETWORKS`. Host validation and a self-only CSP are enabled;
   forwarded headers are not trusted. It provides no mutation or archive download
   endpoints and receives no ingestion secrets.
 - `telemetry-dashboard-snapshot`: no network, no HTTP server, 0.1 CPU and 128 MiB

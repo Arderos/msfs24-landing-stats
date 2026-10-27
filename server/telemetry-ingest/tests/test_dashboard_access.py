@@ -52,13 +52,13 @@ class DashboardAccessTests(unittest.TestCase):
     def setUp(self):
         self.index = FakeIndex()
 
-    def client(self, peer="172.16.3.12", *, hosts=None, networks=None):
+    def client(self, peer="192.0.2.12", *, hosts=None, networks=None):
         application = create_app(
             index=self.index,
-            allowed_networks=networks or ["172.16.0.0/16", "127.0.0.0/8", "::1/128"],
-            allowed_hosts=hosts or ["astr-scad-01", "172.16.3.10", "localhost"],
+            allowed_networks=networks or ["192.0.2.0/24", "127.0.0.0/8", "::1/128"],
+            allowed_hosts=hosts or ["dashboard.example", "192.0.2.10", "localhost"],
         )
-        return TestClient(PeerAddress(application, peer), base_url="http://astr-scad-01:8081")
+        return TestClient(PeerAddress(application, peer), base_url="http://dashboard.example:8081")
 
     def test_lan_can_read_and_index_lifecycle_is_owned_by_application(self):
         with self.client() as client:
@@ -69,20 +69,20 @@ class DashboardAccessTests(unittest.TestCase):
         self.assertTrue(self.index.stopped)
 
     def test_only_configured_lan_and_loopback_sources_are_accepted(self):
-        for peer in ("127.0.0.1", "::1", "172.16.255.254"):
+        for peer in ("127.0.0.1", "::1", "192.0.2.254"):
             with self.subTest(peer=peer), self.client(peer) as client:
                 self.assertEqual(200, client.get("/api/summary").status_code)
-        for peer in ("8.8.8.8", "172.17.0.1", "192.168.1.2", "2001:4860:4860::8888",
+        for peer in ("8.8.8.8", "198.51.100.1", "203.0.113.2", "2001:4860:4860::8888",
                      "fd00::42", "unknown"):
             with self.subTest(peer=peer), self.client(peer) as client:
                 self.assertEqual(403, client.get("/api/summary").status_code)
 
     def test_forwarded_headers_cannot_make_a_public_peer_local(self):
         headers = {
-            "X-Forwarded-For": "172.16.3.12",
+            "X-Forwarded-For": "192.0.2.12",
             "X-Real-IP": "127.0.0.1",
             "CF-Connecting-IP": "127.0.0.1",
-            "Forwarded": 'for="172.16.3.12";host="astr-scad-01"',
+            "Forwarded": 'for="192.0.2.12";host="dashboard.example"',
         }
         with self.client("8.8.8.8") as client:
             response = client.get("/api/summary", headers=headers)
@@ -90,7 +90,7 @@ class DashboardAccessTests(unittest.TestCase):
         self.assertEqual([], self.index.calls)
 
     def test_host_guard_rejects_rebinding_even_from_a_lan_peer(self):
-        for host in ("attacker.example", "astr-scad-01.attacker.example", "172.16.3.10.attacker.example"):
+        for host in ("attacker.example", "dashboard.example.attacker.example", "192.0.2.10.attacker.example"):
             with self.subTest(host=host), self.client() as client:
                 response = client.get("/api/summary", headers={"Host": host})
                 self.assertEqual(400, response.status_code, response.text)

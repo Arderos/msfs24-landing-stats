@@ -655,8 +655,8 @@ Thus an unavailable result can be a necessary outcome of the current evidence
 and reporting criteria. This does not prove that every future model is unable
 to use the same recordings. A new method needs an independently justified
 constraint and validation of its full prediction interval, not only a smaller
-fit residual or a favorable central value. See LS-001 in `BACKLOG.md` for the
-reproducible experiments, conditional counterexamples, and remaining criteria.
+fit residual or a favorable central value. The preceding sections document the reproducible experiments, conditional
+counterexamples and criteria.
 
 ### 7.3.5 Selection verified across the corpus
 
@@ -880,27 +880,27 @@ control-surface positions, spoilers, flaps, brakes, engine power, throttles,
 reverse, wind, and active contact-point compression. New recordings also retain
 latitude, longitude, altitude, ground altitude and true heading for the 3D view.
 
-Some add-on aircraft process or delay the SimConnect `YOKE Y POSITION` value. On
-Windows, the app samples all available X/Y/Z/R/U/V axes from up to eight devices
-directly, including separate pedal devices. Device capability flags and ranges
-determine availability; an unplugged or unsupported axis is not zero input.
-Names are physical axis names, not inferred simulator assignments. For each live Y
-source it searches a bounded set of time lags and correlates the raw axis with the
-aircraft-processed pitch command during the airborne portion. A sufficiently
-correlated source is selected, its direction is normalized, and only live raw
-controller columns are retained in the landing record. This legacy source-match
-metadata remains available for older Y-only recordings.
+Physical controls are sampled through DirectInput in a separate worker. All
+enumerated devices are retained, with X, Y, Z, Rx, Ry, Rz and two slider channels
+where supported. There is no eight-device capture limit. Device capabilities,
+ranges, validity and age distinguish unavailable axes from measured zero input.
 
-The 3D view identifies pitch, roll and yaw roles by correlating the recorded
-physical axes with their corresponding simulator pilot-command channels, allowing
-for processing lag and inverted axes. Windows axis letters do not establish these
-roles. Pitch and roll use the entire available approach before the first contact,
-not individually selected short windows. Each candidate's delay is fitted over that
-whole interval. All contacts in a bounce sequence use this same approach. Ground
-samples are a fallback only when no approach correlation can be computed; a ground
-mode cannot veto or reverse an available approach match. Yaw uses the complete saved
-sequence because directional input may first move during rollout. Lag interpolation
-never crosses a telemetry gap or an airborne/ground transition.
+Saved MSFS profile assignments take precedence when identifying pitch, roll,
+yaw and each engine's throttle. The recording preserves device instance GUIDs,
+axis indices, direction and the profile evidence used to resolve them. General,
+Category and Aircraft bindings are combined by specificity for the loaded
+SimObject configuration path. Playback uses the saved assignment, including
+when controllers and MSFS are absent. See [architecture](architecture.md).
+
+For an unassigned role, the fallback correlates recorded physical axes with the
+corresponding simulator command, allowing for processing lag and inverted axes.
+Pitch and roll use the available approach before the first contact; all contacts
+in a bounce sequence share that approach. Ground samples are used when no
+approach match can be computed. Yaw uses the saved sequence, including rollout.
+Axes already assigned to flight controls are excluded from throttle matching.
+One recorded throttle axis may control more than one engine. A constant axis
+cannot be identified through correlation alone. Interpolation does not cross a
+telemetry gap or an airborne/ground transition.
 
 Candidates are ranked by absolute Pearson correlation, without a minimum correlation,
 minimum winner margin, amplitude cutoff or statistical-confidence veto. Pitch and roll
@@ -931,12 +931,27 @@ the missing measurement remains unknown, not zero. The bar beneath it shows the 
 axis (pedals or stick twist), not independent toe brakes. Tooltips identify the
 recorded source. Missing physical input is never replaced with simulator input.
 Translucent mini charts share replay time: pitch, bank and yaw in the left column;
-ground speed, vertical speed and vertical G in the right. Yaw is the signed nose
+ground speed, vertical speed, vertical G and height above ground in the right. Yaw is the signed nose
 angle relative to the selected runway direction (positive right), unavailable without
 resolved runway geometry. VS is recorded world vertical speed, positive climbing,
 not surface closure. All saved contacts in the same episode are marked together
 on the surface from each contact's own analysed zero time. The markers are visible
 throughout playback; extra OnGround transitions do not create additional contacts.
+
+The engine chart prefers recorded `TURB ENG N1` in percent. When N1 is
+unavailable, `GENERAL ENG RPM` uses a separate RPM scale in actual revolutions
+per minute. RPM is never normalized to the maximum of the current landing.
+The thrust-command channel is not treated as a physical throttle position;
+negative commands and recorded reverser-door position remain visible. Physical
+throttle traces use the saved axis assignments or the correlation fallback.
+These are simulator-published channels; custom aircraft can expose values that
+differ from their cockpit instruments.
+
+Height above ground is available in the landing charts and 3D overlays. It is
+based on recorded AGL and does not assume a level runway. The 3D wind compass
+shows cardinal directions, a crossing arrow pointing downwind and the recorded
+wind direction/speed. The heading in the wind label describes where wind comes
+from, while the arrow shows where it travels.
 
 This input-capture logic does not affect the landing-rate calculation.
 
