@@ -72,9 +72,10 @@ the fixed updater installs a signed EXE even when the old application itself
 does not understand Authenticode bundle layout. The unchanged v0.7.6 bridge
 remains unsigned so legacy updaters can still install it.
 
-`verify-published-client-updates.ps1` downloads every supported published
-baseline (v0.7.3 through v0.8.6), executes its embedded manifest verifier, checks
-the authorized bytes, and invokes the target updater's real replacement
+`verify-published-client-updates.ps1` downloads the supported published baselines
+listed in the script, starting at v0.7.3, and adds the previous published release
+when it is missing from that list. It executes each embedded manifest verifier,
+checks the authorized bytes, and invokes the target updater's real replacement
 transaction on a disposable copy. It then runs the installed launcher's bundle
 verification. This is an offline installation/compatibility gate, not a claim
 that a not-yet-published URL was exercised end-to-end. The separate hosted-runner
@@ -88,7 +89,9 @@ screenshots of authentication. The existing `RELEASE_SIGNING_KEY_PKCS8_B64`
 continues to sign update metadata and must not be rotated without a separate
 compatibility plan.
 
-Normal pushes and pull requests build and test without code-signing access.
+Code changes on `main` and pull requests build and test without code-signing access.
+Documentation-only commits use `[skip ci]` (also retained in squash commit titles).
+No workflow is manually dispatched for documentation changes.
 Version tags require signing, startup, regression, and all previous-client
 gates before publication. A manual **Build** run with `sign=true` runs the same
 signing and compatibility checks, but does not create a GitHub release. The

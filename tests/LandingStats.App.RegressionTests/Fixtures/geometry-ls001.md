@@ -39,7 +39,7 @@ an airborne datum, plus taildragger, observability, noise, compression-sign,
 physics-boundary, extension, numbering, clock and latch controls.
 
 Full original archives belong to the 874-archive server snapshot documented in
-`BACKLOG.md` (2026-10-14). The full-corpus replay compares all current results,
+[historical LS-001 investigation](https://github.com/Arderos/msfs24-landing-stats/blob/ec5a06985f74381673f621bef23be67ff09f79d5/BACKLOG_HISTORY_2026-10-19.md). The full-corpus replay compares all current results,
 including configured geometry where available; these small fixtures keep the
 critical cases reproducible without access to that private corpus.
 
