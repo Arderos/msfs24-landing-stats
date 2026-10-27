@@ -35,6 +35,7 @@ public partial class MainWindow
     {
         var shutdown = _windowShutdown.BeginAsync(DrainWindowShutdownAsync);
         _isClosed = true;
+        StopWorkerHealthPresentation();
         _settingsLoadingIndicator.Cancel();
         StopAcceptingSettingsOperations();
         StopHistoryOperations();

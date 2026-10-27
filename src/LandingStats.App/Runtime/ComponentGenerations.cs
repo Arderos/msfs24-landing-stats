@@ -7,7 +7,7 @@ using LandingStats.Runtime.Contracts;
 
 namespace LandingStats.App.Runtime;
 
-internal sealed class ProcessComponentGeneration : IComponentGeneration
+internal sealed class ProcessComponentGeneration : IIsolatedComponentGeneration
 {
     private readonly ProcessWorkerHost _host;
     private readonly TimeSpan _startup;
@@ -31,6 +31,23 @@ internal sealed class ProcessComponentGeneration : IComponentGeneration
 /// <summary>Only the owning loop calls Progress, so a probe cannot be answered by an unrelated timer.</summary>
 internal sealed class ManagedComponentContext
 {
+    // Flows with the owning async operation, including finite jobs several layers
+    // below it. The scope covers native exit only, never parent storage callbacks.
+    internal static readonly AsyncLocal<ManagedComponentContext?> Current = new AsyncLocal<ManagedComponentContext?>();
+    private int _processRetirements, _delayedProcessRetirements;
+    internal bool WaitingForProcessExit => Volatile.Read(ref _processRetirements) != 0;
+    internal bool ProcessExitDelayed => Volatile.Read(ref _delayedProcessRetirements) != 0;
+    internal ProcessRetirement TrackProcessRetirement() => new ProcessRetirement(this);
+    internal sealed class ProcessRetirement : IDisposable
+    {
+        private ManagedComponentContext? _owner;
+        private bool _delayed;
+        public ProcessRetirement(ManagedComponentContext owner) { _owner = owner; Interlocked.Increment(ref owner._processRetirements); }
+        public void ReportDelayedExit()
+        { if (!_delayed && _owner != null) { _delayed = true; Interlocked.Increment(ref _owner._delayedProcessRetirements); } }
+        public void Dispose()
+        { var owner = Interlocked.Exchange(ref _owner, null); if (owner != null) { if (_delayed) Interlocked.Decrement(ref owner._delayedProcessRetirements); Interlocked.Decrement(ref owner._processRetirements); } }
+    }
     private readonly ConcurrentQueue<TaskCompletionSource<bool>> _probes = new ConcurrentQueue<TaskCompletionSource<bool>>();
     private readonly TaskCompletionSource<bool> _ready = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
     private ComponentHealthMessage? _health;
@@ -103,6 +120,8 @@ internal sealed class ManagedComponentGeneration : IComponentGeneration
     public Task Completion => _completion;
     public Task Exit => _exit.Task;
     public ComponentHealthMessage? Health => _context.Health;
+    internal bool WaitingForProcessExit => _context.WaitingForProcessExit;
+    internal bool ProcessExitDelayed => _context.ProcessExitDelayed;
     public Task StartAsync(CancellationToken cancellationToken)
     {
         lock (_gate)
@@ -117,6 +136,8 @@ internal sealed class ManagedComponentGeneration : IComponentGeneration
     private async Task RunOwnerAsync()
     {
         Exception? failure = null;
+        var previous = ManagedComponentContext.Current.Value;
+        ManagedComponentContext.Current.Value = _context;
         try { await _run(_context).ConfigureAwait(false); }
         catch (Exception error) { failure = error; throw; }
         finally
@@ -124,7 +145,7 @@ internal sealed class ManagedComponentGeneration : IComponentGeneration
             Task callbacks;
             lock (_gate) { _ownerFinished = true; callbacks = _cancelCallbacks; }
             try { await callbacks.ConfigureAwait(false); }
-            finally { _context.End(failure); _exit.TrySetResult(true); }
+            finally { ManagedComponentContext.Current.Value = previous; _context.End(failure); _exit.TrySetResult(true); }
         }
     }
     public Task<bool> ProbeAsync(CancellationToken cancellationToken) => _context.ProbeAsync(cancellationToken);

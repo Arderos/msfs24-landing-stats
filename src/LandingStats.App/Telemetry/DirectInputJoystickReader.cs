@@ -169,7 +169,7 @@ internal interface IDirectInputDevice : IDisposable
 
 /// <summary>DirectInput8W ABI from Windows SDK dinput.h. This reader never writes
 /// calibration, action mappings, force feedback, or exclusive device settings.</summary>
-internal sealed class NativeDirectInputApi : IDirectInputApi
+internal sealed partial class NativeDirectInputApi : IDirectInputApi
 {
     private IntPtr _input, _window;
     internal NativeDirectInputApi()
@@ -196,23 +196,7 @@ internal sealed class NativeDirectInputApi : IDirectInputApi
     public IReadOnlyList<DirectInputIdentity> Enumerate()
     {
         if (_input == IntPtr.Zero) throw new ObjectDisposedException(nameof(NativeDirectInputApi));
-        var result = new List<DirectInputIdentity>(); Exception? callbackError = null;
-        EnumCallback callback = (pointer, _) =>
-        {
-            try
-            {
-                var item = Marshal.PtrToStructure<DeviceInstance>(pointer);
-                result.Add(new DirectInputIdentity(item.InstanceId, item.ProductId,
-                    string.IsNullOrWhiteSpace(item.ProductName) ? item.InstanceName : item.ProductName));
-                return 1;
-            }
-            catch (Exception error) { callbackError = error; return 0; }
-        };
-        // DI8DEVCLASS_GAMECTRL, DIEDFL_ATTACHEDONLY.
-        Check(Method<EnumerateDevices>(_input, 4)(_input, 4, callback, IntPtr.Zero, 1), "EnumDevices");
-        GC.KeepAlive(callback);
-        if (callbackError != null) throw new InvalidOperationException("Invalid DirectInput device enumeration.", callbackError);
-        return result;
+        return DiscoverGameControllers();
     }
     public IDirectInputDevice Open(DirectInputIdentity identity)
     {
@@ -386,7 +370,6 @@ internal sealed class NativeDirectInputApi : IDirectInputApi
     [StructLayout(LayoutKind.Sequential)] private struct DataFormat
     { internal uint Size, ObjectSize, Flags, DataSize, ObjectCount; internal IntPtr Objects; }
     [UnmanagedFunctionPointer(CallingConvention.StdCall)] private delegate int EnumCallback(IntPtr value, IntPtr context);
-    [UnmanagedFunctionPointer(CallingConvention.StdCall)] private delegate int EnumerateDevices(IntPtr self, uint kind, EnumCallback callback, IntPtr context, uint flags);
     [UnmanagedFunctionPointer(CallingConvention.StdCall)] private delegate int CreateDevice(IntPtr self, ref Guid id, out IntPtr device, IntPtr outer);
     [UnmanagedFunctionPointer(CallingConvention.StdCall)] private delegate int EnumerateObjects(IntPtr self, EnumCallback callback, IntPtr context, uint flags);
     [UnmanagedFunctionPointer(CallingConvention.StdCall)] private delegate int GetRange(IntPtr self, IntPtr property, ref PropertyRange value);

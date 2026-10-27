@@ -69,11 +69,12 @@ internal sealed class CloudWorkerSession
         var drained = _callbacks.Stop();
         try
         {
+            using var retirement = ManagedComponentContext.Current.Value?.TrackProcessRetirement();
             while (true)
             {
                 try { await _host.StopAsync(TimeSpan.FromSeconds(1)).ConfigureAwait(false); break; }
                 catch (Exception error) when (error is IOException || error is TimeoutException || error is System.ComponentModel.Win32Exception)
-                { await Task.Delay(250).ConfigureAwait(false); }
+                { retirement?.ReportDelayedExit(); await Task.Delay(250).ConfigureAwait(false); }
             }
         }
         finally { _host.Dispose(); await drained.ConfigureAwait(false); }

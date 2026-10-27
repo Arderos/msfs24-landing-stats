@@ -89,14 +89,24 @@ internal static class DirectInputControllerRegressionTests
 
     // Explicit opt-in: background/nonexclusive polling of attached hardware.
     // It does not open MSFS or change the simulator/controller configuration.
-    internal static void RunNativeSmoke()
+    internal static void RunNativeSmoke(int polls = 30)
     {
         using var reader = new DirectInputJoystickReader();
         if (reader.Count == 0) throw new InvalidOperationException("DirectInput hardware smoke found no attached controllers.");
         var sample = new TelemetrySample(); var clocks = new long[reader.Count];
         var observed = new bool[reader.Count * reader.AxisCount]; var watch = Stopwatch.StartNew();
-        for (var i = 0; i < 30; i++)
+        var initialCatalog = reader.CreateCatalog(1);
+        var refreshes = 0;
+        for (var i = 0; i < polls; i++)
         {
+            if (i > 0 && i % 500 == 0)
+            {
+                reader.BeginRefresh();
+                while (!reader.RefreshNext(out _)) { }
+                Check(reader.CreateCatalog(1).Devices.Select(device => device.InstanceId).SequenceEqual(initialCatalog.Devices.Select(device => device.InstanceId)),
+                    "Native refresh changed the attached controller identities.");
+                refreshes++;
+            }
             reader.ReadInto(sample, clocks);
             for (var axis = 0; axis < observed.Length; axis++) observed[axis] |= sample.RawControllerAxesValid[axis];
             Thread.Sleep(10);
@@ -104,6 +114,8 @@ internal static class DirectInputControllerRegressionTests
         var catalog = reader.CreateCatalog(1);
         foreach (var device in catalog.Devices)
         {
+            Check(Enumerable.Range(0, device.AxisCount).Where(device.Supports).All(axis => observed[device.Slot * reader.AxisCount + axis]),
+                "No valid measurement from an advertised axis of " + device.Name);
             var values = Enumerable.Range(0, device.AxisCount).Where(device.Supports).Select(axis =>
                 axis + ":" + (sample.RawControllerAxesValid[device.Slot * reader.AxisCount + axis]
                     ? sample.RawControllerAxesPercent[device.Slot * reader.AxisCount + axis].ToString("F4", CultureInfo.InvariantCulture) : "unavailable"));
@@ -111,7 +123,7 @@ internal static class DirectInputControllerRegressionTests
                 " axes=" + Enumerable.Range(0, device.AxisCount).Count(device.Supports) + " values=" + string.Join(",", values));
         }
         Check(observed.Any(value => value), "DirectInput enumerated devices but obtained no valid measurements.");
-        Console.WriteLine("directinput: devices=" + reader.Count + " valid_axes=" + observed.Count(value => value) + " polls=30 elapsed_ms=" + watch.ElapsedMilliseconds);
+        Console.WriteLine("directinput: devices=" + reader.Count + " valid_axes=" + observed.Count(value => value) + " polls=" + polls + " refreshes=" + refreshes + " elapsed_ms=" + watch.ElapsedMilliseconds);
     }
 
     private static void Check(bool condition, string message) { if (!condition) throw new InvalidOperationException(message); }

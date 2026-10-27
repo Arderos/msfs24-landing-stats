@@ -40,7 +40,7 @@ internal sealed class IntegrationApiRuntimeOwner
     public bool Enabled => Volatile.Read(ref _enabled) != 0;
     public SupervisionSnapshot Snapshot => Project(Volatile.Read(ref _supervisor)?.Snapshot);
     private SupervisionSnapshot Project(SupervisionSnapshot? state) => new SupervisionSnapshot("integration.api",
-        Interlocked.Read(ref _generation), state?.State ?? SupervisionState.Stopped, state?.Failures ?? 0, state?.Reason ?? "disabled");
+        Interlocked.Read(ref _generation), state?.State ?? SupervisionState.Stopped, state?.Failures ?? 0, state?.Reason ?? "disabled", state?.Settled ?? false, state?.UnavailableSinceQpc ?? 0, state?.Failure ?? "");
     public long ObservationQpc => Volatile.Read(ref _supervisor)?.ObservationQpc ?? Stopwatch.GetTimestamp();
     internal ProcessWorkerHost? CurrentHost => Volatile.Read(ref _current)?.Host;
 
@@ -143,7 +143,7 @@ internal sealed class IntegrationApiRuntimeOwner
         public Generation Generation { get; }
         public IntegrationRequestMessage Message { get; }
     }
-    private sealed class Generation : IComponentGeneration
+    private sealed class Generation : IIsolatedComponentGeneration
     {
         private readonly IntegrationApiRuntimeOwner _parent;
         private readonly ProcessComponentGeneration _process;

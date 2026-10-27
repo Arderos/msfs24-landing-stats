@@ -27,11 +27,32 @@ recording state; `EpisodeWorkCoordinator` and `EpisodeTransactionStore` handle
 completed episodes and persistence. Recovery journals and the durable outbox
 preserve pending work across restarts.
 
+An isolated worker remains owned until Windows confirms that its process tree
+has exited. The supervisor keeps reporting progress during termination and
+retries within that boundary; a delayed native exit does not restart the App
+or admit a second worker. Managed owners retain their child-process claims
+during cleanup. An unresponsive managed owner without such a pending child
+still escalates to Guardian because it shares application state.
+
+Header health groups use these supervision snapshots. First readiness is green
+immediately; recovery requires ten seconds of continuing owner progress,
+including an idle owner. The thirty-second warning budget spans restarts.
+Acknowledgement affects only the warning and resets after stable recovery;
+it never changes recording or recovery policy.
+
 Changes should stay with the component that owns the state. File reads,
 SimConnect callbacks, controller polling and network requests must not be moved
 into WPF rendering or input handlers.
 
 ## Controller values and assignments
+
+The Controllers worker selects game-controller collections by Raw Input HID
+Usage Page / Usage before reading DirectInput device identities. Joystick
+configuration supplies candidate instance GUIDs, supplemented by the Windows
+DirectInput instance cache behind `DirectInputInstanceCache`. Each candidate
+must match a live collection through `DIPROP_GUIDANDPATH`; persisted data alone
+never establishes identity. Global DirectInput enumeration is avoided because
+it can query unrelated HID product strings and block inside a device driver.
 
 The simulator worker owns `MsfsControlProfileMonitor`. It reads saved MSFS
 profile selections and XML files on a background task, away from SimConnect

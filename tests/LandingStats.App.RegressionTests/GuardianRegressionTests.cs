@@ -31,6 +31,8 @@ internal static class GuardianRegressionTests
             await Scenario(Path.Combine(root, "stop-progress"), "stop-progress", 1);
             await Scenario(Path.Combine(root, "stop-pipe"), "stop-pipe", 1);
             await Scenario(Path.Combine(root, "hello"), "wrong-hello", 2);
+            await Scenario(Path.Combine(root, "invalid-packet"), "invalid-packet", 2);
+            await Scenario(Path.Combine(root, "update-rejected"), "update-rejected", 1);
             await Scenario(Path.Combine(root, "prepare"), "prepare-fail", 1);
             await Scenario(Path.Combine(root, "sim-exit"), "sim-exit", 1);
             await Scenario(Path.Combine(root, "session-end"), "session-end", 1);
@@ -151,7 +153,9 @@ internal static class GuardianRegressionTests
         {
             if (mode == "prepare-fail" && generation <= 2) throw new IOException("Temporary runtime-cache repair failure.");
             if (generations.Count > 0 && !generations.Last().Exit.IsCompleted) overlap = true;
-            var next = new GuardianGeneration(session, generation, (_, token) => GuardianUpdateRegressionTests.Prepare(root,
+            var next = new GuardianGeneration(session, generation, (_, token) => mode == "update-rejected"
+                ? Task.FromException<GuardianUpdateLease>(new IOException("Updater rejected fixture.", new InvalidOperationException("Original handoff cause.")))
+                : GuardianUpdateRegressionTests.Prepare(root,
                 mode == "update-cancel" ? "no-ready" : "normal", token)); generations.Add(next); return next;
         }, policy);
         supervisor.Changed += (generation, state) => { lock (states) states.Add(generation + ":" + state); };
@@ -163,6 +167,12 @@ internal static class GuardianRegressionTests
             Check(generations.Count == expectedGenerations && !overlap, "Guardian replaced a live owner or missed recovery: " + mode + " " + string.Join(";", states));
             Check(File.Exists(Path.Combine(root, "stop-acked")), "Application shutdown was not acknowledged before exit.");
             Check(generations.All(generation => generation.Exit.IsCompleted), "Guardian returned with an owned application still alive.");
+            if (mode == "prepare-fail") Check(states.Any(state => state.Contains("System.IO.IOException: Temporary runtime-cache repair failure.")), "Preparation error message was lost.");
+            if (mode == "wrong-hello") Check(states.Any(state => state.Contains("System.IO.InvalidDataException: Application guardian handshake differs.")), "Startup exception message was lost.");
+            if (mode == "invalid-packet") Check(states.Count(state => state.Contains("channel_failed error=")) == 1 &&
+                states.Any(state => state.Contains("System.IO.InvalidDataException: Unexpected application control packet.")), "Guardian channel error was lost or duplicated: " + string.Join(";", states));
+            if (mode == "update-rejected") Check(states.Any(state => state.Contains("update_handoff_rejected error=") &&
+                state.Contains("Updater rejected fixture.") && state.Contains("Original handoff cause.")), "Rejected update lost its original exception.");
             if (mode == "ui") Check(File.Exists(Path.Combine(root, "prepared")) && File.Exists(Path.Combine(root, "recording-continued")), "UI-only recovery skipped the flight-safe boundary or its local drain.");
             if (mode == "stop-progress") Check(File.Exists(Path.Combine(root, "drain-complete")), "Guardian killed shutdown while durable drain was progressing.");
             if (mode == "update")
@@ -212,6 +222,17 @@ internal static class GuardianRegressionTests
         using var client = new GuardianClient(descriptor, Health, () => File.WriteAllText(Path.Combine(root, "activated"), "yes"), () =>
         { File.WriteAllText(Path.Combine(root, "prepared"), "drained"); return Task.FromResult(true); });
         await client.ConnectAsync();
+        if (mode == "invalid-packet" && descriptor.Generation == 1)
+        {
+            var wire = (GuardianWire)typeof(GuardianClient).GetField("_wire", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(client)!;
+            await wire.SendAsync(new GuardianPacket(GuardianMessageKind.Activate, 2), CancellationToken.None);
+            await Task.Delay(Timeout.Infinite);
+        }
+        if (mode == "update-rejected")
+        {
+            Check(!await client.UpdateAsync(new GuardianUpdateRequest(Assembly.GetExecutingAssembly().Location, Assembly.GetExecutingAssembly().Location,
+                "1.2.3", "Local\\fixture", "update-channel.txt", 1, new string('a', 64)), CancellationToken.None), "Rejected update was accepted.");
+        }
         if (mode == "orphan")
         {
             using var child = Process.Start(new ProcessStartInfo { FileName = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "LandingStats.WorkerHost.exe"),

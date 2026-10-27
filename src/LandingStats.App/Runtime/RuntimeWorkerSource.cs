@@ -69,7 +69,7 @@ internal sealed class RuntimeWorkerSource : IDisposable
     public Task StopAsync() { Interlocked.Exchange(ref _stopping, 1); return _supervisor.StopAsync(); }
     public void Dispose() { Interlocked.Exchange(ref _stopping, 1); _supervisor.Dispose(); }
 
-    private sealed class SourceGeneration : IComponentGeneration
+    private sealed class SourceGeneration : IIsolatedComponentGeneration
     {
         private readonly RuntimeWorkerSource _source;
         private readonly ProcessComponentGeneration _process;

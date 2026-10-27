@@ -99,17 +99,28 @@ internal sealed partial class OwnedProcess : IDisposable
         return Marshal.StringToHGlobalUni(string.Concat(values.Select(pair => pair.Key + "=" + pair.Value + "\0")) + "\0");
     }
 
-    public Task TerminateAsync(TimeSpan exitDeadline)
+    public async Task TerminateAsync(TimeSpan exitDeadline)
     {
         if (exitDeadline <= TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(exitDeadline));
+        Task termination;
         lock (_lifetimeGate)
         {
-            // Concurrent stop/timeout paths share one confirmation operation.
-            // Dispose cannot close the job while that operation still queries it.
-            if (_termination != null && (!_termination.IsCompleted || _termination.Status == TaskStatus.RanToCompletion)) return _termination;
-            if (_disposed != 0) throw new ObjectDisposedException(nameof(OwnedProcess));
-            return _termination = TerminateOwnedAsync(exitDeadline);
+            if (_termination == null || _termination.IsFaulted || _termination.IsCanceled)
+            {
+                if (_disposed != 0) throw new ObjectDisposedException(nameof(OwnedProcess));
+                _termination = Task.Run(TerminateOwnedAsync);
+                _ = _termination.ContinueWith(task => { _ = task.Exception; }, CancellationToken.None,
+                    TaskContinuationOptions.OnlyOnFaulted, TaskScheduler.Default);
+            }
+            termination = _termination;
         }
+        // The caller's deadline does not cancel OS exit observation. All callers
+        // share one kill/confirmation, including a late successful tree exit.
+        using var timer = new CancellationTokenSource();
+        if (await Task.WhenAny(termination, Task.Delay(exitDeadline, timer.Token)).ConfigureAwait(false) != termination)
+            throw new TimeoutException("Worker tree exit is not confirmed; its replacement must not start.");
+        timer.Cancel();
+        await termination.ConfigureAwait(false);
     }
 
     // Only the verified updater handoff uses this: after its ready/commit
@@ -134,17 +145,15 @@ internal sealed partial class OwnedProcess : IDisposable
                 TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
         }
     }
-    private async Task TerminateOwnedAsync(TimeSpan exitDeadline)
+    private async Task TerminateOwnedAsync()
     {
         if (!Native.TerminateJobObject(_job, 0x4c530001))
             throw new Win32Exception(Marshal.GetLastWin32Error(), "Cannot terminate the owned worker job.");
-        var deadline = Stopwatch.StartNew();
         while (true)
         {
             if (!Native.QueryInformationJobObject(_job, 1, out var accounting, (uint)Marshal.SizeOf(typeof(Native.JobAccounting)), IntPtr.Zero))
                 throw new Win32Exception(Marshal.GetLastWin32Error(), "Cannot confirm worker job termination.");
             if (Exit.IsCompleted && accounting.ActiveProcesses == 0) break;
-            if (deadline.Elapsed >= exitDeadline) throw new TimeoutException("Worker tree exit is not confirmed; its replacement must not start.");
             await Task.Delay(20).ConfigureAwait(false);
         }
         await Exit.ConfigureAwait(false);
