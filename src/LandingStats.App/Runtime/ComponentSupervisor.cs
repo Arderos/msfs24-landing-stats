@@ -108,15 +108,18 @@ internal sealed class ComponentSupervisor : IDisposable
                 Publish(_failures == 0 ? SupervisionState.Starting : SupervisionState.Recovering, "creating_owner");
                 try
                 {
+                    Log("owner_starting", null);
                     owner = _factory(_generation);
                     var startup = owner.StartAsync(_shutdown.Token);
                     await AwaitDeadline(startup, _options.Startup, _shutdown.Token, "Component startup expired.").ConfigureAwait(false);
+                    Log("owner_ready", owner);
                     await MonitorAsync(owner).ConfigureAwait(false);
                     if (!_shutdown.IsCancellationRequested) throw new InvalidOperationException("Component owner ended unexpectedly.");
                 }
                 catch (OperationCanceledException) when (_shutdown.IsCancellationRequested) { }
                 catch (Exception error)
                 {
+                    Log("owner_failed", owner, error);
                     failed = true; if (_failures < int.MaxValue) _failures++;
                     Publish(SupervisionState.Recovering, error.GetType().Name + ": " + Bound(error.Message));
                 }
@@ -138,6 +141,7 @@ internal sealed class ComponentSupervisor : IDisposable
         catch (OperationCanceledException) when (_shutdown.IsCancellationRequested) { }
         catch (Exception error)
         {
+            Log("supervision_failed", null, error);
             fatal = true;
             Publish(SupervisionState.Escalating, "supervision_failed: " + Bound(error.Message));
             Escalate(); throw;
@@ -192,14 +196,15 @@ internal sealed class ComponentSupervisor : IDisposable
         Interlocked.Exchange(ref _observationQpc, Stopwatch.GetTimestamp());
         Publish(SupervisionState.Stopping, _shutdown.IsCancellationRequested ? "shutdown" : "retiring_generation");
         try { await AwaitDeadline(owner.StopAsync(_options.Stop), _options.Stop, CancellationToken.None, "Owner stop expired.").ConfigureAwait(false); }
-        catch (Exception) { /* Stop deadline does not transfer ownership. Escalate to its isolation boundary. */ }
+        catch (Exception error) { Log("owner_stop_failed", owner, error); }
         if (!ConfirmedExit(owner))
         {
             try { await AwaitDeadline(owner.TerminateAsync(_options.Stop), _options.Stop, CancellationToken.None, "Owner termination expired.").ConfigureAwait(false); }
-            catch (Exception) { }
+            catch (Exception error) { Log("owner_termination_failed", owner, error); }
         }
         if (!ConfirmedExit(owner))
         {
+            Log("owner_exit_unconfirmed", owner);
             Publish(SupervisionState.Escalating, "owner_exit_unconfirmed");
             Escalate();
             // A noncooperative managed owner requires the App process boundary.
@@ -226,6 +231,7 @@ internal sealed class ComponentSupervisor : IDisposable
             }
             catch (Exception error)
             {
+                Log("retirement_failed", null, error);
                 Publish(SupervisionState.Waiting, "retirement_checkpoint: " + Bound(error.Message));
                 // Shutdown can leave a durable pending checkpoint for the next
                 // runtime, but can never create another owner in this runtime.
@@ -277,6 +283,27 @@ internal sealed class ComponentSupervisor : IDisposable
         Volatile.Write(ref _snapshot, snapshot);
         // Presentation/diagnostics are observers, not owners of supervision.
         try { Changed?.Invoke(snapshot); } catch { }
+    }
+    private void Log(string stage, IComponentGeneration? owner, Exception? error = null)
+    {
+        // Health is an observer snapshot. A failed observation must never change recovery.
+        try
+        {
+            var health = owner?.Health;
+            var now = Stopwatch.GetTimestamp();
+            RuntimeDiagnosticLog.Write("runtime", stage + " component=" + _name + " generation=" + _generation +
+                " failures=" + _failures + " completion=" + owner?.Completion.Status + " exit=" + owner?.Exit.Status +
+                " health=" + (health == null ? "missing" : "present") + " phase=" + health?.Phase + " waiting=" + health?.WaitingFor +
+                " owner_progress=" + health?.OwnerProgress + " useful_progress=" + health?.UsefulProgress +
+                " owner_age_ms=" + RuntimeDiagnosticLog.Age(now, health?.OwnerProgressQpc ?? 0) +
+                " pending_age_ms=" + RuntimeDiagnosticLog.Age(now, health?.OldestPendingQpc ?? 0) +
+                " queue=" + health?.QueueDepth + " operation=" + health?.OperationId, error);
+        }
+        catch (Exception observationError)
+        {
+            RuntimeDiagnosticLog.Write("runtime", stage + " component=" + _name + " generation=" + _generation,
+                error == null ? observationError : new AggregateException(error, observationError));
+        }
     }
     private static string Bound(string value) => value.Length <= 512 ? value : value.Substring(0, 512);
     private void Escalate()

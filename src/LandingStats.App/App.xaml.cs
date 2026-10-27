@@ -15,7 +15,10 @@ public partial class App : Application
     private ApplicationInstanceGuard? _instanceGuard;
     internal static readonly System.Collections.Concurrent.ConcurrentDictionary<string, long> RecoveryRequests = new System.Collections.Concurrent.ConcurrentDictionary<string, long>();
     internal static void RequestRuntimeRecovery(string component, long generation)
-    { RecoveryRequests.AddOrUpdate(component, generation, (_, previous) => Math.Max(previous, generation)); }
+    {
+        Runtime.RuntimeDiagnosticLog.Write("runtime", "runtime_recovery_requested component=" + component + " generation=" + generation);
+        RecoveryRequests.AddOrUpdate(component, generation, (_, previous) => Math.Max(previous, generation));
+    }
 
     protected override async void OnStartup(StartupEventArgs e)
     {

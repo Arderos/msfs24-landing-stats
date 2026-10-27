@@ -16,6 +16,7 @@
     <Compile Include="..\LandingStats.UpdateProtocol\RuntimePayload.cs" Link="RuntimePayload.cs" />
     <Compile Include="..\LandingStats.UpdateProtocol\UpdateProtocol.cs" Link="UpdateProtocol.cs" />
     <Compile Include="..\LandingStats.ProcessControl\GuardianGeneration.cs" Link="ProcessControl\GuardianGeneration.cs" />
+    <Compile Include="..\LandingStats.ProcessControl\RuntimeDiagnosticLog.cs" Link="ProcessControl\RuntimeDiagnosticLog.cs" />
     <Compile Include="..\LandingStats.ProcessControl\GuardianInstance.cs" Link="ProcessControl\GuardianInstance.cs" />
     <Compile Include="..\LandingStats.ProcessControl\GuardianPolicy.cs" Link="ProcessControl\GuardianPolicy.cs" />
     <Compile Include="..\LandingStats.ProcessControl\GuardianProtocol.cs" Link="ProcessControl\GuardianProtocol.cs" />

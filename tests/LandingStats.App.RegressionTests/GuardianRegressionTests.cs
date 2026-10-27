@@ -164,6 +164,12 @@ internal static class GuardianRegressionTests
             Check(File.Exists(Path.Combine(root, "stop-acked")), "Application shutdown was not acknowledged before exit.");
             Check(generations.All(generation => generation.Exit.IsCompleted), "Guardian returned with an owned application still alive.");
             if (mode == "ui") Check(File.Exists(Path.Combine(root, "prepared")) && File.Exists(Path.Combine(root, "recording-continued")), "UI-only recovery skipped the flight-safe boundary or its local drain.");
+            if (mode == "control") Check(states.Any(state => state.Contains("Restart reason=control_stalled") && state.Contains("control_age_ms=") && state.Contains("child_pid=")),
+                "Runtime watchdog recovery did not record its reason and last heartbeat.");
+            if (mode == "ui") Check(states.Any(state => state.Contains("WaitForSafePoint reason=ui_stalled")) && states.Any(state => state.Contains("PrepareRecovery reason=ui_stalled")),
+                "Presentation recovery diagnostics lost the flight-safe transition.");
+            if (mode == "crash") Check(states.Any(state => state.Contains("retired child_pid=") && state.Contains("exit_code=77")),
+                "Application crash diagnostics lost the OS exit code.");
             if (mode == "stop-progress") Check(File.Exists(Path.Combine(root, "drain-complete")), "Guardian killed shutdown while durable drain was progressing.");
             if (mode == "update")
             {

@@ -27,8 +27,10 @@ public partial class App
         Environment.SetEnvironmentVariable(GuardianDescriptor.EnvironmentName, null);
         _guardian = new GuardianClient(descriptor, ReadGuardianHealth, ActivateFromGuardian, PrepareGuardianRecoveryAsync);
         await _guardian.ConnectAsync();
+        RuntimeDiagnosticLog.Write("runtime", "guardian_connected parent_pid=" + descriptor.Parent + " generation=" + descriptor.Generation + " session=" + descriptor.Session.ToString("N"));
         _ = _guardian.Completion.ContinueWith(_ =>
         {
+            RuntimeDiagnosticLog.Write("runtime", "guardian_connection_ended intentional=" + Volatile.Read(ref _intentionalExit), _guardian.Completion.Exception);
             if (Volatile.Read(ref _intentionalExit) == 0)
             {
                 // The launcher owns this application's entire job. If its

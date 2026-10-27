@@ -93,6 +93,11 @@ internal sealed class ProcessWorkerHost : IDisposable
             deadline.CancelAfter(handshakeDeadline);
             deadline.Token.ThrowIfCancellationRequested();
             _process = OwnedProcess.Start(_executable, arguments, jobName: OwnedProcess.JobName(Identity));
+            Log("worker_started");
+            _ = _process.Exit.ContinueWith(exit =>
+            {
+                Log("worker_exited exit_code=" + (exit.Status == TaskStatus.RanToCompletion ? exit.Result.ToString(CultureInfo.InvariantCulture) : exit.Status.ToString()), exit.Exception);
+            }, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
             using var cancelRead = deadline.Token.Register(() => { _pipe.Dispose(); _controlPipe.Dispose(); });
             var connections = Task.WhenAll(_pipe.WaitForConnectionAsync(deadline.Token), _controlPipe.WaitForConnectionAsync(deadline.Token));
             if (await Task.WhenAny(connections, _process.Exit).ConfigureAwait(false) != connections)
@@ -114,6 +119,9 @@ internal sealed class ProcessWorkerHost : IDisposable
             SourceCompletion = ReadPumpAsync();
             ControlCompletion = ReadControlPumpAsync();
             Completion = FirstCompletionAsync(SourceCompletion, ControlCompletion);
+            _ = Completion.ContinueWith(ended => Log("worker_channel_ended source=" + SourceCompletion.Status +
+                " control=" + ControlCompletion.Status + " received=" + LastReceivedSequence + " acknowledged=" + LastAcknowledgedSequence,
+                ended.Exception), CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
         }
         catch (Exception error)
         {
@@ -283,7 +291,7 @@ internal sealed class ProcessWorkerHost : IDisposable
             }
         }
         catch (Exception error) when (error is OperationCanceledException || error is IOException || error is InvalidDataException || error is TimeoutException || error is ObjectDisposedException)
-        { await _process.TerminateAsync(TimeSpan.FromSeconds(3)).ConfigureAwait(false); }
+        { Log("worker_stop_failed", error); await _process.TerminateAsync(TimeSpan.FromSeconds(3)).ConfigureAwait(false); }
         // A role may have spawned descendants. Root exit alone is not a tree exit.
         await _process.TerminateAsync(TimeSpan.FromSeconds(3)).ConfigureAwait(false);
     }
@@ -316,11 +324,15 @@ internal sealed class ProcessWorkerHost : IDisposable
             using (var file = File.OpenRead(_failureLog))
             using (var reader = new StreamReader(file))
             { var buffer = new char[8192]; FailureDiagnostic = new string(buffer, 0, reader.ReadBlock(buffer, 0, buffer.Length)); }
+            Log("worker_failure diagnostic=" + FailureDiagnostic);
             File.Delete(_failureLog);
         }
         catch (IOException) { }
         catch (UnauthorizedAccessException) { }
     }
+    private void Log(string stage, Exception? error = null) => RuntimeDiagnosticLog.Write("runtime", stage +
+        " role=" + Identity.Role + " worker=" + Identity.InstanceId.ToString("N") + " generation=" + Identity.Generation +
+        " child_pid=" + ProcessId + " stopping=" + Volatile.Read(ref _stopping), error);
     private static async Task FirstCompletionAsync(Task source, Task control)
     { var first = await Task.WhenAny(source, control).ConfigureAwait(false); await first.ConfigureAwait(false); }
     private sealed class PendingCommand

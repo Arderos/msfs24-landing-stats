@@ -2,6 +2,7 @@
   <PropertyGroup><TargetFramework>net48</TargetFramework><PlatformTarget>x64</PlatformTarget></PropertyGroup>
   <ItemGroup>
     <Compile Include="../LandingStats.UpdateProtocol/RuntimePayload.cs" Link="RuntimePayload.cs" />
+    <Compile Include="../LandingStats.ProcessControl/RuntimeDiagnosticLog.cs" Link="RuntimeDiagnosticLog.cs" />
     <ProjectReference Include="../LandingStats.Models/LandingStats.Models.csproj" />
     <ProjectReference Include="../LandingStats.Storage/LandingStats.Storage.csproj" />
     <ProjectReference Include="../LandingStats.Recording/LandingStats.Recording.csproj" />

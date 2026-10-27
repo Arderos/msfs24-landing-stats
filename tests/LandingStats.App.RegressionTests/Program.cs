@@ -120,6 +120,7 @@ internal static class Program
         Run("window startup loads local history while runtime is unavailable", WindowStartupRegressionTests.RunAll);
         Run("loading indicators stop their hidden animation clocks", LoadingIndicatorRegressionTests.RunAll);
         Run("guardian recovers application failures, defers UI recovery and honors acknowledged exits", GuardianRegressionTests.RunAll);
+        Run("runtime diagnostics preserve failures and bound log retention without affecting recovery", RuntimeDiagnosticsRegressionTests.Run);
         Run("telemetry decisions record actual branches and stay capture-local and bounded", TelemetryDecisionJournalRegressionTests.RunAll);
         Run("deduplicator keeps the last same-time frame", DeduplicatorKeepsLastFrame);
         Run("physics continuity rejects paused contacts and preserves real landings and bounces", PhysicsContinuityRegressionTests.RunAll);

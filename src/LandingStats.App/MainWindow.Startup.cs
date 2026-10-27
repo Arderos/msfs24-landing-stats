@@ -105,6 +105,7 @@ public partial class MainWindow
     private void OnUpdatePhaseChanged(string phase)
     {
         _startupTimeline?.Mark(phase);
+        RuntimeDiagnosticLog.Write("runtime", "update_phase=" + phase);
         Dispatcher.BeginInvoke(new Action(() =>
         {
             if (_isClosed || !_updateCheckRunning) return;

@@ -44,7 +44,13 @@ internal sealed class GuardianClient : IDisposable
     private async Task RunAsync()
     {
         var reader = ReadPumpAsync(); var writer = HealthPumpAsync();
-        try { await await Task.WhenAny(reader, writer).ConfigureAwait(false); }
+        try
+        {
+            var ended = await Task.WhenAny(reader, writer).ConfigureAwait(false);
+            if (!_lifetime.IsCancellationRequested)
+                RuntimeDiagnosticLog.Write("runtime", "guardian_channel_ended endpoint=" + (ended == reader ? "reader" : "health_writer") + " status=" + ended.Status, ended.Exception);
+            await ended.ConfigureAwait(false);
+        }
         finally
         {
             _lifetime.Cancel(); _wire.Dispose(); Volatile.Read(ref _pending)?.TrySetException(new IOException("Guardian channel closed."));

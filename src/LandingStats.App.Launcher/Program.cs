@@ -103,18 +103,8 @@ internal static class Program
         }
     }
 
-    private static void LogGuardian(long generation, string state)
-    {
-        try
-        {
-            var directory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "MSFS Landing Stats", "Runtime");
-            Directory.CreateDirectory(directory); var path = Path.Combine(directory, "guardian.log");
-            if (File.Exists(path) && new FileInfo(path).Length >= 1024 * 1024)
-            { var previous = path + ".previous"; if (File.Exists(previous)) File.Delete(previous); File.Move(path, previous); }
-            File.AppendAllText(path, DateTime.UtcNow.ToString("o") + " generation=" + generation + " " + state + Environment.NewLine);
-        }
-        catch { /* Diagnostics cannot prevent ownership and recovery. */ }
-    }
+    private static void LogGuardian(long generation, string state) =>
+        RuntimeDiagnosticLog.Write("guardian", "generation=" + generation + " " + state);
 
     private static string PrepareRuntime(byte[] payload, IReadOnlyCollection<string> bundledFiles)
     {

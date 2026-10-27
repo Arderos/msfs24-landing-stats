@@ -129,7 +129,8 @@ internal sealed class GuardianGeneration : IDisposable
                             }
                         }
                     }
-                    catch (Exception) when (!_lifetime.IsCancellationRequested) { /* Rejected handoff leaves the application running. */ }
+                    catch (Exception error) when (!_lifetime.IsCancellationRequested)
+                    { RuntimeDiagnosticLog.Write("guardian", "generation=" + _descriptor.Generation + " update_handoff_rejected", error); }
                     finally { if (prepared != null) await prepared.RetireAsync().ConfigureAwait(false); }
                 }
                 await _wire.SendAsync(new GuardianPacket(GuardianMessageKind.Ack, packet.Request, accepted: accepted), _lifetime.Token).ConfigureAwait(false);
@@ -182,7 +183,7 @@ internal sealed class GuardianSupervisor
             try { prepared = _factory(++generation); }
             catch (Exception error)
             {
-                Publish(generation, "prepare_failed:" + error.GetType().Name);
+                Publish(generation, "prepare_failed error=" + error);
                 failures = Math.Min(1000000, failures + 1);
                 if (++startupFailures >= _policy.MaximumStartupFailures) throw new IOException("The application repeatedly failed during runtime preparation.", error);
                 await Task.Delay(_policy.Backoff(failures)).ConfigureAwait(false); continue;
@@ -207,10 +208,21 @@ internal sealed class GuardianSupervisor
                     if (now - lastTick > Stopwatch.Frequency * 5) { resumeUntil = now + (long)(_policy.ResumeGrace.TotalSeconds * Stopwatch.Frequency); preparing = 0; }
                     lastTick = now;
                     if (child.TakeRecoveryDeferred()) preparing = 0;
-                    var decision = _policy.Decide(now, started, child.Health, child.StopIntent, child.Exit.IsCompleted, child.Completion.IsCompleted, preparing, child.RecoveryReady);
+                    var health = child.Health; var stop = child.StopIntent;
+                    var exited = child.Exit.IsCompleted; var channelClosed = child.Completion.IsCompleted;
+                    var decision = _policy.Decide(now, started, health, stop, exited, channelClosed, out var reason, preparing, child.RecoveryReady);
                     if (now < resumeUntil && child.StopIntent == GuardianStopReason.None && !child.Exit.IsCompleted && !child.Completion.IsCompleted)
-                    { decision = GuardianDecision.Continue; if (child.Health?.ControlQpc >= resumeUntil - (long)(_policy.ResumeGrace.TotalSeconds * Stopwatch.Frequency) && child.Health?.UiQpc >= resumeUntil - (long)(_policy.ResumeGrace.TotalSeconds * Stopwatch.Frequency)) resumeUntil = 0; }
-                    var state = decision.ToString(); if (state != previous) { Publish(generation, state); previous = state; }
+                    { decision = GuardianDecision.Continue; reason = "resume_grace"; if (child.Health?.ControlQpc >= resumeUntil - (long)(_policy.ResumeGrace.TotalSeconds * Stopwatch.Frequency) && child.Health?.UiQpc >= resumeUntil - (long)(_policy.ResumeGrace.TotalSeconds * Stopwatch.Frequency)) resumeUntil = 0; }
+                    var state = decision + " reason=" + reason;
+                    if (state != previous)
+                    {
+                        Publish(generation, state + " child_pid=" + child.ProcessId + " alive_ms=" + RuntimeDiagnosticLog.Age(now, started) +
+                            " ready=" + health?.Ready + " safe=" + health?.SafeToRestart + " recovery=" + health?.Recovery + " component=" + health?.Component +
+                            " control_age_ms=" + RuntimeDiagnosticLog.Age(now, health?.ControlQpc ?? 0) + " ui_age_ms=" + RuntimeDiagnosticLog.Age(now, health?.UiQpc ?? 0) +
+                            " exited=" + exited + " exit_code=" + (child.Exit.Status == TaskStatus.RanToCompletion ? child.Exit.Result.ToString(System.Globalization.CultureInfo.InvariantCulture) : "pending") +
+                            " channel=" + child.Completion.Status + (child.Completion.Exception == null ? "" : " channel_error=" + child.Completion.Exception));
+                        previous = state;
+                    }
                     if (decision == GuardianDecision.Stop)
                     {
                         intentional = true;
@@ -231,7 +243,7 @@ internal sealed class GuardianSupervisor
                     await Task.Delay(_policy.CheckInterval).ConfigureAwait(false);
                 }
             }
-            catch (Exception error) { Publish(generation, "failed:" + error.GetType().Name); }
+            catch (Exception error) { Publish(generation, "failed error=" + error); }
             finally
             {
                 // Never abandon an unconfirmed tree and continue the outer
@@ -240,8 +252,10 @@ internal sealed class GuardianSupervisor
                 {
                     try { await child.RetireAsync(TimeSpan.FromSeconds(3)).ConfigureAwait(false); break; }
                     catch (Exception error) when (error is IOException || error is TimeoutException || error is System.ComponentModel.Win32Exception)
-                    { Publish(generation, "retirement_pending:" + error.GetType().Name); await Task.Delay(250).ConfigureAwait(false); }
+                    { Publish(generation, "retirement_pending error=" + error); await Task.Delay(250).ConfigureAwait(false); }
                 }
+                Publish(generation, "retired child_pid=" + child.ProcessId + " exit_code=" +
+                    (child.Exit.Status == TaskStatus.RanToCompletion ? child.Exit.Result.ToString(System.Globalization.CultureInfo.InvariantCulture) : child.Exit.Status.ToString()));
                 Volatile.Write(ref _current, null);
             }
             if (intentional || child.StopIntent != GuardianStopReason.None || Volatile.Read(ref _stop) != 0) return;

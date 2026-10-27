@@ -73,10 +73,11 @@ public partial class MainWindow
                 }
                 await start.ConfigureAwait(false);
                 _startupTimeline?.Mark("runtime_ready");
+                RuntimeDiagnosticLog.Write("runtime", "runtime_ready");
                 if (_services.Settings.Snapshot.Settings.IntegrationApiEnabled)
                     await runtime.SetIntegrationApiEnabledAsync(true).ConfigureAwait(false);
             }
-            catch { await runtime.StopAsync().ConfigureAwait(false); throw; }
+            catch (Exception error) { RuntimeDiagnosticLog.Write("runtime", "runtime_start_failed", error); await runtime.StopAsync().ConfigureAwait(false); throw; }
             finally { if (Volatile.Read(ref _isClosed)) await runtime.StopAsync().ConfigureAwait(false); }
         });
         await _runtimeStartupTask;
