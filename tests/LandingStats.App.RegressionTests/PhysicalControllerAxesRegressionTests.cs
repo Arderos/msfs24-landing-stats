@@ -61,7 +61,7 @@ internal static class PhysicalControllerAxesRegressionTests
 
         for (uint device = 0; device < 16; device++) api.Devices[device] = (Caps(2, 0), State(0, 0, 0, 0, 0, 0));
         reader.Refresh();
-        Require(reader.Count == TelemetrySample.CapturedControllerCount, "device slots are bounded");
+        Require(reader.Count == api.Devices.Count, "all discovered devices are retained");
 
         VerifyCsv();
         VerifyQueuedSchema();

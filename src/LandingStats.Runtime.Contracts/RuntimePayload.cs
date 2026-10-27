@@ -15,6 +15,7 @@ public enum RuntimeMessageKind : ushort
     SourceObservation = 24,
     IntegrationRequest = 25, IntegrationResponse = 26,
     SimulatorLifecycleSnapshot = 27,
+    AircraftControls = 28,
 }
 
 public abstract class RuntimePayload

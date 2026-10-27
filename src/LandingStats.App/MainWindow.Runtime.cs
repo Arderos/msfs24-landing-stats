@@ -215,7 +215,6 @@ public partial class MainWindow
                 _runtimeObservedSimulatorExit = true;
                 if (Environment.GetEnvironmentVariable(App.SimulatorAutoStartEnvironmentVariable) == "1") OnSimulatorExited();
             }
-            RetryDeferredUpdateIfSafe();
         }, DispatcherPriority.Background, cancellationToken).Task.ConfigureAwait(false);
         _runtimePresentedEpisodes.Clear();
         foreach (var episode in snapshot.Episodes) _runtimePresentedEpisodes[episode.Episode] = episode.ReportReady;

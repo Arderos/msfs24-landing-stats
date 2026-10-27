@@ -32,10 +32,16 @@ public partial class MainWindow
     private Task _runtimeInitializationTask = Task.CompletedTask;
     private bool _runtimeStartupFailed;
     private bool _runtimeRetrying;
+    private readonly object _runtimeStartupGate = new object();
+
+    private Task BeginRuntimeStartup()
+    {
+        lock (_runtimeStartupGate) return _runtimeInitializationTask = TryStartRuntimeAsync();
+    }
 
     private async Task TryStartRuntimeAsync()
     {
-        _runtimeRetrying = true; RetryRuntimeButton.IsEnabled = false;
+        _runtimeRetrying = true; _runtimeStartupFailed = false; RetryRuntimeButton.IsEnabled = false;
         try
         {
             await InitializeRuntimeAsync();
@@ -51,22 +57,60 @@ public partial class MainWindow
                 RetryRuntimeButton.Visibility = Visibility.Visible;
             }
         }
-        finally { _runtimeRetrying = false; RetryRuntimeButton.IsEnabled = !_isClosed; RetryDeferredUpdateIfSafe(); }
+        finally { _runtimeRetrying = false; RetryRuntimeButton.IsEnabled = !_isClosed; }
     }
 
     private async void OnRetryRuntimeClick(object sender, RoutedEventArgs args)
     {
         if (_isClosed || _runtimeRetrying) return;
-        await TryStartRuntimeAsync();
+        await BeginRuntimeStartup();
         if (!_isClosed) RefreshSettingsPresentation();
     }
 
     private bool _updateCheckRunning;
-    private void RetryDeferredUpdateIfSafe()
+    private string? _updatePhase;
+    private bool CanInstallUpdate()
     {
-        if (!_isClosed && !_updateCheckRunning && _releaseUpdateResult?.MessageKey == "Update.DeferredUnsafe" &&
-            (_runtimeStartupFailed || Volatile.Read(ref _runtime)?.SafeToRestart == true))
-            _ = CheckForUpdateAsync();
+        lock (_runtimeStartupGate)
+            return _runtimeInitializationTask.IsCompleted && !Volatile.Read(ref _runtimeRetrying) &&
+                (Volatile.Read(ref _runtimeStartupFailed) || Volatile.Read(ref _runtime)?.SafeToRestart == true);
+    }
+
+    private async Task WaitForUpdateRestartAsync(CancellationToken cancellationToken)
+    {
+        // A manual startup retry replaces the task; never accept its stale failure.
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Task startup;
+            lock (_runtimeStartupGate) startup = _runtimeInitializationTask;
+            var cancelled = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            using (cancellationToken.Register(() => cancelled.TrySetResult(true)))
+                await Task.WhenAny(startup, cancelled.Task).ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
+            await startup.ConfigureAwait(false);
+            LandingRuntime runtime;
+            lock (_runtimeStartupGate)
+            {
+                if (!ReferenceEquals(startup, _runtimeInitializationTask)) continue;
+                if (Volatile.Read(ref _runtimeStartupFailed)) return;
+                runtime = Volatile.Read(ref _runtime) ?? throw new InvalidOperationException("Runtime startup did not publish a runtime.");
+            }
+            await runtime.WaitForSafeRestartAsync(cancellationToken).ConfigureAwait(false);
+            lock (_runtimeStartupGate)
+                if (ReferenceEquals(startup, _runtimeInitializationTask) && ReferenceEquals(runtime, Volatile.Read(ref _runtime))) return;
+        }
+    }
+
+    private void OnUpdatePhaseChanged(string phase)
+    {
+        _startupTimeline?.Mark(phase);
+        Dispatcher.BeginInvoke(new Action(() =>
+        {
+            if (_isClosed || !_updateCheckRunning) return;
+            _updatePhase = phase;
+            RefreshUpdatePresentation();
+        }));
     }
 
     private async Task CheckForUpdateAsync()
@@ -77,18 +121,27 @@ public partial class MainWindow
         {
             var version = typeof(MainWindow).Assembly.GetName().Version ?? new Version(0, 0, 0);
             _releaseUpdateResult = await _releaseUpdater.CheckAndInstallAsync(version, _lifetimeCancellation.Token,
-                () => _runtimeStartupFailed || Volatile.Read(ref _runtime)?.SafeToRestart == true);
+                WaitForUpdateRestartAsync, CanInstallUpdate, OnUpdatePhaseChanged);
             if (_isClosed) return;
+            _updatePhase = null;
             RefreshUpdatePresentation();
             if (_releaseUpdateResult.State == ReleaseUpdateState.UpdateStarted)
             { _stopReason = GuardianStopReason.Update; Close(); }
         }
-        finally { _updateCheckRunning = false; }
-        RetryDeferredUpdateIfSafe();
+        finally { _updateCheckRunning = false; _updatePhase = null; }
     }
 
     private void RefreshUpdatePresentation()
     {
+        if (_updateCheckRunning && _updatePhase != null)
+        {
+            var key = _updatePhase == "update_wait_safe" ? "Update.StatusWaiting" :
+                _updatePhase == "update_handoff" ? "Update.StatusInstalling" : "Update.StatusChecking";
+            VersionAuthorRun.Text = _versionAuthorBase + LocalizationManager.Text(key);
+            VersionAuthorText.ToolTip = _updatePhase == "update_wait_safe" ?
+                LocalizationManager.Text("Update.DeferredUnsafe") : LocalizationManager.Text(key).Trim(' ', '·');
+            return;
+        }
         var result = _releaseUpdateResult;
         if (result == null) return;
         VersionAuthorText.ToolTip = result.Path == null ? result.Message : result.Message + "\n" + result.Path;

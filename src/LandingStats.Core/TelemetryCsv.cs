@@ -7,7 +7,7 @@ namespace LandingStats.Core;
 
 public static class TelemetryCsv
 {
-    public const int SchemaVersion = 7;
+    public const int SchemaVersion = 8;
 
     private const int LegacyContactPointCount = 64;
 
@@ -29,7 +29,9 @@ public static class TelemetryCsv
 
     public static readonly string V6Header = BuildCompactHeader(includeAllControllerAxes: true);
 
-    public static readonly string Header = V6Header + ",analysis_time_s,simulator_state,pause_flags,flight_segment";
+    public static readonly string V7Header = V6Header + ",analysis_time_s,simulator_state,pause_flags,flight_segment";
+
+    public static readonly string Header = V7Header + ",controller_data_v2";
 
     private static readonly CultureInfo Invariant = CultureInfo.InvariantCulture;
     private static readonly int LegacyColumnCount = ColumnCount(LegacyHeader);
@@ -39,10 +41,13 @@ public static class TelemetryCsv
     private static readonly int V4ColumnCount = ColumnCount(V4Header);
     private static readonly int V5ColumnCount = ColumnCount(V5Header);
     private static readonly int V6ColumnCount = ColumnCount(V6Header);
+    private static readonly int V7ColumnCount = ColumnCount(V7Header);
     private static readonly int CurrentColumnCount = ColumnCount(Header);
 
     public static string Format(TelemetrySample sample)
     {
+        var controllers = sample.HasLegacyControllerLayout ? string.Empty : Convert.ToBase64String(ControllerSampleCodec.Encode(sample));
+        sample = sample.LegacyControllerProjection();
         var values = new List<string>
         {
             sample.Sequence.ToString(Invariant),
@@ -159,6 +164,7 @@ public static class TelemetryCsv
         values.Add(((int)sample.SimulatorState).ToString(Invariant));
         values.Add(sample.PauseFlags.ToString(Invariant));
         values.Add(sample.FlightSegment.ToString(Invariant));
+        values.Add(controllers);
         return string.Join(",", values);
     }
 
@@ -168,6 +174,7 @@ public static class TelemetryCsv
         using var reader = new StreamReader(path);
         var header = reader.ReadLine();
         if (!string.Equals(header, Header, StringComparison.Ordinal) &&
+            !string.Equals(header, V7Header, StringComparison.Ordinal) &&
             !string.Equals(header, V6Header, StringComparison.Ordinal) &&
             !string.Equals(header, V5Header, StringComparison.Ordinal) &&
             !string.Equals(header, V4Header, StringComparison.Ordinal) &&
@@ -217,7 +224,7 @@ public static class TelemetryCsv
         var isBlackBoxV3 = values.Length == BlackBoxV3ColumnCount;
         var isV4 = values.Length == V4ColumnCount;
         var isCurrent = values.Length == CurrentColumnCount;
-        if (isCurrent || values.Length == V6ColumnCount || values.Length == V5ColumnCount)
+        if (isCurrent || values.Length == V7ColumnCount || values.Length == V6ColumnCount || values.Length == V5ColumnCount)
         {
             return TryParseCompact(values, out sample);
         }
@@ -733,7 +740,7 @@ public static class TelemetryCsv
             }
         }
 
-        if (values.Length == CurrentColumnCount)
+        if (values.Length == CurrentColumnCount || values.Length == V7ColumnCount)
         {
             if (!TryNumber(values[index++], out var analysisTime) || double.IsInfinity(analysisTime) ||
                 !int.TryParse(values[index++], NumberStyles.Integer, Invariant, out var state) || state < 0 || state > 3 ||
@@ -746,6 +753,16 @@ public static class TelemetryCsv
             sample.FlightSegment = segment;
         }
 
+        if (values.Length == CurrentColumnCount)
+        {
+            var encoded = values[index++];
+            if (encoded.Length > ((TelemetryBinaryCodec.MaximumEncodedSize + 2L) / 3L) * 4L) return false;
+            if (encoded.Length != 0)
+            {
+                try { ControllerSampleCodec.Apply(sample, Convert.FromBase64String(encoded)); }
+                catch (Exception error) when (error is FormatException || error is InvalidDataException || error is EndOfStreamException || error is ArgumentException) { return false; }
+            }
+        }
         return index == values.Length;
     }
 

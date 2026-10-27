@@ -26,6 +26,8 @@ internal sealed partial class SimConnectSource
     private void OnRecvSystemState(SimConnect sender, SIMCONNECT_RECV_SYSTEM_STATE data)
     {
         if (!ReferenceEquals(sender, _simConnect)) return;
+        if (data.dwRequestID == (uint)Requests.AircraftConfiguration)
+        { ObserveAircraftConfiguration(data.szString); return; }
         if (_streamWatchdog.ObserveSystem(data.dwRequestID, data.dwInteger != 0, _subscriptionClock())) return;
         if (data.dwRequestID == (uint)Requests.SimulationState)
         {

@@ -1,0 +1,3 @@
+# Immutable signed update fixtures must retain their published bytes.
+tests/LandingStats.App.RegressionTests/Fixtures/update-readiness-v0.9.6-manifest.txt -text
+tests/LandingStats.App.RegressionTests/Fixtures/update-readiness-v0.9.6-signature.txt -text

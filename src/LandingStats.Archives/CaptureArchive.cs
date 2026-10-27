@@ -16,9 +16,12 @@ public static class CaptureArchiveFormat
     public const int LegacyZip = 1, ZstdZip = 2;
     public const string ManifestName = "archive-format.bin";
     public const long MaximumDecodedBytes = 256L * 1024 * 1024;
+    // A 1 MiB controller catalog plus its text keys, identity labels and sparse
+    // slot placeholders fits in two payload budgets; the old eight-device limit did not.
+    public const int MaximumSessionMetadataBytes = 2 * 1024 * 1024;
     internal static readonly byte[] Magic = Encoding.ASCII.GetBytes("LSAR0002");
     internal static readonly string[] Names = { "telemetry.csv", "session.txt", "landing-results.json", "decisions.json", "controller-catalogs.json", "source-state.bin" };
-    internal static long Limit(string name) => name == "session.txt" ? 16384 : name == "decisions.json" ? 4L * 1024 * 1024 :
+    internal static long Limit(string name) => name == "session.txt" ? MaximumSessionMetadataBytes : name == "decisions.json" ? 4L * 1024 * 1024 :
         name == "controller-catalogs.json" ? 8L * 1024 * 1024 : name == "source-state.bin" ? 16L * 1024 * 1024 : MaximumDecodedBytes;
 }
 

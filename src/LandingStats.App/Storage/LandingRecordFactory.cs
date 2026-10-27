@@ -127,9 +127,11 @@ public static class LandingRecordFactory
             if (scheduled) nextStoredTime = relativeTime + StoredSampleIntervalSeconds;
         }
 
+        record.ControllerAxisCount = storedSamples.Count == 0 ? 6 : storedSamples.Max(value => value.Sample.ControllerAxisCount);
+        var controllerCount = storedSamples.Count == 0 ? 0 : storedSamples.Max(value => value.Sample.ControllerCount);
         record.ControllerTimeline = ControllerCatalogTimeline.Capture(storedSamples.Select(value => value.Sample).ToArray());
         record.SourceEvidenceTimeline = ReplaySourceTimelineCodec.EncodeText(storedSamples.Select(value => value.Sample).ToArray());
-        for (var sourceIndex = 0; sourceIndex < TelemetrySample.CapturedControllerCount; sourceIndex++)
+        for (var sourceIndex = 0; sourceIndex < controllerCount; sourceIndex++)
         {
             foreach (var stored in storedSamples)
             {
@@ -142,11 +144,12 @@ public static class LandingRecordFactory
             }
         }
 
-        for (var axis = 0; axis < TelemetrySample.CapturedControllerCount * TelemetrySample.CapturedControllerAxisCount; axis++)
+        for (var axis = 0; axis < checked(controllerCount * record.ControllerAxisCount); axis++)
         {
             foreach (var stored in storedSamples)
             {
-                if (axis < stored.Sample.RawControllerAxesValid.Length && stored.Sample.RawControllerAxesValid[axis])
+                var sourceAxis = ControllerAxisOffset(stored.Sample, axis, record.ControllerAxisCount);
+                if (sourceAxis >= 0 && stored.Sample.RawControllerAxesValid[sourceAxis])
                 {
                     record.RawControllerAxesSourceIndices.Add(axis);
                     break;
@@ -205,9 +208,9 @@ public static class LandingRecordFactory
                 PlaneAltitudeFeet = FiniteImpactValue(sample.PlaneAltitudeFeet),
                 GroundAltitudeFeet = FiniteImpactValue(sample.GroundAltitudeFeet),
                 HeadingTrueDegrees = FiniteImpactValue(sample.HeadingTrueDegrees),
-                RawControllerAxesPercent = RoundedSelectedCopy(sample.RawControllerAxesPercent, record.RawControllerAxesSourceIndices, 2),
-                RawControllerAxesValid = SelectedCopy(sample.RawControllerAxesValid, record.RawControllerAxesSourceIndices),
-                RawControllerAxesAgeSeconds = RoundedSelectedCopy(sample.RawControllerAxesAgeSeconds, record.RawControllerAxesSourceIndices, 4),
+                RawControllerAxesPercent = SelectedAxes(sample, record, sample.RawControllerAxesPercent, value => Math.Round(value, 2)),
+                RawControllerAxesValid = SelectedAxes(sample, record, sample.RawControllerAxesValid, value => value),
+                RawControllerAxesAgeSeconds = SelectedAxes(sample, record, sample.RawControllerAxesAgeSeconds, value => Math.Round(value, 4)),
             });
         }
 
@@ -236,6 +239,17 @@ public static class LandingRecordFactory
         record.ImpactStatus = impact.Status.ToString();
 
         return record;
+    }
+
+    private static int ControllerAxisOffset(TelemetrySample sample, int source, int stride)
+    {
+        var slot = source / stride; var axis = source % stride;
+        return slot < sample.ControllerCount && axis < sample.ControllerAxisCount ? slot * sample.ControllerAxisCount + axis : -1;
+    }
+    private static T[] SelectedAxes<T>(TelemetrySample sample, LandingRecord record, T[] values, Func<T, T> convert)
+    {
+        return record.RawControllerAxesSourceIndices.Select(source =>
+        { var offset = ControllerAxisOffset(sample, source, record.ControllerAxisCount); return offset < 0 ? default! : convert(values[offset]); }).ToArray();
     }
 
     private static double? FiniteImpactValue(double value) =>

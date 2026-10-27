@@ -168,14 +168,14 @@ jobs:
         run: |
           $fixtures = Join-Path $env:GITHUB_WORKSPACE 'artifacts\receiver-contract'
           New-Item -ItemType Directory -Path $fixtures -Force | Out-Null
-          foreach ($kind in @('ARCHIVE','PROVENANCE','SOURCE')) {
+          foreach ($kind in @('ARCHIVE','PROVENANCE','SOURCE','DYNAMIC_CONTROLLER')) {
             $path = Join-Path $fixtures ($kind.ToLowerInvariant() + '.zip')
             [Environment]::SetEnvironmentVariable("MSFSLS_${kind}_FIXTURE", $path)
             "MSFSLS_${kind}_FIXTURE=$path" >> $env:GITHUB_ENV
           }
           & .\tests\LandingStats.App.RegressionTests\bin\Release\net48\LandingStats.App.RegressionTests.exe
           if ($LASTEXITCODE -ne 0) { throw 'Application regressions failed.' }
-          foreach ($kind in @('ARCHIVE','PROVENANCE','SOURCE')) {
+          foreach ($kind in @('ARCHIVE','PROVENANCE','SOURCE','DYNAMIC_CONTROLLER')) {
             if (-not (Test-Path -LiteralPath ([Environment]::GetEnvironmentVariable("MSFSLS_${kind}_FIXTURE")) -PathType Leaf)) {
               throw "Required receiver contract fixture was not emitted: $kind"
             }

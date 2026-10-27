@@ -21,6 +21,8 @@ internal sealed class ReplayPresentationData
     internal IReadOnlyList<double> ContactTimes { get; }
     internal IReadOnlyList<Point3D> GroundPositions { get; }
     internal IReadOnlyDictionary<LandingSeriesPoint, double> Pitch { get; }
+    internal IReadOnlyDictionary<LandingEnginePoint, double> Throttles { get; }
+    internal IReadOnlyCollection<int> PhysicalThrottleEngines { get; }
 
     private ReplayPresentationData(LandingRecord record, LandingRecord[] contacts)
     {
@@ -29,7 +31,7 @@ internal sealed class ReplayPresentationData
         var pitch = new Dictionary<LandingSeriesPoint, double>();
         if (record.ControllerTimeline != null)
         {
-            var selected = record.HasRawPitchInput || !record.ControllerTimeline.IsSupported;
+            var selected = record.HasRawPitchInput || Inputs.HasPhysicalPitch || !record.ControllerTimeline.IsSupported;
             foreach (var point in record.Series)
             {
                 pitch[point] = Inputs.Sample(point.TimeSeconds).PitchPercent ?? double.NaN;
@@ -40,6 +42,12 @@ internal sealed class ReplayPresentationData
             if (!selected) pitch.Clear();
         }
         Pitch = pitch;
+        var throttleEngines = record.Engines.Where(engine => Inputs.HasPhysicalThrottle(engine.EngineNumber - 1)).Select(engine => engine.EngineNumber).ToArray();
+        var throttles = new Dictionary<LandingEnginePoint, double>();
+        foreach (var engine in record.Engines.Where(engine => throttleEngines.Contains(engine.EngineNumber)))
+            foreach (var point in engine.Points)
+                throttles[point] = Inputs.SampleThrottle(point.TimeSeconds, engine.EngineNumber - 1) ?? double.NaN;
+        Throttles = throttles; PhysicalThrottleEngines = throttleEngines;
         if (LandingReplayTrack.TryCreate(record, out var track))
         {
             Track = track;
@@ -74,9 +82,16 @@ internal sealed class ReplayPresentationData
                 hash = hash * 31 + p.PlaneAltitudeFeet.GetHashCode(); hash = hash * 31 + p.GroundAltitudeFeet.GetHashCode();
                 hash = hash * 31 + p.HeadingTrueDegrees.GetHashCode(); hash = hash * 31 + p.PitchDegrees.GetHashCode();
                 hash = hash * 31 + p.BankDegrees.GetHashCode(); hash = hash * 31 + p.OnGround.GetHashCode();
+                hash = hash * 31 + p.AglFeet.GetHashCode();
+                hash = hash * 31 + p.WindSpeedKnots.GetHashCode(); hash = hash * 31 + p.WindDirectionDegrees.GetHashCode();
             }
             return hash;
         }
+    }
+    internal static ReplayPresentationData ForControls(LandingRecord record)
+    {
+        lock (Gate) if (Cache.TryGetValue(record, out var cached)) return cached;
+        return Prepare(record, new[] { record });
     }
     internal static IReadOnlyDictionary<LandingSeriesPoint, double>? PitchValues(LandingRecord record)
     {

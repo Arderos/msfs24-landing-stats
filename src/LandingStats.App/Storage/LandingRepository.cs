@@ -745,6 +745,7 @@ public sealed class LandingRepository
             RawPitchInputLagSeconds = source.RawPitchInputLagSeconds,
             RawControllerSourceIndices = new List<int>(source.RawControllerSourceIndices ?? new List<int>()),
             RawControllerAxesSourceIndices = new List<int>(source.RawControllerAxesSourceIndices ?? new List<int>()),
+            ControllerAxisCount = source.ControllerAxisCount,
             RunwayGeometry = source.RunwayGeometry,
             WindSpeedKnotsAtContact = source.WindSpeedKnotsAtContact,
             WindDirectionDegreesAtContact = source.WindDirectionDegreesAtContact,

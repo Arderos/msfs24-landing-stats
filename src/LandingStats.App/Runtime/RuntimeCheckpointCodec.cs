@@ -30,19 +30,19 @@ internal static class RuntimeCheckpointCodec
     public static void WriteNullableBool(BinaryWriter writer, bool? value) => writer.Write((sbyte)(value.HasValue ? value.Value ? 1 : 0 : -1));
     public static bool? ReadNullableBool(BinaryReader reader)
     { var value = reader.ReadSByte(); if (value == -1) return null; if (value == 0 || value == 1) return value == 1; throw new InvalidDataException("Invalid nullable checkpoint boolean."); }
-    public static void WriteSample(BinaryWriter writer, TelemetrySample? sample)
+    public static void WriteSample(BinaryWriter writer, TelemetrySample? sample, bool includeControllerCatalog = true)
     {
-        writer.Write((byte)(sample == null ? 0 : (sample.ControllerCatalog == null ? 1 : 2) + (sample.SourceEvidence == null ? 0 : 2)));
+        writer.Write((byte)(sample == null ? 0 : (!includeControllerCatalog || sample.ControllerCatalog == null ? 1 : 2) + (sample.SourceEvidence == null ? 0 : 2)));
         if (sample == null) return;
         writer.Write(TelemetryBinaryCodec.Encode(sample));
-        if (sample.ControllerCatalog != null) ControllerProvenanceCodec.Write(writer, sample.ControllerCatalog);
+        if (includeControllerCatalog && sample.ControllerCatalog != null) ControllerProvenanceCodec.Write(writer, sample.ControllerCatalog);
         if (sample.SourceEvidence != null) ReplaySourceEvidenceCodec.Write(writer, sample.SourceEvidence);
     }
     public static TelemetrySample? ReadSample(BinaryReader reader)
     {
         var tag = reader.ReadByte(); if (tag == 0) return null;
         if (tag > 4) throw new InvalidDataException("Invalid checkpoint sample tag.");
-        var sample = TelemetryBinaryCodec.Decode(ReadBytes(reader, TelemetryBinaryCodec.EncodedSize));
+        var sample = TelemetryBinaryCodec.Read(reader);
         if (tag == 2 || tag == 4) sample.ControllerCatalog = ControllerProvenanceCodec.Read(reader);
         if (tag >= 3) sample.SourceEvidence = ReplaySourceEvidenceCodec.Read(reader);
         return sample;

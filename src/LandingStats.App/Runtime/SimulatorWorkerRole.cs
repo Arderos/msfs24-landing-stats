@@ -38,6 +38,7 @@ internal sealed class SimulatorWorkerRole : IWorkerRole
         var owner = new WorkerOwner(context); var capture = new CaptureContext(); var scenery = new SceneryObserver(capture, context);
         Exception? failure = null; ISimulatorSource? source = null; HwndSource? window = null; long connection = 0, useful = 0, previousUseful = 0;
         var simulator = "MSFS";
+        using var profiles = new MsfsControlProfileMonitor();
         var physicsAnnounced = false;
         void Physics(double time, bool motion)
         {
@@ -69,15 +70,21 @@ internal sealed class SimulatorWorkerRole : IWorkerRole
             window.AddHook((IntPtr hwnd, int message, IntPtr wParam, IntPtr lParam, ref bool handled) => source.HandleWindowMessage(message, ref handled));
             source.Connected += name =>
             {
-                connection++; physicsAnnounced = false; simulator = OptionalMetadataText.Sanitize(name, 128, "MSFS"); scenery.Connection = connection;
+                connection++; profiles.Reset(); physicsAnnounced = false; simulator = OptionalMetadataText.Sanitize(name, 128, "MSFS"); scenery.Connection = connection;
                 scenery.FlightBoundary();
                 Publish(new LifecycleMessage(SourceLifecycle.Connected));
                 Publish(new AircraftMessage(simulator, "Unknown aircraft", "unknown", "unknown"));
             };
-            source.Disconnected += reason => { FlushDiagnostics(); scenery.FlushDiagnostics(); Publish(new LifecycleMessage(SourceLifecycle.Disconnected, (int)reason)); scenery.Retire(); };
+            source.Disconnected += reason => { profiles.Reset(); FlushDiagnostics(); scenery.FlushDiagnostics(); Publish(new LifecycleMessage(SourceLifecycle.Disconnected, (int)reason)); scenery.Retire(); };
             source.SimulatorExited += (_, _) => Publish(new LifecycleMessage(SourceLifecycle.SimulatorQuit));
             source.MetadataReceived += (title, type, model) => Publish(new AircraftMessage(simulator,
                 OptionalMetadataText.Sanitize(title, 512, "Unknown aircraft"), OptionalMetadataText.Sanitize(type, 256, "unknown"), OptionalMetadataText.Sanitize(model, 256, "unknown")));
+            if (source is IAircraftConfigurationSource aircraftSource)
+                aircraftSource.AircraftConfigurationReceived += (path, category) =>
+                {
+                    Publish(new AircraftControlsMessage(path, category, Array.Empty<ControllerBinding>()));
+                    profiles.Update(simulator, path, category);
+                };
             source.SampleReceived += sample => { FlushDiagnostics(); Physics(sample.SimulationTimeSeconds, sample.MotionSimulation); capture.LastSimulationTime = sample.SimulationTimeSeconds; Publish(new TelemetryFrameMessage(sample)); };
             // Guard is acquisition-local: the recording reducer never consumes it.
             source.GuardReceived += sample => { Physics(sample.SimulationTime, sample.MotionSimulation); capture.LastSimulationTime = sample.SimulationTime; useful++; };
@@ -85,7 +92,7 @@ internal sealed class SimulatorWorkerRole : IWorkerRole
             source.LifecycleReceived += (kind, value) =>
             {
                 FlushDiagnostics();
-                if (kind == SourceLifecycle.Flow && IsReplacementStart((SimulatorFlowEvent)value)) scenery.FlightBoundary();
+                if (kind == SourceLifecycle.Flow && IsReplacementStart((SimulatorFlowEvent)value)) { scenery.FlightBoundary(); profiles.Reset(); }
                 Publish(new LifecycleMessage(kind, value));
                 if (kind == SourceLifecycle.Flow && IsReplacementStart((SimulatorFlowEvent)value))
                     Publish(new AircraftMessage(simulator, "Unknown aircraft", "unknown", "unknown"));
@@ -110,6 +117,13 @@ internal sealed class SimulatorWorkerRole : IWorkerRole
                 context.CancellationToken.ThrowIfCancellationRequested();
                 FlushDiagnostics();
                 scenery.Pump();
+                if (profiles.TryTake(out var profile))
+                {
+                    Publish(profile!);
+                    foreach (var diagnostic in profiles.Diagnostics)
+                        Publish(new SourceDiagnosticMessage(capture.LastSimulationTime, "source.controls", "profile_resolution",
+                            OptionalMetadataText.Sanitize(diagnostic, 1024, "Profile resolution unavailable"), new Dictionary<string, double>()));
+                }
                 owner.Progress(useful != previousUseful, source.IsConnected ? DependencyWait.None : DependencyWait.Simulator, Command);
                 previousUseful = useful;
                 if (owner.Stopping) dispatcher.BeginInvokeShutdown(DispatcherPriority.Send);

@@ -246,6 +246,14 @@ public sealed class LandingRecord : IExtensibleDataObject
     [DataMember(Order = 69, EmitDefaultValue = false)]
     public int[]? ClosureReconstructionContactPointIndices { get; set; }
 
+    [DataMember(Name = "ControllerAxisCount", Order = 74, EmitDefaultValue = false)]
+    private int _controllerAxisCount;
+    public int ControllerAxisCount
+    {
+        get => _controllerAxisCount == 0 ? TelemetrySample.CapturedControllerAxisCount : _controllerAxisCount;
+        set { if (value != 6 && value != 8) throw new ArgumentOutOfRangeException(nameof(value)); _controllerAxisCount = value == 6 ? 0 : value; }
+    }
+
     [IgnoreDataMember]
     public bool IsSummaryOnly { get; set; }
 
@@ -285,6 +293,7 @@ public sealed class LandingRecord : IExtensibleDataObject
     [OnDeserialized]
     private void OnDeserialized(StreamingContext context)
     {
+        if (_controllerAxisCount != 0 && _controllerAxisCount != 6 && _controllerAxisCount != 8) throw new SerializationException("Unsupported controller axis layout.");
         Series ??= new List<LandingSeriesPoint>();
         Engines ??= new List<LandingEngineSeries>();
         ContactPoints ??= new List<LandingContactSeries>();

@@ -82,6 +82,37 @@ internal sealed class ReplaySurfaceGeometry
         return height;
     }
 
+    /// <summary>
+    /// Maximum rendered ground beneath a horizontal rectangle with orthogonal,
+    /// nonzero half axes. Clip the actual faces once during scene preparation.
+    /// </summary>
+    internal double? MaximumHeightOver(Point3D center, Vector3D halfRight, Vector3D halfForward)
+    {
+        var rightSquared = halfRight.LengthSquared; var forwardSquared = halfForward.LengthSquared;
+        if (!LandingReplayTrack.Finite(center.X) || !LandingReplayTrack.Finite(center.Z) ||
+            !LandingReplayTrack.Finite(rightSquared) || !LandingReplayTrack.Finite(forwardSquared) ||
+            rightSquared <= 0 || forwardSquared <= 0 || halfRight.Y != 0 || halfForward.Y != 0) return null;
+        Func<Point3D, int, double> distance = (point, plane) =>
+        {
+            var delta = new Vector3D(point.X - center.X, 0, point.Z - center.Z);
+            var projection = Vector3D.DotProduct(delta, plane < 2 ? halfRight : halfForward);
+            var limit = plane < 2 ? rightSquared : forwardSquared;
+            return plane % 2 == 0 ? limit + projection : limit - projection;
+        };
+        double? maximum = null;
+        foreach (var mesh in new[] { Terrain, Pavement })
+        for (var i = 0; i < mesh.TriangleIndices.Count; i += 3)
+        {
+            var polygon = new List<Point3D> { mesh.Positions[mesh.TriangleIndices[i]],
+                mesh.Positions[mesh.TriangleIndices[i + 1]], mesh.Positions[mesh.TriangleIndices[i + 2]] };
+            for (var plane = 0; plane < 4 && polygon.Count > 0; plane++) polygon = Clip(polygon, distance, plane, true);
+            // Height is affine within each face, so its maximum over the
+            // intersection lies at an original or newly clipped vertex.
+            foreach (var point in polygon) maximum = Higher(maximum, point.Y);
+        }
+        return maximum;
+    }
+
     private static double? Higher(double? a, double? b) => !a.HasValue ? b : !b.HasValue ? a : Math.Max(a.Value, b.Value);
     private static int Cell(double value) => (int)Math.Floor(value / HeightCellMeters);
 
@@ -149,21 +180,22 @@ internal sealed class ReplaySurfaceGeometry
         // Unlike lowering one of two overlapping surfaces, this cannot produce
         // intersections when the observed terrain differs from facility altitude.
         var remaining = triangle.ToList();
+        Func<Point3D, int, double> distance = profile.Distance;
         for (var plane = 0; plane < 4 && remaining.Count >= 3; plane++)
         {
-            var outside = Clip(remaining, profile, plane, false);
+            var outside = Clip(remaining, distance, plane, false);
             for (var i = 2; i < outside.Count; i++) Triangle(mesh, outside[0], outside[i - 1], outside[i]);
-            remaining = Clip(remaining, profile, plane, true);
+            remaining = Clip(remaining, distance, plane, true);
         }
     }
 
-    private static List<Point3D> Clip(List<Point3D> polygon, RunwayProfile profile, int plane, bool keepInside)
+    private static List<Point3D> Clip(List<Point3D> polygon, Func<Point3D, int, double> distanceFromPlane, int plane, bool keepInside)
     {
         var result = new List<Point3D>();
-        var previous = polygon[polygon.Count - 1]; var previousDistance = profile.Distance(previous, plane);
+        var previous = polygon[polygon.Count - 1]; var previousDistance = distanceFromPlane(previous, plane);
         foreach (var current in polygon)
         {
-            var distance = profile.Distance(current, plane);
+            var distance = distanceFromPlane(current, plane);
             var previousKept = keepInside ? previousDistance >= 0 : previousDistance <= 0;
             var kept = keepInside ? distance >= 0 : distance <= 0;
             if (kept != previousKept)

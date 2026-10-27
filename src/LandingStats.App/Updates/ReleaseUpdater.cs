@@ -52,16 +52,19 @@ internal sealed class ReleaseUpdater : IDisposable
     private const string LauncherPathEnvironmentVariable = "MSFS_LANDING_STATS_LAUNCHER_PATH";
 
     private readonly HttpClient _client;
+    private readonly string _updatesRoot;
 
-    public ReleaseUpdater(HttpMessageHandler? handler = null)
+    public ReleaseUpdater(HttpMessageHandler? handler = null, string? updatesRoot = null)
     {
+        _updatesRoot = Path.GetFullPath(updatesRoot ?? UpdatesRoot());
         ServicePointManager.SecurityProtocol |= SecurityProtocolType.Tls12;
         _client = handler == null ? new HttpClient() : new HttpClient(handler, true);
         _client.Timeout = TimeSpan.FromSeconds(45);
         _client.DefaultRequestHeaders.UserAgent.ParseAdd("MSFS-Landing-Stats-Updater/3");
     }
 
-    public async Task<ReleaseUpdateResult> CheckAndInstallAsync(Version currentVersion, CancellationToken cancellationToken, Func<bool>? canInstall = null)
+    public async Task<ReleaseUpdateResult> CheckAndInstallAsync(Version currentVersion, CancellationToken cancellationToken,
+        Func<CancellationToken, Task>? waitForInstallAllowed = null, Func<bool>? canInstall = null, Action<string>? phaseChanged = null)
     {
         if (Environment.GetEnvironmentVariable("MSFS_LANDING_STATS_SKIP_UPDATE_ONCE") == "1")
         {
@@ -72,6 +75,7 @@ internal sealed class ReleaseUpdater : IDisposable
         var updaterStarted = false;
         try
         {
+            phaseChanged?.Invoke("update_metadata");
             var manifestBytes = await Protocol.DownloadSmallAsync(
                 _client,
                 Protocol.LatestReleaseRoot + Protocol.ChannelManifestName,
@@ -96,7 +100,7 @@ internal sealed class ReleaseUpdater : IDisposable
             var targetPath = ResolveUpdateTarget();
 
             updateRoot = Path.Combine(
-                UpdatesRoot(),
+                _updatesRoot,
                 $"v{manifest.Version.Major}.{manifest.Version.Minor}.{manifest.Version.Build}-{Guid.NewGuid():N}");
             Directory.CreateDirectory(updateRoot);
             var updaterPath = Path.Combine(updateRoot, manifest.UpdaterAsset);
@@ -112,69 +116,100 @@ internal sealed class ReleaseUpdater : IDisposable
                 cancellationToken).ConfigureAwait(false);
             VerifyPortableExecutable(updaterPath);
 
-            var readyEventName = "Local\\MSFSLandingStatsUpdate-" + Guid.NewGuid().ToString("N");
-            if (canInstall != null && !canInstall()) return new ReleaseUpdateResult(ReleaseUpdateState.Unavailable, "Update.DeferredUnsafe");
-            var guardian = App.Guardian;
-            if (guardian != null)
+            phaseChanged?.Invoke("update_prepared");
+            var waitingNoticeSent = false;
+            while (true)
             {
-                var request = new Runtime.GuardianUpdateRequest(updaterPath, targetPath,
-                    $"{manifest.Version.Major}.{manifest.Version.Minor}.{manifest.Version.Build}", readyEventName,
-                    Protocol.ChannelManifestName, manifest.UpdaterSize, manifest.UpdaterSha256);
-                if (!await guardian.UpdateAsync(request, cancellationToken).ConfigureAwait(false))
-                    throw new IOException("The application guardian rejected the verified updater handoff");
-            }
-            else
-            {
-            var processId = Process.GetCurrentProcess().Id;
-            var arguments = string.Join(" ", new[]
-            {
-                "--apply",
-                "--parent-pid",
-                processId.ToString(CultureInfo.InvariantCulture),
-                "--target",
-                QuoteArgument(targetPath),
-                "--version",
-                $"{manifest.Version.Major}.{manifest.Version.Minor}.{manifest.Version.Build}",
-                "--ready-event",
-                readyEventName,
-                "--manifest",
-                Protocol.ChannelManifestName,
-            });
-            using var readyEvent = new EventWaitHandle(false, EventResetMode.ManualReset, readyEventName);
-            using var started = Process.Start(new ProcessStartInfo
-            {
-                FileName = updaterPath,
-                WorkingDirectory = updateRoot,
-                Arguments = arguments,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                WindowStyle = ProcessWindowStyle.Normal,
-            });
-            if (started == null)
-            {
-                throw new InvalidOperationException("The verified updater could not be started");
-            }
-            if (!readyEvent.WaitOne(TimeSpan.FromSeconds(10)))
-            {
-                try
+                if (waitForInstallAllowed != null)
                 {
-                    started.Kill();
+                    if (!waitingNoticeSent && (canInstall == null || !canInstall()))
+                    { waitingNoticeSent = true; phaseChanged?.Invoke("update_wait_safe"); }
+                    do
+                    {
+                        await waitForInstallAllowed(cancellationToken).ConfigureAwait(false);
+                        cancellationToken.ThrowIfCancellationRequested();
+                    }
+                    while (canInstall != null && !canInstall());
                 }
-                catch
-                {
-                    // The helper may have exited while the timeout was being handled.
-                }
-                throw new TimeoutException("The verified updater did not confirm the application identity");
-            }
-            }
+                else if (canInstall != null && !canInstall())
+                    return new ReleaseUpdateResult(ReleaseUpdateState.Unavailable, "Update.DeferredUnsafe");
 
-            updaterStarted = true;
-            return new ReleaseUpdateResult(
-                ReleaseUpdateState.UpdateStarted,
-                "Update.StartedFormat",
-                version: manifest.Version,
-                path: updaterPath,
-                messageArguments: new object[] { manifest.Version });
+                var readyEventName = "Local\\MSFSLandingStatsUpdate-" + Guid.NewGuid().ToString("N");
+                // Keep this operation's prepared file until readiness or cancellation.
+                // Revalidate and lock its bytes through the handoff, including the
+                // direct launch path without a guardian.
+                using var preparedUpdater = VerifyPreparedUpdater(updaterPath, manifest.UpdaterSize, manifest.UpdaterSha256);
+                phaseChanged?.Invoke("update_handoff");
+                cancellationToken.ThrowIfCancellationRequested();
+                if (canInstall != null && !canInstall())
+                {
+                    if (waitForInstallAllowed == null)
+                        return new ReleaseUpdateResult(ReleaseUpdateState.Unavailable, "Update.DeferredUnsafe");
+                    waitingNoticeSent = false;
+                    continue;
+                }
+                var guardian = App.Guardian;
+                if (guardian != null)
+                {
+                    var request = new Runtime.GuardianUpdateRequest(updaterPath, targetPath,
+                        $"{manifest.Version.Major}.{manifest.Version.Minor}.{manifest.Version.Build}", readyEventName,
+                        Protocol.ChannelManifestName, manifest.UpdaterSize, manifest.UpdaterSha256);
+                    if (!await guardian.UpdateAsync(request, cancellationToken).ConfigureAwait(false))
+                        throw new IOException("The application guardian rejected the verified updater handoff");
+                }
+                else
+                {
+                var processId = Process.GetCurrentProcess().Id;
+                var arguments = string.Join(" ", new[]
+                {
+                    "--apply",
+                    "--parent-pid",
+                    processId.ToString(CultureInfo.InvariantCulture),
+                    "--target",
+                    QuoteArgument(targetPath),
+                    "--version",
+                    $"{manifest.Version.Major}.{manifest.Version.Minor}.{manifest.Version.Build}",
+                    "--ready-event",
+                    readyEventName,
+                    "--manifest",
+                    Protocol.ChannelManifestName,
+                });
+                using var readyEvent = new EventWaitHandle(false, EventResetMode.ManualReset, readyEventName);
+                using var started = Process.Start(new ProcessStartInfo
+                {
+                    FileName = updaterPath,
+                    WorkingDirectory = updateRoot,
+                    Arguments = arguments,
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    WindowStyle = ProcessWindowStyle.Normal,
+                });
+                if (started == null)
+                {
+                    throw new InvalidOperationException("The verified updater could not be started");
+                }
+                if (!readyEvent.WaitOne(TimeSpan.FromSeconds(10)))
+                {
+                    try
+                    {
+                        started.Kill();
+                    }
+                    catch
+                    {
+                        // The helper may have exited while the timeout was being handled.
+                    }
+                    throw new TimeoutException("The verified updater did not confirm the application identity");
+                }
+                }
+
+                updaterStarted = true;
+                return new ReleaseUpdateResult(
+                    ReleaseUpdateState.UpdateStarted,
+                    "Update.StartedFormat",
+                    version: manifest.Version,
+                    path: updaterPath,
+                    messageArguments: new object[] { manifest.Version });
+            }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -211,7 +246,7 @@ internal sealed class ReleaseUpdater : IDisposable
         {
             if (!updaterStarted && updateRoot != null)
             {
-                TryDeleteDirectory(updateRoot);
+                TryDeleteDirectory(updateRoot, _updatesRoot);
             }
         }
     }
@@ -270,9 +305,9 @@ internal sealed class ReleaseUpdater : IDisposable
             "Updates");
     }
 
-    private static void VerifyCleanupRoot(string path)
+    private static void VerifyCleanupRoot(string path, string? updatesRoot = null)
     {
-        var allowed = Path.GetFullPath(UpdatesRoot()).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+        var allowed = Path.GetFullPath(updatesRoot ?? UpdatesRoot()).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
         var candidate = Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
         if (!candidate.StartsWith(allowed, StringComparison.OrdinalIgnoreCase) || string.Equals(candidate, allowed, StringComparison.OrdinalIgnoreCase))
         {
@@ -287,6 +322,26 @@ internal sealed class ReleaseUpdater : IDisposable
         {
             throw new InvalidDataException("Signed updater is not a Windows executable");
         }
+    }
+
+    private static FileStream VerifyPreparedUpdater(string path, long expectedSize, string expectedHash)
+    {
+        if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0 ||
+            (File.GetAttributes(Path.GetDirectoryName(path)!) & FileAttributes.ReparsePoint) != 0)
+            throw new InvalidDataException("Prepared updater cannot use a redirected file.");
+        var input = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+        try
+        {
+            using var sha = SHA256.Create();
+            var hash = BitConverter.ToString(sha.ComputeHash(input)).Replace("-", "").ToLowerInvariant();
+            if (input.Length != expectedSize || !Protocol.FixedTimeEquals(hash, expectedHash))
+                throw new InvalidDataException("Prepared updater bytes changed.");
+            input.Position = 0;
+            if (input.ReadByte() != 'M' || input.ReadByte() != 'Z')
+                throw new InvalidDataException("Signed updater is not a Windows executable.");
+            return input;
+        }
+        catch { input.Dispose(); throw; }
     }
 
     private static string ResolveUpdateTarget()
@@ -307,11 +362,11 @@ internal sealed class ReleaseUpdater : IDisposable
         return targetPath;
     }
 
-    private static void TryDeleteDirectory(string path)
+    private static void TryDeleteDirectory(string path, string? updatesRoot = null)
     {
         try
         {
-            VerifyCleanupRoot(path);
+            VerifyCleanupRoot(path, updatesRoot);
             if (Directory.Exists(path))
             {
                 Directory.Delete(path, true);

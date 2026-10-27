@@ -1,6 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup><TargetFramework>net48</TargetFramework><PlatformTarget>x64</PlatformTarget></PropertyGroup>
   <ItemGroup>
+    <Compile Include="../LandingStats.App/Models/ReplayControlInputs.Bindings.cs" Link="Models/ReplayControlInputs.Bindings.cs" />
     <Compile Include="../LandingStats.App/Models/RuntimeFinalFacilities.cs" Link="Models/RuntimeFinalFacilities.cs" />
     <ProjectReference Include="../LandingStats.Core/LandingStats.Core.csproj" />
     <ProjectReference Include="../LandingStats.Runtime.Contracts/LandingStats.Runtime.Contracts.csproj" />

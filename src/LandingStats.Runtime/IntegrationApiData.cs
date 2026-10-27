@@ -84,7 +84,7 @@ internal sealed class IntegrationApiData
             }
             var response = new JObject { ["id"] = id.DeepClone(), ["result"] = result }.ToString(Formatting.None);
             if (Encoding.UTF8.GetByteCount(response) > MaximumResponseBytes)
-                throw new IntegrationApiException("ResponseTooLarge", "Reduce the page limit. For provenance use section=metadata, sourceEvidenceTimeline, controllerCatalogs or controllerTransitions.");
+                throw new IntegrationApiException("ResponseTooLarge", "Reduce the page limit. For provenance use section=metadata, sourceEvidenceTimeline, controllerCatalog with catalogIndex, controllerCatalogs or controllerTransitions.");
             return response;
         }
         catch (IntegrationApiException error) { return Error(id, error.Code, error.Message); }
@@ -256,15 +256,21 @@ internal sealed class IntegrationApiData
     {
         var record = Detail(parameters, cancellationToken);
         var section = OptionalString(parameters, "section", 32);
-        if (section == "sourceEvidenceTimeline")
+        if (section == "sourceEvidenceTimeline" || section == "controllerCatalog")
         {
-            var text = record.SourceEvidenceTimeline ?? "";
+            var catalogIndex = section == "controllerCatalog" ? Integer(parameters, "catalogIndex", 0, 0, int.MaxValue) : -1;
+            var catalogs = record.ControllerTimeline?.Catalogs ?? Array.Empty<string>();
+            if (catalogIndex >= catalogs.Length && section == "controllerCatalog")
+                throw new IntegrationApiException("InvalidParams", "catalogIndex must identify a recorded controller catalog.");
+            var text = section == "controllerCatalog" ? catalogs[catalogIndex] : record.SourceEvidenceTimeline ?? "";
             var offset = Integer(parameters, "offset", 0, 0, int.MaxValue);
             var limit = Integer(parameters, "limit", 65536, 1, 65536);
             var chunk = offset >= text.Length ? "" : text.Substring(offset, Math.Min(limit, text.Length - offset));
-            return new JObject { ["id"] = record.Id, ["section"] = section, ["encoding"] = "base64",
-                ["available"] = record.SourceEvidenceTimeline != null, ["data"] = chunk, ["offset"] = offset,
+            var result = new JObject { ["id"] = record.Id, ["section"] = section, ["encoding"] = "base64",
+                ["available"] = section == "controllerCatalog" || record.SourceEvidenceTimeline != null, ["data"] = chunk, ["offset"] = offset,
                 ["nextOffset"] = (long)offset + chunk.Length, ["total"] = text.Length, ["hasMore"] = (long)offset + chunk.Length < text.Length };
+            if (section == "controllerCatalog") result["catalogIndex"] = catalogIndex;
+            return result;
         }
         if (section == "controllerCatalogs" || section == "controllerTransitions")
         {
@@ -281,6 +287,7 @@ internal sealed class IntegrationApiData
         }
         if (section != null && section != "metadata") throw new IntegrationApiException("InvalidParams", "Unknown provenance section.");
         return new JObject { ["id"] = record.Id, ["controlInputSources"] = new JArray(record.ControlInputSources),
+            ["controllerAxisCount"] = record.ControllerAxisCount,
             ["rawControllerSourceIndices"] = new JArray(record.RawControllerSourceIndices), ["rawControllerAxesSourceIndices"] = new JArray(record.RawControllerAxesSourceIndices),
             ["rawPitchInput"] = new JObject { ["available"] = record.HasRawPitchInput, ["sourceIndex"] = record.RawPitchInputSourceIndex,
                 ["correlation"] = Number(record.RawPitchInputCorrelation), ["lagSeconds"] = Number(record.RawPitchInputLagSeconds) },
@@ -487,9 +494,10 @@ internal sealed class IntegrationApiData
         return new JObject { ["schemaVersion"] = 1, ["seriesUnits"] = units, ["timestamps"] = "ISO8601 UTC", ["seriesTimeOrigin"] = "contact",
             ["unavailableNumericValue"] = null, ["legacyEpisodeIdentity"] = "legacy:<landingId> when the recording has no episode identifier",
             ["legacyAvailability"] = "Fields absent in old recordings follow their existing reader defaults; explicit optional or non-finite fields are null. Zero is a measured value, never a generic missing marker.",
-            ["provenancePaging"] = new JObject { ["parameter"] = "section", ["sections"] = new JArray("metadata", "sourceEvidenceTimeline", "controllerCatalogs", "controllerTransitions"),
-                ["offset"] = "Zero-based character offset for sourceEvidenceTimeline; item offset for controller sections.",
-                ["sourceEvidenceTimeline"] = "Concatenate data chunks before base64 decoding. metadata includes section totals." },
+            ["provenancePaging"] = new JObject { ["parameter"] = "section", ["sections"] = new JArray("metadata", "sourceEvidenceTimeline", "controllerCatalog", "controllerCatalogs", "controllerTransitions"),
+                ["offset"] = "Zero-based character offset for sourceEvidenceTimeline and controllerCatalog; item offset for controllerCatalogs and controllerTransitions.",
+                ["sourceEvidenceTimeline"] = "Concatenate data chunks before base64 decoding. metadata includes section totals.",
+                ["controllerCatalog"] = "Select a zero-based catalogIndex, then concatenate data chunks before base64 decoding." },
             ["eventTypes"] = new JArray("LandingResultAvailable", "LandingResultUpdated"), ["eventRevision"] = "1=analysis committed,2=final metadata committed",
             ["resync"] = "On ResyncRequired, capture hello.events cursor, rebuild history with nextCursor, verify streamId unchanged, then replay after the captured cursor. Deletion resets streamId." };
     }

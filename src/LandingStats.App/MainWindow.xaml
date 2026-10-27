@@ -564,7 +564,6 @@
                     <RowDefinition Height="50*" MaxHeight="560" />
                     <RowDefinition Height="8*" MinHeight="62" MaxHeight="100" />
                     <RowDefinition Style="{StaticResource NonReplayLaneRowStyle}" />
-                    <RowDefinition Style="{StaticResource NonReplayLaneRowStyle}" />
                     <RowDefinition Height="26" />
                 </Grid.RowDefinitions>
 
@@ -1018,28 +1017,16 @@
                     <Grid>
                         <Grid.ColumnDefinitions><ColumnDefinition Width="96" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
                         <StackPanel Margin="24,9,0,0">
-                            <TextBlock Text="N1" Foreground="{StaticResource MutedTextBrush}" FontSize="11" />
+                            <TextBlock Text="{DynamicResource Chart.HeightAboveGround}" ToolTip="{DynamicResource Chart.HeightAboveGroundHelp}" TextWrapping="Wrap" Margin="0,0,8,0" Foreground="{StaticResource MutedTextBrush}" FontSize="11" />
                         </StackPanel>
                         <Grid Grid.Column="1" Margin="0,8,0,8">
-                            <controls:LandingChart x:Name="MiniPowerChart" Mode="Power" ShowLegend="False" ShowHoverTooltip="True" ShowXAxisLabels="False" CompactLane="True" PowerShowThrottle="False" />
-                            <TextBlock Text="0 – 100%" HorizontalAlignment="Right" VerticalAlignment="Top" Foreground="{StaticResource LabelTextBrush}" FontFamily="Cascadia Mono, Consolas" FontSize="9" />
+                            <controls:LandingChart x:Name="MiniAltitudeChart" Mode="HeightAboveGround" ShowLegend="False" ShowHoverTooltip="True" ShowXAxisLabels="False" CompactLane="True" />
+                            <TextBlock Text="{DynamicResource Chart.UnitFeet}" HorizontalAlignment="Right" VerticalAlignment="Top" Foreground="{StaticResource LabelTextBrush}" FontFamily="Cascadia Mono, Consolas" FontSize="9" />
                         </Grid>
                     </Grid>
                 </Border>
 
-                <Border Grid.Row="7" Style="{StaticResource NonReplayPanelStyle}" BorderBrush="#1A1917" BorderThickness="0,1,0,0" Margin="0,0,24,0">
-                    <Grid>
-                        <Grid.ColumnDefinitions><ColumnDefinition Width="96" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
-                        <StackPanel Margin="24,9,0,0">
-                            <TextBlock Text="{DynamicResource Chart.MainGear}" Foreground="{StaticResource MutedTextBrush}" FontSize="11" />
-                        </StackPanel>
-                        <Grid Grid.Column="1" Margin="0,8,0,8">
-                            <controls:LandingChart x:Name="MiniGearChart" Mode="Gear" ShowLegend="False" ShowHoverTooltip="True" ShowXAxisLabels="False" CompactLane="True" />
-                        </Grid>
-                    </Grid>
-                </Border>
-
-                <Border Grid.Row="8" BorderBrush="{StaticResource BorderBrush}" BorderThickness="0,1,0,0" Margin="0,0,24,0">
+                <Border Grid.Row="7" BorderBrush="{StaticResource BorderBrush}" BorderThickness="0,1,0,0" Margin="0,0,24,0">
                     <Grid>
                         <Grid.ColumnDefinitions><ColumnDefinition Width="96" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
                         <TextBlock x:Name="HoverTimeText" Text="0.00s" Margin="24,0,0,0" VerticalAlignment="Center"

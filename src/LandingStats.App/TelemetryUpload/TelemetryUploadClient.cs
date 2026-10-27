@@ -833,22 +833,22 @@ internal sealed class TelemetryUploadClient : IDisposable
         using var input = File.OpenRead(path);
         using var archive = new CaptureArchiveReader(input);
         var entry = archive.GetEntry("session.txt");
-        if (entry == null || entry.Length > 8192)
+        if (entry == null || entry.Length > CaptureArchiveFormat.MaximumSessionMetadataBytes)
             throw new InvalidDataException("Capture session metadata is missing or too large.");
         using var reader = new StreamReader(archive.Open("session.txt"), Encoding.UTF8);
-        var buffer = new char[8193];
+        var buffer = new char[checked((int)entry.Length + 1)];
         var length = 0;
         int read;
         while (length < buffer.Length && (read = reader.Read(buffer, length, buffer.Length - length)) > 0)
             length += read;
-        if (length > 8192) throw new InvalidDataException("Capture session metadata is too large.");
+        if (length > entry.Length) throw new InvalidDataException("Capture session metadata is too large.");
         int? schema = null;
         foreach (var line in new string(buffer, 0, length).Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
         {
             const string prefix = "telemetry_schema=";
             if (!line.StartsWith(prefix, StringComparison.Ordinal)) continue;
             if (schema.HasValue || !int.TryParse(line.Substring(prefix.Length), NumberStyles.None,
-                    CultureInfo.InvariantCulture, out var value) || (value != 5 && value != 6 && value != TelemetryCsv.SchemaVersion))
+                    CultureInfo.InvariantCulture, out var value) || (value != 5 && value != 6 && value != 7 && value != TelemetryCsv.SchemaVersion))
                 throw new InvalidDataException("Capture telemetry schema is unsupported.");
             schema = value;
         }

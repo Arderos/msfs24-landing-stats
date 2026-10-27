@@ -10,7 +10,8 @@ namespace LandingStats.Core;
 public static class TelemetryBinaryCodec
 {
     public const ushort Version = 1;
-    public const int EncodedSize = 1869;
+    public const int EncodedSize = 1869; // Historical v1 size.
+    public const int MaximumEncodedSize = 1024 * 1024; // Shared runtime payload byte budget.
     public const string FingerprintFormat = "telemetry_binary64_v1_csv7";
 
     public static byte[] Encode(TelemetrySample sample)
@@ -20,15 +21,31 @@ public static class TelemetryBinaryCodec
             throw new InvalidDataException("An analysis sentinel is not a raw source observation.");
         using var stream = new MemoryStream(EncodedSize);
         using (var writer = new BinaryWriter(stream, Encoding.UTF8, true)) Write(writer, sample, false);
+        if (stream.Length > MaximumEncodedSize) throw new InvalidDataException("Telemetry payload exceeds its byte budget.");
         return stream.ToArray();
     }
 
     public static TelemetrySample Decode(byte[] bytes)
     {
-        if (bytes == null || bytes.Length != EncodedSize) throw new InvalidDataException("Invalid telemetry payload length.");
+        if (bytes == null || bytes.Length < 2 || bytes.Length > MaximumEncodedSize) throw new InvalidDataException("Invalid telemetry payload length.");
         using var stream = new MemoryStream(bytes, false);
         using var reader = new BinaryReader(stream, Encoding.UTF8, true);
-        if (reader.ReadUInt16() != Version) throw new InvalidDataException("Unsupported telemetry payload version.");
+        var sample = Read(reader);
+        if (stream.Position != stream.Length) throw new InvalidDataException("Unexpected telemetry payload suffix.");
+        return sample;
+    }
+
+    public static TelemetrySample Read(BinaryReader reader)
+    {
+        var version = reader.ReadUInt16();
+        if (version != 1 && version != 2) throw new InvalidDataException("Unsupported telemetry payload version.");
+        var controllerCount = version == 2 ? reader.ReadInt32() : 8;
+        var axisCount = version == 2 ? reader.ReadInt32() : 6;
+        var controllerBytes = 21L + axisCount * 17L;
+        if (controllerCount < 0 || (axisCount != 6 && axisCount != 8) ||
+            controllerCount > (MaximumEncodedSize - 893) / controllerBytes ||
+            (reader.BaseStream.CanSeek && controllerCount * controllerBytes + 883 > reader.BaseStream.Length - reader.BaseStream.Position))
+            throw new InvalidDataException("Controller measurements exceed their telemetry payload.");
         var sample = new TelemetrySample
         {
             Sequence = reader.ReadInt64(),
@@ -92,17 +109,18 @@ public static class TelemetryBinaryCodec
             throw new InvalidDataException("Unknown simulator state.");
         if (double.IsInfinity(sample.AnalysisTimeSeconds) || sample.PauseFlags < -1 || sample.FlightSegment < 0)
             throw new InvalidDataException("Invalid lifecycle telemetry values.");
+        sample.ResizeControllers(controllerCount, axisCount);
         for (var i = 0; i < 4; i++) sample.EngineThrottlePercent[i] = BitConverter.Int64BitsToDouble(reader.ReadInt64());
         for (var i = 0; i < 4; i++) sample.EngineN1Percent[i] = BitConverter.Int64BitsToDouble(reader.ReadInt64());
         for (var i = 0; i < 4; i++) sample.EngineRpm[i] = BitConverter.Int64BitsToDouble(reader.ReadInt64());
         for (var i = 0; i < 4; i++) sample.EngineReversePercent[i] = BitConverter.Int64BitsToDouble(reader.ReadInt64());
-        for (var i = 0; i < 8; i++) sample.RawControllerDeviceId[i] = reader.ReadInt32();
-        for (var i = 0; i < 8; i++) sample.RawControllerYAxisPercent[i] = BitConverter.Int64BitsToDouble(reader.ReadInt64());
-        for (var i = 0; i < 8; i++) sample.RawControllerYAxisValid[i] = ReadBoolean(reader);
-        for (var i = 0; i < 8; i++) sample.RawControllerYAxisAgeSeconds[i] = BitConverter.Int64BitsToDouble(reader.ReadInt64());
-        for (var i = 0; i < 48; i++) sample.RawControllerAxesPercent[i] = BitConverter.Int64BitsToDouble(reader.ReadInt64());
-        for (var i = 0; i < 48; i++) sample.RawControllerAxesValid[i] = ReadBoolean(reader);
-        for (var i = 0; i < 48; i++) sample.RawControllerAxesAgeSeconds[i] = BitConverter.Int64BitsToDouble(reader.ReadInt64());
+        for (var i = 0; i < sample.ControllerCount; i++) sample.RawControllerDeviceId[i] = reader.ReadInt32();
+        for (var i = 0; i < sample.ControllerCount; i++) sample.RawControllerYAxisPercent[i] = BitConverter.Int64BitsToDouble(reader.ReadInt64());
+        for (var i = 0; i < sample.ControllerCount; i++) sample.RawControllerYAxisValid[i] = ReadBoolean(reader);
+        for (var i = 0; i < sample.ControllerCount; i++) sample.RawControllerYAxisAgeSeconds[i] = BitConverter.Int64BitsToDouble(reader.ReadInt64());
+        for (var i = 0; i < sample.RawControllerAxesPercent.Length; i++) sample.RawControllerAxesPercent[i] = BitConverter.Int64BitsToDouble(reader.ReadInt64());
+        for (var i = 0; i < sample.RawControllerAxesPercent.Length; i++) sample.RawControllerAxesValid[i] = ReadBoolean(reader);
+        for (var i = 0; i < sample.RawControllerAxesPercent.Length; i++) sample.RawControllerAxesAgeSeconds[i] = BitConverter.Int64BitsToDouble(reader.ReadInt64());
         for (var i = 0; i < 20; i++) sample.ContactPointCompression[i] = BitConverter.Int64BitsToDouble(reader.ReadInt64());
         for (var i = 0; i < 20; i++) sample.ContactPointPosition[i] = BitConverter.Int64BitsToDouble(reader.ReadInt64());
         for (var i = 0; i < 20; i++) sample.ContactPointOnGround[i] = ReadBoolean(reader);
@@ -120,7 +138,8 @@ public static class TelemetryBinaryCodec
 
     private static void Write(BinaryWriter writer, TelemetrySample sample, bool canonical)
     {
-        writer.Write(Version);
+        writer.Write(sample.HasLegacyControllerLayout ? Version : (ushort)2);
+        if (!sample.HasLegacyControllerLayout) { writer.Write(sample.ControllerCount); writer.Write(sample.ControllerAxisCount); }
         writer.Write(sample.Sequence);
         WriteDouble(writer, sample.HostElapsedSeconds, canonical);
         WriteDouble(writer, sample.SimulationTimeSeconds, canonical);
@@ -181,13 +200,13 @@ public static class TelemetryBinaryCodec
         for (var i = 0; i < 4; i++) WriteDouble(writer, sample.EngineN1Percent[i], canonical);
         for (var i = 0; i < 4; i++) WriteDouble(writer, sample.EngineRpm[i], canonical);
         for (var i = 0; i < 4; i++) WriteDouble(writer, sample.EngineReversePercent[i], canonical);
-        for (var i = 0; i < 8; i++) writer.Write(sample.RawControllerDeviceId[i]);
-        for (var i = 0; i < 8; i++) WriteDouble(writer, sample.RawControllerYAxisPercent[i], canonical);
-        for (var i = 0; i < 8; i++) writer.Write(sample.RawControllerYAxisValid[i]);
-        for (var i = 0; i < 8; i++) WriteDouble(writer, sample.RawControllerYAxisAgeSeconds[i], canonical);
-        for (var i = 0; i < 48; i++) WriteDouble(writer, canonical && i % TelemetrySample.CapturedControllerAxisCount == 1 ? sample.RawControllerYAxisPercent[i / TelemetrySample.CapturedControllerAxisCount] : sample.RawControllerAxesPercent[i], canonical);
-        for (var i = 0; i < 48; i++) writer.Write(canonical && i % TelemetrySample.CapturedControllerAxisCount == 1 ? sample.RawControllerYAxisValid[i / TelemetrySample.CapturedControllerAxisCount] : sample.RawControllerAxesValid[i]);
-        for (var i = 0; i < 48; i++) WriteDouble(writer, canonical && i % TelemetrySample.CapturedControllerAxisCount == 1 ? sample.RawControllerYAxisAgeSeconds[i / TelemetrySample.CapturedControllerAxisCount] : sample.RawControllerAxesAgeSeconds[i], canonical);
+        for (var i = 0; i < sample.ControllerCount; i++) writer.Write(sample.RawControllerDeviceId[i]);
+        for (var i = 0; i < sample.ControllerCount; i++) WriteDouble(writer, sample.RawControllerYAxisPercent[i], canonical);
+        for (var i = 0; i < sample.ControllerCount; i++) writer.Write(sample.RawControllerYAxisValid[i]);
+        for (var i = 0; i < sample.ControllerCount; i++) WriteDouble(writer, sample.RawControllerYAxisAgeSeconds[i], canonical);
+        for (var i = 0; i < sample.RawControllerAxesPercent.Length; i++) WriteDouble(writer, canonical && i % sample.ControllerAxisCount == 1 ? sample.RawControllerYAxisPercent[i / sample.ControllerAxisCount] : sample.RawControllerAxesPercent[i], canonical);
+        for (var i = 0; i < sample.RawControllerAxesPercent.Length; i++) writer.Write(canonical && i % sample.ControllerAxisCount == 1 ? sample.RawControllerYAxisValid[i / sample.ControllerAxisCount] : sample.RawControllerAxesValid[i]);
+        for (var i = 0; i < sample.RawControllerAxesPercent.Length; i++) WriteDouble(writer, canonical && i % sample.ControllerAxisCount == 1 ? sample.RawControllerYAxisAgeSeconds[i / sample.ControllerAxisCount] : sample.RawControllerAxesAgeSeconds[i], canonical);
         for (var i = 0; i < 20; i++) WriteDouble(writer, sample.ContactPointCompression[i], canonical);
         for (var i = 0; i < 20; i++) WriteDouble(writer, sample.ContactPointPosition[i], canonical);
         for (var i = 0; i < 20; i++) writer.Write(sample.ContactPointOnGround[i]);

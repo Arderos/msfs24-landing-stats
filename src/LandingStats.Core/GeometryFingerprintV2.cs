@@ -27,6 +27,7 @@ internal static class GeometryFingerprintV2
 
     private static void Write(BinaryWriter writer, TelemetrySample sample, bool canonical)
     {
+        sample = sample.LegacyControllerProjection();
         writer.Write((ushort)1);
         writer.Write(sample.Sequence);
         WriteDouble(writer, sample.HostElapsedSeconds, canonical);

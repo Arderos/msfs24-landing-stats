@@ -71,7 +71,7 @@ internal sealed partial class EpisodeTransactionStore
     private RuntimeFinalFacilities ReadFacilityFile(EpisodeWorkManifest manifest, string path, long? expectedOrdinal = null)
     {
         using var file = File.OpenRead(path);
-        if (file.Length > MaximumMetadataBytes + ControllerProvenanceCodec.MaximumTableBytes + (long)MaximumFrames * (LandingStats.Core.TelemetryBinaryCodec.EncodedSize + 8 + LandingStats.Core.ReplaySourceEvidenceCodec.EvidenceSize + 1))
+        if (file.Length > MaximumMetadataBytes + ControllerProvenanceCodec.MaximumTableBytes + (long)MaximumFrames * (LandingStats.Core.TelemetryBinaryCodec.MaximumEncodedSize + 8 + LandingStats.Core.ReplaySourceEvidenceCodec.EvidenceSize + 1))
             throw new InvalidDataException("Facility input exceeds its bound.");
         using var gzip = new GZipStream(file, CompressionMode.Decompress); using var reader = new BinaryReader(gzip, Encoding.UTF8);
         if (reader.ReadInt32() != 0x31465045) throw new InvalidDataException("Unsupported final facility format.");

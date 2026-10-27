@@ -116,13 +116,14 @@ public static class RuntimeWire
             case RuntimeMessageKind.SourceStatus: return SourceStatusMessage.Read(reader);
             case RuntimeMessageKind.SourceObservation: return new SourceObservationMessage(ReplaySourceEvidenceCodec.ReadObservation(reader));
             case RuntimeMessageKind.ControllerCatalog: return ControllerCatalogMessage.Read(reader);
+            case RuntimeMessageKind.AircraftControls: return AircraftControlsMessage.Read(reader);
             case RuntimeMessageKind.ControllerSnapshot: return ControllerSnapshotMessage.Read(reader);
             case RuntimeMessageKind.DurableAck: return new DurableAckMessage(reader.ReadInt64());
             case RuntimeMessageKind.ControlAck: return new ControlAckMessage(reader.ReadInt64());
             case RuntimeMessageKind.Hello:
                 return new WorkerHello(ReadText(reader, 128), ReadText(reader, 64), reader.ReadUInt64(), ReadGuid(reader), reader.ReadInt64());
             case RuntimeMessageKind.Frame:
-                return new TelemetryFrameMessage(reader.ReadBytes(TelemetryBinaryCodec.EncodedSize));
+                return new TelemetryFrameMessage(TelemetryBinaryCodec.Read(reader));
             case RuntimeMessageKind.GuardFrame:
                 return new GuardFrameMessage(reader.ReadDouble(), reader.ReadDouble(), ReadBoolean(reader), reader.ReadDouble(), ReadBoolean(reader));
             case RuntimeMessageKind.Lifecycle:

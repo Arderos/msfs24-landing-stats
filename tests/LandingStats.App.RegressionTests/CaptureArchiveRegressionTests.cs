@@ -102,7 +102,7 @@ internal static class CaptureArchiveRegressionTests
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             if (request.RequestUri!.AbsolutePath.EndsWith("/config")) return Reply(HttpStatusCode.OK,
-                "{\"protocol\":1,\"registration_mode\":\"open\",\"telemetry_schema\":7,\"capture_kinds\":[\"automatic_landing\",\"bug_report\"],\"decision_journal_formats\":[1],\"controller_catalog_formats\":[1],\"archive_formats\":" + (Supported ? "[1,2]" : "[1]") + "}");
+                "{\"protocol\":1,\"registration_mode\":\"open\",\"telemetry_schema\":" + TelemetryCsv.SchemaVersion + ",\"capture_kinds\":[\"automatic_landing\",\"bug_report\"],\"decision_journal_formats\":[1],\"controller_catalog_formats\":[1],\"archive_formats\":" + (Supported ? "[1,2]" : "[1]") + "}");
             if (request.RequestUri.AbsolutePath.EndsWith("/enroll")) return Reply(HttpStatusCode.Created, "{}");
             if (request.RequestUri.AbsolutePath.EndsWith("/captures")) { Uploads++; Bytes = await request.Content!.ReadAsByteArrayAsync(); return Reply(Status, "{\"status\":\"accepted\",\"capture_id\":\"0123456789abcdef0123456789abcdef\"}"); }
             throw new InvalidOperationException("Unexpected HTTP fixture request.");

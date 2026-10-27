@@ -16,7 +16,10 @@ import zstandard
 MANIFEST = "archive-format.bin"
 NAMES = {"telemetry.csv", "session.txt", "landing-results.json", "decisions.json", "controller-catalogs.json", "source-state.bin"}
 MAXIMUM_BYTES = 256 * 1024 * 1024
-LIMITS = {"session.txt": 16384, "decisions.json": 4 * 1024 * 1024, "controller-catalogs.json": 8 * 1024 * 1024, "source-state.bin": 16 * 1024 * 1024}
+# One 1 MiB controller catalog plus text keys, GUID labels and sparse slots.
+# Keep this archive contract aligned with CaptureArchiveFormat on the client.
+MAXIMUM_SESSION_METADATA_BYTES = 2 * 1024 * 1024
+LIMITS = {"session.txt": MAXIMUM_SESSION_METADATA_BYTES, "decisions.json": 4 * 1024 * 1024, "controller-catalogs.json": 8 * 1024 * 1024, "source-state.bin": 16 * 1024 * 1024}
 
 
 def _exact(stream, size):

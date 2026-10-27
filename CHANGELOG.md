@@ -4,6 +4,22 @@ All notable changes to MSFS Landing Stats are documented in this file.
 
 ## [Unreleased]
 
+## [0.9.7] - 2026-10-27
+
+### Added
+
+- Height-above-ground charts in landing details and the 3D replay.
+- A wind compass with cardinal directions, wind direction and speed beside the runway in the 3D replay.
+
+### Improved
+
+- Capture all controller axes and use saved MSFS assignments for flight controls and physical throttle levers. Preserve their assignments when reviewing recordings and include profile diagnostics in reports.
+
+### Fixed
+
+- Apply downloaded updates promptly when recording is inactive, including after application startup.
+- Show negative thrust commands and reverser-door positions, and display engine RPM in revolutions per minute.
+
 ## [0.9.6] - 2026-10-26
 
 ### Improved

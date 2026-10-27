@@ -33,7 +33,7 @@ internal sealed class RawCaptureMetadata
     public void Validate()
     {
         _ = TimestampUtc;
-        if (Sources == null || Sources.Length > 64) throw new InvalidDataException("Invalid RAW metadata sources.");
+        if (Sources == null) throw new InvalidDataException("Invalid RAW metadata sources.");
         foreach (var value in new[] { Simulator, Title, Type, Model }.Concat(Sources))
             if (value == null || Encoding.UTF8.GetByteCount(value) > 4096) throw new InvalidDataException("RAW metadata text exceeds its bound.");
     }
@@ -58,12 +58,25 @@ internal sealed class RawChunkManifest
 /// original capture; a helper never has deletion authority over these archives.</summary>
 internal sealed class RawChunkStore
 {
+    // The receiver's default decoded-capture budget. Archive framing permits
+    // larger files, but new RAW chunks must also fit the ingestion contract.
+    internal const long MaximumDecodedBytes = 64L * 1024 * 1024;
     private readonly string _root, _archives;
     private readonly DurableOutbox _outbox;
     private readonly Func<bool>? _useZstd;
     private readonly bool _automatic;
     public RawChunkStore(string root, string archives, DurableOutbox outbox, Func<bool>? useZstd = null, bool automatic = false)
     { _root = Path.GetFullPath(root); _archives = Path.GetFullPath(archives); _outbox = outbox; _useZstd = useZstd; _automatic = automatic; }
+    internal int? ExistingSampleCount(Guid capture, int ordinal)
+    {
+        var id = StableRuntimeIdentity.Command(capture, ordinal);
+        var path = Path.Combine(_root, id.ToString("N"), "manifest.json");
+        if (!File.Exists(path)) return null;
+        var manifest = DurableFile.ReadJson<RawChunkManifest>(path, 8192);
+        if (manifest.Id != id || manifest.Capture != capture || manifest.Ordinal != ordinal || manifest.SampleCount < 1 ||
+            manifest.SampleCount > RawCaptureRepository.ChunkMaximumSamples) throw new InvalidDataException("Invalid RAW chunk boundary.");
+        return manifest.SampleCount;
+    }
     public string Publish(Guid capture, int ordinal, RawCaptureMetadata metadata, IReadOnlyList<TelemetrySample> samples)
     {
         metadata.Validate();

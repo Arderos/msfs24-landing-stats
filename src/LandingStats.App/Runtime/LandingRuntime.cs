@@ -148,7 +148,22 @@ internal sealed class LandingRuntime : IDisposable
     public bool IntegrationApiEnabled => _integrationApi.Enabled;
     internal IntegrationApiRuntimeOwner IntegrationApi => _integrationApi;
     public bool Ready => Volatile.Read(ref _ready) != 0;
-    public bool SafeToRestart => Ready && _acquisition.SafeToRestart;
+    public bool SafeToRestart => !Volatile.Read(ref _stopping) && Ready && _acquisition.SafeToRestart;
+    // The caller first awaits StartAsync; a stopped runtime cannot grant restart.
+    public async Task WaitForSafeRestartAsync(CancellationToken cancellationToken)
+    {
+        lock (_lifecycle)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!Ready || _stopping) throw new InvalidOperationException("Runtime is not available for a safe restart.");
+        }
+        await _acquisition.WaitForSafeRestartAsync(cancellationToken).ConfigureAwait(false);
+        lock (_lifecycle)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (_stopping) throw new InvalidOperationException("Runtime has stopped accepting a restart.");
+        }
+    }
     // Presentation may be unable to retire while the dispatcher is stalled.
     // Its escalation is deferred to a recording-safe boundary by the guardian.
     internal bool IsPresentationDependency(string component, bool uiStalled) => component == "presentation" || uiStalled && component == "cloud.sync" && _cloud?.WaitingForPresentation == true;

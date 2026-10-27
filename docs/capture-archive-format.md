@@ -43,7 +43,7 @@ materializing entries: at most seven entries and 32 KiB of directory data.
 
 Readers require seekable input no larger than 256 MiB. Total decoded bytes are
 bounded by the caller (receiver default 64 MiB, dashboard 128 MiB, library ceiling
-256 MiB); session is at most 16 KiB, decisions 4 MiB, controller metadata 8 MiB,
+256 MiB); session is at most 2 MiB, decisions 4 MiB, controller metadata 8 MiB,
 source-state member 16 MiB (its version-1 structure has a tighter 8,454,152-byte bound).
 The Zstd window is at most 128 MiB, reads are at most 64 KiB, and accumulated
 decoder-read time is at most ten seconds per member. The independent frame scan

@@ -15,6 +15,12 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Remove="Telemetry/MsfsControlProfileEvidence.cs" />
+    <Compile Remove="Telemetry/DirectInputJoystickReader.cs" />
+    <Compile Remove="Telemetry/SimConnectSource.Controls.cs" />
+    <Compile Remove="Telemetry/MsfsControlProfiles.cs" />
+    <Compile Remove="Telemetry/MsfsControlProfileMonitor.cs" />
+    <Compile Remove="Models/ReplayControlInputs.Bindings.cs" />
     <ProjectReference Include="../LandingStats.Workers.Cloud/LandingStats.Workers.Cloud.csproj" />
     <ProjectReference Include="../LandingStats.Workers.IntegrationApi/LandingStats.Workers.IntegrationApi.csproj" />
     <Compile Remove="Runtime/CloudWorkerRole.cs" />

@@ -1,6 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup><TargetFramework>net48</TargetFramework><PlatformTarget>x64</PlatformTarget></PropertyGroup>
   <ItemGroup>
+    <Compile Include="../LandingStats.App/Telemetry/DirectInputJoystickReader.cs" Link="Telemetry/DirectInputJoystickReader.cs" />
     <ProjectReference Include="../LandingStats.Workers.Common/LandingStats.Workers.Common.csproj" />
     <ProjectReference Include="../LandingStats.Runtime/LandingStats.Runtime.csproj" />
     <ProjectReference Include="../LandingStats.Recording/LandingStats.Recording.csproj" />

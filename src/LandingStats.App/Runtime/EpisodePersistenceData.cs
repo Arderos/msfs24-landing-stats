@@ -58,7 +58,7 @@ internal sealed class EpisodeInputMetadata
     };
     public LandingEpisodeEventArgs Restore(IReadOnlyList<TelemetrySample> samples, IReadOnlyList<TelemetrySample> approach)
     {
-        if (Version != 1 || Id == Guid.Empty || ControlSources == null || ControlSources.Length > 64 ||
+        if (Version != 1 || Id == Guid.Empty || ControlSources == null ||
             KnownAirports == null || EpisodeAirports == null || KnownAirports.Length > 65536 || EpisodeAirports.Length > 65536 ||
             Simulator == null || AircraftTitle == null || AircraftType == null || AircraftModel == null || Facilities == null || Decisions == null)
             throw new System.IO.InvalidDataException("Invalid episode metadata.");

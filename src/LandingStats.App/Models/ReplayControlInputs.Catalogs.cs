@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using LandingStats.App.Runtime;
 using LandingStats.Core;
+using LandingStats.Runtime.Contracts;
 
 namespace LandingStats.App.Models;
 
@@ -17,6 +18,8 @@ public sealed partial class ReplayControlInputs
         var timeline = record.ControllerTimeline!;
         if (timeline.Version > 1) return new ReplayControlInputs(record.Series.ToArray());
         var contexts = timeline.Validate(record.Series.Count);
+        var normalized = NormalizePoints(record.Series, journal);
+        if (normalized == null) return new ReplayControlInputs(Array.Empty<LandingSeriesPoint>());
         var episode = LandingReplayContacts.ForEpisode(record, contacts).Where(value => !value.IsSummaryOnly && value.ControllerTimeline?.IsSupported == true).ToArray();
         var bindings = new Dictionary<string, (ReplayControlInputs Inputs, LandingRecord Record)>(StringComparer.Ordinal);
         var segments = new List<CatalogSegment>();
@@ -25,8 +28,10 @@ public sealed partial class ReplayControlInputs
         {
             var start = timeline.Transitions[i][0]; var end = i + 1 == timeline.Transitions.Length ? record.Series.Count : timeline.Transitions[i + 1][0];
             var context = timeline.Transitions[i][1]; var key = context < 0 ? string.Empty : timeline.Catalogs[context];
-            var points = record.Series.Skip(start).Take(end - start).ToArray();
-            var local = new ReplayControlInputs(points);
+            // Timeline boundaries retain their original row indices. Within a
+            // catalog, the last observation at one simulation time owns that time.
+            var points = NormalizePoints(record.Series.Skip(start).Take(end - start), journal)!.ToArray();
+            var local = new ReplayControlInputs(points, record);
             if (!string.IsNullOrEmpty(key) && ControllerProvenanceCodec.Decode(contexts[context]) != null)
             {
                 if (!bindings.TryGetValue(key, out var binding))
@@ -38,7 +43,7 @@ public sealed partial class ReplayControlInputs
                     var labels = ControllerCatalogTimeline.Labels(ControllerProvenanceCodec.Decode(contexts[context]));
                     var projected = ForCatalog(canonical, key, labels);
                     var catalogJournal = journal == null ? null : new TelemetryDecisionJournal();
-                    binding = (Resolve(projected, catalogJournal), projected); bindings.Add(key, binding);
+                    binding = (Resolve(projected, catalogJournal, (ControllerCatalogMessage)ControllerProvenanceCodec.Decode(contexts[context])!.Payload), projected); bindings.Add(key, binding);
                     if (catalogJournal != null)
                         foreach (var entry in catalogJournal.Snapshot().Entries)
                         {
@@ -51,10 +56,13 @@ public sealed partial class ReplayControlInputs
                 local.Pitch = Remap(binding.Inputs.Pitch, record);
                 local.Roll = Remap(binding.Inputs.Roll, record);
                 local.Yaw = Remap(binding.Inputs.Yaw, record);
+                Array.Copy(binding.Inputs._assignedFlightControls, local._assignedFlightControls, 3);
+                for (var engine = 0; engine < 4; engine++)
+                { local._throttles[engine] = Remap(binding.Inputs._throttles[engine], record); local._assignedThrottles[engine] = binding.Inputs._assignedThrottles[engine]; }
             }
             segments.Add(new CatalogSegment(points[0].TimeSeconds, local));
         }
-        var result = new ReplayControlInputs(record.Series.ToArray()) { _catalogSegments = segments.ToArray() };
+        var result = new ReplayControlInputs(normalized.ToArray(), record) { _catalogSegments = segments.ToArray() };
         result.SelectCatalog(0); return result;
     }
     private static LandingRecord ForCatalog(LandingRecord source, string key, List<string> labels)
@@ -70,7 +78,7 @@ public sealed partial class ReplayControlInputs
             { TimeSeconds = point.TimeSeconds, OnGround = point.OnGround, PilotPitchPercent = point.PilotPitchPercent,
                 PilotRollPercent = point.PilotRollPercent, PilotYawPercent = point.PilotYawPercent });
         }
-        return new LandingRecord { Series = points, ControlInputSources = labels,
+        return new LandingRecord { Series = points, ControlInputSources = labels, Engines = source.Engines, ControllerAxisCount = source.ControllerAxisCount,
             RawControllerSourceIndices = source.RawControllerSourceIndices, RawControllerAxesSourceIndices = source.RawControllerAxesSourceIndices,
             RawPitchInputSourceIndex = source.RawPitchInputSourceIndex, RawPitchInputCorrelation = source.RawPitchInputCorrelation, RawPitchInputLagSeconds = source.RawPitchInputLagSeconds };
     }
@@ -83,7 +91,7 @@ public sealed partial class ReplayControlInputs
         var source = legacy ? axis.SourceIndex / TelemetrySample.CapturedControllerAxisCount : axis.SourceIndex;
         var column = Array.IndexOf(sources, source);
         return column >= 0 && sources.Count(value => value == source) == 1 && (!legacy || axis.SourceIndex % 6 == 1)
-            ? new ReplayControlAxis(axis.SourceIndex, column, axis.SourceLabel, axis.Correlation, axis.LagSeconds, legacy) : null;
+            ? new ReplayControlAxis(axis.SourceIndex, column, axis.SourceLabel, axis.Correlation, axis.LagSeconds, legacy, axis.Polarity, axis.IsExplicitBinding) : null;
     }
     private ReplayControlSample SampleCatalog(double time)
     {
@@ -95,7 +103,10 @@ public sealed partial class ReplayControlInputs
     {
         if (_catalogSelection == index) return;
         _catalogSelection = index; var selected = _catalogSegments![index].Inputs;
-        Pitch = selected.Pitch; Roll = selected.Roll; Yaw = selected.Yaw; BindingRevision++;
+        Pitch = selected.Pitch; Roll = selected.Roll; Yaw = selected.Yaw;
+        Array.Copy(selected._assignedFlightControls, _assignedFlightControls, 3);
+        Array.Copy(selected._throttles, _throttles, _throttles.Length);
+        Array.Copy(selected._assignedThrottles, _assignedThrottles, _assignedThrottles.Length); BindingRevision++;
     }
     private sealed class CatalogSegment
     {

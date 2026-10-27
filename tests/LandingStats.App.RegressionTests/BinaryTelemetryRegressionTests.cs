@@ -59,7 +59,7 @@ internal static class BinaryTelemetryRegressionTests
         // Keep the strict v1 reader: neither a wrong hash nor a mislabeled v2 is accepted.
         snapshot.Version = 1;
         snapshot.InputFingerprintFormat = "telemetry_csv_v7";
-        snapshot.InputSha256 = Sha(Encoding.UTF8.GetBytes(string.Concat(binding.Select(s => TelemetryCsv.Format(s) + "\n"))));
+        snapshot.InputSha256 = Sha(Encoding.UTF8.GetBytes(string.Concat(binding.Select(s => GeometryFingerprintCsvV7.Format(s) + "\n"))));
         snapshot.Restore(binding);
         snapshot.InputSha256 = TelemetryBinaryCodec.Fingerprint(binding);
         Reject(() => snapshot.Restore(binding));
@@ -180,7 +180,7 @@ internal static class BinaryTelemetryRegressionTests
                 var array = (Array)property.GetValue(sample)!;
                 for (var i = 0; i < array.Length; i++) array.SetValue(Value(type.GetElementType()!, index++), i);
             }
-            else property.SetValue(sample, Value(type, index++));
+            else if (property.GetSetMethod() != null) property.SetValue(sample, Value(type, index++));
         }
         sample.PauseFlags = -1;
         if (double.IsInfinity(sample.AnalysisTimeSeconds)) sample.AnalysisTimeSeconds = double.NaN;

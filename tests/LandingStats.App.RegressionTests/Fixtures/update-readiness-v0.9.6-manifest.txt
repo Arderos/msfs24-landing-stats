@@ -1,0 +1,8 @@
+format=3
+version=0.9.6
+package=MSFS-Landing-Stats.exe
+package-size=2252056
+package-sha256=2e2983e5f881be66c2d87666ccdd39d9fd27da374e56bfade78ea1daeb1a98e8
+updater=MSFS-Landing-Stats.Updater.exe
+updater-size=131424
+updater-sha256=98de091a94cc91dd56d4fc614f93446ca84022612382a3e34a80dfd2ec93fd82

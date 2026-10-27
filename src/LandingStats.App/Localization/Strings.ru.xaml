@@ -78,6 +78,10 @@
     <system:String x:Key="Chart.TabPower">Тяга</system:String>
     <system:String x:Key="Chart.TabGear">Шасси</system:String>
     <system:String x:Key="Chart.VerticalG">Вертикальная перегрузка</system:String>
+    <system:String x:Key="Chart.HeightAboveGround">Высота AGL</system:String>
+    <system:String x:Key="Chart.HeightAboveGroundHelp">Записанная высота самолёта над рельефом, в футах.</system:String>
+    <system:String x:Key="Chart.HeightFeetFormat">{0:0.0} фт</system:String>
+    <system:String x:Key="Chart.UnitFeet">фт</system:String>
     <system:String x:Key="Chart.MainGear">Основные стойки</system:String>
     <system:String x:Key="Chart.NoData">Нет данных для графика</system:String>
     <system:String x:Key="Chart.Aircraft">самолёт</system:String>
@@ -97,7 +101,13 @@
     <system:String x:Key="Chart.Bank">крен</system:String>
     <system:String x:Key="Chart.Aoa">угол атаки</system:String>
     <system:String x:Key="Chart.EngineFormat">ДВИГ {0}</system:String>
-    <system:String x:Key="Chart.PowerStyle">сплошная — N1/RPM · пунктир — РУД</system:String>
+    <system:String x:Key="Chart.RpmFormat">{0:0} об/мин</system:String>
+    <system:String x:Key="Chart.PowerStylePhysical">Сплошная: N1 / RPM · Пунктир: РУД / команда MSFS · Точки: створки реверса</system:String>
+    <system:String x:Key="Chart.HoverPhysicalThrottle">Физический РУД</system:String>
+
+    <system:String x:Key="Chart.PowerStyle">сплошная — N1/RPM · пунктир — команда тяги MSFS · точки — створки реверса</system:String>
+    <system:String x:Key="Chart.PowerStyleNoThrottle">сплошная — N1/RPM · точки — створки реверса</system:String>
+    <system:String x:Key="Chart.HoverReverseDoors">створки реверса</system:String>
     <system:String x:Key="Chart.ContactPointGroupFormat">ТК {0}</system:String>
     <system:String x:Key="Chart.GearStrutFormat">Стойка {0}</system:String>
     <system:String x:Key="Chart.GearNose">Носовая</system:String>
@@ -111,13 +121,13 @@
     <system:String x:Key="Chart.HoverElevator">РВ</system:String>
     <system:String x:Key="Chart.HoverAileron">элерон</system:String>
     <system:String x:Key="Chart.HoverRudder">РН</system:String>
-    <system:String x:Key="Chart.HoverThrottle">РУД</system:String>
+    <system:String x:Key="Chart.HoverThrottle">команда тяги MSFS</system:String>
     <system:String x:Key="Chart.DescriptionVertical">вертикальная скорость · набор + / снижение −</system:String>
     <system:String x:Key="Chart.DescriptionLoads">три оси в точке стойки</system:String>
     <system:String x:Key="Chart.DescriptionRawControlsFormat">исходный тангаж C{0} · {1:F0} мс · поверхности пунктиром</system:String>
     <system:String x:Key="Chart.DescriptionControls">обработанные команды SimConnect · поверхности пунктиром</system:String>
     <system:String x:Key="Chart.DescriptionAttitude">тангаж, крен и угол атаки</system:String>
-    <system:String x:Key="Chart.DescriptionPower">N1 сплошной линией, РУД пунктиром</system:String>
+    <system:String x:Key="Chart.DescriptionPower">сплошная — N1/RPM · пунктир — команда тяги MSFS · точки — створки реверса</system:String>
     <system:String x:Key="Chart.DescriptionGear">обжатие амортизатора каждой стойки</system:String>
     <system:String x:Key="Chart.UnitTravel">% отклонения</system:String>
     <system:String x:Key="Chart.UnitDegrees">°</system:String>
@@ -289,6 +299,9 @@
     <system:String x:Key="Update.RejectedFormat">Обновление отклонено: {0}</system:String>
     <system:String x:Key="Update.StatusUpdatingFormat" xml:space="preserve"> · обновление до v{0}</system:String>
     <system:String x:Key="Update.StatusRejected" xml:space="preserve"> · обновление отклонено</system:String>
+    <system:String x:Key="Update.StatusChecking" xml:space="preserve"> · проверка обновлений</system:String>
+    <system:String x:Key="Update.StatusWaiting" xml:space="preserve"> · обновление готово, ожидается безопасный перезапуск</system:String>
+    <system:String x:Key="Update.StatusInstalling" xml:space="preserve"> · запуск обновления</system:String>
     <system:String x:Key="Chart.TabReconstruction">3D-реконструкция</system:String>
     <system:String x:Key="Replay.Unavailable">В этой посадке не записаны координаты и курс. 3D-реконструкция доступна для новых записей.</system:String>
     <system:String x:Key="Replay.Gap">Нет записанных кадров для этого момента</system:String>
@@ -334,4 +347,9 @@
     <system:String x:Key="Chart.DescriptionCatalogControls">Физический тангаж показан по записанному устройству каждого интервала. Разрывы означают недоступный ввод.</system:String>
     <system:String x:Key="Settings.DriveFailedLandingsFormat">Не удалось синхронизировать посадки: {0}. ID: {1}</system:String>
     <system:String x:Key="Runtime.ProcessingFailedFormat">Ошибка обработки посадки ({0}): {1}. Исходные данные сохранены.</system:String>
+    <system:String x:Key="Replay.WindNorth">С</system:String>
+    <system:String x:Key="Replay.WindEast">В</system:String>
+    <system:String x:Key="Replay.WindSouth">Ю</system:String>
+    <system:String x:Key="Replay.WindWest">З</system:String>
+    <system:String x:Key="Replay.WindUnits">°T / уз</system:String>
 </ResourceDictionary>

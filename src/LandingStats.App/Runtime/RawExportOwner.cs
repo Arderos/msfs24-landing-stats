@@ -3,12 +3,14 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Runtime.Serialization;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using LandingStats.App.Storage;
 using LandingStats.App.Telemetry;
 using LandingStats.Core;
 using LandingStats.Runtime.Contracts;
+using LandingStats.Archives;
 
 namespace LandingStats.App.Runtime;
 
@@ -39,14 +41,23 @@ internal sealed class RawExportOwner
     private readonly string _checkpoint;
     private readonly Action<string, int, bool> _published;
     private readonly int _chunkSize;
+    private readonly long _maximumChunkBytes;
     private readonly List<TelemetrySample> _samples = new List<TelemetrySample>();
+    private readonly HashSet<byte[]> _catalogReferences = new HashSet<byte[]>();
+    private readonly HashSet<byte[]> _catalogs = new HashSet<byte[]>(ControllerProvenanceCodec.BytesComparer.Instance);
+    private long _sampleBytes, _catalogBytes;
+    private int? _committedSampleCount;
+    private bool _boundaryKnown;
     private RawExportCheckpoint? _state;
     private JournalCursor? _readCursor;
     private bool _resume;
     private ManagedComponentContext? _owner;
-    public RawExportOwner(RawEffectStore inputs, RawChunkStore chunks, Action<string, int, bool> published, int chunkSize = RawCaptureRepository.ChunkMaximumSamples)
+    public RawExportOwner(RawEffectStore inputs, RawChunkStore chunks, Action<string, int, bool> published, int chunkSize = RawCaptureRepository.ChunkMaximumSamples,
+        long maximumChunkBytes = RawChunkStore.MaximumDecodedBytes)
     {
         if (chunkSize < 1 || chunkSize > RawCaptureRepository.ChunkMaximumSamples) throw new ArgumentOutOfRangeException(nameof(chunkSize));
+        if (maximumChunkBytes <= MetadataReserve || maximumChunkBytes > CaptureArchiveFormat.MaximumDecodedBytes) throw new ArgumentOutOfRangeException(nameof(maximumChunkBytes));
+        _maximumChunkBytes = maximumChunkBytes;
         _inputs = inputs; _chunks = chunks; _published = published; _chunkSize = chunkSize; _checkpoint = Path.Combine(inputs.Root, "export.json");
     }
     public void Wake() => Volatile.Read(ref _owner)?.SignalWork();
@@ -135,16 +146,48 @@ internal sealed class RawExportOwner
         if (_state!.Capture == Guid.Empty || _state.Metadata == null || _state.NextSample > samples.Count) throw new InvalidDataException("RAW samples have no matching capture context.");
         for (var i = _state.NextSample; i < samples.Count; i++)
         {
-            cancellationToken.ThrowIfCancellationRequested(); _samples.Add(samples[i]); _state.NextSample = i + 1;
-            if (_samples.Count == _chunkSize) Flush(true);
+            cancellationToken.ThrowIfCancellationRequested();
+            var sample = samples[i];
+            var bytes = Encoding.UTF8.GetByteCount(TelemetryCsv.Format(sample)) + Environment.NewLine.Length +
+                1L + (sample.SourceEvidence == null ? 0 : ReplaySourceEvidenceCodec.EvidenceSize);
+            if (!_boundaryKnown)
+            { _committedSampleCount = _chunks.ExistingSampleCount(_state.Capture, _state.Chunk); _boundaryKnown = true; }
+            var catalog = sample.ControllerCatalog;
+            var additionalCatalog = catalog != null && !_catalogReferences.Contains(catalog) && !_catalogs.Contains(catalog);
+            if (!_committedSampleCount.HasValue && _samples.Count != 0 &&
+                (bytes > _maximumChunkBytes - MetadataReserve - _sampleBytes || additionalCatalog &&
+                    (_catalogs.Count == 4096 || catalog!.Length > ControllerProvenanceCodec.MaximumTableBytes - _catalogBytes)))
+            {
+                // NextSample still points at this row. The flushed checkpoint
+                // therefore resumes it once, in the following immutable chunk.
+                Flush(true); additionalCatalog = catalog != null;
+                _committedSampleCount = _chunks.ExistingSampleCount(_state.Capture, _state.Chunk); _boundaryKnown = true;
+            }
+            if (bytes > _maximumChunkBytes - MetadataReserve && !_committedSampleCount.HasValue)
+                throw new InvalidDataException("A RAW sample exceeds the decoded chunk budget.");
+            _samples.Add(sample); _sampleBytes += bytes;
+            if (catalog != null)
+            {
+                _catalogReferences.Add(catalog);
+                if (additionalCatalog) { _catalogs.Add(catalog); _catalogBytes += catalog.Length; }
+            }
+            _state.NextSample = i + 1;
+            if (_samples.Count == (_committedSampleCount ?? _chunkSize)) Flush(true);
         }
+    }
+    private static readonly long MetadataReserve = CaptureArchiveFormat.MaximumSessionMetadataBytes + ControllerCatalogArchive.MaximumBytes +
+        Encoding.UTF8.GetByteCount(TelemetryCsv.Header) + Environment.NewLine.Length + 8;
+    private void ClearChunk()
+    {
+        _samples.Clear(); _sampleBytes = 0; _catalogBytes = 0; _catalogReferences.Clear(); _catalogs.Clear();
+        _committedSampleCount = null; _boundaryKnown = false;
     }
     private void Flush(bool continues)
     {
         if (_samples.Count == 0) return;
         var count = _samples.Count;
         var path = _chunks.Publish(_state!.Capture, _state.Chunk, _state.Metadata!, _samples);
-        _state.Chunk = checked(_state.Chunk + 1); _samples.Clear(); SaveCheckpoint();
+        _state.Chunk = checked(_state.Chunk + 1); ClearChunk(); SaveCheckpoint();
         _published(path, count, continues);
     }
     private void SaveCheckpoint()
@@ -154,11 +197,12 @@ internal sealed class RawExportOwner
     }
     private void Reset()
     {
-        var state = File.Exists(_checkpoint) ? DurableFile.ReadJson<RawExportCheckpoint>(_checkpoint, 65536) : new RawExportCheckpoint();
+        // Sources use the same dynamic catalog metadata budget as recording checkpoints.
+        var state = File.Exists(_checkpoint) ? DurableFile.ReadJson<RawExportCheckpoint>(_checkpoint, 8 * 1024 * 1024) : new RawExportCheckpoint();
         if (state.Version != 1 || state.Segment < 0 || state.Sequence < 0 || (state.Segment == 0) != (state.Sequence == 0) ||
             (state.Segment == 0) != (state.Input == Guid.Empty) || state.NextEffect < 0 || state.NextEffect > 8 || state.NextSample < 0 || state.NextSample > 65536 ||
             state.Chunk < 1 || (state.Capture == Guid.Empty) != (state.Metadata == null)) throw new InvalidDataException("Invalid RAW export checkpoint.");
-        state.Metadata?.Validate(); _state = state; _samples.Clear(); _readCursor = state.Cursor; _resume = state.Cursor != null;
+        state.Metadata?.Validate(); _state = state; ClearChunk(); _readCursor = state.Cursor; _resume = state.Cursor != null;
         if (state.Cursor != null) _inputs.CollectBefore(state.Cursor);
     }
 }

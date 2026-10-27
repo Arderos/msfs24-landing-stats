@@ -90,7 +90,7 @@ internal static class ReviewUiPolicyRegressionTests
                     {
                         context, restored.Series, new Func<LandingSeriesPoint, double>(p => p.TimeSeconds),
                         new Func<LandingSeriesPoint, double>(p => Pitch(chart, p)), new Rect(0, 0, 500, 100),
-                        0d, .5, -100d, 100d, new Pen(Brushes.Red, 1), null
+                        0d, .5, -100d, 100d, new Pen(Brushes.Red, 1), null, double.PositiveInfinity
                     });
             var geometry = PathGeometry.CreateFromGeometry(((GeometryDrawing)drawing.Children.Single()).Geometry);
             Check(geometry.Figures.Count == 2, invalid + " raw pitch gap was joined by chart geometry; figures=" + geometry.Figures.Count +

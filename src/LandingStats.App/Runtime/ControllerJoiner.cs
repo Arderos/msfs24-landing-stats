@@ -19,6 +19,7 @@ internal sealed class ControllerJoiner
     private readonly List<RuntimeEnvelope> _snapshots = new List<RuntimeEnvelope>();
     private readonly List<RuntimeEnvelope> _catalogs = new List<RuntimeEnvelope>();
     private WorkerIdentity? _active;
+    private RuntimeEnvelope? _aircraftControls;
     private long _lastSequence, _lastCapture;
     public ControllerJoiner(RuntimeClockEpoch clock, TimeSpan? freshness = null)
     {
@@ -40,6 +41,8 @@ internal sealed class ControllerJoiner
             writer.Write(list.Count);
             foreach (var item in list) { var bytes = RuntimeWire.Encode(item); writer.Write(bytes.Length); writer.Write(bytes); }
         }
+        writer.Write(_aircraftControls != null);
+        if (_aircraftControls != null) { var bytes = RuntimeWire.Encode(_aircraftControls); writer.Write(bytes.Length); writer.Write(bytes); }
         return memory.ToArray();
     }
     public static ControllerJoiner RestoreCheckpoint(byte[] bytes, RuntimeClockEpoch clock)
@@ -63,7 +66,7 @@ internal sealed class ControllerJoiner
             var count = RuntimeCheckpointCodec.ReadCount(reader, MaximumSnapshots); long sequence = 0, capture = clock.OriginQpc, revision = 0;
             for (var i = 0; i < count; i++)
             {
-                var message = RuntimeWire.Decode(RuntimeCheckpointCodec.ReadBytes(reader, RuntimeCheckpointCodec.ReadCount(reader, 16384)));
+                var message = RuntimeWire.Decode(RuntimeCheckpointCodec.ReadBytes(reader, RuntimeCheckpointCodec.ReadCount(reader, RuntimeWire.MaximumPayloadLength + RuntimeWire.HeaderLength)));
                 if (value._active == null || !value._active.Equals(message.Worker) || message.Sequence <= sequence || message.CaptureQpc < capture ||
                     message.Sequence > value._lastSequence || message.CaptureQpc > value._lastCapture) throw new InvalidDataException("Invalid controller checkpoint ordering.");
                 if (ReferenceEquals(list, value._catalogs))
@@ -80,6 +83,12 @@ internal sealed class ControllerJoiner
                 }
                 list.Add(message); sequence = message.Sequence; capture = message.CaptureQpc;
             }
+        }
+        if (memory.Position < memory.Length && RuntimeCheckpointCodec.ReadBoolean(reader))
+        {
+            var controls = RuntimeWire.Decode(RuntimeCheckpointCodec.ReadBytes(reader, RuntimeCheckpointCodec.ReadCount(reader, RuntimeWire.MaximumPayloadLength + RuntimeWire.HeaderLength)));
+            if (controls.Worker.Role != ComponentRole.Simulator || !(controls.Payload is AircraftControlsMessage)) throw new InvalidDataException("Invalid aircraft binding checkpoint.");
+            value._aircraftControls = controls;
         }
         if (memory.Position != memory.Length || value._lastSequence < 0 || value._lastCapture < 0) throw new InvalidDataException("Invalid controller checkpoint suffix.");
         return value;
@@ -128,6 +137,14 @@ internal sealed class ControllerJoiner
         }
         return true;
     }
+    public void ObserveAircraftControls(RuntimeEnvelope message)
+    {
+        if (message.Worker.Role != ComponentRole.Simulator || !(message.Payload is AircraftControlsMessage))
+            throw new ArgumentException("Expected simulator binding observation.");
+        _aircraftControls = message;
+    }
+    public void ClearAircraftControls() => _aircraftControls = null;
+
     public ControllerJoinDecision Join(long frameCaptureQpc)
     {
         if (frameCaptureQpc < _clock.OriginQpc) throw new ArgumentException("Frame belongs to an earlier clock epoch.");
@@ -141,6 +158,13 @@ internal sealed class ControllerJoiner
                 if (candidate.CaptureQpc <= frameCaptureQpc && ((ControllerSnapshotMessage)candidate.Payload).CatalogRevision == ((ControllerCatalogMessage)catalog.Payload).Revision)
                 { snapshot = candidate; break; }
             }
+        if (catalog?.Payload is ControllerCatalogMessage devices && _aircraftControls?.Payload is AircraftControlsMessage profiles &&
+            _aircraftControls.CaptureQpc <= frameCaptureQpc)
+        {
+            var bindings = profiles.Bindings;
+            catalog = new RuntimeEnvelope(catalog.Worker, catalog.ConnectionGeneration, catalog.Sequence, catalog.CaptureQpc,
+                new ControllerCatalogMessage(devices.Revision, devices.Devices, bindings, profiles.Context));
+        }
         return new ControllerJoinDecision(_clock, frameCaptureQpc, _freshness, _active != null, catalog, snapshot);
     }
 }
@@ -148,7 +172,7 @@ internal sealed class ControllerJoiner
 /// <summary>Immutable decision recorded with the joined frame; replay never queries the live joiner.</summary>
 internal sealed class ControllerJoinDecision
 {
-    private const int MaximumMessage = 16384;
+    private const int MaximumMessage = RuntimeWire.MaximumPayloadLength + RuntimeWire.HeaderLength;
     private readonly RuntimeClockEpoch _clock;
     private readonly TimeSpan _freshness;
     private readonly bool _sourceActive;
@@ -184,41 +208,48 @@ internal sealed class ControllerJoinDecision
             !catalogEnvelope.Worker.Equals(snapshotEnvelope.Worker) || snapshot.CatalogRevision != catalog.Revision ||
             snapshotEnvelope.Sequence <= catalogEnvelope.Sequence || catalogEnvelope.CaptureQpc < clock.OriginQpc || snapshotEnvelope.CaptureQpc < catalogEnvelope.CaptureQpc)
             throw new InvalidDataException("Controller snapshot context does not match its catalog.");
-        for (var slot = 0; slot < TelemetrySample.CapturedControllerCount; slot++)
+        if (catalog.Devices.Count > 0 && snapshot.AxisCount != catalog.AxisCount || snapshot.DeviceCount < catalog.DeviceCount)
+            throw new InvalidDataException("Controller snapshot dimensions do not match its catalog.");
+        for (var slot = 0; slot < snapshot.DeviceCount; slot++)
         {
             var descriptor = catalog.Devices.FirstOrDefault(value => value.Slot == slot);
             if (snapshot.CapturedAt(slot) != 0 && (snapshot.CapturedAt(slot) < catalogEnvelope.CaptureQpc || snapshot.CapturedAt(slot) > snapshotEnvelope.CaptureQpc))
                 throw new InvalidDataException("Controller measurement time is outside its catalog and publication boundary.");
-            for (var axis = 0; axis < 6; axis++)
+            for (var axis = 0; axis < snapshot.AxisCount; axis++)
                 if (snapshot.Valid(slot, axis) && (descriptor == null || !descriptor.Supports(axis))) throw new InvalidDataException("Measured axis is missing from its catalog.");
         }
     }
     public void Apply(TelemetrySample sample)
     {
         sample.ControllerCatalog = Catalog == null ? Array.Empty<byte>() : ControllerProvenanceCodec.Encode(Catalog);
-        Array.Clear(sample.RawControllerAxesPercent, 0, 48); Array.Clear(sample.RawControllerAxesValid, 0, 48); Array.Clear(sample.RawControllerAxesAgeSeconds, 0, 48);
-        for (var slot = 0; slot < TelemetrySample.CapturedControllerCount; slot++) sample.RawControllerDeviceId[slot] = -1;
-        if (Catalog?.Payload is ControllerCatalogMessage catalog && Snapshot?.Payload is ControllerSnapshotMessage snapshot)
+        var catalog = Catalog?.Payload as ControllerCatalogMessage;
+        sample.ResizeControllers(catalog?.DeviceCount ?? 0, catalog?.AxisCount ?? 8);
+        Array.Clear(sample.RawControllerAxesPercent, 0, sample.RawControllerAxesPercent.Length);
+        Array.Clear(sample.RawControllerAxesValid, 0, sample.RawControllerAxesValid.Length);
+        Array.Clear(sample.RawControllerAxesAgeSeconds, 0, sample.RawControllerAxesAgeSeconds.Length);
+        for (var slot = 0; slot < sample.ControllerCount; slot++) sample.RawControllerDeviceId[slot] = -1;
+        if (catalog != null && Snapshot?.Payload is ControllerSnapshotMessage snapshot)
             foreach (var device in catalog.Devices)
             {
                 var captured = snapshot.CapturedAt(device.Slot);
                 var age = captured == 0 ? 0 : (FrameCaptureQpc - captured) / (double)_clock.Frequency;
                 if (captured != 0) sample.RawControllerDeviceId[device.Slot] = device.DeviceId;
-                for (var axis = 0; axis < 6; axis++)
+                for (var axis = 0; axis < sample.ControllerAxisCount; axis++)
                 {
-                    var index = device.Slot * 6 + axis;
+                    var index = device.Slot * sample.ControllerAxisCount + axis;
                     sample.RawControllerAxesPercent[index] = snapshot.Value(device.Slot, axis);
                     sample.RawControllerAxesAgeSeconds[index] = age;
                     sample.RawControllerAxesValid[index] = captured != 0 && snapshot.Valid(device.Slot, axis) && age >= 0 && age <= _freshness.TotalSeconds;
                 }
             }
-        for (var slot = 0; slot < TelemetrySample.CapturedControllerCount; slot++)
+        for (var slot = 0; slot < sample.ControllerCount; slot++)
         {
-            sample.RawControllerYAxisPercent[slot] = sample.RawControllerAxesPercent[slot * 6 + 1];
-            sample.RawControllerYAxisValid[slot] = sample.RawControllerAxesValid[slot * 6 + 1];
-            sample.RawControllerYAxisAgeSeconds[slot] = sample.RawControllerAxesAgeSeconds[slot * 6 + 1];
+            sample.RawControllerYAxisPercent[slot] = sample.RawControllerAxesPercent[slot * sample.ControllerAxisCount + 1];
+            sample.RawControllerYAxisValid[slot] = sample.RawControllerAxesValid[slot * sample.ControllerAxisCount + 1];
+            sample.RawControllerYAxisAgeSeconds[slot] = sample.RawControllerAxesAgeSeconds[slot * sample.ControllerAxisCount + 1];
         }
     }
+
     public byte[] Encode()
     {
         using var stream = new MemoryStream(); using var writer = new BinaryWriter(stream);

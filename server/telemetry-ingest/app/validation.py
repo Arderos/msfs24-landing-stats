@@ -6,7 +6,7 @@ import json
 import math
 import struct
 import zipfile
-from .capture_archive import CaptureArchive
+from .capture_archive import CaptureArchive, MAXIMUM_SESSION_METADATA_BYTES
 from .bounded_json import JsonScanner, check_json_graph
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -20,6 +20,11 @@ MAXIMUM_DECISION_JOURNAL_BYTES = 4 * 1024 * 1024
 MAXIMUM_DECISION_ENTRIES = 8192
 CONTROLLER_CATALOG_FORMAT_VERSION = 1
 MAXIMUM_CONTROLLER_CATALOG_BYTES = 8 * 1024 * 1024
+# Match the client's runtime/telemetry payload byte budget. Device count is
+# derived from the payload, rather than limited to an arbitrary slot count.
+MAXIMUM_CONTROLLER_BINARY_BYTES = 1024 * 1024
+MAXIMUM_CONTROLLER_BASE64_CHARS = ((MAXIMUM_CONTROLLER_BINARY_BYTES + 2) // 3) * 4
+csv.field_size_limit(max(csv.field_size_limit(), MAXIMUM_CONTROLLER_BASE64_CHARS))
 MAXIMUM_RESULT_BYTES = 64 * 1024 * 1024
 MAXIMUM_RESULT_RECORDS = 65536
 BOOLEAN_COLUMNS = {
@@ -173,7 +178,7 @@ def _is_replay_like(samples: list[_ReplaySample]) -> bool:
 
 
 def _session_values(content: bytes) -> dict[str, str]:
-    if len(content) > 8192:
+    if len(content) > MAXIMUM_SESSION_METADATA_BYTES:
         raise ValueError("session metadata is too large")
     text = content.decode("utf-8")
     result: dict[str, str] = {}
@@ -250,13 +255,15 @@ def _validate_decision_journal(content: bytes, episode_id: int) -> None:
 def _validate_controller_catalog(payload: bytes) -> None:
     if not payload:  # Explicitly unavailable, distinct from unknown (-1).
         return
-    if len(payload) < 72 or len(payload) > 16384:
+    if len(payload) < 72 or len(payload) > MAXIMUM_CONTROLLER_BINARY_BYTES:
         raise ValueError("controller catalog length is invalid")
     magic = struct.unpack_from("<I", payload)[0]
-    if magic == 0x3143434C:  # LCC1 durable descriptor, independent of live IPC.
-        generation, sequence, capture, revision, count = struct.unpack_from("<qqqqi", payload, 36)
+    if magic in {0x3143434C, 0x3243434C}:  # LCC1/LCC2 durable metadata.
+        generation, sequence, capture, revision, encoded_count = struct.unpack_from("<qqqqi", payload, 36)
         if not any(payload[4:20]) or not any(payload[20:36]) or generation <= 0 or sequence <= 0 or capture < 0:
             raise ValueError("controller catalog identity is invalid")
+        if (magic == 0x3243434C) != (encoded_count < 0):
+            raise ValueError("controller catalog version/layout is invalid")
         offset = 72
     else:
         if len(payload) < 146:
@@ -272,40 +279,116 @@ def _validate_controller_catalog(payload: bytes) -> None:
                 or (payload[133] == 0) != (not any(payload[117:133]))
                 or (any(payload[117:133]) and not any(payload[101:117]))):
             raise ValueError("controller catalog identity is invalid")
-        revision, count = struct.unpack_from("<qi", payload, 134)
+        revision, encoded_count = struct.unpack_from("<qi", payload, 134)
         offset = 146
-    if revision <= 0 or not 0 <= count <= 8:
+    extended = encoded_count < 0
+    count = -encoded_count - 1 if extended else encoded_count
+    if revision <= 0 or count > (len(payload) - offset) // 65 or (not extended and count > 8):
         raise ValueError("controller catalog revision/count is invalid")
     slots, devices = set(), set()
+
+    def read_text(maximum):
+        nonlocal offset
+        size = struct.unpack_from("<i", payload, offset)[0]
+        offset += 4
+        if not 0 <= size <= maximum or offset + size > len(payload):
+            raise ValueError("controller catalog text is invalid")
+        if "\0" in payload[offset:offset + size].decode("utf-8", errors="strict"):
+            raise ValueError("controller catalog text contains NUL")
+        offset += size
+
     try:
         for _ in range(count):
             slot, device = struct.unpack_from("<ii", payload, offset)
             offset += 8
-            if not 0 <= slot < 8 or not 0 <= device < 16 or slot in slots or device in devices:
+            if (slot < 0 or device < 0 or slot in slots or device in devices
+                    or not extended and (slot >= 8 or device >= 16)):
                 raise ValueError("controller catalog slot/device is invalid")
             slots.add(slot)
             devices.add(device)
-            for _ in range(2):
-                size = struct.unpack_from("<i", payload, offset)[0]
-                offset += 4
-                if not 0 <= size <= 512 or offset + size > len(payload):
-                    raise ValueError("controller catalog text is invalid")
-                if "\0" in payload[offset:offset + size].decode("utf-8", errors="strict"):
-                    raise ValueError("controller catalog text contains NUL")
-                offset += size
+            read_text(512)
+            read_text(512)
             axes = payload[offset]
             offset += 1
-            if axes > 63:
-                raise ValueError("controller catalog axis mask is invalid")
-            for axis in range(6):
+            axis_count = 6
+            instance = None
+            if extended:
+                axis_count = struct.unpack_from("<i", payload, offset)[0]
+                offset += 4
+                if offset + 32 > len(payload):
+                    raise ValueError("controller catalog GUID is truncated")
+                instance = payload[offset:offset + 16]
+                offset += 32  # Instance GUID and product GUID.
+            if axis_count not in {6, 8} or axes >= (1 << axis_count):
+                raise ValueError("controller catalog axis mask/layout is invalid")
+            if slot >= MAXIMUM_CONTROLLER_BINARY_BYTES // (8 + axis_count * 9):
+                raise ValueError("controller catalog slot exceeds the payload byte budget")
+            for axis in range(axis_count):
                 minimum, maximum = struct.unpack_from("<II", payload, offset)
                 offset += 8
                 if axes & (1 << axis) and minimum >= maximum:
                     raise ValueError("controller catalog axis range is invalid")
+        if extended:
+            read_text(4096)
+            binding_count = struct.unpack_from("<i", payload, offset)[0]
+            offset += 4
+            if not 0 <= binding_count <= (len(payload) - offset) // 30:
+                raise ValueError("controller binding count exceeds its payload")
+            for _ in range(binding_count):
+                control, engine, instance, axis, inverted = struct.unpack_from("<Bi16siB", payload, offset)
+                offset += 26
+                if (control not in {0, 1, 2, 3} or not -1 <= engine <= 3
+                        or (control != 3 and engine != -1) or not 0 <= axis <= 7
+                        or inverted not in {0, 1} or not any(instance)):
+                    raise ValueError("controller binding has an invalid control, identity or axis")
+                read_text(4096)
+            if offset < len(payload):
+                marker, size = struct.unpack_from("<Ii", payload, offset)
+                offset += 8
+                if marker != 0x31464550 or size <= 0 or size != len(payload) - offset:
+                    raise ValueError("controller profile evidence header is invalid")
+                try:
+                    evidence = json.loads(payload[offset:].decode("utf-8", errors="strict"))
+                except (ValueError, RecursionError) as exc:
+                    raise ValueError("controller profile evidence is not valid JSON") from exc
+                if not isinstance(evidence, dict):
+                    raise ValueError("controller profile evidence must be an object")
+                offset += size
     except (struct.error, IndexError, UnicodeDecodeError) as exc:
         raise ValueError("controller catalog is truncated or malformed") from exc
     if offset != len(payload):
         raise ValueError("controller catalog contains trailing bytes")
+
+
+def _validate_controller_samples(encoded: str, valid_axes: set[tuple[int, int]] | None = None) -> int | None:
+    if not encoded:  # Legacy eight-by-six projection remains authoritative.
+        return
+    if len(encoded) > MAXIMUM_CONTROLLER_BASE64_CHARS:
+        raise ValueError("controller observations exceed their byte budget")
+    try:
+        payload = base64.b64decode(encoded, validate=True)
+    except (ValueError, binascii.Error) as exc:
+        raise ValueError("controller observations are not valid base64") from exc
+    if not 10 <= len(payload) <= MAXIMUM_CONTROLLER_BINARY_BYTES:
+        raise ValueError("controller observation length is invalid")
+    version, count, axes = struct.unpack_from("<Hii", payload)
+    if version != 2 or count < 0 or axes not in {6, 8} or 10 + count * (21 + 17 * axes) != len(payload):
+        raise ValueError("controller observation dimensions do not match the payload")
+    offset = 10
+    for slot in range(count):
+        device = struct.unpack_from("<i", payload, offset)[0]
+        offset += 4
+        if device < -1:
+            raise ValueError("controller observation device is invalid")
+        for channel in range(axes + 1):  # Legacy Y projection followed by every axis.
+            value, valid, age = struct.unpack_from("<dBd", payload, offset)
+            offset += 17
+            if (valid not in {0, 1} or not math.isfinite(value) or not math.isfinite(age)
+                    or age < 0 or valid and (device < 0 or abs(value) > 100)):
+                raise ValueError("controller observation value, validity or age is invalid")
+            if valid_axes is not None and channel > 0 and valid:
+                valid_axes.add((slot, channel - 1))
+    return axes
 
 
 def _validate_controller_timeline(content: bytes, samples: int) -> None:
@@ -324,7 +407,7 @@ def _validate_controller_timeline(content: bytes, samples: int) -> None:
         raise ValueError("controller metadata envelope is malformed")
     total = 0
     for encoded in timeline["catalogs"]:
-        if not isinstance(encoded, str) or len(encoded) > 21848:
+        if not isinstance(encoded, str) or len(encoded) > MAXIMUM_CONTROLLER_BASE64_CHARS:
             raise ValueError("controller catalog encoding is too large")
         try:
             payload = base64.b64decode(encoded, validate=True)
@@ -436,7 +519,7 @@ def _validate_capture_archive(path: Path, expected_header: str, maximum_uncompre
             raise ValueError("archive entries do not match capture kind")
         if capture_kind not in CAPTURE_KINDS:
             raise ValueError("unsupported capture kind")
-        if expected_schema not in {5, 6, 7} or session.get("telemetry_schema") != str(expected_schema):
+        if expected_schema not in {5, 6, 7, 8} or session.get("telemetry_schema") != str(expected_schema):
             raise ValueError("unsupported telemetry schema")
         if session.get("source_period") != "SIM_FRAME":
             raise ValueError("telemetry is not a SIM_FRAME capture")
@@ -491,7 +574,8 @@ def _validate_capture_archive(path: Path, expected_header: str, maximum_uncompre
                     raise ValueError(f"capture contains more than {maximum_samples} samples")
                 if len(row) != len(expected_columns):
                     raise ValueError("telemetry row width does not match schema")
-                if sum(len(value) for value in row) > 8192:
+                numeric_width = sum(len(value) for column, value in zip(expected_columns, row) if column != "controller_data_v2")
+                if numeric_width > 8192:
                     raise ValueError("telemetry row is too large")
                 try:
                     sequence = int(row[index["sequence"]])
@@ -502,6 +586,9 @@ def _validate_capture_archive(path: Path, expected_header: str, maximum_uncompre
                 previous_sequence = sequence
 
                 for column, value in zip(expected_columns, row):
+                    if column == "controller_data_v2":
+                        _validate_controller_samples(value)
+                        continue
                     if column in BOOLEAN_COLUMNS:
                         if value not in {"0", "1"}:
                             raise ValueError(f"{column} is not boolean")

@@ -34,6 +34,7 @@ internal sealed class RecordingRuntimeOwner
     private PendingCheckpoint? _checkpoint;
     private JournalCursor? _lastCheckpoint;
     private int _safeToRestart;
+    private TaskCompletionSource<bool> _restartStateChanged = Signal();
     public bool SafeToRestart => Volatile.Read(ref _safeToRestart) != 0;
     public RecordingRuntimeOwner(RecoveryJournalIdentity identity, Func<DurableRuntimeInput, RecordingRuntimeEffects, Task> commitEffects,
         Func<JournalCursor, byte[], Task> saveCheckpoint, Action<Exception> invalidateJournal, TimeSpan? checkpointInterval = null)
@@ -49,6 +50,7 @@ internal sealed class RecordingRuntimeOwner
         {
             if (_closed) throw new InvalidOperationException("Recording intake has stopped.");
             if (_restore != null) throw new InvalidOperationException("Recording restore already pending.");
+            SetRestartSafety(false);
             _restore = new RestoreRequest(snapshot, cursor); _owner?.SignalWork(); return _restore.Completion.Task;
         }
     }
@@ -63,10 +65,32 @@ internal sealed class RecordingRuntimeOwner
                 if (_closed) throw new InvalidOperationException("Recording intake has stopped.");
                 if (_failure != null) throw new IOException("Recording owner needs recovery.", _failure);
                 if (_pending.Count < MaximumMessages && input.Input.Size <= MaximumBytes - _pendingBytes)
-                { _pending.Enqueue(input); _pendingBytes += input.Input.Size; _owner?.SignalWork(); return; }
+                { SetRestartSafety(false); _pending.Enqueue(input); _pendingBytes += input.Input.Size; _owner?.SignalWork(); return; }
                 wait = _space.Task;
             }
             await wait.ConfigureAwait(false);
+        }
+    }
+    // A signal means the owner changed state, never an irrevocable permission.
+    // Checking and subscribing under the mailbox gate prevents lost wakeups.
+    public async Task WaitForSafeRestartAsync(CancellationToken cancellationToken)
+    {
+        var cancelled = Signal();
+        using (cancellationToken.Register(() => cancelled.TrySetResult(true)))
+        {
+            while (true)
+            {
+                Task changed;
+                lock (_gate)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    if (_closed) throw new InvalidOperationException("Recording intake has stopped.");
+                    if (SafeToRestart) return;
+                    if (_restartStateChanged.Task.IsCompleted) _restartStateChanged = Signal();
+                    changed = _restartStateChanged.Task;
+                }
+                await Task.WhenAny(changed, cancelled.Task).ConfigureAwait(false);
+            }
         }
     }
     public async Task WaitForCheckpointAsync(Guid inputId, CancellationToken cancellationToken = default)
@@ -91,7 +115,7 @@ internal sealed class RecordingRuntimeOwner
     }
     public async Task CloseIntakeAsync()
     {
-        lock (_gate) { _closed = true; PulseSpace(); _owner?.SignalWork(); }
+        lock (_gate) { _closed = true; SetRestartSafety(false); PulseRestartState(); PulseSpace(); _owner?.SignalWork(); }
         if (await Task.WhenAny(_drained.Task, Task.Delay(TimeSpan.FromSeconds(30))).ConfigureAwait(false) != _drained.Task)
         {
             var error = new IOException("Recording closed before its checkpoint became durable; journal retained for replay.");
@@ -169,16 +193,17 @@ internal sealed class RecordingRuntimeOwner
                         }
                     dirty = true; context.Progress(true);
                 }
+                var grounded = state?.SafeForPresentationRestart == true;
+                if (!grounded) groundedSince = 0;
+                else if (groundedSince == 0) groundedSince = Stopwatch.GetTimestamp();
                 bool barrierPending, closed, empty;
                 lock (_gate)
                 {
                     barrierPending = _barriers.Values.Any(value => value.Cursor != null && !value.Completion.Task.IsCompleted);
                     closed = _closed; empty = _pending.Count == 0 && _restore == null;
+                    SetRestartSafety(!closed && _failure == null && grounded && empty &&
+                        Stopwatch.GetTimestamp() - groundedSince >= Stopwatch.Frequency * 5);
                 }
-                var grounded = state?.SafeForPresentationRestart == true;
-                if (!grounded) groundedSince = 0;
-                else if (groundedSince == 0) groundedSince = Stopwatch.GetTimestamp();
-                Volatile.Write(ref _safeToRestart, grounded && empty && Stopwatch.GetTimestamp() - groundedSince >= Stopwatch.Frequency * 5 ? 1 : 0);
                 if (state?.Cursor != null && _lastCheckpoint != null && state.Cursor.CompareTo(_lastCheckpoint) == 0) dirty = false;
                 if (state?.Cursor != null && dirty && _checkpoint == null &&
                     (_lastCheckpoint == null || state.Cursor.CompareTo(_lastCheckpoint) > 0) &&
@@ -197,9 +222,9 @@ internal sealed class RecordingRuntimeOwner
         catch (Exception error) { failure = error; throw; }
         finally
         {
-            Volatile.Write(ref _safeToRestart, 0);
             lock (_gate)
             {
+                SetRestartSafety(false);
                 _owner = null;
                 if (!_closed)
                 { _failure = failure ?? new IOException("Recording owner ended unexpectedly."); PulseSpace(); }
@@ -224,6 +249,16 @@ internal sealed class RecordingRuntimeOwner
             .OrderByDescending(pair => pair.Value.Cursor?.Segment ?? 0).ThenByDescending(pair => pair.Value.Cursor?.Sequence ?? 0).Skip(128).Select(pair => pair.Key).ToArray())
             _barriers.Remove(old);
     }
+    // Caller holds _gate. Continuations run outside the recording owner.
+    private void SetRestartSafety(bool safe)
+    {
+        var next = safe ? 1 : 0;
+        if (_safeToRestart == next) return;
+        Volatile.Write(ref _safeToRestart, next);
+        PulseRestartState();
+    }
+    private void PulseRestartState()
+    { _restartStateChanged.TrySetResult(true); }
     private void PulseSpace() { var previous = _space; _space = Signal(); previous.TrySetResult(true); }
     private static TaskCompletionSource<bool> Signal() => new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
     private sealed class Barrier

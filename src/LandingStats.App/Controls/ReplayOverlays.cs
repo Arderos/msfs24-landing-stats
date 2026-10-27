@@ -73,22 +73,25 @@ internal abstract class ReplayOverlayElement : FrameworkElement
 /// <summary>Cached, gap-aware mini charts; only the cursor and current values change during playback.</summary>
 internal sealed class ReplayMetricsOverlay : ReplayOverlayElement
 {
+    private const int HeightAboveGroundIndex = 6;
+    private const int MetricCount = 7;
     private readonly Func<LandingSeriesPoint, double>[] _values = { p => -p.PitchDegrees, p => p.BankDegrees,
-        p => p.HeadingTrueDegrees ?? double.NaN, p => p.GroundSpeedKnots, p => -p.InertialFpm, p => p.GForce };
-    private readonly string[] _labels = { "Pitch", "Bank", "Yaw", "GroundSpeed", "VerticalSpeed", "VerticalG" };
+        p => p.HeadingTrueDegrees ?? double.NaN, p => p.GroundSpeedKnots, p => -p.InertialFpm, p => p.GForce, p => p.AglFeet };
+    private readonly string[] _labels = { "Replay.Pitch", "Replay.Bank", "Replay.Yaw", "Replay.GroundSpeed",
+        "Replay.VerticalSpeed", "Replay.VerticalG", "Chart.HeightAboveGround" };
     private readonly Brush[] _colors = { ReplayOverlayStyle.Orange, ReplayOverlayStyle.Blue, ReplayOverlayStyle.Purple,
-        ReplayOverlayStyle.Amber, ReplayOverlayStyle.Cyan, ReplayOverlayStyle.Green };
-    private readonly Geometry?[] _paths = new Geometry?[6];
-    private readonly ImageDrawing?[] _chartImages = new ImageDrawing?[6];
+        ReplayOverlayStyle.Amber, ReplayOverlayStyle.Cyan, ReplayOverlayStyle.Green, ReplayOverlayStyle.Blue };
+    private readonly Geometry?[] _paths = new Geometry?[MetricCount];
+    private readonly ImageDrawing?[] _chartImages = new ImageDrawing?[MetricCount];
     private DpiScale? _chartDpi;
-    private readonly double[] _minimum = new double[6];
-    private readonly double[] _maximum = new double[6];
+    private readonly double[] _minimum = new double[MetricCount];
+    private readonly double[] _maximum = new double[MetricCount];
     private double? _runwayHeading;
     private LandingReplayTrack? _track;
     private LandingReplayPose? _pose;
     private double _time;
 
-    public ReplayMetricsOverlay() { Width = 340; Height = 220; IsHitTestVisible = false; }
+    public ReplayMetricsOverlay() { Width = 340; Height = Card(HeightAboveGroundIndex).Bottom; IsHitTestVisible = false; }
     internal void SetTrack(LandingReplayTrack? track, double? runwayHeading = null)
     {
         _track = track; _runwayHeading = runwayHeading;
@@ -129,7 +132,8 @@ internal sealed class ReplayMetricsOverlay : ReplayOverlayElement
     private double Yaw(double heading) => _runwayHeading.HasValue && LandingReplayTrack.Finite(heading)
         ? (heading - _runwayHeading.Value + 540) % 360 - 180 : double.NaN;
     private double Value(int i, LandingSeriesPoint point) => i == 2 ? Yaw(_values[i](point)) : _values[i](point);
-    internal static Rect Card(int i) => new Rect(i / 3 * 176, i % 3 * 76, 164, 68);
+    internal static Rect Card(int i) => i == HeightAboveGroundIndex
+        ? new Rect(0, 3 * 76, 340, 68) : new Rect(i / 3 * 176, i % 3 * 76, 164, 68);
     private static Rect Plot(int i) { var r = Card(i); return new Rect(r.X + 10, r.Y + 29, r.Width - 20, 29); }
     private Point ChartPoint(int i, double time, double value)
     {
@@ -140,13 +144,13 @@ internal sealed class ReplayMetricsOverlay : ReplayOverlayElement
     protected override void OnRender(DrawingContext dc)
     {
         PrepareChartImages();
-        DrawBackground(dc, ReplayOverlayStyle.L("Pitch"), background =>
+        DrawBackground(dc, LocalizationManager.Text(_labels[0]), background =>
         {
             for (var i = 0; i < _values.Length; i++)
             {
                 var card = Card(i); var plot = Plot(i);
                 ReplayOverlayStyle.Box(background, card);
-                ReplayOverlayStyle.Text(this, background, ReplayOverlayStyle.L(_labels[i]), card.X + 10, card.Y + 8, ReplayOverlayStyle.Muted, 9);
+                ReplayOverlayStyle.Text(this, background, LocalizationManager.Text(_labels[i]), card.X + 10, card.Y + 8, ReplayOverlayStyle.Muted, 9);
                 if (_track == null || _paths[i] == null) continue;
                 var baseline = ChartPoint(i, _track.StartSeconds, i == 5 ? 1 : 0).Y;
                 if (baseline >= plot.Top && baseline <= plot.Bottom)
@@ -162,7 +166,8 @@ internal sealed class ReplayMetricsOverlay : ReplayOverlayElement
         {
             var card = Card(i); var plot = Plot(i); var color = _colors[i];
             var value = i == 2 ? Yaw(_pose?.HeadingDegrees ?? double.NaN) : _pose?.Value(_values[i]) ?? double.NaN;
-            var text = !LandingReplayTrack.Finite(value) ? "—" : value.ToString(i < 3 ? "+0.0;-0.0;0.0" : i == 4 ? "+0;-0;0" : i == 3 ? "0" : "0.00", CultureInfo.CurrentCulture) +
+            var text = !LandingReplayTrack.Finite(value) ? "—" : i == HeightAboveGroundIndex
+                ? LocalizationManager.Format("Chart.HeightFeetFormat", value) : value.ToString(i < 3 ? "+0.0;-0.0;0.0" : i == 4 ? "+0;-0;0" : i == 3 ? "0" : "0.00", CultureInfo.CurrentCulture) +
                 (i < 3 ? "°" : i == 3 ? " " + ReplayOverlayStyle.L("Knots") : i == 4 ? " fpm" : " G");
             ReplayOverlayStyle.Text(this, dc, text, card.Right - 10, card.Y + 6, color, 12, true);
             if (_track == null || _paths[i] == null) continue;

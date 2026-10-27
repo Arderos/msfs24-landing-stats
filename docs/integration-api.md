@@ -316,6 +316,7 @@ sections, and `hello.limits` advertises their page bounds.
 | Section | Offset/limit units | Default / maximum limit | Response content |
 | --- | --- | --- | --- |
 | `sourceEvidenceTimeline` | Base64 text characters | 65536 / 65536 | `data`, `available`, `encoding: "base64"` |
+| `controllerCatalog` | Base64 text characters within `catalogIndex` (default 0) | 65536 / 65536 | `data`, `catalogIndex`, `available`, `encoding: "base64"` |
 | `controllerCatalogs` | Catalog entries | 8 / 16 | `items`, timeline `version` and `samples` |
 | `controllerTransitions` | Transition entries | 100 / 200 | `items`, timeline `version` and `samples` |
 
@@ -327,6 +328,11 @@ their indices; they reconstruct the original controller timeline with `version`
 and `samples`. A missing source timeline has `available: false`, total zero and
 empty data. Metadata section totals are characters or entries in these same units.
 These sections retain opaque encoded provenance without reinterpreting it.
+If a single controller catalog exceeds the response bound, read it with
+`section: "controllerCatalog"` and its zero-based `catalogIndex`. Use the
+`controllerCatalogs` total from `section: "metadata"` to enumerate catalogs,
+and concatenate each catalog's text chunks before base64 decoding. An absent
+catalog index returns `InvalidParams`.
 
 For example:
 

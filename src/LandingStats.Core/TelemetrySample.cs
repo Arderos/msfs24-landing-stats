@@ -14,9 +14,48 @@ public sealed class TelemetrySample
     public const int CapturedContactPointCount = 20;
     public const int CapturedEngineCount = 4;
 
+    // Sizes of the historical WinMM recording format, not collection limits.
     public const int CapturedControllerCount = 8;
     // Device-major order: X, Y, Z, R, U, V. These are physical axes, not simulator bindings.
     public const int CapturedControllerAxisCount = 6;
+
+    public int ControllerCount => RawControllerDeviceId.Length;
+    public int ControllerAxisCount { get; private set; } = CapturedControllerAxisCount;
+    public bool HasLegacyControllerLayout => ControllerCount == CapturedControllerCount && ControllerAxisCount == CapturedControllerAxisCount;
+
+    public void ResizeControllers(int count, int axisCount)
+    {
+        if (count < 0 || (axisCount != 6 && axisCount != 8)) throw new System.ArgumentOutOfRangeException();
+        var width = checked(count * axisCount);
+        if (ControllerCount == count && ControllerAxisCount == axisCount) return;
+        ControllerAxisCount = axisCount;
+        RawControllerDeviceId = new int[count];
+        RawControllerYAxisPercent = new double[count]; RawControllerYAxisValid = new bool[count]; RawControllerYAxisAgeSeconds = new double[count];
+        RawControllerAxesPercent = new double[width]; RawControllerAxesValid = new bool[width]; RawControllerAxesAgeSeconds = new double[width];
+        for (var i = 0; i < count; i++) RawControllerDeviceId[i] = -1;
+    }
+
+    /// <summary>Frozen v7 numeric projection used by old CSV readers and geometry fingerprints.</summary>
+    public TelemetrySample LegacyControllerProjection()
+    {
+        if (HasLegacyControllerLayout) return this;
+        var copy = (TelemetrySample)MemberwiseClone(); copy.ResizeControllers(8, 6);
+        for (var slot = 0; slot < System.Math.Min(8, ControllerCount); slot++)
+        {
+            copy.RawControllerDeviceId[slot] = RawControllerDeviceId[slot];
+            copy.RawControllerYAxisPercent[slot] = RawControllerYAxisPercent[slot];
+            copy.RawControllerYAxisValid[slot] = RawControllerYAxisValid[slot];
+            copy.RawControllerYAxisAgeSeconds[slot] = RawControllerYAxisAgeSeconds[slot];
+            for (var axis = 0; axis < 6; axis++)
+            {
+                var source = slot * ControllerAxisCount + axis; var target = slot * 6 + axis;
+                copy.RawControllerAxesPercent[target] = RawControllerAxesPercent[source];
+                copy.RawControllerAxesValid[target] = RawControllerAxesValid[source];
+                copy.RawControllerAxesAgeSeconds[target] = RawControllerAxesAgeSeconds[source];
+            }
+        }
+        return copy;
+    }
 
     public long Sequence { get; set; }
 
@@ -163,19 +202,19 @@ public sealed class TelemetrySample
 
     public double[] EngineReversePercent { get; } = new double[CapturedEngineCount];
 
-    public int[] RawControllerDeviceId { get; } = new int[CapturedControllerCount];
+    public int[] RawControllerDeviceId { get; private set; } = new int[CapturedControllerCount];
 
-    public double[] RawControllerYAxisPercent { get; } = new double[CapturedControllerCount];
+    public double[] RawControllerYAxisPercent { get; private set; } = new double[CapturedControllerCount];
 
-    public bool[] RawControllerYAxisValid { get; } = new bool[CapturedControllerCount];
+    public bool[] RawControllerYAxisValid { get; private set; } = new bool[CapturedControllerCount];
 
-    public double[] RawControllerYAxisAgeSeconds { get; } = new double[CapturedControllerCount];
+    public double[] RawControllerYAxisAgeSeconds { get; private set; } = new double[CapturedControllerCount];
 
-    public double[] RawControllerAxesPercent { get; } = new double[CapturedControllerCount * CapturedControllerAxisCount];
+    public double[] RawControllerAxesPercent { get; private set; } = new double[CapturedControllerCount * CapturedControllerAxisCount];
 
-    public bool[] RawControllerAxesValid { get; } = new bool[CapturedControllerCount * CapturedControllerAxisCount];
+    public bool[] RawControllerAxesValid { get; private set; } = new bool[CapturedControllerCount * CapturedControllerAxisCount];
 
-    public double[] RawControllerAxesAgeSeconds { get; } = new double[CapturedControllerCount * CapturedControllerAxisCount];
+    public double[] RawControllerAxesAgeSeconds { get; private set; } = new double[CapturedControllerCount * CapturedControllerAxisCount];
 
     public double[] ContactPointCompression { get; } = new double[CapturedContactPointCount];
 

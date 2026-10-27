@@ -33,11 +33,11 @@ internal sealed class JoinedRuntimeFrame
     }
     public static JoinedRuntimeFrame Decode(byte[] bytes)
     {
-        if (bytes == null || bytes.Length > 65536) throw new InvalidDataException("Joined frame exceeds its bound.");
+        if (bytes == null || bytes.Length > 3 * (RuntimeWire.MaximumPayloadLength + RuntimeWire.HeaderLength) + 256) throw new InvalidDataException("Joined frame exceeds its bound.");
         using var memory = new MemoryStream(bytes, false); using var reader = new BinaryReader(memory);
         if (reader.ReadInt32() != 0x31464a4c) throw new InvalidDataException("Unsupported joined frame.");
-        var source = RuntimeWire.Decode(RuntimeCheckpointCodec.ReadBytes(reader, RuntimeCheckpointCodec.ReadCount(reader, 4096)));
-        var decision = ControllerJoinDecision.Decode(RuntimeCheckpointCodec.ReadBytes(reader, RuntimeCheckpointCodec.ReadCount(reader, 32768 + 256)));
+        var source = RuntimeWire.Decode(RuntimeCheckpointCodec.ReadBytes(reader, RuntimeCheckpointCodec.ReadCount(reader, RuntimeWire.MaximumPayloadLength + RuntimeWire.HeaderLength)));
+        var decision = ControllerJoinDecision.Decode(RuntimeCheckpointCodec.ReadBytes(reader, RuntimeCheckpointCodec.ReadCount(reader, 2 * (RuntimeWire.MaximumPayloadLength + RuntimeWire.HeaderLength) + 64)));
         if (memory.Position != memory.Length) throw new InvalidDataException("Joined frame has an unexpected suffix.");
         return new JoinedRuntimeFrame(source, decision);
     }
@@ -78,16 +78,28 @@ internal sealed class ControllerInputPreparation : IRuntimeInputPreparation
         if (committed.Kind == JournalRecordKind.RuntimeCommand && RecordingCommand.Decode(committed.CopyContent()).Kind == RecordingCommandKind.PreviousRuntimeEnded)
         {
             if (_joiner.ActiveWorker != null) _joiner.Retire(_joiner.ActiveWorker);
+            _joiner.ClearAircraftControls();
             return;
         }
         if (committed.Kind == JournalRecordKind.SourceRetirement)
         {
             var retirement = RuntimeSourceRetirement.Decode(committed.CopyContent());
             if (retirement.Worker.Role == ComponentRole.Controllers) _joiner.Retire(retirement.Worker);
+            if (retirement.Worker.Role == ComponentRole.Simulator) _joiner.ClearAircraftControls();
         }
         else if (committed.Kind == JournalRecordKind.SourceMessage)
         {
             var message = RuntimeWire.Decode(committed.CopyContent());
+            if (message.Worker.Role == ComponentRole.Simulator)
+            {
+                if (message.Payload is AircraftControlsMessage) _joiner.ObserveAircraftControls(message);
+                else if (message.Payload is WorkerHello || message.Payload is SourceGapMessage ||
+                    message.Payload is AircraftMessage aircraft && aircraft.Title == "Unknown aircraft" ||
+                    message.Payload is LifecycleMessage lifecycle && (lifecycle.State == SourceLifecycle.Connected ||
+                        lifecycle.State == SourceLifecycle.Disconnected || lifecycle.State == SourceLifecycle.SimulatorQuit))
+                    _joiner.ClearAircraftControls();
+                return;
+            }
             if (message.Worker.Role != ComponentRole.Controllers) return;
             if (message.Payload is WorkerHello && _joiner.ActiveWorker == null) _joiner.Activate(message.Worker);
             if (_joiner.ActiveWorker == null) return; // A rejected generation stays unavailable until its replacement Hello.

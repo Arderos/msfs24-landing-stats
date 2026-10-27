@@ -10,6 +10,7 @@ using LandingStats.App.Runtime;
 using LandingStats.App.Storage;
 using LandingStats.App.Telemetry;
 using LandingStats.Core;
+using LandingStats.Runtime.Contracts;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 
@@ -21,6 +22,7 @@ internal static class IntegrationApiDataRegressionTests
     public static void RunAll()
     {
         WithFixture(QueryContractsAndKeyset);
+        WithFixture(LargeControllerCatalogCanBeReadCompletely);
         WithFixture(DurableResultsBeforeHistoryAndRecovery);
         WithFixture(DeletionResetsAllClientsAndDoesNotResurrect);
         WithFixture(CorruptJournalRebuildsPendingAnalysis);
@@ -114,6 +116,38 @@ internal static class IntegrationApiDataRegressionTests
             "archived completed reports must repair their missed metadata events");
         Require((string?)f.Call("episodes.get", new JObject { ["id"] = "physical:1" })["contacts"]?[0]?["site"]?["airport"] == "EGLL",
             "episode query did not return the latest metadata revision");
+    }
+    private static void LargeControllerCatalogCanBeReadCompletely(Fixture f)
+    {
+        var worker = new WorkerIdentity(Guid.NewGuid(), Guid.NewGuid(), 1, ComponentRole.Controllers);
+        var evidence = "{\"schema\":1,\"diagnostic\":\"" + new string('x', 600000) + "\"}";
+        var bytes = ControllerProvenanceCodec.Encode(new RuntimeEnvelope(worker, 0, 1, 100,
+            new ControllerCatalogMessage(1, Array.Empty<ControllerDescriptor>(), profileEvidence: evidence)));
+        var record = Record("large-catalog", DateTime.UtcNow);
+        record.Series.Add(new LandingSeriesPoint { TimeSeconds = 0, RawControllerYAxisPercent = Array.Empty<double>(),
+            RawControllerYAxisValid = Array.Empty<bool>(), RawControllerYAxisAgeSeconds = Array.Empty<double>() });
+        record.ControllerTimeline = ControllerCatalogTimeline.Capture(new[] { new TelemetrySample { ControllerCatalog = bytes } });
+        f.Repository.Save(record);
+        Require(f.Error(Request("landings.provenance", new JObject { ["id"] = record.Id, ["section"] = "controllerCatalogs", ["limit"] = 1 })) == "ResponseTooLarge",
+            "Fixture must exceed the response budget even with one catalog per page.");
+        Require(((JArray)f.Call("schema.get")["provenancePaging"]!["sections"]!).Values<string>().Contains("controllerCatalog"),
+            "Chunked catalog access is not discoverable through schema.get.");
+        var text = new StringBuilder(); var offset = 0;
+        while (true)
+        {
+            var page = f.Call("landings.provenance", new JObject { ["id"] = record.Id, ["section"] = "controllerCatalog",
+                ["catalogIndex"] = 0, ["offset"] = offset });
+            var chunk = (string)page["data"]!;
+            Require(chunk.Length <= 65536 && (int?)page["catalogIndex"] == 0 && (string?)page["encoding"] == "base64", "Catalog page lost its bounds or identity.");
+            text.Append(chunk); offset = (int)page["nextOffset"]!;
+            if ((bool?)page["hasMore"] == false) { Require(offset == (int?)page["total"], "Catalog text page ended at the wrong offset."); break; }
+            Require(chunk.Length > 0, "Catalog pagination made no progress.");
+        }
+        Require(Convert.FromBase64String(text.ToString()).SequenceEqual(bytes), "API truncated or rewrote controller profile evidence.");
+        Require(f.Error(Request("landings.provenance", new JObject { ["id"] = record.Id, ["section"] = "controllerCatalog", ["catalogIndex"] = 1 })) == "InvalidParams",
+            "API accepted an absent catalog index.");
+        var empty = f.Call("landings.provenance", new JObject { ["id"] = record.Id, ["section"] = "controllerCatalog", ["offset"] = int.MaxValue });
+        Require((string?)empty["data"] == "" && (bool?)empty["hasMore"] == false, "Past-end catalog offset did not produce an empty final page.");
     }
     private static void DeletionResetsAllClientsAndDoesNotResurrect(Fixture f)
     {

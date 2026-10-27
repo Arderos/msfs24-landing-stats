@@ -10,6 +10,7 @@ public static class GeometryFingerprintCsvV7
     private static string Number(double value) => value.ToString("G17", Invariant);
     public static string Format(TelemetrySample sample)
     {
+        sample = sample.LegacyControllerProjection();
         var values = new List<string>
         {
             sample.Sequence.ToString(Invariant),

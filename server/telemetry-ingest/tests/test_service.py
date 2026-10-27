@@ -1,5 +1,6 @@
 import base64
 import concurrent.futures
+import csv
 import json
 import sqlite3
 import tempfile
@@ -328,7 +329,7 @@ class CaptureValidationTests(unittest.TestCase):
             directory = Path(value)
             path = directory / "oversized-field.zip"
             with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_STORED) as archive:
-                archive.writestr("telemetry.csv", HEADER + "\n" + "1" * 200_000 + "\n")
+                archive.writestr("telemetry.csv", HEADER + "\n" + "1" * (csv.field_size_limit() + 1) + "\n")
                 archive.writestr(
                     "session.txt",
                     "telemetry_schema=5\nsource_period=SIM_FRAME\nsample_count=1\n",

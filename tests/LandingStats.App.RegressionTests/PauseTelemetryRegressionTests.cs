@@ -34,16 +34,19 @@ internal static class PauseTelemetryRegressionTests
         raw.FlightSegment = 17;
         raw.RawControllerAxesPercent[0] = 38;
         raw.RawControllerAxesValid[0] = true;
-        Assert(TelemetryCsv.SchemaVersion == 7 && TelemetryCsv.Header ==
-            TelemetryCsv.V6Header + ",analysis_time_s,simulator_state,pause_flags,flight_segment", "schema7 header mismatch");
-        Assert(TelemetryCsv.TryParse(TelemetryCsv.Format(raw), out var parsed), "schema7 row rejected");
-        Assert(parsed.SimulationTimeSeconds == 220 && parsed.AnalysisTimeSeconds == 20 &&
-            parsed.SimulatorState == TelemetrySimulatorState.Paused && parsed.PauseFlags == 5 &&
-            parsed.FlightSegment == 17 && parsed.RawControllerAxesPercent[0] == 38 &&
-            parsed.RawControllerAxesValid[0], "schema7 lost raw or lifecycle data");
-        var invalid = TelemetryCsv.Format(raw).Split(',');
-        invalid[invalid.Length - 3] = "4";
-        Assert(!TelemetryCsv.TryParse(string.Join(",", invalid), out _), "unknown lifecycle enum accepted");
+        Assert(TelemetryCsv.V7Header == TelemetryCsv.V6Header + ",analysis_time_s,simulator_state,pause_flags,flight_segment", "schema7 header mismatch");
+        Assert(TelemetryCsv.SchemaVersion == 8 && TelemetryCsv.Header == TelemetryCsv.V7Header + ",controller_data_v2", "current schema header mismatch");
+        foreach (var header in new[] { TelemetryCsv.V7Header, TelemetryCsv.Header })
+        {
+            var values = TelemetryCsv.Format(raw).Split(',').Take(header.Split(',').Length).ToArray();
+            Assert(TelemetryCsv.TryParse(string.Join(",", values), out var parsed), "lifecycle row rejected");
+            Assert(parsed.SimulationTimeSeconds == 220 && parsed.AnalysisTimeSeconds == 20 &&
+                parsed.SimulatorState == TelemetrySimulatorState.Paused && parsed.PauseFlags == 5 &&
+                parsed.FlightSegment == 17 && parsed.RawControllerAxesPercent[0] == 38 &&
+                parsed.RawControllerAxesValid[0], "raw or lifecycle data lost");
+            values[Array.IndexOf(header.Split(','), "simulator_state")] = "4";
+            Assert(!TelemetryCsv.TryParse(string.Join(",", values), out _), "unknown lifecycle enum accepted");
+        }
     }
 
     private static void OldSchemasHaveNoInventedLifecycleEvidence()

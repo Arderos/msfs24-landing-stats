@@ -63,8 +63,8 @@ class SourceObservationTests(unittest.TestCase):
     @unittest.skipUnless(os.environ.get("MSFSLS_SOURCE_FIXTURE"), "explicit .NET writer fixture required")
     def test_actual_net48_writer_with_source_metadata(self):
         path = Path(os.environ["MSFSLS_SOURCE_FIXTURE"])
-        header = (ROOT / "schema-v7.header").read_text(encoding="utf-8").strip()
-        self.assertEqual(40, validate_capture(path, header, 64 * 1024 * 1024, 7).sample_count)
+        header = (ROOT / "schema-v8.header").read_text(encoding="utf-8").strip()
+        self.assertEqual(40, validate_capture(path, header, 64 * 1024 * 1024, 8).sample_count)
         row = {"compressed_bytes": path.stat().st_size, "sha256": hashlib.sha256(path.read_bytes()).hexdigest(), "sample_count": 40}
         self.assertEqual(40, _index_archive(path, row)["telemetry"]["rows"])
 

@@ -27,10 +27,11 @@ internal sealed class RawCaptureGap
 internal sealed class RawPendingEffect
 {
     public RawPendingEffect(DurableRuntimeInput input, IReadOnlyList<object> effects)
-    { Id = input.Input.Id; Cursor = input.Cursor; Bytes = RawEffectStore.Encode(input, effects); }
+    { Id = input.Input.Id; Cursor = input.Cursor; Bytes = RawEffectStore.Encode(input, effects, out var catalogs); Catalogs = catalogs; }
     public Guid Id { get; }
     public JournalCursor Cursor { get; }
     public byte[] Bytes { get; }
+    public RawEffectStore.CatalogBlob[] Catalogs { get; }
 }
 
 /// <summary>Optional RAW persistence never blocks the recording producer on
@@ -45,6 +46,7 @@ internal sealed class RawBatchPersistence
     private readonly RawEffectStore _store;
     private readonly List<RawPendingEffect> _pending = new List<RawPendingEffect>();
     private int _bytes;
+    private readonly HashSet<string> _catalogs = new HashSet<string>(StringComparer.Ordinal);
     private JournalCursor? _lastCursor;
     private RawDebugCaptureStartedEventArgs? _capture;
     private RawCaptureGap? _gap, _diagnostic, _savedDiagnostic;
@@ -72,9 +74,10 @@ internal sealed class RawBatchPersistence
             try
             {
                 var pending = new RawPendingEffect(input, values);
-                if (_pending.Count == MaximumPendingInputs || pending.Bytes.Length > MaximumPendingBytes - _bytes)
+                var addedBytes = pending.Bytes.Length + pending.Catalogs.Where(catalog => !_catalogs.Contains(catalog.Hash)).Sum(catalog => (long)catalog.Bytes.Length);
+                if (_pending.Count == MaximumPendingInputs || addedBytes > MaximumPendingBytes - _bytes)
                     throw new IOException("RAW batch capacity exceeded; diagnostic fragment ended.");
-                _pending.Add(pending); _bytes += pending.Bytes.Length; _gap = null;
+                _pending.Add(pending); _bytes += checked((int)addedBytes); foreach (var catalog in pending.Catalogs) _catalogs.Add(catalog.Hash); _gap = null;
             }
             catch (Exception error) when (OptionalFailure(error)) { Drop(_pending.Count + 1, error); }
             if (effects.Any(e => ReferenceEquals(e, EventArgs.Empty))) _capture = null;
@@ -87,7 +90,7 @@ internal sealed class RawBatchPersistence
         lock (_flushGate)
         {
             RawPendingEffect[] pending;
-            lock (_gate) { pending = _pending.ToArray(); _pending.Clear(); _bytes = 0; }
+            lock (_gate) { pending = _pending.ToArray(); _pending.Clear(); _bytes = 0; _catalogs.Clear(); }
             if (pending.Length != 0)
             {
                 try { _store.CommitBatch(pending); }
@@ -104,7 +107,7 @@ internal sealed class RawBatchPersistence
     }
     private void Drop(int count, Exception error)
     {
-        _pending.Clear(); _bytes = 0;
+        _pending.Clear(); _bytes = 0; _catalogs.Clear();
         var message = error.GetType().Name + ": " + error.Message;
         _gap = _diagnostic = new RawCaptureGap(Math.Min(long.MaxValue - count, _diagnostic?.DroppedInputs ?? 0) + count,
             message.Length > 1024 ? message.Substring(0, 1024) : message, _lastCursor);

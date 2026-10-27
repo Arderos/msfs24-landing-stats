@@ -39,9 +39,9 @@ public sealed class RuntimeEnvelope
         Worker = worker ?? throw new ArgumentNullException(nameof(worker));
         Payload = payload ?? throw new ArgumentNullException(nameof(payload));
         if (worker.Role != ComponentRole.Simulator && (connectionGeneration != 0 || payload is TelemetryFrameMessage ||
-            payload is GuardFrameMessage || payload is LifecycleMessage || payload is SimulatorLifecycleSnapshotMessage || payload is AircraftMessage || payload is SceneryCommandMessage || payload is SceneryChunkMessage))
+            payload is GuardFrameMessage || payload is LifecycleMessage || payload is SimulatorLifecycleSnapshotMessage || payload is AircraftMessage || payload is AircraftControlsMessage || payload is SceneryCommandMessage || payload is SceneryChunkMessage))
             throw new ArgumentException("Payload does not belong to this source role.");
-        if ((payload is TelemetryFrameMessage || payload is GuardFrameMessage || payload is SimulatorLifecycleSnapshotMessage) && connectionGeneration == 0)
+        if ((payload is TelemetryFrameMessage || payload is GuardFrameMessage || payload is SimulatorLifecycleSnapshotMessage || payload is AircraftControlsMessage) && connectionGeneration == 0)
             throw new ArgumentException("A simulator frame requires a connection generation.");
         if ((payload is ControllerCatalogMessage || payload is ControllerSnapshotMessage) && worker.Role != ComponentRole.Controllers)
             throw new ArgumentException("Controller data requires the controller source role.");

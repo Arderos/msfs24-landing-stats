@@ -20,7 +20,9 @@ public sealed partial class LandingChart
 
         var top = ShowLegend ? 31.0 : 0.0;
         var bottom = ShowXAxisLabels ? 30.0 : 0.0;
-        return new Rect(96, top, Math.Max(10, ActualWidth - 96), Math.Max(10, ActualHeight - top - bottom));
+        var right = Mode == LandingChartMode.Power && _powerHasRpm
+            ? Formatted(LocalizationManager.Format("Chart.RpmFormat", _powerRpmMaximum), MutedBrush, 10).Width + 10 : 0;
+        return new Rect(96, top, Math.Max(10, ActualWidth - 96 - right), Math.Max(10, ActualHeight - top - bottom));
     }
 
     private void GetTimeRange(IReadOnlyList<LandingSeriesPoint> points, out double minimum, out double maximum)
@@ -96,7 +98,10 @@ public sealed partial class LandingChart
                     }
                 }
 
-                DrawText(context, LocalizationManager.Text("Chart.PowerStyle"), new Point(x + 4, 2), MutedBrush, 10);
+                DrawText(context, LocalizationManager.Text(PowerShowThrottle ? (HasPhysicalThrottles ? "Chart.PowerStylePhysical" : "Chart.PowerStyle") : "Chart.PowerStyleNoThrottle"), new Point(x + 4, 2), MutedBrush, 10);
+                break;
+            case LandingChartMode.HeightAboveGround:
+                DrawLegendItem(context, x, LocalizationManager.Text("Chart.HeightAboveGround"), BluePen, 0);
                 break;
             case LandingChartMode.Gear:
                 for (var index = 0; index < _gearSeries.Count; index++)
@@ -149,10 +154,6 @@ public sealed partial class LandingChart
                 case LandingChartMode.LoadFactors:
                     minimum = 0.8;
                     maximum = 1.6;
-                    return;
-                case LandingChartMode.Power:
-                    minimum = 0;
-                    maximum = 100;
                     return;
             }
         }
@@ -253,8 +254,29 @@ public sealed partial class LandingChart
                 }
                 break;
             case LandingChartMode.Power:
-                minimum = 0;
-                maximum = 110;
+                var powerStart = points.Count == 0 ? double.NegativeInfinity : points[0].TimeSeconds;
+                var powerEnd = points.Count == 0 ? double.PositiveInfinity : points[points.Count - 1].TimeSeconds;
+                var powerPoints = _record?.Engines.Where((_, index) => IsSeriesVisible(index))
+                    .SelectMany(engine => engine.Points)
+                    .Where(point => point.TimeSeconds >= powerStart && point.TimeSeconds <= powerEnd)
+                    .ToArray() ?? Array.Empty<LandingEnginePoint>();
+                IEnumerable<double> powerPositions = powerPoints.Select(point => point.ReversePercent);
+                if (_record != null) powerPositions = powerPositions.Concat(_record.Engines.Where((_, index) => IsSeriesVisible(index) && UsesN1(index))
+                    .SelectMany(engine => engine.Points.Where(point => point.TimeSeconds >= powerStart && point.TimeSeconds <= powerEnd).Select(point => point.N1Percent)));
+                if (PowerShowThrottle && _record != null) powerPositions = powerPositions.Concat(_record.Engines.Where((_, index) => IsSeriesVisible(index))
+                    .SelectMany(engine => engine.Points.Where(point => point.TimeSeconds >= powerStart && point.TimeSeconds <= powerEnd)
+                        .Select(point => PowerThrottle(engine, point))));
+                var finitePowerPositions = ChartValueSanitizer.FiniteValues(powerPositions);
+                minimum = Math.Min(0, Math.Floor(finitePowerPositions.DefaultIfEmpty(0).Min() / 10) * 10);
+                maximum = Math.Max(CompactLane ? 100 : 110, Math.Ceiling(finitePowerPositions.DefaultIfEmpty(0).Max() / 10) * 10);
+                break;
+            case LandingChartMode.HeightAboveGround:
+                var heightValues = ChartValueSanitizer.FiniteValues(points.Select(point => point.AglFeet));
+                var heightMinimum = Math.Min(0, heightValues.DefaultIfEmpty(0).Min());
+                var heightMaximum = Math.Max(0, heightValues.DefaultIfEmpty(0).Max());
+                var heightPadding = Math.Max(1, (heightMaximum - heightMinimum) * 0.08);
+                minimum = heightMinimum - heightPadding;
+                maximum = heightMaximum + heightPadding;
                 break;
             case LandingChartMode.Gear:
                 minimum = 0;
@@ -385,7 +407,14 @@ public sealed partial class LandingChart
                 }
                 break;
             case LandingChartMode.Power:
+                DrawBaseline(context, plot, 0, minValue, maxValue);
                 DrawPower(context, plot, minTime, maxTime, minValue, maxValue);
+                break;
+            case LandingChartMode.HeightAboveGround:
+                DrawBaseline(context, plot, 0, minValue, maxValue);
+                if (IsSeriesVisible(0))
+                    DrawSeries(context, points, point => point.TimeSeconds, point => point.AglFeet,
+                        plot, minTime, maxTime, minValue, maxValue, BluePen);
                 break;
             case LandingChartMode.Gear:
                 DrawGear(context, plot, minTime, maxTime, minValue, maxValue);
@@ -410,18 +439,41 @@ public sealed partial class LandingChart
             var engine = _record.Engines[index];
             var solid = CompactLane ? BluePen : SolidPens[index % SolidPens.Length];
             var dashed = DashedPens[index % DashedPens.Length];
-            var hasN1 = engine.Points.Any(point => Math.Abs(point.N1Percent) > 0.01);
-            var maximumRpm = engine.Points.Count == 0 ? 1 : Math.Max(1, engine.Points.Max(point => point.Rpm));
+            var hasN1 = UsesN1(index);
             DrawSeries(context, engine.Points, point => point.TimeSeconds,
-                point => hasN1 ? point.N1Percent : point.Rpm / maximumRpm * 100.0,
-                plot, minTime, maxTime, minValue, maxValue, solid);
+                point => hasN1 ? point.N1Percent : RpmPosition(point.Rpm),
+                plot, minTime, maxTime, minValue, maxValue, solid, maximumGapSeconds: LandingReplayTrack.MaximumInterpolationGapSeconds);
             if (PowerShowThrottle)
             {
-                DrawSeries(context, engine.Points, point => point.TimeSeconds, point => point.ThrottlePercent,
-                    plot, minTime, maxTime, minValue, maxValue, dashed);
+                DrawSeries(context, engine.Points, point => point.TimeSeconds, point => PowerThrottle(engine, point),
+                    plot, minTime, maxTime, minValue, maxValue, dashed,
+                    point => IsPhysicalThrottle(engine) && _catalogStarts?.Contains(point.TimeSeconds) == true, LandingReplayTrack.MaximumInterpolationGapSeconds);
             }
+            DrawSeries(context, engine.Points, point => point.TimeSeconds, point => point.ReversePercent,
+                plot, minTime, maxTime, minValue, maxValue, ReversePens[index % ReversePens.Length], maximumGapSeconds: LandingReplayTrack.MaximumInterpolationGapSeconds);
         }
     }
+
+    private bool UsesN1(int index) => index < _powerUsesN1.Length && _powerUsesN1[index];
+    private double RpmPosition(double rpm) => rpm / _powerRpmMaximum * 100;
+    private void PreparePowerScale(double minimumTime, double maximumTime)
+    {
+        _powerHasRpm = Mode == LandingChartMode.Power && _record?.Engines.Where((_, index) => IsSeriesVisible(index) && !UsesN1(index)).Any() == true;
+        _powerRpmMaximum = 1;
+        if (!_powerHasRpm) return;
+        var maximum = ChartValueSanitizer.FiniteValues(_record!.Engines.Where((_, index) => IsSeriesVisible(index) && !UsesN1(index))
+            .SelectMany(engine => engine.Points.Where(point => point.TimeSeconds >= minimumTime && point.TimeSeconds <= maximumTime).Select(point => point.Rpm)))
+            .DefaultIfEmpty(0).Max();
+        if (maximum <= 0) return;
+        var step = Math.Pow(10, Math.Floor(Math.Log10(maximum)));
+        _powerRpmMaximum = Math.Ceiling(maximum / step) * step;
+    }
+
+    private ReplayPresentationData? PowerInputs => _record == null ? null : _powerInputs ??= ReplayPresentationData.ForControls(_record);
+    private bool HasPhysicalThrottles => PowerInputs?.PhysicalThrottleEngines.Count > 0;
+    private bool IsPhysicalThrottle(LandingEngineSeries engine) => PowerInputs?.PhysicalThrottleEngines.Contains(engine.EngineNumber) == true;
+    private double PowerThrottle(LandingEngineSeries engine, LandingEnginePoint point) => IsPhysicalThrottle(engine)
+        ? PowerInputs!.Throttles.TryGetValue(point, out var value) ? value : double.NaN : point.ThrottlePercent;
 
     private void DrawGear(DrawingContext context, Rect plot, double minTime, double maxTime, double minValue, double maxValue)
     {
@@ -483,8 +535,16 @@ public sealed partial class LandingChart
                 LandingChartMode.VerticalSpeed => value.ToString("+0;-0;0", CultureInfo.CurrentCulture),
                 _ => value.ToString("F0", CultureInfo.CurrentCulture),
             };
+            if (Mode == LandingChartMode.Power) valueLabel += "%";
             DrawText(context, valueLabel, new Point(plot.Left, y - 8), MutedBrush, 10);
         }
+
+        if (Mode == LandingChartMode.Power && _powerHasRpm)
+            foreach (var fraction in new[] { 0d, .25, .5, .75, 1 })
+            {
+                var y = MapY(fraction * 100, plot, minValue, maxValue);
+                DrawText(context, LocalizationManager.Format("Chart.RpmFormat", fraction * _powerRpmMaximum), new Point(plot.Right + 6, y - 8), MutedBrush, 10);
+            }
 
         var tickInterval = maxTime - minTime > 35 ? 10.0 : 5.0;
         var firstTick = Math.Ceiling(minTime / tickInterval) * tickInterval;
@@ -536,7 +596,7 @@ public sealed partial class LandingChart
         double maxTime,
         double minValue,
         double maxValue,
-        Pen pen, Func<T, bool>? startsSegment = null)
+        Pen pen, Func<T, bool>? startsSegment = null, double maximumGapSeconds = double.PositiveInfinity)
     {
         if (points.Count < 2)
         {
@@ -547,6 +607,7 @@ public sealed partial class LandingChart
         using (var geometryContext = geometry.Open())
         {
             var hasFigure = false;
+            var previousTime = double.NaN;
             for (var index = 0; index < points.Count; index++)
             {
                 var time = selectTime(points[index]);
@@ -559,7 +620,7 @@ public sealed partial class LandingChart
 
                 var x = MapX(time, plot, minTime, maxTime);
                 var y = MapY(value, plot, minValue, maxValue);
-                if (!hasFigure || startsSegment?.Invoke(points[index]) == true)
+                if (!hasFigure || time < previousTime || time - previousTime > maximumGapSeconds || startsSegment?.Invoke(points[index]) == true)
                 {
                     geometryContext.BeginFigure(new Point(x, y), false, false);
                     hasFigure = true;
@@ -568,6 +629,7 @@ public sealed partial class LandingChart
                 {
                     geometryContext.LineTo(new Point(x, y), true, false);
                 }
+                previousTime = time;
             }
         }
 
@@ -605,11 +667,11 @@ public sealed partial class LandingChart
     {
         var flags = new List<HoverFlag>();
 
-        void AddFlag(double value, Brush brush, bool visible, string? label = null)
+        void AddFlag(double value, Brush brush, bool visible, string? label = null, string? valueText = null)
         {
             if (visible && ChartValueSanitizer.IsFinite(value))
             {
-                var text = FormatFlagValue(value);
+                var text = valueText ?? FormatFlagValue(value);
                 flags.Add(new HoverFlag(label == null ? text : $"{label} {text}", brush, MapY(value, plot, minValue, maxValue)));
             }
         }
@@ -664,16 +726,20 @@ public sealed partial class LandingChart
                     }
 
                     var engine = _record.Engines[index];
-                    var hasN1 = engine.Points.Any(candidate => Math.Abs(candidate.N1Percent) > 0.01);
-                    var maximumRpm = engine.Points.Count == 0 ? 1 : Math.Max(1, engine.Points.Max(candidate => candidate.Rpm));
-                    var power = hasN1 ? enginePoint.N1Percent : enginePoint.Rpm / maximumRpm * 100.0;
+                    var hasN1 = UsesN1(index);
+                    var power = hasN1 ? enginePoint.N1Percent : RpmPosition(enginePoint.Rpm);
                     var brush = CompactLane ? BlueBrush : SeriesBrushes[index % SeriesBrushes.Length];
-                    AddFlag(power, brush, true);
+                    AddFlag(power, brush, true, hasN1 ? "N1" : null,
+                        hasN1 ? null : LocalizationManager.Format("Chart.RpmFormat", enginePoint.Rpm));
                     if (PowerShowThrottle)
                     {
-                        AddFlag(enginePoint.ThrottlePercent, brush, true, LocalizationManager.Text("Chart.HoverThrottle"));
+                        AddFlag(PowerThrottle(engine, enginePoint), brush, true, LocalizationManager.Text(IsPhysicalThrottle(engine) ? "Chart.HoverPhysicalThrottle" : "Chart.HoverThrottle"));
                     }
+                    AddFlag(enginePoint.ReversePercent, brush, true, LocalizationManager.Text("Chart.HoverReverseDoors"));
                 }
+                break;
+            case LandingChartMode.HeightAboveGround:
+                AddFlag(point.AglFeet, BlueBrush, IsSeriesVisible(0));
                 break;
             case LandingChartMode.Gear:
                 if (_gearSeries.Count == 0)
@@ -755,6 +821,7 @@ public sealed partial class LandingChart
             LandingChartMode.Attitude => value.ToString("+0.0;-0.0;0.0", CultureInfo.CurrentCulture),
             LandingChartMode.Power => value.ToString("0.0", CultureInfo.CurrentCulture),
             LandingChartMode.Gear => value.ToString("0.0", CultureInfo.CurrentCulture),
+            LandingChartMode.HeightAboveGround => LocalizationManager.Format("Chart.HeightFeetFormat", value),
             _ => value.ToString("+0;-0;0", CultureInfo.CurrentCulture),
         };
     }

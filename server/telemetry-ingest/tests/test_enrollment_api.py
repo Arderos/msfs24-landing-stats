@@ -129,6 +129,8 @@ class EnrollmentApiTests(unittest.TestCase):
         if schema >= 7:
             values[header.split(",").index("analysis_time_s")] = "NaN"
             values[header.split(",").index("pause_flags")] = "-1"
+        if schema >= 8:
+            values[header.split(",").index("controller_data_v2")] = ""
         content = io.BytesIO()
         with zipfile.ZipFile(content, "w", compression=zipfile.ZIP_DEFLATED) as archive:
             archive.writestr("telemetry.csv", header + "\n" + ",".join(values) + "\n")
@@ -166,11 +168,11 @@ class EnrollmentApiTests(unittest.TestCase):
         with TestClient(service.app) as client:
             config = client.get("/v1/config").json()
             self.assertEqual(5, config["telemetry_schema"])
-            self.assertEqual([5, 6, 7], config["telemetry_schemas"])
+            self.assertEqual([5, 6, 7, 8], config["telemetry_schemas"])
             self.assertEqual(["raw_debug", "bug_report", "automatic_landing"], config["capture_kinds"])
             self.assertEqual([1], config["decision_journal_formats"])
             self.assertEqual([1], config["controller_catalog_formats"])
-            for schema in (5, 6, 7):
+            for schema in (5, 6, 7, 8):
                 body, headers = self._signed_capture(schema)
                 response = client.post("/v1/captures", content=body, headers=headers)
                 self.assertEqual(201, response.status_code, response.text)

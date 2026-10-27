@@ -134,7 +134,7 @@ internal static class ReplaySourcePersistenceRegressionTests
                 using (var text = new StreamWriter(zip.CreateEntry("session.txt"))) text.Write("telemetry_schema=" + schema + "\nsource_period=SIM_FRAME\nsample_count=1\n");
                 using (var text = new StreamWriter(zip.CreateEntry("telemetry.csv")))
                 {
-                    var header = schema == 5 ? TelemetryCsv.V5Header : schema == 6 ? TelemetryCsv.V6Header : TelemetryCsv.Header;
+                    var header = schema == 5 ? TelemetryCsv.V5Header : schema == 6 ? TelemetryCsv.V6Header : TelemetryCsv.V7Header;
                     var fields = TelemetryCsv.Header.Split(',').Zip(TelemetryCsv.Format(samples[0]).Split(','), (name, value) => new { name, value }).ToDictionary(pair => pair.name, pair => pair.value);
                     text.WriteLine(header); text.WriteLine(string.Join(",", header.Split(',').Select(name => fields[name])));
                 }
@@ -154,7 +154,7 @@ internal static class ReplaySourcePersistenceRegressionTests
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             if (request.RequestUri!.AbsolutePath.EndsWith("/config")) return Reply(HttpStatusCode.OK,
-                "{\"protocol\":1,\"registration_mode\":\"open\",\"telemetry_schema\":7,\"telemetry_schemas\":[5,6,7],\"archive_formats\":[1,2],\"source_state_formats\":" + (Supported ? "[1]" : "[]") + "}");
+                "{\"protocol\":1,\"registration_mode\":\"open\",\"telemetry_schema\":" + TelemetryCsv.SchemaVersion + ",\"telemetry_schemas\":[5,6,7,8],\"archive_formats\":[1,2],\"source_state_formats\":" + (Supported ? "[1]" : "[]") + "}");
             if (request.RequestUri.AbsolutePath.EndsWith("/enroll")) return Reply(HttpStatusCode.Created, "{}");
             if (request.RequestUri.AbsolutePath.EndsWith("/captures")) { Uploads++; Bytes = await request.Content!.ReadAsByteArrayAsync(); return Reply(HttpStatusCode.Created, "{\"status\":\"accepted\",\"capture_id\":\"0123456789abcdef0123456789abcdef\"}"); }
             throw new InvalidOperationException("Unexpected fixture HTTP request.");

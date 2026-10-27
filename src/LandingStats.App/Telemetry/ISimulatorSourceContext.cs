@@ -6,6 +6,11 @@ using LandingStats.Runtime.Contracts;
 
 namespace LandingStats.App.Telemetry;
 
+internal interface IAircraftConfigurationSource
+{
+    event Action<string, string>? AircraftConfigurationReceived;
+}
+
 internal interface ISimulatorSource : IDisposable
 {
     bool IsConnected { get; }

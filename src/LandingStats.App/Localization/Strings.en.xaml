@@ -78,6 +78,10 @@
     <system:String x:Key="Chart.TabPower">Power</system:String>
     <system:String x:Key="Chart.TabGear">Gear</system:String>
     <system:String x:Key="Chart.VerticalG">Vertical G</system:String>
+    <system:String x:Key="Chart.HeightAboveGround">Height AGL</system:String>
+    <system:String x:Key="Chart.HeightAboveGroundHelp">Recorded aircraft height above the terrain, in feet.</system:String>
+    <system:String x:Key="Chart.HeightFeetFormat">{0:0.0} ft</system:String>
+    <system:String x:Key="Chart.UnitFeet">ft</system:String>
     <system:String x:Key="Chart.MainGear">Main gear</system:String>
     <system:String x:Key="Chart.NoData">No chart data</system:String>
     <system:String x:Key="Chart.Aircraft">aircraft</system:String>
@@ -97,7 +101,13 @@
     <system:String x:Key="Chart.Bank">bank</system:String>
     <system:String x:Key="Chart.Aoa">AoA</system:String>
     <system:String x:Key="Chart.EngineFormat">ENG {0}</system:String>
-    <system:String x:Key="Chart.PowerStyle">solid N1/RPM · dashed throttle</system:String>
+    <system:String x:Key="Chart.RpmFormat">{0:0} rpm</system:String>
+    <system:String x:Key="Chart.PowerStylePhysical">Solid: N1 / RPM · Dashed: physical throttle / MSFS command · Dotted: reverser doors</system:String>
+    <system:String x:Key="Chart.HoverPhysicalThrottle">Physical throttle</system:String>
+
+    <system:String x:Key="Chart.PowerStyle">solid N1/RPM · dashed MSFS throttle command · dotted reverser doors</system:String>
+    <system:String x:Key="Chart.PowerStyleNoThrottle">solid N1/RPM · dotted reverser doors</system:String>
+    <system:String x:Key="Chart.HoverReverseDoors">reverser doors</system:String>
     <system:String x:Key="Chart.ContactPointGroupFormat">CP {0}</system:String>
     <system:String x:Key="Chart.GearStrutFormat">Gear {0}</system:String>
     <system:String x:Key="Chart.GearNose">Nose</system:String>
@@ -111,13 +121,13 @@
     <system:String x:Key="Chart.HoverElevator">elev</system:String>
     <system:String x:Key="Chart.HoverAileron">ail</system:String>
     <system:String x:Key="Chart.HoverRudder">rud</system:String>
-    <system:String x:Key="Chart.HoverThrottle">thr</system:String>
+    <system:String x:Key="Chart.HoverThrottle">MSFS throttle command</system:String>
     <system:String x:Key="Chart.DescriptionVertical">vertical speed · climb + / descent −</system:String>
     <system:String x:Key="Chart.DescriptionLoads">three axes at the strut</system:String>
     <system:String x:Key="Chart.DescriptionRawControlsFormat">raw pitch C{0} · {1:F0} ms · dashed surfaces</system:String>
     <system:String x:Key="Chart.DescriptionControls">processed SimConnect commands · dashed surfaces</system:String>
     <system:String x:Key="Chart.DescriptionAttitude">pitch, bank and AoA</system:String>
-    <system:String x:Key="Chart.DescriptionPower">solid N1, dashed lever</system:String>
+    <system:String x:Key="Chart.DescriptionPower">solid N1/RPM · dashed MSFS throttle command · dotted reverser doors</system:String>
     <system:String x:Key="Chart.DescriptionGear">strut compression per point</system:String>
     <system:String x:Key="Chart.UnitTravel">% travel</system:String>
     <system:String x:Key="Chart.UnitDegrees">degrees</system:String>
@@ -289,6 +299,9 @@
     <system:String x:Key="Update.RejectedFormat">Update rejected: {0}</system:String>
     <system:String x:Key="Update.StatusUpdatingFormat" xml:space="preserve"> · updating to v{0}</system:String>
     <system:String x:Key="Update.StatusRejected" xml:space="preserve"> · update rejected</system:String>
+    <system:String x:Key="Update.StatusChecking" xml:space="preserve"> · checking for updates</system:String>
+    <system:String x:Key="Update.StatusWaiting" xml:space="preserve"> · update ready, waiting for safe restart</system:String>
+    <system:String x:Key="Update.StatusInstalling" xml:space="preserve"> · starting update</system:String>
     <system:String x:Key="Chart.TabReconstruction">3D reconstruction</system:String>
     <system:String x:Key="Replay.Unavailable">This landing has no recorded position and heading. 3D reconstruction is available for newly recorded landings.</system:String>
     <system:String x:Key="Replay.Gap">No recorded samples at this time</system:String>
@@ -334,4 +347,9 @@
     <system:String x:Key="Chart.DescriptionCatalogControls">Physical pitch follows the recorded controller source for each interval. Gaps indicate unavailable input.</system:String>
     <system:String x:Key="Settings.DriveFailedLandingsFormat">{0} landing(s) could not sync. IDs: {1}</system:String>
     <system:String x:Key="Runtime.ProcessingFailedFormat">Landing processing failed ({0}): {1}. Original data retained.</system:String>
+    <system:String x:Key="Replay.WindNorth">N</system:String>
+    <system:String x:Key="Replay.WindEast">E</system:String>
+    <system:String x:Key="Replay.WindSouth">S</system:String>
+    <system:String x:Key="Replay.WindWest">W</system:String>
+    <system:String x:Key="Replay.WindUnits">°T / kt</system:String>
 </ResourceDictionary>

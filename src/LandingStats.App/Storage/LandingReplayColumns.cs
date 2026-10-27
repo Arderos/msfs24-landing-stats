@@ -92,8 +92,7 @@ internal sealed class LandingPhysicalInputColumns
 
     public static void ValidateMapping(IReadOnlyList<int> indices)
     {
-        var max = TelemetrySample.CapturedControllerCount * TelemetrySample.CapturedControllerAxisCount;
-        if (indices == null || indices.Any(i => i < 0 || i >= max) || indices.Distinct().Count() != indices.Count)
+        if (indices == null || indices.Any(i => i < 0) || indices.Distinct().Count() != indices.Count)
             throw new InvalidDataException("Physical input source mapping is invalid.");
     }
 

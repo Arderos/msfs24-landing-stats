@@ -18,6 +18,7 @@ public enum LandingChartMode
     Attitude,
     Power,
     Gear,
+    HeightAboveGround,
 }
 
 public sealed class LandingChartHoverEventArgs : EventArgs
@@ -136,6 +137,7 @@ public sealed partial class LandingChart : FrameworkElement
         DashedPen(TanBrush, 1.3, 5, 4),
         DashedPen(SilverBrush, 1.3, 5, 4),
     };
+    private static readonly Pen[] ReversePens = SolidPens.Select(pen => DashedPen(pen.Brush, 1.3, 1, 3)).ToArray();
     private static readonly Brush[] SeriesBrushes =
     {
         AccentBrush,
@@ -154,6 +156,10 @@ public sealed partial class LandingChart : FrameworkElement
 
     private readonly List<LegendHitTarget> _legendHitTargets = new();
     private LandingRecord? _record;
+    private ReplayPresentationData? _powerInputs;
+    private bool[] _powerUsesN1 = Array.Empty<bool>();
+    private double _powerRpmMaximum;
+    private bool _powerHasRpm;
     private IReadOnlyList<LandingGearSeries> _gearSeries = Array.Empty<LandingGearSeries>();
     private int _hoveredIndex = -1;
     private int? _isolatedSeriesIndex;
@@ -181,6 +187,9 @@ public sealed partial class LandingChart : FrameworkElement
         {
             var sameRecord = value != null && _record?.Id == value.Id;
             _record = value;
+            _powerInputs = null;
+            _powerUsesN1 = value?.Engines.Select(engine => engine.Points.Any(point =>
+                ChartValueSanitizer.IsFinite(point.N1Percent) && Math.Abs(point.N1Percent) > 0.01)).ToArray() ?? Array.Empty<bool>();
             _catalogStarts = value?.ControllerTimeline?.IsSupported != true ? null : new HashSet<double>(value.ControllerTimeline.Transitions.Skip(1).Select(transition => value.Series[transition[0]].TimeSeconds));
             _catalogPitch = value?.ControllerTimeline == null ? null : ReplayPresentationData.PitchValues(value);
             _gearSeries = LandingGearSeriesBuilder.Build(value);
@@ -354,6 +363,13 @@ public sealed partial class LandingChart : FrameworkElement
         var visible = points!.Where(point => point.TimeSeconds >= _drawingMinTime && point.TimeSeconds <= _drawingMaxTime).ToArray();
         if (visible.Length < 2)
         { visible = points!.ToArray(); _drawingMinTime = points[0].TimeSeconds; _drawingMaxTime = points[points.Count - 1].TimeSeconds; }
+        if (Mode == LandingChartMode.HeightAboveGround && !visible.Any(point => ChartValueSanitizer.IsFinite(point.AglFeet)))
+        {
+            _drawingHasData = false;
+            DrawText(context, LocalizationManager.Text("Chart.NoData"), new Point(18, 18), MutedBrush, 12);
+            return;
+        }
+        PreparePowerScale(_drawingMinTime, _drawingMaxTime);
         _drawingPlot = PlotRect();
         GetValueRange(visible, out _drawingMinValue, out _drawingMaxValue);
         if (ShowLegend && !CompactLane) DrawLegend(context); else _legendHitTargets.Clear();

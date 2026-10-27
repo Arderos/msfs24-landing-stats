@@ -92,7 +92,8 @@ class ControllerProvenanceTests(unittest.TestCase):
 
     @unittest.skipUnless(os.environ.get("MSFSLS_PROVENANCE_FIXTURE"), "explicit .NET writer fixture required")
     def test_actual_net48_writer_archive(self):
-        facts = validate_capture(Path(os.environ["MSFSLS_PROVENANCE_FIXTURE"]), HEADER, 64 * 1024 * 1024, 7)
+        header = (Path(__file__).resolve().parents[1] / "schema-v8.header").read_text().strip()
+        facts = validate_capture(Path(os.environ["MSFSLS_PROVENANCE_FIXTURE"]), header, 64 * 1024 * 1024, 8)
         self.assertEqual(140, facts.sample_count)
 
 

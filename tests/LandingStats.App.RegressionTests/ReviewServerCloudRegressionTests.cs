@@ -145,7 +145,7 @@ internal static class ReviewEnrollmentRegressionTests
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token)
         {
             if (request.RequestUri!.AbsolutePath == "/v1/config")
-                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("{\"protocol\":1,\"registration_mode\":\"closed\",\"telemetry_schema\":7,\"telemetry_schemas\":[5,6,7]}") });
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("{\"protocol\":1,\"registration_mode\":\"closed\",\"telemetry_schema\":8,\"telemetry_schemas\":[5,6,7,8]}") });
             if (request.RequestUri.AbsolutePath == "/v1/captures")
             {
                 Uploads++;

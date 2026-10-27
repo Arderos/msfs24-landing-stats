@@ -163,7 +163,7 @@ internal sealed partial class EpisodeTransactionStore
     private StoredEpisodeInput ReadInputFile(EpisodeWorkManifest manifest, string path)
     {
         using var file = File.OpenRead(path);
-        if (file.Length > MaximumMetadataBytes + 2L * (ControllerProvenanceCodec.MaximumTableBytes + MaximumFrames * (TelemetryBinaryCodec.EncodedSize + 8L + ReplaySourceEvidenceCodec.EvidenceSize + 1)))
+        if (file.Length > MaximumMetadataBytes + 2L * (ControllerProvenanceCodec.MaximumTableBytes + MaximumFrames * (TelemetryBinaryCodec.MaximumEncodedSize + 8L + ReplaySourceEvidenceCodec.EvidenceSize + 1)))
             throw new InvalidDataException("Episode input file exceeds its bound.");
         using var gzip = new GZipStream(file, CompressionMode.Decompress);
         using var reader = new BinaryReader(gzip, Encoding.UTF8);

@@ -12,7 +12,7 @@ using Microsoft.FlightSimulator.SimConnect;
 
 namespace LandingStats.App.Telemetry;
 
-internal sealed partial class SimConnectSource : ISimulatorSource
+internal sealed partial class SimConnectSource : ISimulatorSource, IAircraftConfigurationSource
 {
     public const int WindowMessage = 0x0403;
 
@@ -105,7 +105,11 @@ internal sealed partial class SimConnectSource : ISimulatorSource
     }
 
     public void RefreshTelemetryMode() { ThrowIfDisposed(); SetFullTelemetryForAgl(double.NaN); }
-    public void RefreshMetadata() { ThrowIfDisposed(); TryOptionalRefresh("metadata_refresh_failed", connection => _requestMetadata(connection, true)); }
+    public void RefreshMetadata()
+    {
+        ThrowIfDisposed(); TryOptionalRefresh("metadata_refresh_failed", connection => _requestMetadata(connection, true));
+        _aircraftConfigurationPath = string.Empty; RequestAircraftConfiguration();
+    }
     private void TryOptionalRefresh(string code, Action<SimConnect> refresh)
     {
         if (DeferNativeEffect(() => TryOptionalRefresh(code, refresh))) return;
@@ -222,6 +226,7 @@ internal sealed partial class SimConnectSource : ISimulatorSource
         connection.OnRecvEventEx1 += OnRecvEventEx1;
         connection.OnRecvFlowEvent += OnRecvFlowEvent;
         connection.OnRecvSystemState += OnRecvSystemState;
+        connection.OnRecvEventFilename += OnRecvAircraftFilename;
         _simConnect = connection;
     }
 
@@ -259,6 +264,7 @@ internal sealed partial class SimConnectSource : ISimulatorSource
 
             _connectionSetupComplete = true;
             Connected?.Invoke(string.IsNullOrWhiteSpace(data.szApplicationName) ? "MSFS" : data.szApplicationName.Trim());
+            StartAircraftConfiguration();
             StartSourceObservation();
             _recoverStatusAfterFrame = false;
             SetStatus(RecorderState.Connected, "Recorder.ConnectedGate");
@@ -302,7 +308,7 @@ internal sealed partial class SimConnectSource : ISimulatorSource
         _guardSubscription.Reject(data.dwSendID, _subscriptionClock());
         _fullSubscription.Reject(data.dwSendID, _subscriptionClock());
         var operation = _simConnectOperations.Name(data.dwSendID) is string value
-            ? $" · {value}"
+            ? $" Â· {value}"
             : string.Empty;
         _recoverStatusAfterFrame = true;
         SetStatus(
@@ -422,6 +428,7 @@ internal sealed partial class SimConnectSource : ISimulatorSource
         if ((Requests)data.dwRequestID == Requests.Metadata || (Requests)data.dwRequestID == Requests.MetadataRefresh)
         {
             var metadata = (AircraftMetadata)data.dwData[0];
+            ObserveAircraftCategory(metadata.Category);
             MetadataReceived?.Invoke(ValueOrUnknown(metadata.Title, "Unknown aircraft"),
                 ValueOrUnknown(metadata.AtcType, "unknown"), ValueOrUnknown(metadata.AtcModel, "unknown"));
             return;
@@ -957,6 +964,7 @@ internal sealed partial class SimConnectSource : ISimulatorSource
         Airports,
         SimulationState,
         MetadataRefresh,
+        AircraftConfiguration,
     }
 
     private enum NotificationGroups

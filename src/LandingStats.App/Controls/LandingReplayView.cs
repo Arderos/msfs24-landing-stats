@@ -32,6 +32,7 @@ public sealed class LandingReplayView : Grid
     private readonly ReplayControlOverlay _controls = new ReplayControlOverlay();
     private readonly ReplayRunwayOverlay _runwayOffset = new ReplayRunwayOverlay();
     private LandingReplayRunwayOffset? _offset;
+    private ReplayWindIndicator? _wind;
     private readonly TextBlock _hint = Text(Muted, 10);
     private readonly TextBlock _message = Text(Muted, 13);
     private readonly TextBlock _clock = Text(Ink, 11);
@@ -161,7 +162,7 @@ public sealed class LandingReplayView : Grid
         _interactionDiagnostics?.Record(value?.Id, value?.Series.Count ?? 0);
         var sameRecord = value != null && _record?.Id == value.Id;
         var savedTime = _time; var resumePlayback = sameRecord && _playing;
-        StopPlayback(); _record = value; _hasPose = false; _gearRegistration = null; _offset = null;
+        StopPlayback(); _record = value; _hasPose = false; _gearRegistration = null; _offset = null; _wind = null;
         _visualUpdatePending = false; _resetCameraPending = !sameRecord;
         _contacts = nextContacts;
         _prepared = prepared;
@@ -193,7 +194,7 @@ public sealed class LandingReplayView : Grid
         _play.Content = LocalizationManager.Text(_playing ? "Replay.Pause" : "Replay.Play");
         _reset.Content = LocalizationManager.Text("Replay.ResetView");
         _hint.Text = LocalizationManager.Text("Replay.Hint");
-        _metrics.InvalidateVisual(); _controls.RefreshLocalization(); _runwayOffset.RefreshLocalization();
+        _metrics.InvalidateVisual(); _controls.RefreshLocalization(); _runwayOffset.RefreshLocalization(); _wind?.RefreshLocalization();
         if (_track == null) _message.Text = LocalizationManager.Text("Replay.Unavailable");
         else if (!_hasPose) _message.Text = LocalizationManager.Text("Replay.Gap");
         else if (!_visualUpdatePending) UpdateReadouts();
@@ -298,6 +299,7 @@ public sealed class LandingReplayView : Grid
     {
         _metrics.Update(_time, _hasPose ? _pose : (LandingReplayPose?)null);
         _controls.Update(_time, _hasPose);
+        _wind?.Update(_hasPose ? _pose : (LandingReplayPose?)null);
         double? meters = _hasPose && _offset != null && _offset.TryGetMeters(_pose, out var value) ? value : (double?)null;
         _runwayOffset.Update(meters, _record?.RunwayGeometry?.WidthMeters ?? 0);
     }
@@ -357,6 +359,8 @@ public sealed class LandingReplayView : Grid
         AddFrozen(scene, surface.Markings, Material("#C2BFB5", true));
         foreach (var designation in surface.Designations) scene.Children.Add(designation);
         AddFrozen(scene, trail, Material("#FA7849", true));
+        _wind = ReplayWindIndicator.Create(_record!, _track, surface, _offset?.HeadingTrueDegrees);
+        if (_wind != null) scene.Children.Add(_wind.Model);
         var marker = new MeshGeometry3D();
         foreach (var contact in _prepared!.GroundPositions)
         {

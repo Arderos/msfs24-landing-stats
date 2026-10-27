@@ -12,6 +12,7 @@ COPY app ./app
 COPY schema-v5.header ./schema-v5.header
 COPY schema-v6.header ./schema-v6.header
 COPY schema-v7.header ./schema-v7.header
+COPY schema-v8.header ./schema-v8.header
 
 RUN addgroup --system --gid 10001 telemetry \
     && adduser --system --uid 10001 --ingroup telemetry --home /nonexistent --no-create-home telemetry

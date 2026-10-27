@@ -10,13 +10,13 @@ namespace LandingStats.App.Runtime;
 
 internal sealed class ControllersWorkerRole : IWorkerRole
 {
-    // Initial limits remain explicit until measured with the supported devices.
+    // Polling and publication cadence are independent of device enumeration.
     internal static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(10);
     internal static readonly TimeSpan EnumerationInterval = TimeSpan.FromSeconds(5);
-    private readonly Func<WindowsJoystickReader> _create;
+    private readonly Func<IControllerReader> _create;
     private readonly TimeSpan _enumerationInterval;
-    public ControllersWorkerRole() : this(() => new WindowsJoystickReader()) { }
-    internal ControllersWorkerRole(Func<WindowsJoystickReader> create, TimeSpan? enumerationInterval = null)
+    public ControllersWorkerRole() : this(() => new DirectInputJoystickReader()) { }
+    internal ControllersWorkerRole(Func<IControllerReader> create, TimeSpan? enumerationInterval = null)
     { _create = create; _enumerationInterval = enumerationInterval ?? EnumerationInterval; }
     public Task RunAsync(WorkerExecutionContext context) => Task.Factory.StartNew(() => Run(context), CancellationToken.None,
         TaskCreationOptions.LongRunning, TaskScheduler.Default);
@@ -24,13 +24,14 @@ internal sealed class ControllersWorkerRole : IWorkerRole
     {
         var owner = new WorkerOwner(context);
         owner.Progress(false, DependencyWait.Device);
-        var reader = _create();
+        using var reader = _create();
         long revision = 1;
         owner.Publish(reader.CreateCatalog(revision), Stopwatch.GetTimestamp());
         var nextEnumeration = Stopwatch.GetTimestamp() + (long)(_enumerationInterval.TotalSeconds * Stopwatch.Frequency);
-        var clocks = new long[TelemetrySample.CapturedControllerCount];
+        var clocks = new long[reader.Count];
         var sample = new TelemetrySample();
-        var publishedValues = new double[48]; var publishedValid = new bool[48];
+        sample.ResizeControllers(reader.Count, reader.AxisCount);
+        var publishedValues = new double[sample.RawControllerAxesPercent.Length]; var publishedValid = new bool[sample.RawControllerAxesValid.Length];
         long publishedAt = 0; var catalogChanged = true;
         var enumerating = false;
         using var cadence = new OwnerCadence(context.CancellationToken);
@@ -42,9 +43,15 @@ internal sealed class ControllersWorkerRole : IWorkerRole
             {
                 reader.BeginRefresh(); enumerating = true;
             }
+            if (clocks.Length != reader.Count)
+            {
+                clocks = new long[reader.Count];
+                publishedValues = new double[checked(reader.Count * reader.AxisCount)];
+                publishedValid = new bool[publishedValues.Length];
+            }
             reader.ReadInto(sample, clocks);
             var changed = catalogChanged || publishedAt == 0;
-            for (var i = 0; i < 48 && !changed; i++)
+            for (var i = 0; i < sample.RawControllerAxesPercent.Length && !changed; i++)
                 changed = sample.RawControllerAxesValid[i] != publishedValid[i] ||
                     sample.RawControllerAxesValid[i] && sample.RawControllerAxesPercent[i] != publishedValues[i];
             // Poll at 100 Hz, publish every change immediately and refresh steady
@@ -52,8 +59,8 @@ internal sealed class ControllersWorkerRole : IWorkerRole
             if (changed || began - publishedAt >= Stopwatch.Frequency / 10)
             {
                 publishedAt = Stopwatch.GetTimestamp();
-                owner.Publish(new ControllerSnapshotMessage(revision, clocks, sample.RawControllerAxesPercent, sample.RawControllerAxesValid), publishedAt);
-                Array.Copy(sample.RawControllerAxesPercent, publishedValues, 48); Array.Copy(sample.RawControllerAxesValid, publishedValid, 48);
+                owner.Publish(new ControllerSnapshotMessage(revision, clocks, sample.RawControllerAxesPercent, sample.RawControllerAxesValid, reader.AxisCount), publishedAt);
+                Array.Copy(sample.RawControllerAxesPercent, publishedValues, publishedValues.Length); Array.Copy(sample.RawControllerAxesValid, publishedValid, publishedValid.Length);
                 catalogChanged = false;
             }
             if (enumerating && reader.RefreshNext(out var enumerationChanged))

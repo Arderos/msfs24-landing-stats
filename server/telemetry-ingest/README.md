@@ -1,6 +1,6 @@
 # Telemetry ingress
 
-The service accepts signed schema-v5/v6/v7 DEBUG RAW captures, explicit
+The service accepts signed schema-v5/v6/v7/v8 DEBUG RAW captures, explicit
 last-landing bug-report bundles, and automatic landing telemetry. It is intended to run
 from `/opt/msfs-landing-telemetry` with capture data bind-mounted from
 `/srv/msfs-landing-telemetry/data`.
@@ -16,8 +16,8 @@ Secrets live only on the server:
 
 Start the stack with `docker compose up -d --build`. Registration is automatic:
 each installation creates an anonymous random ID and a Windows-protected RSA
-key, then proves possession of that key for enrollment and every upload. No
-hardware identifier or invitation code is collected.
+key, then proves possession of that key for enrollment and every upload. Enrollment uses the random installation ID instead of a hardware identifier;
+no invitation code is required.
 
 An accepted archive is never extracted to disk. The service validates its
 signature, replay nonce, capture-kind-specific ZIP members, expansion bounds, session metadata,
@@ -67,7 +67,7 @@ receiver advertises the required capabilities.
 
 Schema v6 appends five physical controller axes (X/Z/R/U/V) to the v5 prefix;
 the existing Y columns are unchanged. The legacy `telemetry_schema: 5` config
-field is retained for older clients; `telemetry_schemas: [5, 6, 7]` advertises all
+field is retained for older clients; `telemetry_schemas: [5, 6, 7, 8]` advertises all
 accepted versions to newer clients.
 
 Schema v7 appends `analysis_time_s`, `simulator_state`, `pause_flags`, and
@@ -79,6 +79,29 @@ loads, teleports, replay, or separate flights. An unexplained `motion_simulation
 remains a physical discontinuity. Recorder lifecycle decisions describe the clock
 adjustments, suspension, resumption, and partial-capture completion. Deploy this
 receiver before a v7 client; queued schema-v5/v6 uploads remain supported.
+
+Schema v8 appends `controller_data_v2`: a base64-encoded, versioned binary
+field carrying every captured device and its six legacy or eight DirectInput
+axes. The v7 numeric prefix remains readable by existing tools; an empty field
+uses that legacy controller layout. Device count follows the encoded dimensions
+and the existing 1 MiB payload budget. LCC2 controller metadata retains DirectInput
+instance/product GUIDs and the MSFS profile bindings observed during recording,
+including assignments to disconnected devices. The dashboard reads these full
+axis observations without interpreting the binary field as a numeric column.
+Deploy the v8 receiver before distributing a v8 client; schemas v5/v6/v7 remain
+accepted.
+
+The optional LCC2 `PEF1` footer carries UTF-8 JSON diagnostic evidence from the
+profile reader. It retains the available/read profile inventory, device GUIDs,
+axis assignments, saved General/category/aircraft selections, source hashes and
+read/resolve errors. A `storeEncoding: "deflate-base64"` snapshot is raw-DEFLATE
+compressed in `storeDeflateBase64`; verify its decoded length against `storeBytes`
+and SHA-256 against `storeSha256`. The resolution remains ordinary JSON. Original
+profile XML and the saved selection file are retained inside the snapshot, with
+individual compression and SHA-256 fields, for independent re-analysis. These
+fields include local paths and device/profile names and follow the existing
+telemetry upload consent. Catalog timelines deduplicate the snapshot across rows.
+Old LCC1/LCC2 catalogs without this footer remain valid.
 
 Capacity is fail-closed: 16 MiB per request, 128 MiB expanded in the Compose
 deployment, 512 MiB per

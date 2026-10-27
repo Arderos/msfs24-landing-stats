@@ -49,7 +49,6 @@ public partial class MainWindow : Window
     private LandingChart[] _charts = Array.Empty<LandingChart>();
     private bool _showFullApproach;
     private bool _showReplay;
-    private int _primaryGearSeriesIndex;
     private int? _mainIsolatedSeriesIndex;
     private bool _changingLanguageSelection;
     private bool _changingAutoStartSelection;
@@ -105,7 +104,7 @@ public partial class MainWindow : Window
         var company = assembly.GetCustomAttribute<AssemblyCompanyAttribute>()?.Company ?? "Evgeniy Zaytsev";
         VersionAuthorRun.Text = $"v{version?.Major ?? 0}.{version?.Minor ?? 0}.{version?.Build ?? 0} · {company}";
         _versionAuthorBase = VersionAuthorRun.Text;
-        _charts = new[] { MainChart, MiniGChart, MiniPowerChart, MiniGearChart };
+        _charts = new[] { MainChart, MiniGChart, MiniAltitudeChart };
         ReplayView.TimeChanged += OnChartHoverTimeChanged;
         foreach (var chart in _charts)
         {
@@ -172,7 +171,7 @@ public partial class MainWindow : Window
             _startupReady = true;
             SettingsButton.IsEnabled = true;
             RefreshLocalizedPresentation();
-            _runtimeInitializationTask = TryStartRuntimeAsync();
+            _ = BeginRuntimeStartup();
         });
         if (_isClosed) return;
         var state = await initialState;
@@ -248,15 +247,11 @@ public partial class MainWindow : Window
         ReplayView.SetRecord(detail, replayContacts);
         UpdateControlTab(ReplayView.IsPlaybackAvailable, ReconstructionTab, ControlsTab);
         MiniGChart.Record = detail;
-        MiniPowerChart.Record = detail;
-        MiniGearChart.Record = detail;
+        MiniAltitudeChart.Record = detail;
         Timeline.Record = detail;
         if (!sameRecord)
         {
         MiniGChart.SetIsolatedSeries(0);
-        MiniPowerChart.SetIsolatedSeries(detail.Engines.Count > 0 ? 0 : (int?)null);
-        _primaryGearSeriesIndex = PrimaryGearSeriesIndex(detail);
-        MiniGearChart.SetIsolatedSeries(detail.ContactPoints.Count > 0 ? _primaryGearSeriesIndex : (int?)null);
         _mainIsolatedSeriesIndex = null;
         MainChart.SetIsolatedSeries(null);
         UpdateMainLegend(MainChart.Mode);
@@ -425,8 +420,7 @@ public partial class MainWindow : Window
         ReplayView.Record = null;
         UpdateControlTab(false, ReconstructionTab, ControlsTab);
         MiniGChart.Record = null;
-        MiniPowerChart.Record = null;
-        MiniGearChart.Record = null;
+        MiniAltitudeChart.Record = null;
         Timeline.Record = null;
     }
 
@@ -1363,7 +1357,7 @@ public partial class MainWindow : Window
             LandingChartMode.LoadFactors => "G",
             LandingChartMode.FlightControls => LocalizationManager.Text("Chart.UnitTravel"),
             LandingChartMode.Attitude => LocalizationManager.Text("Chart.UnitDegrees"),
-            LandingChartMode.Power => "% N1",
+            LandingChartMode.Power => "%",
             LandingChartMode.Gear => LocalizationManager.Text("Chart.UnitStroke"),
             _ => string.Empty,
         };
@@ -1680,26 +1674,6 @@ public partial class MainWindow : Window
         _uploadStatusIsError = isError;
         UploadStatusText.Text = LocalizationManager.Format(key, _uploadStatusArguments);
         UploadStatusText.Foreground = isError ? Brush("#FF8A6A") : Brush("#AEB8C2");
-    }
-
-    private static int PrimaryGearSeriesIndex(LandingRecord record)
-    {
-        var gearSeries = LandingGearSeriesBuilder.Build(record);
-        if (gearSeries.Count == 0)
-        {
-            return 0;
-        }
-
-        return gearSeries
-            .Select((series, index) => new
-            {
-                Index = index,
-                FirstContact = series.FirstContactSeconds,
-                Peak = series.PeakCompressionPercent,
-            })
-            .OrderBy(candidate => candidate.FirstContact)
-            .ThenByDescending(candidate => candidate.Peak)
-            .First().Index;
     }
 
     private void UpdateLaneReadouts(LandingRecord record, double timeSeconds)

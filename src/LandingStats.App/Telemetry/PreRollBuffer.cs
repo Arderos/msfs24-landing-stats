@@ -91,7 +91,7 @@ internal sealed class PreRollBuffer : IEnumerable<TelemetrySample>
             var time = reader.ReadDouble();
             if (double.IsNaN(time) || double.IsInfinity(time) || time < previous || time > last) throw new InvalidDataException("Invalid pre-roll receipt clock.");
             previous = times[i] = time;
-            if (!annotated) entries[i] = new Entry(TelemetryBinaryCodec.Decode(RuntimeCheckpointCodec.ReadBytes(reader, TelemetryBinaryCodec.EncodedSize)), time);
+            if (!annotated) entries[i] = new Entry(TelemetryBinaryCodec.Read(reader), time);
         }
         if (annotated)
         {

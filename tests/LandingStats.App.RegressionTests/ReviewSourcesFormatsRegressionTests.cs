@@ -172,8 +172,8 @@ internal static class ReviewSourcesFormatsRegressionTests
         Check(ControllerProvenanceCodec.Encode(ControllerProvenanceCodec.Decode(RuntimeWire.Encode(value))!).SequenceEqual(bytes), "Legacy catalog cannot be imported.");
         for (var length = 1; length < bytes.Length; length++) Reject(() => ControllerProvenanceCodec.Decode(bytes.Take(length).ToArray()));
         Reject(() => ControllerProvenanceCodec.Decode(bytes.Concat(new byte[] { 0 }).ToArray()));
-        var future = new byte[] { (byte)'L', (byte)'C', (byte)'C', (byte)'2', 99, 88 };
-        Check(ControllerProvenanceCodec.Decode(future) == null, "Future optional catalog was interpreted by the v1 reader.");
+        var future = new byte[] { (byte)'L', (byte)'C', (byte)'C', (byte)'3', 99, 88 };
+        Check(ControllerProvenanceCodec.Decode(future) == null, "Future optional catalog was interpreted by the current reader.");
         var samples = new[] { new TelemetrySample { ControllerCatalog = future } };
         var timeline = ControllerCatalogTimeline.Capture(samples)!;
         var restored = new[] { new TelemetrySample() }; timeline.Apply(restored);

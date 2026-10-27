@@ -89,6 +89,8 @@ internal sealed class RecordingRuntimeState
     private bool _fullRequested;
     private bool _automaticCaptureEnabled;
     private long _policyRevision;
+    private string _profileContext = "", _profileEvidence = "";
+    private byte[]? _profileCatalogSource, _profileCatalogEnriched;
     public RecordingRuntimeState(RecoveryJournalIdentity identity)
     {
         _identity = identity; _controllers = new ControllerJoiner(identity.Clock); _preparation = new ControllerInputPreparation(_controllers);
@@ -262,6 +264,7 @@ internal sealed class RecordingRuntimeState
                     case SourceLifecycle.Connected:
                         if (stream.Connection <= 0) throw new InvalidDataException("OPEN has no connection identity.");
                         stream.Connected = true; _query.Connect(stream.Worker, stream.Connection);
+                        ClearProfileEvidence();
                         stream.LifecyclePending = false;
                         stream.Observation = new ReplaySourceObservation(SourceObservationAvailability.Unknown, SourceObservationReason.InitialState);
                         stream.ObservationQpc = message.CaptureQpc; stream.SdkReplay = SdkReplayState.Unknown;
@@ -283,13 +286,19 @@ internal sealed class RecordingRuntimeState
                         _coordinator.HandleFlowEvent(flow); break;
                 }
                 break;
+            case AircraftControlsMessage controls:
+                if (!stream.Connected) break;
+                _profileContext = controls.Context; _profileEvidence = controls.ProfileEvidence;
+                _profileCatalogSource = null; _profileCatalogEnriched = null;
+                break;
             case AircraftMessage aircraft:
                 if (!stream.Connected) break;
+                if (aircraft.Title == "Unknown aircraft") ClearProfileEvidence();
                 _coordinator.Simulator = aircraft.Simulator; _coordinator.SetMetadata(aircraft.Title, aircraft.Type, aircraft.Model); break;
             case TelemetryFrameMessage frame:
                 if (!stream.Connected || controllers == null) throw new InvalidDataException("Telemetry must have a live context and a durable controller join.");
                 if (stream.LifecyclePending) break; // A gap cannot invent the end of a replay/pause/loading state.
-                var sample = frame.CopySample(); controllers.Apply(sample); sample.Sequence = checked(++_sampleSequence);
+                var sample = frame.CopySample(); controllers.Apply(sample); EnrichProfileEvidence(sample, controllers.Catalog); sample.Sequence = checked(++_sampleSequence);
                 sample.SourceEvidence = new ReplaySourceEvidence(stream.Worker.InstanceId, stream.Worker.Generation, stream.Connection,
                     stream.ObservationQpc, message.CaptureQpc, _identity.Clock.Frequency, stream.SdkReplay, stream.Observation);
                 sample.HostElapsedSeconds = _identity.Clock.ElapsedSeconds(_identity.Clock.Id, message.CaptureQpc, _identity.Clock.Frequency);
@@ -344,9 +353,46 @@ internal sealed class RecordingRuntimeState
         }
         Effects.SourceObservation = message;
     }
+    private void EnrichProfileEvidence(TelemetrySample sample, RuntimeEnvelope? envelope)
+    {
+        if (_profileEvidence.Length == 0 || !(envelope?.Payload is ControllerCatalogMessage catalog) ||
+            catalog.BindingContext != _profileContext) return;
+        var source = sample.ControllerCatalog!;
+        if (_profileCatalogSource == null || !_profileCatalogSource.SequenceEqual(source))
+        {
+            var enriched = new ControllerCatalogMessage(catalog.Revision, catalog.Devices, catalog.Bindings, catalog.BindingContext, _profileEvidence);
+            try
+            {
+                _profileCatalogEnriched = ControllerProvenanceCodec.Encode(new RuntimeEnvelope(envelope.Worker, envelope.ConnectionGeneration,
+                    envelope.Sequence, envelope.CaptureQpc, enriched));
+            }
+            catch (InvalidDataException error)
+            {
+                _profileCatalogEnriched = source;
+                var report = "{\"schema\":1,\"evidenceError\":\"enriched_catalog_exceeds_limit\",\"evidenceBytes\":" +
+                    System.Text.Encoding.UTF8.GetByteCount(_profileEvidence).ToString(System.Globalization.CultureInfo.InvariantCulture) + "}";
+                try
+                {
+                    _profileCatalogEnriched = ControllerProvenanceCodec.Encode(new RuntimeEnvelope(envelope.Worker, envelope.ConnectionGeneration,
+                        envelope.Sequence, envelope.CaptureQpc, new ControllerCatalogMessage(catalog.Revision, catalog.Devices, catalog.Bindings, catalog.BindingContext, report)));
+                }
+                catch (InvalidDataException) { /* The catalog itself fits; its optional error report may also exceed the archive bound. */ }
+                _coordinator.DecisionJournal.Record(_hostSeconds, "controllers", "profile_evidence_too_large",
+                    "Profile diagnostics could not fit the catalog; physical observations and bindings were retained. " + error.Message,
+                    new Dictionary<string, double> { ["evidence_bytes"] = System.Text.Encoding.UTF8.GetByteCount(_profileEvidence) });
+            }
+            _profileCatalogSource = source;
+        }
+        // The immutable evidence catalog is encoded once per catalog/profile change, then shared by all samples.
+        sample.ControllerCatalog = _profileCatalogEnriched;
+    }
+    private void ClearProfileEvidence()
+    {
+        _profileContext = ""; _profileEvidence = ""; _profileCatalogSource = null; _profileCatalogEnriched = null;
+    }
     private void Disconnect(StreamState stream, string reason)
     {
-        stream.Connected = false; _query.Retire(stream.Worker);
+        stream.Connected = false; _query.Retire(stream.Worker); ClearProfileEvidence();
         stream.SdkReplay = SdkReplayState.Unknown;
         stream.Observation = new ReplaySourceObservation(SourceObservationAvailability.Gap, SourceObservationReason.ConnectionGap);
         stream.ObservationQpc = stream.Capture;
@@ -357,7 +403,7 @@ internal sealed class RecordingRuntimeState
     {
         if (_effects != null) throw new InvalidOperationException("Cannot checkpoint in the middle of a recording transaction.");
         using var memory = new MemoryStream(); using var writer = new BinaryWriter(memory);
-        writer.Write(0x3653524c); writer.Write(_identity.RuntimeId.ToByteArray()); writer.Write(_identity.CaptureSessionId.ToByteArray());
+        writer.Write(0x3753524c); writer.Write(_identity.RuntimeId.ToByteArray()); writer.Write(_identity.CaptureSessionId.ToByteArray());
         writer.Write(_cursor != null); if (_cursor != null) { writer.Write(_cursor.Segment); writer.Write(_cursor.Sequence); }
         writer.Write(_utc.Ticks); writer.Write(_hostSeconds); writer.Write(_nextLookup); writer.Write(_fullRequested);
         writer.Write(_automaticCaptureEnabled); writer.Write(_policyRevision);
@@ -377,6 +423,8 @@ internal sealed class RecordingRuntimeState
         foreach (var pending in _pendingFacilities)
         { writer.Write(pending.Id.ToByteArray()); writer.Write(pending.Ordinal); }
         writer.Write(_sampleSequence);
+        RuntimeCheckpointCodec.WriteText(writer, _profileContext);
+        RuntimeCheckpointCodec.WriteText(writer, _profileEvidence, RuntimeWire.MaximumPayloadLength);
         return memory.ToArray();
     }
     public static RecordingRuntimeState RestoreCheckpoint(byte[] bytes, RecoveryJournalIdentity identity)
@@ -384,13 +432,13 @@ internal sealed class RecordingRuntimeState
         if (bytes == null || bytes.Length > 192 * 1024 * 1024) throw new InvalidDataException("Recording checkpoint exceeds its bound.");
         using var memory = new MemoryStream(bytes, false); using var reader = new BinaryReader(memory);
         var version = reader.ReadInt32();
-        if ((version < 0x3253524c || version > 0x3653524c || (version & 0xffffff) != 0x53524c) || new Guid(RuntimeCheckpointCodec.ReadBytes(reader, 16)) != identity.RuntimeId ||
+        if ((version < 0x3253524c || version > 0x3753524c || (version & 0xffffff) != 0x53524c) || new Guid(RuntimeCheckpointCodec.ReadBytes(reader, 16)) != identity.RuntimeId ||
             new Guid(RuntimeCheckpointCodec.ReadBytes(reader, 16)) != identity.CaptureSessionId) throw new InvalidDataException("Recording checkpoint belongs to another runtime.");
         var state = new RecordingRuntimeState(identity);
         if (RuntimeCheckpointCodec.ReadBoolean(reader)) state._cursor = new JournalCursor(reader.ReadInt64(), reader.ReadInt64());
         state._utc = new DateTime(reader.ReadInt64(), DateTimeKind.Utc); state._hostSeconds = reader.ReadDouble(); state._nextLookup = reader.ReadInt64(); state._fullRequested = RuntimeCheckpointCodec.ReadBoolean(reader);
         state._automaticCaptureEnabled = RuntimeCheckpointCodec.ReadBoolean(reader); state._policyRevision = reader.ReadInt64();
-        state._controlSources = new string[RuntimeCheckpointCodec.ReadCount(reader, 8)];
+        state._controlSources = new string[RuntimeCheckpointCodec.ReadCount(reader, checked((int)((reader.BaseStream.Length - reader.BaseStream.Position) / sizeof(int))))];
         for (var i = 0; i < state._controlSources.Length; i++) state._controlSources[i] = RuntimeCheckpointCodec.ReadText(reader);
         var count = RuntimeCheckpointCodec.ReadCount(reader, 5);
         for (var i = 0; i < count; i++)
@@ -424,6 +472,11 @@ internal sealed class RecordingRuntimeState
         }
         state._sampleSequence = version >= 0x3453524c ? reader.ReadInt64() : Math.Max(state._cursor?.Sequence ?? 0,
             Math.Max(state._coordinator.MaximumRetainedSequence, state._facilities.MaximumRetainedSequence));
+        if (version >= 0x3753524c)
+        {
+            state._profileContext = RuntimeCheckpointCodec.ReadText(reader);
+            state._profileEvidence = RuntimeCheckpointCodec.ReadText(reader, RuntimeWire.MaximumPayloadLength);
+        }
         if (memory.Position != memory.Length || state._sampleSequence < 0 || state._nextLookup < 0 || state._policyRevision < 0 || double.IsNaN(state._hostSeconds) || double.IsInfinity(state._hostSeconds) || state._hostSeconds < 0)
             throw new InvalidDataException("Invalid recording checkpoint suffix.");
         return state;

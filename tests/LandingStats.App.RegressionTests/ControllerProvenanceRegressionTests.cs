@@ -142,7 +142,7 @@ internal static class ControllerProvenanceRegressionTests
             using (var writer = new StreamWriter(zip.CreateEntry("telemetry.csv")))
             { writer.WriteLine(TelemetryCsv.Header); foreach (var sample in samples) writer.WriteLine(TelemetryCsv.Format(sample)); }
             using (var writer = new StreamWriter(zip.CreateEntry("session.txt")))
-                writer.Write("telemetry_schema=7\nsource_period=SIM_FRAME\nsample_count=" + samples.Length + "\n");
+                writer.Write("telemetry_schema=" + TelemetryCsv.SchemaVersion + "\nsource_period=SIM_FRAME\nsample_count=" + samples.Length + "\n");
         }
         var original = File.ReadAllBytes(path);
         var handler = new Receiver();
@@ -162,7 +162,7 @@ internal static class ControllerProvenanceRegressionTests
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             if (request.RequestUri!.AbsolutePath.EndsWith("/config")) return Reply(HttpStatusCode.OK,
-                "{\"protocol\":1,\"registration_mode\":\"open\",\"telemetry_schema\":7,\"controller_catalog_formats\":" + (Supported ? "[1]" : "[]") + "}");
+                "{\"protocol\":1,\"registration_mode\":\"open\",\"telemetry_schema\":" + TelemetryCsv.SchemaVersion + ",\"controller_catalog_formats\":" + (Supported ? "[1]" : "[]") + "}");
             if (request.RequestUri.AbsolutePath.EndsWith("/enroll")) return Reply(HttpStatusCode.Created, "{}");
             if (request.RequestUri.AbsolutePath.EndsWith("/captures")) { Uploads++; Bytes = await request.Content!.ReadAsByteArrayAsync(); return Reply(HttpStatusCode.Created, "{\"status\":\"accepted\",\"capture_id\":\"0123456789abcdef0123456789abcdef\"}"); }
             throw new InvalidOperationException("Unexpected fixture HTTP request.");

@@ -41,6 +41,21 @@ internal static class Program
     private static int Main(string[] args)
     {
         if (args.Any(arg => arg.StartsWith("--fixture=adversarial-", StringComparison.Ordinal))) return AdversarialRuntimeRegressionTests.Fixture(args);
+        if (args.Length == 4 && args[0] == "--profile-evidence-probe")
+        {
+            var store = MsfsControlProfileStore.Load(args[1]);
+            var resolution = store.Resolve(args[2]);
+            var evidence = MsfsControlProfileEvidence.WithResolution(store.ProfileEvidence, resolution);
+            File.WriteAllText(args[3], evidence, new UTF8Encoding(false));
+            Console.WriteLine("Profile evidence bytes=" + Encoding.UTF8.GetByteCount(evidence) + " bindings=" + resolution.Bindings.Count + " matched=" + resolution.MatchedAircraft);
+            foreach (var binding in resolution.Bindings) Console.WriteLine(binding.Control + " engine=" + binding.EngineIndex + " guid=" + binding.DeviceInstanceId + " axis=" + binding.AxisIndex + " inverted=" + binding.Inverted);
+            foreach (var diagnostic in resolution.Diagnostics) Console.WriteLine(diagnostic);
+            return 0;
+        }
+        if (args.Length == 1 && args[0] == "--directinput-source-smoke")
+        {
+            DirectInputControllerRegressionTests.RunNativeSmoke(); return 0;
+        }
         if (args.Length == 1 && args[0] == "--native-source-smoke")
         {
             _ = new System.Windows.Application(); LocalizationManager.Apply("en");
@@ -73,7 +88,13 @@ internal static class Program
 
         Run("delivery acknowledgements and OAuth failures preserve durable evidence", DeliveryRemediationRegressionTests.RunAll);
         Run("behavior parity preserves lifecycle and simulator controls across gaps", BehaviorParityRegressionTests.Recording);
-        Run("behavior parity retries a deferred update only when safe", WindowStartupRegressionTests.DeferredUpdateResumes);
+        Run("restart readiness wakes without UI events and revokes stale permissions", RestartReadinessRegressionTests.RunAll);
+        Run("update readiness retains one verified download until safe handoff", UpdateReadinessRegressionTests.PreparedUpdateWaitsForReadiness);
+        Run("update readiness resumes naturally without presentation events", UpdateReadinessRegressionTests.NaturalReadinessResumesWithoutPresentation);
+        Run("update readiness rechecks safety immediately before handoff", UpdateReadinessRegressionTests.UnsafeHandoffResumesPreparedUpdate);
+        Run("update readiness cancellation cleans up prepared files", UpdateReadinessRegressionTests.WaitingUpdateCancelsAndCleansUp);
+        Run("update readiness rejects changed prepared files", UpdateReadinessRegressionTests.WaitingUpdateRejectsChangedFile);
+        Run("altitude lane renders recorded terrain AGL with gaps, zoom and hover", AltitudeChartRegressionTests.RunAll);
         Run("integration API settings remain local and opt-in", IntegrationApiSettingsRegressionTests.RunAll);
         Run("integration API transport isolates clients and replays subscriptions", IntegrationApiTransportRegressionTests.RunAll);
         Run("integration API telemetry distinguishes stale guard and full observations", IntegrationTelemetryRegressionTests.RunAll);
@@ -119,6 +140,14 @@ internal static class Program
         Run("suspended simulator connections recover when independent replies cease", StreamFreshnessRegressionTests.SuspendedTransportStillRecovers);
         Run("geometry attachment cache invalidates roots inheritance and older catalogs", GeometryAttachmentCacheRegressionTests.RunAll);
         Run("geometry catalog prepares after physics and reuses snapshots across aircraft", GeometryCatalogBackgroundRegressionTests.RunAll);
+        Run("MSFS profiles resolve saved layered assignments with deterministic fallback", MsfsControlProfileRegressionTests.RunAll);
+        Run("MSFS profile monitor preserves current configuration across asynchronous refresh", MsfsControlProfileMonitorRegressionTests.RunAll);
+        Run("profile diagnostic evidence survives WAL checkpoint and archive", ProfileEvidencePersistenceRegressionTests.RunAll);
+        Run("profile evidence RAW storage deduplicates and recovers diagnostic snapshots", ProfileEvidenceRawRegressionTests.RunAll);
+        Run("profile control mapping preserves explicit assignments and missing devices", ProfileControlMappingRegressionTests.RunAll);
+        Run("controller binding observations survive profile changes and recovery", ControllerBindingObservationRegressionTests.RunAll);
+        Run("directinput discovers every controller and preserves native axes", DirectInputControllerRegressionTests.RunAll);
+        Run("dynamic controller data survives binary CSV catalog checkpoint and history", DynamicControllerDataRegressionTests.RunAll);
         Run("controller provenance survives recovery history archive and receiver negotiation", ControllerProvenanceRegressionTests.RunAll);
         Run("runtime retention shares its quota across processes and collects only completed dependencies", RuntimeRetentionRegressionTests.RunAll);
         Run("binary telemetry preserves source bits and versioned geometry binding", BinaryTelemetryRegressionTests.RunAll);
@@ -247,6 +276,8 @@ internal static class Program
         Run("binary and diagnostic versions follow the release version", BuildVersionRegressionTests.RunAll);
         Run("replay runway offset follows the selected runway direction", LandingReplayRunwayOffsetTests.RunAll);
         Run("replay overlays preserve controls, chart gaps and localization", ReplayOverlayRegressionTests.RunAll);
+        Run("replay wind rose preserves world directions, gaps and cached materials", ReplayWindRegressionTests.RunAll);
+        Run("replay surface footprint finds exact terrain and pavement maxima", ReplaySurfaceFootprintRegressionTests.RunAll);
         Run("legacy Controls and 3D tabs follow recorded data and preserve selection", ReplayTabRegressionTests.RunAll);
         Run("3D replay pose, projection, gaps and legacy guards", LandingReplayRegressionTests.RunAll);
         Run("3D aircraft immutable geometry, silhouette and outward normals", ReplayAircraftModelRegressionTests.RunAll);
@@ -271,6 +302,7 @@ internal static class Program
         Run("A340 gear chart groups wheels into four struts", A340GearChartGroupsFourStruts);
         Run("A340 gear chart survives crosswind timing and airborne window end", A340GearChartSurvivesCrosswindAndTouchAndGo);
         Run("A340 gear chart excludes helpers when the nose never touches", A340GearChartExcludesHelpersWithoutNoseContact);
+        Run("power charts preserve signed MSFS commands and reverser-door positions", PowerChartRegressionTests.RunAll);
         Run("fourth-engine throttle uses the fourth-engine color", FourthEngineThrottleUsesMatchingColor);
         Run("closure reconstruction survives history round-trip", ClosureReconstructionSurvivesHistoryRoundTrip);
         Run("legacy reconstruction provenance remains telemetry", LegacyReconstructionProvenanceRemainsTelemetry);
@@ -979,11 +1011,12 @@ internal static class Program
     private static void TelemetryReceiverHeaderMatchesClient()
     {
         var serverHeader = File.ReadAllText(
-            Path.Combine(AppContext.BaseDirectory, "schema-v7.header"),
+            Path.Combine(AppContext.BaseDirectory, "schema-v8.header"),
             Encoding.UTF8).Trim();
         Equal(TelemetryCsv.Header, serverHeader, "server/client telemetry header");
         Equal(TelemetryCsv.V5Header, File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "schema-v5.header"), Encoding.UTF8).Trim(), "legacy server/client telemetry header");
         Equal(TelemetryCsv.V6Header, File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "schema-v6.header"), Encoding.UTF8).Trim(), "v6 server/client telemetry header");
+        Equal(TelemetryCsv.V7Header, File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "schema-v7.header"), Encoding.UTF8).Trim(), "v7 server/client telemetry header");
     }
 
     private static void DeduplicatorKeepsLastFrame()
@@ -2227,8 +2260,8 @@ internal static class Program
         sample.ContactPointOnGround[19] = true;
 
         var currentLine = TelemetryCsv.Format(sample);
-        Equal(7, TelemetryCsv.SchemaVersion, "current telemetry schema");
-        Equal(284, TelemetryCsv.Header.Split(',').Length, "compact telemetry columns");
+        Equal(8, TelemetryCsv.SchemaVersion, "current telemetry schema");
+        Equal(285, TelemetryCsv.Header.Split(',').Length, "compact telemetry columns");
         Equal(325, TelemetryCsv.V4Header.Split(',').Length, "v4 telemetry columns");
         Equal(TelemetryCsv.Header.Split(',').Length, currentLine.Split(',').Length, "header and row column count");
         Equal(true, TelemetryCsv.TryParse(currentLine, out var current), "parse current telemetry row");
@@ -4599,7 +4632,7 @@ internal static class Program
                 {
                     RequestMessage = request,
                     Content = new StringContent(
-                        "{\"protocol\":1,\"registration_mode\":\"open\",\"telemetry_schema\":5,\"telemetry_schemas\":[5,6,7],\"max_upload_bytes\":16777216}",
+                        "{\"protocol\":1,\"registration_mode\":\"open\",\"telemetry_schema\":5,\"telemetry_schemas\":[5,6,7,8],\"max_upload_bytes\":16777216}",
                         Encoding.UTF8,
                         "application/json"),
                 });
@@ -4670,7 +4703,7 @@ internal static class Program
                 {
                     RequestMessage = request,
                     Content = new StringContent(
-                        "{\"protocol\":1,\"registration_mode\":\"open\",\"telemetry_schema\":5,\"telemetry_schemas\":[5,6,7],\"max_upload_bytes\":16777216}",
+                        "{\"protocol\":1,\"registration_mode\":\"open\",\"telemetry_schema\":5,\"telemetry_schemas\":[5,6,7,8],\"max_upload_bytes\":16777216}",
                         Encoding.UTF8,
                         "application/json"),
                 });
@@ -4737,7 +4770,7 @@ internal static class Program
                 {
                     RequestMessage = request,
                     Content = new StringContent(
-                        "{\"protocol\":1,\"registration_mode\":\"open\",\"telemetry_schema\":5,\"telemetry_schemas\":[5,6,7],\"max_upload_bytes\":16777216}",
+                        "{\"protocol\":1,\"registration_mode\":\"open\",\"telemetry_schema\":5,\"telemetry_schemas\":[5,6,7,8],\"max_upload_bytes\":16777216}",
                         Encoding.UTF8,
                         "application/json"),
                 });

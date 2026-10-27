@@ -78,7 +78,8 @@ internal sealed class ApplicationRuntime : IDisposable
         }
     }
     public RecoveryJournalIdentity Identity { get; }
-    public bool SafeToRestart => _recording.SafeToRestart;
+    public bool SafeToRestart => !Volatile.Read(ref _stopping) && _recording.SafeToRestart;
+    public Task WaitForSafeRestartAsync(CancellationToken cancellationToken) => _recording.WaitForSafeRestartAsync(cancellationToken);
     public long ObservationQpc => Math.Min(_managed.Min(item => item.ObservationQpc), _sources.Values.Min(item => item.ObservationQpc));
     public event Action<SupervisionSnapshot>? HealthChanged;
     public IReadOnlyList<SupervisionSnapshot> Health => _managed.Select(item => item.Snapshot).Concat(_sources.Values.Select(item => item.Snapshot)).ToArray();

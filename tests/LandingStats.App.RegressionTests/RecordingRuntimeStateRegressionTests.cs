@@ -63,7 +63,7 @@ internal static class RecordingRuntimeStateRegressionTests
     {
         using var source = new MemoryStream(current, false); using var reader = new BinaryReader(source);
         using var destination = new MemoryStream(); using var writer = new BinaryWriter(destination);
-        Check(reader.ReadInt32() == 0x3653524c, "Update the explicit legacy checkpoint fixture for the new source schema.");
+        Check(reader.ReadInt32() == 0x3753524c, "Update the explicit legacy checkpoint fixture for the new source schema.");
         writer.Write(version); writer.Write(reader.ReadBytes(32));
         var cursor = reader.ReadBoolean(); writer.Write(cursor); if (cursor) writer.Write(reader.ReadBytes(16));
         writer.Write(reader.ReadBytes(24)); writer.Write(reader.ReadBoolean()); writer.Write(reader.ReadBoolean()); writer.Write(reader.ReadInt64());
@@ -98,6 +98,8 @@ internal static class RecordingRuntimeStateRegressionTests
         }
         var pending = reader.ReadInt32(); writer.Write(pending); writer.Write(reader.ReadBytes(pending * 24));
         reader.ReadInt64(); // v4 parent-owned sequence
+        RuntimeCheckpointCodec.ReadText(reader); // v7 profile context
+        RuntimeCheckpointCodec.ReadText(reader, RuntimeWire.MaximumPayloadLength); // v7 profile evidence
         Check(source.Position == source.Length, "Legacy fixture omitted a current checkpoint field.");
         return destination.ToArray();
     }
@@ -332,7 +334,7 @@ internal static class RecordingRuntimeStateRegressionTests
         Feed(JournalRecordKind.RuntimeCommand, new RecordingCommand(RecordingCommandKind.DeliveryPolicy, false, 2).Encode());
         var samples = captures[0].Episode.Samples;
         Check(samples[0].RawControllerAxesPercent[1] == -25 && samples[0].RawControllerAxesValid[1] &&
-            samples.Any(sample => sample.OnGround && !sample.RawControllerAxesValid[1]) && samples.Last().RawControllerAxesPercent[1] == 75,
+            samples.Any(sample => sample.OnGround && (sample.RawControllerAxesValid.Length <= 1 || !sample.RawControllerAxesValid[1])) && samples.Last().RawControllerAxesPercent[1] == 75,
             "Source restart changed already joined axes or prevented their recovery.");
         Check(final[0].Snapshot.PreliminaryRunways.Single().WidthMeters == 30 && !final[0].Snapshot.FinalLookupCompleted,
             "Source retirement lost accepted scenery or fabricated final lookup success.");

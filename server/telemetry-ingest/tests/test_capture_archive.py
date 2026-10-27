@@ -141,7 +141,8 @@ class CaptureArchiveTests(unittest.TestCase):
     def test_actual_net48_writer_ingestion_and_dashboard(self):
         path = Path(os.environ["MSFSLS_ARCHIVE_FIXTURE"])
         before = path.read_bytes()
-        facts = validate_capture(path, self.header, 64 * 1024 * 1024, 7)
+        header = (Path(__file__).resolve().parents[1] / "schema-v8.header").read_text().strip()
+        facts = validate_capture(path, header, 64 * 1024 * 1024, 8)
         self.assertEqual(40, facts.sample_count)
         row = {"compressed_bytes": len(before), "sha256": hashlib.sha256(before).hexdigest(), "sample_count": 40}
         indexed = _index_archive(path, row)

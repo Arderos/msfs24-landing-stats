@@ -9,11 +9,10 @@ using Microsoft.Win32;
 
 namespace LandingStats.App.Telemetry;
 
-internal sealed class WindowsJoystickReader
+internal sealed class WindowsJoystickReader : IControllerReader
 {
     private const uint JoyReturnAxes = 0x0000003f;
     private const uint JoyNoError = 0;
-    private const int MaximumWinmmJoysticks = 16;
 
     private Slot[] _slots = Array.Empty<Slot>();
     private readonly IJoystickApi _api;
@@ -41,7 +40,7 @@ internal sealed class WindowsJoystickReader
     public void BeginRefresh()
     {
         _refreshSlots = new List<Slot>(); _refreshId = 0;
-        _refreshCount = Math.Min((uint)MaximumWinmmJoysticks, _api.DeviceCount);
+        _refreshCount = _api.DeviceCount;
     }
 
     // The same native owner scans at most one ID between regular samples.
@@ -51,13 +50,13 @@ internal sealed class WindowsJoystickReader
     {
         changed = false;
         if (_refreshSlots == null) return true;
-        if (_refreshId < _refreshCount && _refreshSlots.Count < TelemetrySample.CapturedControllerCount)
+        if (_refreshId < _refreshCount)
         {
             var id = _refreshId++;
             if (_api.TryGetState(id, out _) && _api.TryGetCapabilities(id, out var caps))
                 _refreshSlots.Add(new Slot(id, caps, ResolveProductName(id, caps, ReadRegistryString)));
         }
-        if (_refreshId < _refreshCount && _refreshSlots.Count < TelemetrySample.CapturedControllerCount) return false;
+        if (_refreshId < _refreshCount) return false;
         var refreshed = _refreshSlots.ToArray(); _refreshSlots = null;
         changed = refreshed.Length != _slots.Length;
         if (!changed)
@@ -82,8 +81,9 @@ internal sealed class WindowsJoystickReader
 
     public void ReadInto(TelemetrySample sample, long[]? capturedAt = null)
     {
-        if (capturedAt != null && capturedAt.Length != TelemetrySample.CapturedControllerCount) throw new ArgumentException("Invalid controller clock array.");
-        for (var slotIndex = 0; slotIndex < TelemetrySample.CapturedControllerCount; slotIndex++)
+        sample.ResizeControllers(Count, AxisCount);
+        if (capturedAt != null && capturedAt.Length != Count) throw new ArgumentException("Invalid controller clock array.");
+        for (var slotIndex = 0; slotIndex < Count; slotIndex++)
         {
             var offset = slotIndex * TelemetrySample.CapturedControllerAxisCount;
             Array.Clear(sample.RawControllerAxesPercent, offset, TelemetrySample.CapturedControllerAxisCount);
@@ -125,8 +125,10 @@ internal sealed class WindowsJoystickReader
     }
 
     public int Count => _slots.Length;
+    public int AxisCount => TelemetrySample.CapturedControllerAxisCount;
+    public void Dispose() { }
 
-    internal ControllerCatalogMessage CreateCatalog(long revision)
+    public ControllerCatalogMessage CreateCatalog(long revision)
     {
         var devices = new List<ControllerDescriptor>();
         for (var index = 0; index < _slots.Length; index++)
