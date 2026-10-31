@@ -52,7 +52,7 @@ public partial class App : Application
     {
         var variable = UpdateProtocol.ReleaseUpdateProtocol.BackgroundRestartEnvironmentVariable;
         if (Array.IndexOf(arguments, SimulatorAutoStartManager.LaunchArgument) >= 0 ||
-            Environment.GetEnvironmentVariable(variable) == "1") window.ShowActivated = false;
+            Environment.GetEnvironmentVariable(variable) == "1") BackgroundWindowStartup.Configure(window);
         Environment.SetEnvironmentVariable(variable, null);
     }
 

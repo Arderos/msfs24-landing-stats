@@ -3,9 +3,11 @@ using System;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
+using System.Windows.Interop;
 using System.Windows.Threading;
 using LandingStats.App.Runtime;
 using LandingStats.App.Updates;
@@ -27,7 +29,64 @@ internal static class UpdateActivationRegressionTests
         BackgroundWindowDoesNotActivate(Array.Empty<string>(), update: true);
         BackgroundWindowDoesNotActivate(new[] { SimulatorAutoStartManager.LaunchArgument }, update: false);
         DuplicateBackgroundLaunchDoesNotActivate();
+        foreach (var update in new[] { false, true })
+        foreach (var sourceInitialized in new[] { false, true })
+        foreach (var taskbar in new[] { false, true })
+            BackgroundWindowStaysBehindExistingWindows(update, sourceInitialized, taskbar);
     }
+
+    private static void BackgroundWindowStaysBehindExistingWindows(bool update, bool sourceInitialized, bool taskbar)
+    {
+        var variable = Protocol.BackgroundRestartEnvironmentVariable;
+        var previous = Environment.GetEnvironmentVariable(variable);
+        var shutdown = Application.Current.ShutdownMode;
+        Application.Current.ShutdownMode = ShutdownMode.OnExplicitShutdown;
+        var simulator = new Window { Width = 180, Height = 80, Left = -10000, Top = -10000, ShowInTaskbar = false };
+        var splash = new Window { Width = 180, Height = 80, Left = -10000, Top = -10000, ShowInTaskbar = false };
+        var background = new Window { Width = 180, Height = 80, Left = -10000, Top = -10000,
+            ShowInTaskbar = taskbar, WindowStyle = WindowStyle.None };
+        try
+        {
+            simulator.Show();
+            splash.Show();
+            // Non-activation alone leaves a new window between the splash and
+            // the simulator, exposing it when the temporary foreground closes.
+            if (sourceInitialized) new WindowInteropHelper(background).EnsureHandle();
+            Environment.SetEnvironmentVariable(variable, update ? "1" : null);
+            App.ConfigureStartupWindow(background, update ? Array.Empty<string>() : new[] { SimulatorAutoStartManager.LaunchArgument });
+            background.Show();
+            Check(!background.IsActive, "Background startup activated its window.");
+            Check(IsAbove(simulator, background), "Background startup opened above an existing window behind the foreground splash.");
+            splash.Close();
+            Check(!background.IsActive && IsAbove(simulator, background), "Closing a foreground splash exposed the background window.");
+            background.Activate();
+            Check(background.IsActive && IsAbove(background, simulator), "Explicit activation could not bring the background window forward.");
+            background.Hide();
+            background.ShowActivated = true;
+            background.Show();
+            Check(background.IsActive && IsAbove(background, simulator), "Initial background placement was reapplied on a later show.");
+        }
+        finally
+        {
+            background.Close(); splash.Close(); simulator.Close();
+            Application.Current.ShutdownMode = shutdown;
+            Environment.SetEnvironmentVariable(variable, previous);
+        }
+    }
+
+    private static bool IsAbove(Window first, Window second)
+    {
+        var firstHandle = new WindowInteropHelper(first).Handle;
+        const uint previousWindow = 3; // GW_HWNDPREV traverses upward in z-order.
+        for (var above = GetWindow(new WindowInteropHelper(second).Handle, previousWindow);
+            above != IntPtr.Zero; above = GetWindow(above, previousWindow))
+            if (above == firstHandle) return true;
+        return false;
+    }
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetWindow(IntPtr window, uint command);
+
     private static async Task WireRoundTrip(bool background)
     {
         var identity = GuardianDescriptor.Create(Guid.NewGuid(), 1);

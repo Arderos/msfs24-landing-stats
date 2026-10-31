@@ -42,6 +42,9 @@ The updater passes the background policy through a process-scoped environment
 variable to the replacement launcher and application. WPF consumes it before
 showing the main window with `ShowActivated = false`; asynchronous startup
 prompts and shutdown overlays do not request focus while the window is inactive.
+Before its first show, the background window is placed below existing windows.
+This keeps it behind the simulator even when a foreground splash screen closes.
+The placement is applied once; subsequent user activation works normally.
 A background launch also leaves an already running instance inactive. Simulator
 autostart (`--simulator-autostart`) uses the same non-activating window behavior,
 including when an instance is already running; existing `exe.xml` registrations
@@ -49,8 +52,9 @@ need no changes. Explicit user launches retain the usual activation behavior. Th
 used when restarting the preserved application after an update failure; the
 updater's existing error dialog remains visible on failure.
 
-This policy controls window activation only. The separate flight-state gate
-still determines whether an automatic update may restart the application.
+This policy controls initial window activation and placement. The separate
+flight-state gate still determines whether an automatic update may restart the
+application.
 
 ## Release gate
 
