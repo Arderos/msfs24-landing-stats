@@ -2,6 +2,16 @@
 
 All notable changes to MSFS Landing Stats are documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- Flight Explorer in the private telemetry dashboard, with linked flight profiles, maps, control and contact charts, cohort comparisons, and synchronized replay.
+
+### Fixed
+
+- Keep background startup windows behind existing applications when a foreground splash screen closes, while preserving normal activation by the user.
+
 ## [0.9.9] - 2026-10-27
 
 ### Added
