@@ -28,10 +28,11 @@ internal static class TelemetryContactDetector
     public static IReadOnlyList<TelemetryContactCandidate> Find(
         IReadOnlyList<TelemetrySample> samples,
         double episodeGapSeconds,
-        TelemetryDecisionJournal? journal = null)
+        TelemetryDecisionJournal? journal = null,
+        TelemetryContactContinuity? continuity = null)
     {
         var candidates = new List<TelemetryContactCandidate>();
-        var continuity = new TelemetryContactContinuity();
+        continuity ??= new TelemetryContactContinuity();
         var previousOnGround = samples.Count > 0 && samples[0].OnGround;
         var previousAirborneIndex = -1;
         var previousContactTime = double.NegativeInfinity;
@@ -50,15 +51,15 @@ internal static class TelemetryContactDetector
                 previousFlightSegment = current.FlightSegment;
             }
             var isContact = continuity.Observe(current);
-            if (!current.MotionSimulation) previousAirborneIndex = -1;
-            else if (!current.OnGround)
+            if (!current.MotionSimulation || (!current.OnGround && !continuity.HasAirborneWitness)) previousAirborneIndex = -1;
+            else if (!current.OnGround && continuity.HasAirborneWitness)
             {
                 previousAirborneIndex = index;
             }
 
             if (current.OnGround && !previousOnGround && !isContact)
-                journal?.Record(TouchdownAnalysis.TimeOf(current), "contact", "physics_discontinuity_rejected",
-                    "Ground transition has no airborne evidence in the current active-physics segment.",
+                journal?.Record(TouchdownAnalysis.TimeOf(current), "contact", continuity.RejectionCode,
+                    continuity.RejectionReason,
                     new Dictionary<string, double> { ["sample_index"] = index });
 
             if (isContact && previousAirborneIndex >= 0)

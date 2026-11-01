@@ -42,8 +42,14 @@ public sealed partial class ReplayControlInputs
         var source = devices[0].Slot * _axisCount + binding.AxisIndex;
         var column = record.RawControllerAxesSourceIndices.IndexOf(source);
         if (column < 0 || record.RawControllerAxesSourceIndices.Count(value => value == source) != 1) return null;
+        // MSFS unipolar throttle profiles start with the opposite direction to
+        // increasing native DirectInput values; FL_MOD_INV toggles that baseline.
+        // The saved flag describes the profile transform, not display polarity.
+        // Keep the original flag/raw samples and orient physical travel here.
+        var polarity = binding.Inverted ? -1 : 1;
+        if (kind == ControllerControlKind.Throttle) polarity = -polarity;
         return new ReplayControlAxis(source, column, devices[0].Name + " · " + AxisLabel(binding.AxisIndex, _axisCount) + " · " + binding.Source,
-            0, 0, false, binding.Inverted ? -1 : 1, true);
+            0, 0, false, polarity, true);
     }
 
     private static IEnumerable<ControllerBinding> ProfileBindings(ControllerCatalogMessage catalog, ControllerControlKind kind, int engine)
@@ -79,11 +85,135 @@ public sealed partial class ReplayControlInputs
             _throttles[engine] = DirectBinding(record, catalog, ControllerControlKind.Throttle, engine);
             if (_throttles[engine] != null && flightAxes.Contains(_throttles[engine]!.SourceIndex)) _throttles[engine] = null;
             if (_throttles[engine] != null || MissingAssignedInput(record, catalog, ControllerControlKind.Throttle, engine)) continue;
-            var candidates = Rank(record, sources, false, engine + 3, Enumerable.Range(0, _points.Length).ToArray(), journal, 3);
-            if (candidates.Count == 0) continue;
-            var best = Math.Abs(candidates[0].Correlation);
-            if (candidates.Count(candidate => Math.Abs(candidate.Correlation) == best) == 1) _throttles[engine] = candidates[0];
+            _throttles[engine] = InferThrottle(record, sources, engine, journal);
         }
+    }
+
+    // Engine command can be driven by automation. It identifies a physical lever
+    // only when repeated movements support the same mapping in independent time
+    // windows. A single retard, its plateau, or a numerical winner among unrelated
+    // axes supplies insufficient evidence. Explicit bindings bypass this contract.
+    private ReplayControlAxis? InferThrottle(LandingRecord record, int[] sources, int engine, TelemetryDecisionJournal? journal)
+    {
+        if (!ThrottleWindows(engine, out var split)) return null;
+        var supported = new List<ReplayControlAxis>();
+        for (var column = 0; column < sources.Length; column++)
+        {
+            var source = sources[column];
+            if (source < 0 || _reservedAxes.Contains(source) || sources.Count(value => value == source) != 1) continue;
+            var first = FitThrottle(column, engine, 0, split);
+            var second = FitThrottle(column, engine, split, _points.Length);
+            if (first == null || second == null || Math.Sign(first.Gain) != Math.Sign(second.Gain)) continue;
+            // Each lag/gain is selected using its training window only. The other
+            // window cannot choose a favourable lag for its validation score.
+            if (!PredictsThrottle(column, engine, split, _points.Length, first) ||
+                !PredictsThrottle(column, engine, 0, split, second)) continue;
+            var device = source / _axisCount;
+            var label = (device < record.ControlInputSources.Count ? record.ControlInputSources[device] : "Controller " + (device + 1)) +
+                " · " + AxisLabel(source % _axisCount, _axisCount);
+            supported.Add(new ReplayControlAxis(source, column, label, first.Correlation, first.Lag, false));
+        }
+        // Even a slightly better score cannot distinguish synchronous levers.
+        // Require one supported physical source, not one floating-point maximum.
+        journal?.Record(0, "replay.inputs", supported.Count == 1 ? "throttle_evidence_supported" : "throttle_evidence_unresolved",
+            "Throttle inference requires repeatable movement prediction in both independent windows and one supported source.",
+            new Dictionary<string, double> { ["engine"] = engine + 1, ["supported_sources"] = supported.Count,
+                ["source_index"] = supported.Count == 1 ? supported[0].SourceIndex : -1, ["split_time"] = _points[split].TimeSeconds });
+        return supported.Count == 1 ? supported[0] : null;
+    }
+
+    private bool ThrottleWindows(int engine, out int split)
+    {
+        split = 0;
+        var starts = new List<int>(); var direction = 0; var previous = double.NaN;
+        for (var index = 0; index < _points.Length; index++)
+        {
+            var command = EngineCommand(_points[index].TimeSeconds, engine);
+            if (!Finite(command) || !Finite(previous) || index == 0 || _segments[index] != _segments[index - 1]) direction = 0;
+            else
+            {
+                var next = Math.Sign(command - previous);
+                if (next != 0)
+                {
+                    if (next != direction) starts.Add(index - 1);
+                    direction = next;
+                }
+            }
+            previous = command;
+        }
+        // At least two separate movements per window. Splitting a lone ramp in
+        // half would validate the same action twice. Only reversals delimit runs;
+        // equal samples can be quantization within one uninterrupted movement.
+        if (starts.Count < 4) return false;
+        split = starts[starts.Count / 2];
+        return split > 0 && split < _points.Length - 1;
+    }
+
+    private ThrottleFit? FitThrottle(int column, int engine, int start, int end)
+    {
+        ThrottleFit? best = null;
+        for (var step = 0; step <= 16; step++)
+        {
+            var lag = step * .05;
+            var motion = ThrottleMotion(column, engine, start, end, lag);
+            if (motion.Count < 3 || motion.RawRuns < 2 || motion.RawEnergy <= 0 || motion.CommandEnergy <= 0 || motion.Product == 0) continue;
+            var correlation = motion.Product / Math.Sqrt(motion.RawEnergy * motion.CommandEnergy);
+            if (!Finite(correlation) || best != null && Math.Abs(correlation) <= Math.Abs(best.Correlation)) continue;
+            best = new ThrottleFit(lag, motion.Product / motion.RawEnergy, correlation);
+        }
+        return best;
+    }
+
+    private bool PredictsThrottle(int column, int engine, int start, int end, ThrottleFit fit)
+    {
+        var motion = ThrottleMotion(column, engine, start, end, fit.Lag);
+        if (motion.Count < 3 || motion.RawRuns < 2 || motion.RawEnergy <= 0 || motion.CommandEnergy <= 0) return false;
+        var predicted = fit.Gain * fit.Gain * motion.RawEnergy;
+        var residual = Math.Max(0, motion.CommandEnergy - 2 * fit.Gain * motion.Product + predicted);
+        // Explicit engineering admission policy: predicted movement must exceed
+        // unexplained movement (signal-to-residual energy > 1), and must improve
+        // on predicting no command movement. This is not statistical confidence.
+        return Finite(predicted) && Finite(residual) && predicted > residual && residual < motion.CommandEnergy;
+    }
+
+    private ThrottleMotionEvidence ThrottleMotion(int column, int engine, int start, int end, double lag)
+    {
+        var motion = new ThrottleMotionEvidence();
+        var previousIndex = -2; var previousRaw = 0.0; var previousCommand = 0.0; var direction = 0;
+        for (var index = start; index < end; index++)
+        {
+            var point = _points[index]; var time = point.TimeSeconds + lag;
+            if (time > _points[end - 1].TimeSeconds || !Raw(point, column, false, out var raw) ||
+                !Find(time, out _, out _, out _, out var segment) || segment != _segments[index]) continue;
+            var command = EngineCommand(time, engine);
+            if (!Finite(command) || Math.Abs(command) > 100.001) continue;
+            if (previousIndex == index - 1 && _segments[index] == _segments[previousIndex])
+            {
+                var x = raw - previousRaw; var y = command - previousCommand;
+                motion.Count++; motion.RawEnergy += x * x; motion.CommandEnergy += y * y; motion.Product += x * y;
+                if (x != 0)
+                {
+                    var next = Math.Sign(x);
+                    if (next != direction) motion.RawRuns++;
+                    direction = next;
+                }
+            }
+            previousIndex = index; previousRaw = raw; previousCommand = command;
+        }
+        return motion;
+    }
+
+    private sealed class ThrottleFit
+    {
+        internal ThrottleFit(double lag, double gain, double correlation) { Lag = lag; Gain = gain; Correlation = correlation; }
+        internal double Lag { get; }
+        internal double Gain { get; }
+        internal double Correlation { get; }
+    }
+    private struct ThrottleMotionEvidence
+    {
+        internal int Count, RawRuns;
+        internal double RawEnergy, CommandEnergy, Product;
     }
 
     private double EngineCommand(double time, int engineIndex)

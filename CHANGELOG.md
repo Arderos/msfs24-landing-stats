@@ -11,6 +11,12 @@ All notable changes to MSFS Landing Stats are documented in this file.
 ### Fixed
 
 - Keep background startup windows behind existing applications when a foreground splash screen closes, while preserving normal activation by the user.
+- Reject false contacts around frozen or slewing physics and require a released airborne interval before accepting a subsequent touchdown, including after recorder recovery.
+- Bound touchdown-rate extrapolation by its actual sample support and prediction quality; retain the measured fallback when the trend is unreliable.
+- Stop contact measurement windows at frozen physics and preserve earlier real contacts without borrowing later measurements.
+- Preserve discrete contact and source-control transitions when coalescing same-time telemetry or paused recordings.
+- Leave inferred physical throttle sources unresolved when repeated independent movements do not support a unique axis.
+- Correct physical throttle graph direction for saved MSFS profile assignments, so advancing the levers raises the trace and retarding them lowers it.
 
 ## [0.9.9] - 2026-10-27
 

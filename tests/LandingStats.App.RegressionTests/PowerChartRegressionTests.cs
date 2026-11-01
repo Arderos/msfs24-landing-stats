@@ -70,7 +70,7 @@ internal static class PowerChartRegressionTests
             var sample = new TelemetrySample { Sequence = index + 1, SimulationTimeSeconds = 10 + index * .1, MotionSimulation = true,
                 OnGround = index >= 3, AboveGroundLevelFeet = Math.Max(0, 3 - index), NumberOfEngines = 2, GForce = 1 };
             sample.ResizeControllers(12, 8); sample.ControllerCatalog = catalog;
-            sample.RawControllerDeviceId[11] = 11; sample.RawControllerAxesPercent[95] = 100 - 2 * throttle[index]; sample.RawControllerAxesValid[95] = true;
+            sample.RawControllerDeviceId[11] = 11; sample.RawControllerAxesPercent[95] = 2 * throttle[index] - 100; sample.RawControllerAxesValid[95] = true;
             for (var engine = 0; engine < 2; engine++)
             { sample.EngineN1Percent[engine] = n1[index]; sample.EngineThrottlePercent[engine] = command[index]; sample.EngineReversePercent[engine] = reverse[index]; }
             return sample;
@@ -135,7 +135,7 @@ internal static class PowerChartRegressionTests
         LandingRecord Physical(bool attached)
         {
             var record = Record(); record.ControllerAxisCount = 8; record.RawControllerAxesSourceIndices.Add(3);
-            var values = new[] { -40d, -40, 0, 80, 100 };
+            var values = new[] { 40d, 40, 0, -80, -100 };
             for (var i = 0; i < record.Series.Count; i++)
             {
                 record.Series[i].RawControllerAxesPercent = new[] { values[i] };

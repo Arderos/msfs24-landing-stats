@@ -41,14 +41,15 @@ internal static class UpdateActivationRegressionTests
         var previous = Environment.GetEnvironmentVariable(variable);
         var shutdown = Application.Current.ShutdownMode;
         Application.Current.ShutdownMode = ShutdownMode.OnExplicitShutdown;
-        var simulator = new Window { Width = 180, Height = 80, Left = -10000, Top = -10000, ShowInTaskbar = false };
-        var splash = new Window { Width = 180, Height = 80, Left = -10000, Top = -10000, ShowInTaskbar = false };
+        // The simulator and its splash belong to another process. Putting all
+        // three windows on this dispatcher tests WPF's same-thread activation
+        // fallback when its active window closes, not simulator startup.
+        using var simulator = new BackgroundWindowRegressionFixture();
         var background = new Window { Width = 180, Height = 80, Left = -10000, Top = -10000,
             ShowInTaskbar = taskbar, WindowStyle = WindowStyle.None };
         try
         {
-            simulator.Show();
-            splash.Show();
+            var foreground = GetForegroundWindow();
             // Non-activation alone leaves a new window between the splash and
             // the simulator, exposing it when the temporary foreground closes.
             if (sourceInitialized) new WindowInteropHelper(background).EnsureHandle();
@@ -56,36 +57,65 @@ internal static class UpdateActivationRegressionTests
             App.ConfigureStartupWindow(background, update ? Array.Empty<string>() : new[] { SimulatorAutoStartManager.LaunchArgument });
             background.Show();
             Check(!background.IsActive, "Background startup activated its window.");
-            Check(IsAbove(simulator, background), "Background startup opened above an existing window behind the foreground splash.");
-            splash.Close();
-            Check(!background.IsActive && IsAbove(simulator, background), "Closing a foreground splash exposed the background window.");
-            background.Activate();
-            Check(background.IsActive && IsAbove(background, simulator), "Explicit activation could not bring the background window forward.");
+            Check(IsAbove(simulator.Window, Handle(background)), "Background startup opened above an existing window behind the foreground splash.");
+            Check(GetForegroundWindow() == foreground, "Background startup changed the foreground window.");
+            simulator.CloseSplash();
+            Check(!background.IsActive && IsAbove(simulator.Window, Handle(background)), "Closing another process's splash exposed the background window.");
+            // Foreground permission belongs to Windows. A background CI agent's
+            // Activate() may legitimately return false. Test the native click
+            // activation contract without forcing focus from the user's app.
+            const int mouseActivate = 0x0021, leftButtonDown = 0x0201, client = 1;
+            var activation = SendMessage(Handle(background), mouseActivate, Handle(background),
+                new IntPtr((leftButtonDown << 16) | client)).ToInt64();
+            Check(activation == 1 || activation == 2, "Background startup disabled native mouse activation.");
             background.Hide();
-            background.ShowActivated = true;
-            background.Show();
-            Check(background.IsActive && IsAbove(background, simulator), "Initial background placement was reapplied on a later show.");
+            // Global HWND_TOP / Activate requests depend on foreground rights.
+            // Check a later explicit relative-order show inside this process:
+            // a persistent startup hook would change InsertAfter to HWND_BOTTOM.
+            var lower = new Window { Width = 180, Height = 80, Left = -10000, Top = -10000, ShowInTaskbar = taskbar, ShowActivated = false };
+            var upper = new Window { Width = 180, Height = 80, Left = -10000, Top = -10000, ShowInTaskbar = taskbar, ShowActivated = false };
+            try
+            {
+                lower.Show(); upper.Show();
+                const uint noSize = 0x0001, noMove = 0x0002, noActivate = 0x0010, showWindow = 0x0040;
+                Check(SetWindowPos(Handle(background), Handle(upper), 0, 0, 0, 0, noSize | noMove | noActivate | showWindow),
+                    "The later native window-show request failed.");
+                Check(IsAbove(Handle(upper), Handle(background)) && IsAbove(Handle(background), Handle(lower)),
+                    "Initial background placement was reapplied on a later show.");
+            }
+            finally { upper.Close(); lower.Close(); }
         }
         finally
         {
-            background.Close(); splash.Close(); simulator.Close();
+            background.Close();
             Application.Current.ShutdownMode = shutdown;
             Environment.SetEnvironmentVariable(variable, previous);
         }
     }
 
-    private static bool IsAbove(Window first, Window second)
+    private static IntPtr Handle(Window window) => new WindowInteropHelper(window).Handle;
+
+    private static bool IsAbove(IntPtr first, IntPtr second)
     {
-        var firstHandle = new WindowInteropHelper(first).Handle;
         const uint previousWindow = 3; // GW_HWNDPREV traverses upward in z-order.
-        for (var above = GetWindow(new WindowInteropHelper(second).Handle, previousWindow);
+        for (var above = GetWindow(second, previousWindow);
             above != IntPtr.Zero; above = GetWindow(above, previousWindow))
-            if (above == firstHandle) return true;
+            if (above == first) return true;
         return false;
     }
 
     [DllImport("user32.dll")]
     private static extern IntPtr GetWindow(IntPtr window, uint command);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetForegroundWindow();
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr SendMessage(IntPtr window, int message, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SetWindowPos(IntPtr window, IntPtr insertAfter, int x, int y, int width, int height, uint flags);
 
     private static async Task WireRoundTrip(bool background)
     {

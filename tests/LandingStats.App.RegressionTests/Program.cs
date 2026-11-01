@@ -40,6 +40,7 @@ internal static class Program
     [STAThread]
     private static int Main(string[] args)
     {
+        if (args.Length == 1 && args[0] == "--background-window-fixture") return BackgroundWindowRegressionFixture.Run();
         if (args.Any(arg => arg.StartsWith("--fixture=adversarial-", StringComparison.Ordinal))) return AdversarialRuntimeRegressionTests.Fixture(args);
         if (args.Length == 4 && args[0] == "--profile-evidence-probe")
         {
@@ -127,6 +128,10 @@ internal static class Program
         Run("telemetry decisions record actual branches and stay capture-local and bounded", TelemetryDecisionJournalRegressionTests.RunAll);
         Run("deduplicator keeps the last same-time frame", DeduplicatorKeepsLastFrame);
         Run("physics continuity rejects paused contacts and preserves real landings and bounces", PhysicsContinuityRegressionTests.RunAll);
+        Run("source contact continuity requires a released airborne interval and survives recovery", ContactSourceContinuityRegressionTests.RunAll);
+        Run("inertial velocity fit validates observed support and prediction quality", InertialFitSupportRegressionTests.RunAll);
+        Run("source contact analysis preserves control boundaries across preparation and segmentation", ContactSourceAnalysisRegressionTests.RunAll);
+        Run("source contact pipeline preserves eligibility across geometry and result processing", ContactSourcePipelineRegressionTests.RunAll);
         Run("SDK pause telemetry preserves physics and legacy CSV compatibility", PauseTelemetryRegressionTests.RunAll);
         Run("SDK recorder stitches pauses and saves interrupted landings without crossing flight changes", PauseRecorderRegressionTests.RunAll);
         Run("SDK pause pipeline keeps raw provenance and settles scenery lookups", PausePipelineRegressionTests.RunAll);
@@ -282,6 +287,7 @@ internal static class Program
         Run("physical replay controls preserve source, polarity and gaps", ReplayControlInputsRegressionTests.RunAll);
         Run("physical bindings stay consistent across contacts of one landing episode", ReplayControlEpisodeRegressionTests.RunAll);
         Run("physical axes rank the complete approach with soft device-pair evidence", ReplayControlEvidenceRegressionTests.RunAll);
+        Run("inferred throttles require repeatable independent movement evidence", ThrottleInferenceRegressionTests.RunAll);
         Run("historical Y-only input matching preserves published selections", ReplayControlLegacyCompatibilityTests.RunAll);
         Run("binary and diagnostic versions follow the release version", BuildVersionRegressionTests.RunAll);
         Run("replay runway offset follows the selected runway direction", LandingReplayRunwayOffsetTests.RunAll);

@@ -67,15 +67,33 @@ recorder, so the next real approach or contact can start normally.
 Simulator telemetry is treated as an **unevenly timed series**. Frame intervals
 can change during a landing, and duplicate messages can share the same simulation
 time. All fits and windows use simulation timestamps rather than sample indexes.
-Before analysis, duplicate timestamps are collapsed by keeping the last message;
-this retains same-frame updates such as a touchdown latch that changes in a later
-message for the same simulation instant.
+Before analysis, duplicate timestamps within the same ground/air, physics and
+source-control state are collapsed by keeping the last message. This retains same-frame updates
+such as a touchdown latch that changes in a later message for the same simulation
+instant, while preserving discrete contact, freeze, release and unavailable-source
+boundaries. The recorder uses the same rule when coalescing deliveries. Paused
+numeric updates remain bounded while source-control transitions are retained.
 
 ## 3. Contact detection and bounces
 
 A contact candidate is an air-to-ground transition of `SIM ON GROUND` after at
 least one airborne sample. Contacts separated by no more than ten seconds belong
 to the same landing episode and are numbered independently.
+
+Fresh source observations of any freeze axis, slew or active SDK replay interrupt
+contact eligibility. After that interruption, two distinct airborne observations
+must establish an interval entirely in freshly released physics before a ground
+transition can be accepted. Both endpoints must belong to the same source and
+flight segment, with increasing frame and analysis time. There is no minimum
+airspeed, groundspeed, height or interval duration. Unknown or stale source data
+cannot release a known interruption; recordings without such evidence retain the
+ordinary contact rule. The guard survives pauses, segment boundaries and recorder
+recovery. Rejected transitions can remain available as diagnostic captures.
+
+Source-controlled frames also end compression, velocity, geometry, latch, G-load
+and impact measurement support. This preserves earlier accepted contacts without
+using frozen or subsequently resumed measurements to complete their windows.
+These are analysis boundaries; recorded telemetry is preserved.
 
 Every contact is analyzed and stored. A bounce does not overwrite the first
 impact with the final gentle touchdown, and later-contact data cannot leak into
@@ -120,9 +138,19 @@ airborne trend to the estimated contact time. It intentionally does **not**
 interpolate through the first ground sample: that sample can already include
 deceleration from the landing-gear impact, which did not exist before contact.
 
-The extrapolation is used only when the contact time came from compression and at
-least 0.15 seconds of continuous airborne data exists. Otherwise the raw last-
-airborne `VELOCITY WORLD Y` value is used and the UI marks it as a fallback.
+The extrapolation is used only when the contact time came from compression and
+the selected fit window itself contains at least 0.15 seconds of finite, ordered,
+active airborne observations from the same segment. Older samples outside that
+window do not provide fit support. The forecast horizon cannot exceed the
+observed fit duration.
+
+The linear model must also predict at least as well as a constant-velocity model
+both at the requested contact time, using residual variance and prediction
+leverage, and under leave-one-out validation of its observed samples. This rejects
+poorly supported trends and endpoint spikes without clipping FPM or forbidding a
+real climb. These are model-admission checks, not calibrated physical confidence
+intervals. If any check fails, the raw last-airborne `VELOCITY WORLD Y` value is
+used and the UI marks it as a fallback.
 
 The dashboard presents signed motion in the conventional graph form: climb is
 positive and descent is negative. Thus an internal descent-positive value of
@@ -902,7 +930,7 @@ One recorded throttle axis may control more than one engine. A constant axis
 cannot be identified through correlation alone. Interpolation does not cross a
 telemetry gap or an airborne/ground transition.
 
-Candidates are ranked by absolute Pearson correlation, without a minimum correlation,
+Flight-control candidates are ranked by absolute Pearson correlation, without a minimum correlation,
 minimum winner margin, amplitude cutoff or statistical-confidence veto. Pitch and roll
 are ranked jointly as distinct axes. Their pair score is
 `abs(r_pitch) + abs(r_roll) + 0.5 * min(abs(r_pitch), abs(r_roll))` when both axes belong
@@ -918,6 +946,20 @@ and malformed duplicate source IDs are data-validity failures, not score thresho
 This is relative inference: it does not prove a simulator binding if none of the
 recorded physical signals actually controls the corresponding simulator channel.
 Legacy Y-only recordings remain pitch-only, including sparse Y-only CSV imports.
+
+Inferred throttles have a separate admission rule because engine commands can
+move under autothrottle while the physical levers remain still. Two chronological
+windows must each contain direction reversals in both command and physical-axis
+movement. A lag and gain
+selected in either window must predict the other window without refitting, with
+consistent polarity, predicted movement energy exceeding residual energy, and
+less error than predicting no movement. A single ramp cannot validate itself by
+being split in half, including when quantization produces short plateaus. Exactly
+one physical source must satisfy the checks;
+indistinguishable or unsupported candidates remain unknown. Explicit saved
+assignments retain priority. The energy comparison is an engineering admission
+policy, not a statistical confidence claim.
+
 The selected axis is
 displayed at its original recorded time and amplitude, before simulator curves;
 the matching lag does not shift the animation. This is not a control-surface
@@ -944,6 +986,13 @@ per minute. RPM is never normalized to the maximum of the current landing.
 The thrust-command channel is not treated as a physical throttle position;
 negative commands and recorded reverser-door position remain visible. Physical
 throttle traces use the saved axis assignments or the correlation fallback.
+Their scale increases when the lever advances. For supported MSFS throttle-axis
+profile assignments, native DirectInput travel has the opposite baseline
+direction to the simulator's throttle input; the saved inversion flag reverses
+that baseline. Playback applies this throttle-specific conversion when resolving
+the binding. Inferred bindings retain their observed polarity. The recorded axis
+values and profile flags are unchanged, and the scale describes physical travel,
+not calibrated cockpit detents or commanded thrust.
 These are simulator-published channels; custom aircraft can expose values that
 differ from their cockpit instruments.
 

@@ -11,6 +11,7 @@ public static class TouchdownAnalysis
     private const double LatchUpdateWindowSeconds = 2.0;
     private const double InertialFitWindowSeconds = 0.2;
     private const double MinimumAirborneFitSeconds = 0.15;
+    private const double FitTimeToleranceSeconds = 1e-9;
     private const double GroundFitWindowSeconds = 0.2;
 
     public static IReadOnlyList<TouchdownResult> Analyze(IReadOnlyList<TelemetrySample> samples) =>
@@ -18,13 +19,23 @@ public static class TouchdownAnalysis
 
     public static IReadOnlyList<TouchdownResult> Analyze(
         IReadOnlyList<TelemetrySample> samples,
-        TouchdownAnalysisOptions? options)
+        TouchdownAnalysisOptions? options) => Analyze(samples, options, new TelemetryContactContinuity());
+
+    /// <summary>Analyze one physical segment while retaining source-control evidence from preceding segments.</summary>
+    public static IReadOnlyList<TouchdownResult> Analyze(
+        IReadOnlyList<TelemetrySample> samples,
+        TouchdownAnalysisOptions? options,
+        TelemetryContactContinuity continuity)
     {
+        if (continuity == null) throw new ArgumentNullException(nameof(continuity));
+        // Geometry and airborne witnesses are segment-local. A known source
+        // interruption remains unresolved until released physics proves recovery.
+        continuity.Reset();
         if (options != null && !Enum.IsDefined(typeof(TelemetryDatumCalibrationVersion), options.DatumCalibrationVersion))
             throw new ArgumentOutOfRangeException(nameof(options), "Unsupported datum calibration revision.");
         samples = TelemetryAnalysisFrames.Prepare(samples, options?.DecisionJournal);
         var starts = TelemetryKinematicDiscontinuity.FindSegmentStarts(samples);
-        if (starts.Count == 1) return AnalyzeSegment(samples, options);
+        if (starts.Count == 1) return AnalyzeSegment(samples, options, continuity);
 
         // A raw-debug archive may span several flights and even reset clocks.
         // Calibrate each independently, not merely its contact transitions.
@@ -55,7 +66,8 @@ public static class TouchdownAnalysis
                     break;
                 }
             }
-            var results = AnalyzeSegment(part, options);
+            continuity.Reset();
+            var results = AnalyzeSegment(part, options, continuity);
             var maximumEpisode = episodeOffset;
             foreach (var result in results)
             {
@@ -70,10 +82,12 @@ public static class TouchdownAnalysis
 
     private static IReadOnlyList<TouchdownResult> AnalyzeSegment(
         IReadOnlyList<TelemetrySample> samples,
-        TouchdownAnalysisOptions? options)
+        TouchdownAnalysisOptions? options,
+        TelemetryContactContinuity continuity)
     {
         var journal = options?.DecisionJournal;
-        var candidates = TelemetryContactDetector.Find(samples, EpisodeGapSeconds, journal);
+        var candidates = TelemetryContactDetector.Find(samples, EpisodeGapSeconds, journal, continuity);
+        samples = PrepareMeasurementFrames(samples, journal);
         var analysisTime = samples.Count > 0 ? TimeOf(samples[samples.Count - 1]) : 0;
 
         var longitudinalArmFeet = double.NaN;
@@ -297,6 +311,35 @@ public static class TouchdownAnalysis
         }
 
         return results;
+    }
+
+    private static IReadOnlyList<TelemetrySample> PrepareMeasurementFrames(IReadOnlyList<TelemetrySample> samples,
+        TelemetryDecisionJournal? journal)
+    {
+        // Contact eligibility consumes the original source timeline first. Only
+        // measurement windows receive these same-index barriers: feeding them
+        // back through segment/contact detection would erase the source-release
+        // state that prevents a frozen ground transition becoming a landing.
+        AnalysisFrameList? measurements = null;
+        var previousBlocked = false;
+        for (var index = 0; index < samples.Count; index++)
+        {
+            var sample = samples[index];
+            var blocked = TelemetryContactPhysics.IsBlocked(sample);
+            if (blocked && sample.MotionSimulation)
+            {
+                measurements ??= new AnalysisFrameList(samples) { Prepared = true };
+                var boundary = sample.CopyForAnalysis();
+                boundary.MotionSimulation = false;
+                measurements[index] = boundary;
+                if (!previousBlocked)
+                    journal?.Record(TimeOf(sample), "analysis", "source_physics_measurement_boundary",
+                        "Observed freeze, slew or SDK replay ends measurement support; raw telemetry and previously accepted contacts remain unchanged.",
+                        new Dictionary<string, double> { ["sample_index"] = index });
+            }
+            previousBlocked = blocked;
+        }
+        return measurements ?? samples;
     }
 
     private static void RecordGeometryFailure(
@@ -622,34 +665,35 @@ public static class TouchdownAnalysis
             return ToDescentFpm(last.VelocityWorldYFps);
         }
 
-        var continuousAirStartIndex = lastAirborneIndex;
-        for (var index = lastAirborneIndex - 1; index >= 0; index--)
+        var lastTime = TimeOf(last);
+        if (!InertialFitSampleAvailable(last) || !IsFinite(estimatedContactTime) || estimatedContactTime < lastTime)
         {
-            if (!samples[index].MotionSimulation || samples[index].OnGround)
-            {
-                break;
-            }
-
-            continuousAirStartIndex = index;
-        }
-
-        var continuousAirDuration = TimeOf(last) - TimeOf(samples[continuousAirStartIndex]);
-        if (continuousAirDuration < MinimumAirborneFitSeconds)
-        {
-            decision = "insufficient_continuous_airborne_history";
+            decision = "precontact_fit_sample_unavailable";
             return ToDescentFpm(last.VelocityWorldYFps);
         }
 
-        var fitStartTime = TimeOf(last) - InertialFitWindowSeconds;
+        // Only observations actually participating in the fit can support it.
+        // An older airborne prefix must not turn the same sparse/noisy window
+        // into an accepted extrapolation.
+        var fitStartTime = lastTime - InertialFitWindowSeconds;
         var fitStartIndex = lastAirborneIndex;
-        for (var index = lastAirborneIndex - 1; index >= continuousAirStartIndex; index--)
+        var nextTime = lastTime;
+        for (var index = lastAirborneIndex - 1; index >= 0; index--)
         {
-            if (TimeOf(samples[index]) < fitStartTime)
-            {
+            var sample = samples[index];
+            var time = TimeOf(sample);
+            if (time < fitStartTime - FitTimeToleranceSeconds || !InertialFitSampleAvailable(sample) ||
+                sample.FlightSegment != last.FlightSegment || time >= nextTime)
                 break;
-            }
-
             fitStartIndex = index;
+            nextTime = time;
+        }
+
+        fitDurationSeconds = lastTime - TimeOf(samples[fitStartIndex]);
+        if (fitDurationSeconds < MinimumAirborneFitSeconds - FitTimeToleranceSeconds)
+        {
+            decision = "insufficient_precontact_fit_support";
+            return ToDescentFpm(last.VelocityWorldYFps);
         }
 
         if (!TryLinearFit(
@@ -665,10 +709,97 @@ public static class TouchdownAnalysis
             return ToDescentFpm(last.VelocityWorldYFps);
         }
 
-        var estimatedVelocity = interceptAtLast + slope * (estimatedContactTime - TimeOf(last));
+        var horizon = estimatedContactTime - lastTime;
+        // A locally linear velocity model has no measured support for a
+        // projection longer than the interval over which it was observed.
+        if (horizon > fitDurationSeconds + FitTimeToleranceSeconds)
+        {
+            decision = "precontact_fit_horizon_unsupported";
+            return ToDescentFpm(last.VelocityWorldYFps);
+        }
+        if (!InertialPredictionSupported(samples, fitStartIndex, lastAirborneIndex, horizon, interceptAtLast, slope))
+        {
+            decision = "precontact_fit_prediction_unreliable";
+            return ToDescentFpm(last.VelocityWorldYFps);
+        }
+
+        var estimatedVelocity = interceptAtLast + slope * horizon;
+        if (!IsFinite(estimatedVelocity) || !IsFinite(ToDescentFpm(estimatedVelocity)))
+        {
+            decision = "precontact_fit_prediction_unavailable";
+            return ToDescentFpm(last.VelocityWorldYFps);
+        }
         extrapolated = true;
         decision = "precontact_linear_fit_extrapolated";
         return ToDescentFpm(estimatedVelocity);
+    }
+
+    private static bool InertialFitSampleAvailable(TelemetrySample sample) =>
+        sample.MotionSimulation && !sample.OnGround &&
+        sample.SimulatorState != TelemetrySimulatorState.Paused && sample.SimulatorState != TelemetrySimulatorState.Inactive &&
+        !TelemetryContactPhysics.IsBlocked(sample) &&
+        IsFinite(TimeOf(sample)) && IsFinite(sample.VelocityWorldYFps);
+
+    private static bool InertialPredictionSupported(IReadOnlyList<TelemetrySample> samples,
+        int first, int last, double horizon, double intercept, double slope)
+    {
+        var count = last - first + 1;
+        var endTime = TimeOf(samples[last]);
+        var meanTime = 0.0;
+        var meanVelocity = 0.0;
+        for (var index = first; index <= last; index++)
+        {
+            meanTime += (TimeOf(samples[index]) - endTime) / count;
+            meanVelocity += samples[index].VelocityWorldYFps / count;
+        }
+
+        var timeSpread = 0.0;
+        var linearResidual = 0.0;
+        var constantResidual = 0.0;
+        for (var index = first; index <= last; index++)
+        {
+            var time = TimeOf(samples[index]) - endTime;
+            var velocity = samples[index].VelocityWorldYFps;
+            timeSpread += (time - meanTime) * (time - meanTime);
+            var residual = velocity - (intercept + slope * time);
+            linearResidual += residual * residual;
+            residual = velocity - meanVelocity;
+            constantResidual += residual * residual;
+        }
+        if (count < 3 || !IsFinite(timeSpread) || timeSpread <= 0 ||
+            !IsFinite(linearResidual) || !IsFinite(constantResidual)) return false;
+
+        // Compare a two-parameter velocity trend with a zero-slope model at
+        // the requested prediction time. Residual variance, parameter count
+        // and leverage penalize noisy trends and weak time support without
+        // an arbitrary FPM/R-squared cutoff. This model selection is not a
+        // physical uncertainty bound or a statistical confidence claim.
+        var constantLeverage = 1.0 + 1.0 / count;
+        var offset = horizon - meanTime;
+        var linearError = linearResidual / (count - 2) * (constantLeverage + offset * offset / timeSpread);
+        var constantError = constantResidual / (count - 1) * constantLeverage;
+        // A single endpoint can reduce in-sample residuals while driving the
+        // entire trend. Leave-one-out prediction exposes that dependence:
+        // each observed velocity must be predictable without fitting itself.
+        var linearValidationError = 0.0;
+        for (var index = first; index <= last; index++)
+        {
+            var time = TimeOf(samples[index]) - endTime;
+            var centered = time - meanTime;
+            var remainingWeight = 1.0 - 1.0 / count - centered * centered / timeSpread;
+            if (remainingWeight <= 0) return false;
+            var residual = (samples[index].VelocityWorldYFps - intercept - slope * time) / remainingWeight;
+            linearValidationError += residual * residual;
+        }
+        var constantRemainingWeight = 1.0 - 1.0 / count;
+        var constantValidationError = constantResidual / (constantRemainingWeight * constantRemainingWeight);
+        // Preserve exact constant/linear controls despite arithmetic roundoff.
+        var scale = Math.Max(Math.Abs(meanVelocity), Math.Abs(intercept) + Math.Abs(slope) * InertialFitWindowSeconds);
+        var roundingError = 32 * 2.2204460492503131e-16 * scale;
+        return IsFinite(linearError) && IsFinite(constantError) &&
+            IsFinite(linearValidationError) && IsFinite(constantValidationError) &&
+            linearValidationError <= constantValidationError + roundingError * roundingError &&
+            linearError <= constantError + roundingError * roundingError;
     }
 
     private static double EstimateTerrainContributionFpm(
