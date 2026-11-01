@@ -6,6 +6,7 @@ All notable changes to MSFS Landing Stats are documented in this file.
 
 ### Added
 
+- Share complete landings in a single `.lslanding` file, with multi-file import, drag and drop, and Windows file associations. Imported landings are marked separately and excluded from monthly averages.
 - Flight Explorer in the private telemetry dashboard, with linked flight profiles, maps, control and contact charts, cohort comparisons, and synchronized replay.
 
 ### Fixed

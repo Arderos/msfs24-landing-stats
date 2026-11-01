@@ -184,6 +184,7 @@
     <Compile Remove="Storage/LandingRecordFile.cs" />
     <Compile Remove="Storage/LandingReplayColumns.cs" />
     <Compile Remove="Storage/LandingRepository.cs" />
+    <Compile Remove="Storage/LandingShareArchive.cs" />
     <Compile Remove="Storage/LandingSiteMetadataPersistence.cs" />
     <Compile Remove="Storage/RawCaptureRepository.cs" />
     <Compile Remove="Storage/ReplaySourceArchive.cs" />
@@ -200,6 +201,8 @@
     <Compile Include="..\LandingStats.ProcessControl\GuardianClient.cs" Link="ProcessControl\GuardianClient.cs" />
     <Compile Include="..\LandingStats.ProcessControl\GuardianProtocol.cs" Link="ProcessControl\GuardianProtocol.cs" />
     <Compile Include="..\LandingStats.ProcessControl\GuardianSignals.cs" Link="ProcessControl\GuardianSignals.cs" />
+    <Compile Include="..\LandingStats.ProcessControl\LandingFileAssociation.cs" Link="ProcessControl\LandingFileAssociation.cs" />
+    <Compile Include="..\LandingStats.ProcessControl\LandingFileActivation.cs" Link="ProcessControl\LandingFileActivation.cs" />
     <None Remove="Assets\AppIcon.ico" />
     <Resource Include="Assets\AppIcon.ico" />
     <ProjectReference Include="..\LandingStats.Core\LandingStats.Core.csproj" />

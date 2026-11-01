@@ -71,6 +71,9 @@ data handling.
 - Automatic diagnostic reports (switchable in Settings) that securely bundle landing telemetry with
   its calculated results; no full-flight recording mode is exposed in the UI.
 - Compact local landing history containing only the data used by the dashboard.
+- Share a landing as one `.lslanding` file, including its available contacts,
+  charts and 3D replay. Import multiple files through the file picker, drag and
+  drop, or double-click; imported landings are marked and excluded from monthly averages.
 - Optional Google Drive backup for saved landings, language, and the MSFS 2024
   auto-start preference. Raw telemetry and bug reports are not included.
 - Optional auto-start with detected Steam or Microsoft Store installations of
@@ -85,10 +88,9 @@ unavailable while independent terrain measurements are retained.
 
 ## Requirements
 
-To run the application:
-
-- Windows 10 or Windows 11;
-- Microsoft Flight Simulator 2024.
+The application requires Windows 10 or Windows 11. Recording requires Microsoft
+Flight Simulator 2024. Viewing saved or [shared landings](docs/landing-sharing.md)
+works without a running simulator or connected controllers.
 
 To build locally:
 

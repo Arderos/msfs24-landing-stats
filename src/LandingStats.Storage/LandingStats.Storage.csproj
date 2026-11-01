@@ -17,6 +17,7 @@
     <Compile Include="../LandingStats.App/Storage/LandingRecordFile.cs" Link="Storage/LandingRecordFile.cs" />
     <Compile Include="../LandingStats.App/Storage/LandingReplayColumns.cs" Link="Storage/LandingReplayColumns.cs" />
     <Compile Include="../LandingStats.App/Storage/LandingRepository.cs" Link="Storage/LandingRepository.cs" />
+    <Compile Include="../LandingStats.App/Storage/LandingShareArchive.cs" Link="Storage/LandingShareArchive.cs" />
     <Compile Include="../LandingStats.App/Storage/LandingSiteMetadataPersistence.cs" Link="Storage/LandingSiteMetadataPersistence.cs" />
     <Compile Include="../LandingStats.App/Storage/RawCaptureRepository.cs" Link="Storage/RawCaptureRepository.cs" />
     <Compile Include="../LandingStats.App/Storage/ReplaySourceArchive.cs" Link="Storage/ReplaySourceArchive.cs" />

@@ -20,6 +20,8 @@
     <Compile Include="..\LandingStats.ProcessControl\GuardianPolicy.cs" Link="ProcessControl\GuardianPolicy.cs" />
     <Compile Include="..\LandingStats.ProcessControl\GuardianProtocol.cs" Link="ProcessControl\GuardianProtocol.cs" />
     <Compile Include="..\LandingStats.ProcessControl\GuardianSignals.cs" Link="ProcessControl\GuardianSignals.cs" />
+    <Compile Include="..\LandingStats.ProcessControl\LandingFileAssociation.cs" Link="ProcessControl\LandingFileAssociation.cs" />
+    <Compile Include="..\LandingStats.ProcessControl\LandingFileActivation.cs" Link="ProcessControl\LandingFileActivation.cs" />
     <Compile Include="..\LandingStats.ProcessControl\GuardianUpdateLease.cs" Link="ProcessControl\GuardianUpdateLease.cs" />
     <Compile Include="..\LandingStats.ProcessControl\GuardianUpdater.cs" Link="ProcessControl\GuardianUpdater.cs" />
     <Compile Include="..\LandingStats.App\Runtime\OwnedProcess.cs" Link="ProcessControl\OwnedProcess.cs" />

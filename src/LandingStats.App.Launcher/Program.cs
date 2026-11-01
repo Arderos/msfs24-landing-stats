@@ -47,8 +47,26 @@ internal static class Program
                 return 0;
             }
 
+            var launcher = Assembly.GetExecutingAssembly().Location;
+            try { LandingFileAssociation.Register(launcher); }
+            catch (Exception error)
+            {
+                LogGuardian(0, "file_association_failed " + error.Message);
+                MessageBox.Show("Could not register landing files. The application can still import files from its window.\r\n\r\n" + error.Message,
+                    "MSFS Landing Stats", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+            var landingFiles = LandingFileActivation.FileArguments(args);
+            if (landingFiles.Length != 0)
+            {
+                using var requests = new LandingFileActivation();
+                requests.Submit(landingFiles);
+                // The durable request owns these arguments across App recovery.
+                // Passing them to every replacement App would submit them again.
+                args = LandingFileActivation.WithoutFileArguments(args);
+                Environment.SetEnvironmentVariable(UpdateProtocol.ReleaseUpdateProtocol.BackgroundRestartEnvironmentVariable, null);
+            }
             var simulatorAutoStart = Array.IndexOf(args, "--simulator-autostart") >= 0;
-            var background = simulatorAutoStart || Environment.GetEnvironmentVariable(UpdateProtocol.ReleaseUpdateProtocol.BackgroundRestartEnvironmentVariable) == "1";
+            var background = landingFiles.Length == 0 && (simulatorAutoStart || Environment.GetEnvironmentVariable(UpdateProtocol.ReleaseUpdateProtocol.BackgroundRestartEnvironmentVariable) == "1");
             if (!GuardianInstance.TryAcquire(out var instance, activateExisting: !background)) return 0;
             using (instance!)
             {
@@ -61,7 +79,6 @@ internal static class Program
                 if (GuardianInstance.ApplicationAlreadyRunning()) return 0;
                 var runtimeDirectory = RuntimeDirectoryPath();
                 var session = Guid.NewGuid();
-                var launcher = Assembly.GetExecutingAssembly().Location;
                 var updates = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "MSFS Landing Stats", "Updates");
                 var supervisor = new GuardianSupervisor(generation =>
                 {
@@ -78,7 +95,8 @@ internal static class Program
                 Microsoft.Win32.SystemEvents.SessionEnding += ending;
                 try
                 {
-                    supervisor.RunAsync(Path.Combine(runtimeDirectory, ChildExecutable), args,
+                    var runtimeArguments = landingFiles.Length == 0 ? args : args.Where(argument => argument != "--simulator-autostart").ToArray();
+                    supervisor.RunAsync(Path.Combine(runtimeDirectory, ChildExecutable), runtimeArguments,
                         Path.GetDirectoryName(launcher) ?? Environment.CurrentDirectory,
                         new Dictionary<string, string> { [LauncherPathEnvironmentVariable] = launcher }).GetAwaiter().GetResult();
                 }

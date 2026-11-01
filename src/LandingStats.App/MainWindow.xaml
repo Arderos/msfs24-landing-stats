@@ -13,6 +13,9 @@
         ResizeMode="CanResizeWithGrip"
         Icon="Assets/AppIcon.ico"
         Background="{StaticResource AppBackgroundBrush}"
+        AllowDrop="True"
+        PreviewDragOver="OnLandingFilesDragOver"
+        PreviewDrop="OnLandingFilesDrop"
         UseLayoutRounding="True">
     <Window.Resources>
         <presentation:LandingPresentationConverter x:Key="LandingPresentationConverter" />
@@ -147,6 +150,26 @@
                     <Setter Property="Visibility" Value="Visible" />
                 </DataTrigger>
             </Style.Triggers>
+        </Style>
+        <Style x:Key="HistoryShareButtonStyle" TargetType="{x:Type Button}" BasedOn="{StaticResource HistoryDeleteButtonStyle}">
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type Button}">
+                        <Border x:Name="Chrome" Background="{TemplateBinding Background}" CornerRadius="5">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Chrome" Property="Background" Value="{StaticResource AccentSoftBrush}" />
+                                <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="Chrome" Property="Background" Value="{StaticResource SurfaceRaisedBrush}" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
         </Style>
         <Style x:Key="DangerButtonStyle" TargetType="{x:Type Button}">
             <Setter Property="Foreground" Value="#FFD8CF" />
@@ -395,12 +418,22 @@
                     <RowDefinition Height="46" />
                     <RowDefinition Height="42" />
                     <RowDefinition Height="*" />
+                    <RowDefinition Height="Auto" />
                     <RowDefinition Height="26" />
                 </Grid.RowDefinitions>
                 <Grid Grid.Row="0" Margin="16,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
                     <TextBlock Text="{DynamicResource History.Title}" Style="{StaticResource SectionLabelStyle}" Foreground="{StaticResource SubtleTextBrush}" VerticalAlignment="Center" />
-                    <TextBlock x:Name="HistoryCountText" HorizontalAlignment="Right" VerticalAlignment="Center"
+                    <TextBlock x:Name="HistoryCountText" Grid.Column="1" Margin="8,0,12,0" HorizontalAlignment="Right" VerticalAlignment="Center"
                                Foreground="{StaticResource SubtleTextBrush}" FontFamily="Cascadia Mono, Consolas" FontSize="11" />
+                    <Button x:Name="ImportLandingsButton" Grid.Column="2" Content="{DynamicResource Sharing.Import}"
+                            Style="{StaticResource OutlineButtonStyle}" Padding="9,5" FontSize="11" VerticalAlignment="Center"
+                            Click="OnImportLandingsClick" ToolTip="{DynamicResource Sharing.ImportHint}"
+                            AutomationProperties.Name="{DynamicResource Sharing.Import}" />
                 </Grid>
                 <Border Grid.Row="1" Height="30" Margin="12,0,12,12" Background="{StaticResource SurfaceBrush}" CornerRadius="7">
                     <Grid>
@@ -470,6 +503,10 @@
                                             <ContentPresenter VerticalAlignment="Center" />
                                         </Border>
                                         <ControlTemplate.Triggers>
+                                            <DataTrigger Binding="{Binding IsImported}" Value="True">
+                                                <Setter TargetName="Row" Property="Background" Value="#17252D" />
+                                                <Setter TargetName="Row" Property="BorderBrush" Value="#7EAABF" />
+                                            </DataTrigger>
                                             <Trigger Property="IsSelected" Value="True">
                                                 <Setter TargetName="Row" Property="Background" Value="{StaticResource SurfaceRaisedBrush}" />
                                                 <Setter TargetName="Row" Property="BorderBrush" Value="{StaticResource AccentBrush}" />
@@ -492,6 +529,10 @@
                                 </Grid.ColumnDefinitions>
                                 <StackPanel VerticalAlignment="Center">
                                     <TextBlock Text="{Binding AircraftTitle}" FontSize="12" FontWeight="Medium" TextTrimming="CharacterEllipsis" />
+                                    <TextBlock x:Name="ImportedLandingLabel" Text="{DynamicResource Sharing.Imported}"
+                                               Foreground="#9AC9DD" FontSize="9" FontWeight="SemiBold" Margin="0,2,0,0"
+                                               Visibility="{Binding Record.IsImported, Converter={StaticResource BooleanToVisibilityConverter}}"
+                                               ToolTip="{DynamicResource Sharing.ImportedHint}" />
                                     <StackPanel Orientation="Horizontal" Margin="0,3,0,0">
                                         <TextBlock Text="{Binding LocationDisplay}" Foreground="{StaticResource SubtleTextBrush}" FontSize="11" TextTrimming="CharacterEllipsis" />
                                         <TextBlock Text="  ·  " Foreground="{StaticResource SubtleTextBrush}" FontSize="11" />
@@ -512,7 +553,18 @@
                                     <TextBlock Text="{Binding ImpactPeakDisplay, StringFormat={}{0} G}" Foreground="{StaticResource SubtleTextBrush}"
                                                FontFamily="Cascadia Mono, Consolas" FontSize="10" Margin="0,2,0,0" HorizontalAlignment="Right" />
                                 </StackPanel>
-                                <Button Grid.Column="1"
+                                <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
+                                <Button x:Name="ShareLandingButton" Style="{StaticResource HistoryShareButtonStyle}" Margin="0,0,4,0"
+                                        Tag="{Binding Record}" Click="OnShareLandingClick"
+                                        ToolTip="{DynamicResource Sharing.ShareHint}"
+                                        AutomationProperties.Name="{DynamicResource Sharing.Share}">
+                                    <Viewbox Width="15" Height="15">
+                                        <Path Data="M 10,13 L 10,2 M 6,6 L 10,2 L 14,6 M 4,10 L 4,17 L 16,17 L 16,10"
+                                              Fill="Transparent" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType={x:Type Button}}}"
+                                              StrokeThickness="1.5" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round" />
+                                    </Viewbox>
+                                </Button>
+                                <Button x:Name="DeleteLandingButton"
                                         Style="{StaticResource HistoryDeleteButtonStyle}"
                                         HorizontalAlignment="Right"
                                         Tag="{Binding Record}"
@@ -529,6 +581,7 @@
                                               StrokeLineJoin="Round" />
                                     </Viewbox>
                                 </Button>
+                                </StackPanel>
                             </Grid>
                         </DataTemplate>
                     </ListBox.ItemTemplate>
@@ -547,7 +600,26 @@
                             Style="{StaticResource OutlineButtonStyle}" Click="OnRetryHistoryLoadClick" />
                 </StackPanel>
 
-                <Grid Grid.Row="3" Margin="16,0" VerticalAlignment="Center">
+                <Border x:Name="SharingStatusPanel" Grid.Row="3" Margin="12,6" Padding="10,8"
+                        Background="{StaticResource SurfaceBrush}" CornerRadius="7" Visibility="Collapsed">
+                    <Grid>
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                        <StackPanel>
+                            <TextBlock x:Name="SharingStatusText" Foreground="{StaticResource MutedTextBrush}" FontSize="11" TextWrapping="Wrap" />
+                            <Expander x:Name="SharingErrorDetails" Header="{DynamicResource Sharing.Details}" Visibility="Collapsed"
+                                      Foreground="{StaticResource MutedTextBrush}" FontSize="11" Margin="0,6,0,0">
+                                <ScrollViewer MaxHeight="120" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                                    <TextBlock x:Name="SharingErrorText" TextWrapping="Wrap" Margin="0,5,0,0" />
+                                </ScrollViewer>
+                            </Expander>
+                        </StackPanel>
+                        <Button x:Name="DismissSharingStatusButton" Grid.Column="1" Content="×" Width="20" Height="20"
+                                Margin="4,-3,-4,0" VerticalAlignment="Top" Style="{StaticResource OutlineButtonStyle}" Padding="0"
+                                Click="OnDismissSharingStatusClick" ToolTip="{DynamicResource Common.Close}"
+                                AutomationProperties.Name="{DynamicResource Common.Close}" />
+                    </Grid>
+                </Border>
+                <Grid Grid.Row="4" Margin="16,0" VerticalAlignment="Center">
                     <TextBlock Text="{DynamicResource History.AverageRate}" Foreground="{StaticResource SubtleTextBrush}" FontSize="11" />
                     <TextBlock x:Name="AverageRateText" HorizontalAlignment="Right" Foreground="{StaticResource MutedTextBrush}"
                                FontFamily="Cascadia Mono, Consolas" FontSize="11" />

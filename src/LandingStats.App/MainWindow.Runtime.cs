@@ -37,13 +37,14 @@ public partial class MainWindow
         var reason = failure == null ? GuardianRecovery.None : runtime?.IsPresentationDependency(failure, uiStalled) == true ? GuardianRecovery.Presentation : GuardianRecovery.Runtime;
         return new GuardianStatus(_runtimeStartupFailed || runtime?.Ready == true,
             _runtimeStartupFailed ? System.Diagnostics.Stopwatch.GetTimestamp() : runtime?.ReadObservationQpc(uiStalled) ?? 0,
-            uiQpc, _runtimeStartupFailed || runtime?.SafeToRestart == true, reason, failure ?? "", App.ShutdownProgressQpc);
+            uiQpc, SharingStorageIdle && (_runtimeStartupFailed || runtime?.SafeToRestart == true), reason, failure ?? "", App.ShutdownProgressQpc);
     }
     internal async Task<bool> PrepareGuardianRecoveryAsync()
     {
         var runtime = Volatile.Read(ref _runtime);
-        if (runtime?.SafeToRestart != true || Volatile.Read(ref _isClosed)) return false;
-        await runtime.StopAsync().ConfigureAwait(false); return true;
+        if (runtime?.SafeToRestart != true || Volatile.Read(ref _isClosed) || !TrySealSharingForRestart()) return false;
+        try { await runtime.StopAsync().ConfigureAwait(false); return true; }
+        catch { ResumeSharingAfterFailedRestart(); throw; }
     }
 
     private Task InitializeRuntimeAsync() => InitializeRuntimeAsync(

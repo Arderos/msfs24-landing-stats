@@ -367,7 +367,7 @@ public partial class MainWindow : Window
     internal static double? MonthlyAverageDisplayedFpm(IEnumerable<LandingRecord> records, DateTime localNow)
     {
         var primaryContacts = records
-            .Where(record => record.ContactNumber == 1)
+            .Where(record => !record.IsImported && record.ContactNumber == 1)
             .Where(record =>
             {
                 var local = record.TimestampUtc.ToLocalTime();
@@ -1272,6 +1272,7 @@ public partial class MainWindow : Window
 
     private void RefreshLocalizedPresentation()
     {
+        RefreshSharingPresentation();
         RefreshWorkerHealthPresentation();
         _googleDriveWarningDetail = CloudWarnings(_googleDriveWarningSummary);
         if (_googleDriveErrorKey != null) _googleDriveErrorDetail = LocalizationManager.Text(_googleDriveErrorKey);

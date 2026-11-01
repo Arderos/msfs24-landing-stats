@@ -33,6 +33,7 @@ public partial class MainWindow
 
     private Task BeginWindowShutdown()
     {
+        StopAcceptingLandingSharing();
         var shutdown = _windowShutdown.BeginAsync(DrainWindowShutdownAsync);
         _isClosed = true;
         StopWorkerHealthPresentation();

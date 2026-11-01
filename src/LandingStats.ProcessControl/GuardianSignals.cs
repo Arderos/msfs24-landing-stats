@@ -27,18 +27,29 @@ internal sealed class GuardianSignals : IDisposable
     public static GuardianSignals Create(GuardianDescriptor descriptor) => new GuardianSignals(descriptor, true);
     public static GuardianSignals Open(GuardianDescriptor descriptor) => new GuardianSignals(descriptor, false);
     internal static EventWaitHandle CreateEvent(string name, EventResetMode mode = EventResetMode.ManualReset, bool allowMediumIntegrity = false)
+        => CreateEvent(name, mode, allowMediumIntegrity, allowExisting: false);
+    // A durable inbox's fixed-name wakeup hint can outlive a receiver while a
+    // producer still holds it. This is separate from the guardian's unique,
+    // authenticated lifecycle signals, whose identities must never be reused.
+    internal static EventWaitHandle CreateOrOpenActivationEvent(string name)
+        => CreateEvent(name, EventResetMode.AutoReset, allowMediumIntegrity: true, allowExisting: true);
+    private static EventWaitHandle CreateEvent(string name, EventResetMode mode, bool allowMediumIntegrity, bool allowExisting)
     {
         var security = new EventWaitHandleSecurity(); security.SetAccessRuleProtection(true, false);
         using var identity = WindowsIdentity.GetCurrent();
         security.AddAccessRule(new EventWaitHandleAccessRule(identity.User ?? throw new InvalidOperationException("Missing user identity."), EventWaitHandleRights.FullControl, AccessControlType.Allow));
         var handle = new EventWaitHandle(false, mode, name, out var created, security);
-        if (!created) { handle.Dispose(); throw new InvalidOperationException("Guardian signal identity is already in use."); }
-        if (allowMediumIntegrity)
+        if (!created && !allowExisting) { handle.Dispose(); throw new InvalidOperationException("Guardian signal identity is already in use."); }
+        try
         {
+            // The constructor's descriptor is ignored when opening an existing
+            // object. Preserve the same per-user access policy on that path.
+            if (!created) handle.SetAccessControl(security);
             // LABEL_SECURITY_INFORMATION needs WRITE_OWNER, not the audit SACL
             // privilege requested by the managed event-security constructor.
-            try { SetActivationIntegrity(handle); } catch { handle.Dispose(); throw; }
+            if (allowMediumIntegrity) SetActivationIntegrity(handle);
         }
+        catch { handle.Dispose(); throw; }
         return handle;
     }
     private static void SetActivationIntegrity(EventWaitHandle handle)

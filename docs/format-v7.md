@@ -54,6 +54,16 @@ Regression tests enforce both sides of the rule:
 
 ## Compatibility
 
+### Imported landing provenance
+
+Shared landings add optional summary members: `IsImported`, `ImportedSourceId`,
+`ImportedSourceEpisodeId`, and `ImportedPackageHash`. Older records omit these
+members and remain ordinary recorded landings. Summary indexes and backups
+preserve this provenance. The import uses local identities separate from native
+records; the package revision also separates different shared versions of an
+episode. These additions do not change the v7 series layout. See
+[landing sharing](landing-sharing.md) for duplicate and reimport behavior.
+
 ### Reproducible analysis geometry
 
 New native records optionally include `summary.AnalysisGeometry` (version 1).

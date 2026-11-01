@@ -138,10 +138,16 @@ internal static class GuardianApplicationRegressionTests
         var blocked = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         var release = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         var window = (MainWindow)FormatterServices.GetUninitializedObject(typeof(MainWindow));
+        // This runtime-only probe bypasses the constructor. Initialize the
+        // sharing ownership boundary consulted by guardian health and recovery.
+        const BindingFlags windowFields = BindingFlags.Instance | BindingFlags.NonPublic;
+        typeof(MainWindow).GetField("_sharingAdmissionGate", windowFields)!.SetValue(window, new object());
+        typeof(MainWindow).GetField("_sharingStorageTail", windowFields)!.SetValue(window, Task.CompletedTask);
+        typeof(MainWindow).GetField("_sharingAccepting", windowFields)!.SetValue(window, true);
         using var runtime = new LandingRuntime(root, AppDomain.CurrentDomain.BaseDirectory, Path.Combine(root, "identity"),
             new LandingRepository(Path.Combine(root, "history")), new object(), (_, __) => { blocked.TrySetResult(true); return release.Task; },
             App.RequestRuntimeRecovery, (_, __) => "normal"); // Real production recovery budgets.
-        typeof(MainWindow).GetField("_runtime", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(window, runtime);
+        typeof(MainWindow).GetField("_runtime", windowFields)!.SetValue(window, runtime);
         Exception? failure = null;
         var trace = Path.Combine(Path.GetDirectoryName(root)!, "runtime-trace.txt");
         void Trace(string phase) => File.AppendAllText(trace, DateTime.UtcNow.ToString("O") + " " + phase + Environment.NewLine +

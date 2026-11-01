@@ -98,6 +98,16 @@ the series needed for history, charts and replay. The current history layout is
 7; its version is independent of diagnostic CSV schema 8 and archive format 2.
 See the [history format](format-v7.md) and [capture format](capture-archive-format.md).
 
+[Landing sharing](landing-sharing.md) packages the saved contacts of one episode
+in a `.lslanding` file. The storage layer validates and imports the package;
+the UI serializes those operations with other history writes. Imported contacts
+retain their origin through summaries and backup and are excluded from monthly
+averages. Viewing them uses saved replay data and does not require live devices.
+The outer portable launcher maintains the current-user file association and
+queues file-open requests before acquiring its single-instance lock. The App
+acknowledges a durable request after handling its import, including when the
+request arrives during startup or recovery.
+
 Diagnostic reporting and Google Drive backup are separate operations. Automatic
 diagnostics are enabled by default and can be disabled in Settings. Drive backup
 is optional and contains compact history, not raw diagnostic archives. The local

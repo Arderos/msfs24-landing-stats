@@ -420,6 +420,7 @@ internal sealed class IntegrationApiData
         var projected = new JObject
         {
             ["id"] = record.Id, ["episodeId"] = EpisodeId(record), ["timestampUtc"] = Utc(record.TimestampUtc), ["sourceFormatVersion"] = record.FormatVersion,
+            ["isImported"] = record.IsImported,
             ["aircraft"] = new JObject { ["title"] = record.AircraftTitle, ["type"] = record.AircraftType, ["simulator"] = record.Simulator },
             ["site"] = new JObject { ["airport"] = record.Airport, ["runway"] = record.Runway, ["latitudeDegrees"] = Number(record.TouchdownLatitudeDegrees),
                 ["longitudeDegrees"] = Number(record.TouchdownLongitudeDegrees), ["airportDistanceNauticalMiles"] = Number(record.AirportDistanceNauticalMiles) },

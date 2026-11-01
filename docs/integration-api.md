@@ -119,6 +119,7 @@ Landing projections include:
 | Field | Meaning |
 | --- | --- |
 | `id`, `episodeId`, `timestampUtc`, `sourceFormatVersion` | Stable identities, contact time and source recording format. |
+| `isImported` | `true` for a contact imported from a shared landing file. Exclude these contacts from the user's monthly averages. Older projections without this additive field represent recorded contacts. |
 | `aircraft` | Aircraft `title`, `type` and `simulator`. |
 | `site` | Airport/runway identifiers, contact latitude/longitude in degrees and airport distance in nautical miles. |
 | `contactNumber`, `contactCount` | Contact position and count within the recorded landing. |

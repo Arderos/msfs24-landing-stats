@@ -8,6 +8,7 @@ Start with the [project README](../README.md) for installation, building and set
 | [Architecture](architecture.md) | Process ownership, recording, storage and controller profiles |
 | [Measurement methodology](methodology.md) | Timing, landing rates, G-load, reconstruction and measurement limits |
 | [Landing record format](format-v7.md) | Saved history, replay data, control assignments and backwards compatibility |
+| [Landing sharing](landing-sharing.md) | Export, import, Windows file activation and the portable sharing format |
 | [Capture archive format](capture-archive-format.md) | Diagnostic ZIP/Zstandard members, CSV versions and reader limits |
 | [Replay recording policy](replay-recording-policy.md) | Recording boundaries during simulator and external replay |
 | [Local integration API](integration-api.md) | Discovery, queries, subscriptions and the Python client |

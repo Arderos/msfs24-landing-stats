@@ -40,6 +40,7 @@ internal static class Program
     [STAThread]
     private static int Main(string[] args)
     {
+        if (args.Length >= 5 && args[0] == "--landing-file-submit") return LandingFileActivationRegressionTests.SubmitFixture(args);
         if (args.Length == 1 && args[0] == "--background-window-fixture") return BackgroundWindowRegressionFixture.Run();
         if (args.Any(arg => arg.StartsWith("--fixture=adversarial-", StringComparison.Ordinal))) return AdversarialRuntimeRegressionTests.Fixture(args);
         if (args.Length == 4 && args[0] == "--profile-evidence-probe")
@@ -91,6 +92,9 @@ internal static class Program
         _ = new System.Windows.Application();
         LocalizationManager.Apply("en");
 
+        Run("landing file activation preserves portable associations and durable multi-file handoff", LandingFileActivationRegressionTests.RunAll);
+        Run("landing sharing archive preserves complete episodes and validates portable files", LandingShareArchiveRegressionTests.RunAll);
+        Run("landing sharing UI imports multiple files, separates statistics and drains accepted writes", LandingSharingUiRegressionTests.RunAll);
         Run("delivery acknowledgements and OAuth failures preserve durable evidence", DeliveryRemediationRegressionTests.RunAll);
         Run("behavior parity preserves lifecycle and simulator controls across gaps", BehaviorParityRegressionTests.Recording);
         Run("restart readiness wakes without UI events and revokes stale permissions", RestartReadinessRegressionTests.RunAll);

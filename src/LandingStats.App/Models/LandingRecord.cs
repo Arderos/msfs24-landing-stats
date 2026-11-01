@@ -254,6 +254,18 @@ public sealed class LandingRecord : IExtensibleDataObject
         set { if (value != 6 && value != 8) throw new ArgumentOutOfRangeException(nameof(value)); _controllerAxisCount = value == 6 ? 0 : value; }
     }
 
+    [DataMember(Order = 75, EmitDefaultValue = false)]
+    public bool IsImported { get; set; }
+
+    [DataMember(Order = 76, EmitDefaultValue = false)]
+    public string? ImportedSourceId { get; set; }
+
+    [DataMember(Order = 77, EmitDefaultValue = false)]
+    public string? ImportedSourceEpisodeId { get; set; }
+
+    [DataMember(Order = 78, EmitDefaultValue = false)]
+    public string? ImportedPackageHash { get; set; }
+
     [IgnoreDataMember]
     public bool IsSummaryOnly { get; set; }
 
