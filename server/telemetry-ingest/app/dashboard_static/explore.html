@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark"><title>Flight Explorer · Landing Stats</title>
+  <link rel="icon" href="data:,"><link rel="stylesheet" href="/static/app.css"><link rel="stylesheet" href="/static/explore.css">
+  <script src="/static/explore-math.js" defer></script><script src="/static/explore.js" defer></script>
+</head>
+<body>
+  <header class="topbar"><a class="brand" href="/"><svg class="brand-mark" viewBox="0 0 40 40" aria-hidden="true"><path d="M5 11 16 26 35 30"/><path d="m8 12 11 10 14 3"/></svg><span>Landing Stats<span class="brand-divider">/</span>Flight Explorer</span></a><div class="topbar-right"><a href="/">Telemetry hub ↗</a><span class="network-label"><span class="status-dot"></span> Internal network</span></div></header>
+  <main class="flight-main">
+    <section class="page-heading"><div><p class="eyebrow">FLIGHT ANALYTICS</p><h1>Every approach tells a story.</h1><p class="subtitle">Compare trajectories, control inputs and touchdown dynamics across recorded flights.</p></div><button id="reload" class="button secondary">Refresh recordings</button></section>
+    <div id="flight-error" class="notice error" role="alert" hidden></div>
+    <form id="flight-filters" class="flight-filters">
+      <label class="field aircraft-field">Aircraft · cohort A<select id="aircraft"><option value="">All aircraft</option></select></label>
+      <label class="field">Uploaded<select id="days"><option value="0">All retained</option><option value="1">24 hours</option><option value="7">7 days</option><option value="30">30 days</option></select></label>
+      <label class="field">Airport<select id="airport"><option value="">All airports</option></select></label>
+      <label class="field">Runway<select id="runway"><option value="">All runways</option></select></label>
+      <button type="submit" class="button">Apply selection</button>
+      <details class="extra-filters"><summary>Compare & refine</summary><div class="filter-grid">
+        <label class="field">Recording app version<select id="creator"><option value="">All versions</option></select></label>
+        <label class="field">Physical device<select id="device"><option value="">All devices</option></select></label>
+        <label class="field">Absolute crosswind · kt<input id="wind_min" type="number" min="0" max="500" placeholder="Minimum"></label>
+        <label class="field">Absolute crosswind · kt<input id="wind_max" type="number" min="0" max="500" placeholder="Maximum"></label>
+        <label class="field">Landing weight · lb<input id="weight_min" type="number" min="0" max="10000000" placeholder="Minimum"></label>
+        <label class="field">Landing weight · lb<input id="weight_max" type="number" min="0" max="10000000" placeholder="Maximum"></label>
+        <label class="field compare-field">Cohort B · compare by<select id="compare_by"><option value="">No comparison</option><option value="aircraft">Aircraft</option><option value="creator">Recording app version</option><option value="device">Physical device</option><option value="airport">Airport</option><option value="runway">Airport / runway</option><option value="wind">Crosswind range</option><option value="weight">Landing weight range</option></select></label>
+        <label class="field" id="compare_value_field">Cohort B · value<select id="compare_value" disabled><option value="">Select comparison</option></select></label>
+        <label class="field" id="compare_min_field" hidden><span id="compare_min_label">Cohort B · minimum</span><input id="compare_min" type="number" min="0" placeholder="No lower bound"></label>
+        <label class="field" id="compare_max_field" hidden><span id="compare_max_label">Cohort B · maximum</span><input id="compare_max" type="number" min="0" placeholder="No upper bound"></label>
+      </div></details>
+    </form>
+    <div class="flight-status"><p id="flight-status" role="status" aria-live="polite">Loading retained recordings…</p><button id="clear-selection" class="text-button" hidden>Clear point selection</button></div>
+    <section id="flight-kpis" class="flight-kpis" aria-label="Selected flight statistics"></section>
+    <nav class="flight-tabs" aria-label="Analysis views"><button data-tab="approaches">Approach corridor</button><button data-tab="profiles" aria-current="page">Aircraft profile</button><button data-tab="flare">Flare</button><button data-tab="response">Control response</button><button data-tab="touchdown">Touchdown map</button><button data-tab="wind">Crosswind</button><button data-tab="signature">Contact signature</button><button data-tab="relationships">Relationships</button><button data-tab="comparison">Compare cohorts</button><button data-tab="replay">Flight replay</button></nav><div class="toolbar-options profile-overlays" aria-label="Profile overlays"><label class="check"><input id="extremes" type="checkbox" checked> Min / max</label><label class="check"><input id="individuals" type="checkbox"> Individual flights</label></div>
+    <section id="view-profiles" class="flight-view">
+      <div class="view-toolbar"><div><h2 id="profile-title">Aircraft profile</h2><p id="profile-description">One contribution per approach at each coordinate.</p></div><div class="toolbar-options"><label class="field">Align by<select id="alignment"><option value="agl">Height above ground</option><option value="t">Time from touchdown</option><option value="along">Distance past threshold</option></select></label><label class="field" id="profile-channels">Channels<select id="channel-set"><option value="approach">Approach & energy</option><option value="controls">Physical controls</option><option value="response">Pitch command & response</option><option value="roll-response">Roll response</option><option value="yaw-response">Yaw response</option><option value="flare">Flare close-up</option><option value="wind">Crosswind technique</option></select></label><label id="flare-options" class="field" hidden>Flare window<select id="flare-window"><option value="50">50 ft / 5 s</option><option value="100" selected>100 ft / 10 s</option><option value="200">200 ft / 20 s</option></select></label><label id="response-options" class="field" hidden>Control axis<select id="response-axis"><option value="response">Pitch</option><option value="roll-response">Roll</option><option value="yaw-response">Yaw</option><option value="controls">All physical inputs</option></select></label></div></div>
+      <div id="cohort-legend" class="flight-legend"></div><div id="profiles" class="plot-grid"></div>
+    </section>
+    <section id="view-approaches" class="flight-view" hidden>
+      <div class="view-toolbar"><div><h2>Approach atlas</h2><p>Select an airport on the map or a trajectory to inspect the flight.</p></div><div class="toolbar-options"><label class="field">Corridor projection<select id="corridor-mode"><option value="plan">Plan · lateral deviation</option><option value="side">Side · height above ground</option><option value="3d">3D · runway coordinates</option></select></label><label class="field">Display<select id="corridor-display"><option value="paths">Individual trajectories</option><option value="density">Approach density</option></select></label><label class="field">Colour<select id="corridor-colour"><option value="cohort">Cohort / density</option><option value="ias">Indicated airspeed</option><option value="sink">Descent rate</option></select></label></div></div>
+      <article class="panel map-panel"><div id="world-map" class="world-map"></div><p class="map-caption">Land: Natural Earth, public domain · airport markers use recorded touchdown coordinates.</p></article>
+      <article class="panel corridor-panel"><div class="panel-heading"><h2>Local approach map</h2><span class="panel-meta">Geographic tracks · select one airport above</span></div><div id="local-map"></div></article>
+      <article class="panel corridor-panel"><div class="panel-heading"><h2>Approach corridor</h2><span class="panel-meta">Common landing-threshold origin · click a path</span></div><div id="corridor"></div><p class="plot-footnote">Only recordings with a known runway direction and displaced threshold. Different airports share the same runway coordinate system.</p></article>
+    </section>
+    <section id="view-touchdown" class="flight-view" hidden>
+      <div class="view-toolbar"><div><h2>The landing, in detail</h2><p>First-contact position in common runway coordinates. Compare airports or runways in Compare & refine.</p></div><div class="toolbar-options"><label class="field">Display<select id="touch-display"><option value="density">Touchdown heatmap</option><option value="points">Individual contacts</option></select></label><label class="field">Colour touchdown points<select id="touch-colour"><option value="count">Approach count</option><option value="g">Peak G</option><option value="fpm">Descent rate</option><option value="crosswind">Crosswind</option><option value="ias">Indicated airspeed</option></select></label></div></div>
+      <article class="panel"><div class="panel-heading"><h2>Touchdown footprint</h2><span id="footprint-count" class="panel-meta"></span></div><div id="footprint"></div><p class="plot-footnote">Recorded aircraft reference position at first contact; not the wheel contact patch. Metres from landing threshold and centreline.</p></article>
+    </section>
+    <section id="view-wind" class="flight-view" hidden>
+      <div class="view-toolbar"><div><h2>Crosswind at touchdown</h2><p>Crab, bank, pedals and lateral load against signed crosswind at first contact.</p></div></div>
+      <div id="wind-legend" class="flight-legend"></div><p class="plot-footnote">Points are independent approaches. Bands summarize common wind bins; hover for N and range. Choose a wind range in Compare & refine to apply it to every view.</p><div id="wind-charts" class="plot-grid"></div>
+    </section>
+    <section id="view-signature" class="flight-view" hidden>
+      <div class="view-toolbar"><div><h2>Contact signature</h2><p>Contact sequence, recorded impact windows, vertical load and gear compression.</p></div></div>
+      <article class="panel"><div class="panel-heading"><h2>Contact sequence</h2><span class="panel-meta">Click a flight to inspect individual gear states</span></div><div id="contact-timeline"></div></article>
+      <article class="panel impact-grid"><div class="panel-heading"><h2>Selected flight · gear contact state</h2></div><div id="gear-timeline"></div></article>
+      <div id="impact" class="plot-grid impact-grid"></div>
+    </section>
+    <section id="view-relationships" class="flight-view" hidden>
+      <div class="view-toolbar"><div><h2>Explore the relationships</h2><p>Click a flight. Drag a rectangle to use that group in every view.</p></div><div class="toolbar-options"><label class="field">Horizontal<select id="scatter-x"></select></label><label class="field">Vertical<select id="scatter-y"></select></label><label class="field">Colour<select id="scatter-colour"></select></label></div></div>
+      <article class="panel scatter-panel"><div id="scatter"></div><p id="scatter-note" class="plot-footnote"></p></article>
+    </section>
+    <section id="view-replay" class="flight-view" hidden>
+      <div class="view-toolbar"><div><h2>Recorded flight replay</h2><p>One cursor links the flight path and every signal.</p></div><label class="field replay-select">Flight<select id="replay-flight"><option value="">Select a flight</option></select></label></div>
+      <div id="replay-info" class="replay-info"></div><div class="replay-controls"><button id="play" class="button" disabled>Play</button><input id="scrubber" type="range" min="0" max="1" step="1" value="0" disabled aria-label="Replay position"><output id="replay-time">—</output><label class="field">Speed<select id="play-speed"><option value="1">1×</option><option value="2">2×</option><option value="4">4×</option></select></label></div>
+      <div class="plot-grid"><article class="panel"><div class="panel-heading"><h2>Ground track</h2></div><div id="replay-map"></div></article><article class="panel"><div class="panel-heading"><h2>Control inputs at cursor</h2></div><div id="control-state"></div></article></div><div id="replay-charts" class="plot-grid impact-grid"></div>
+    </section>
+    <section id="view-comparison" class="flight-view" hidden><div class="view-toolbar"><div><h2>Compare landing outcomes</h2><p>Common bins; percentages use each cohort's available observations. Select a bin to inspect its flights.</p></div></div><div id="comparison-legend" class="flight-legend"></div><div id="distributions" class="plot-grid"></div></section>
+    <div id="selected-flight" class="selected-flight" hidden></div>
+    <details class="methodology"><summary>How to read these charts</summary><p>Solid lines show the median; the inner band covers the 10th–90th percentiles. The optional outer band shows the minimum and maximum. These are pointwise statistics, not the trajectory of one real flight. Hover to see the number of independent approaches contributing to that point. Gold is the selected flight; thin clickable lines show up to the 50 newest approaches in each cohort.</p><p>Height profiles use the last downward crossing of each height before first contact. Time profiles use the recorded contact clock. Gaps over 0.5 seconds, paused or inactive physics, confirmed freeze/slew/SDK replay, and flight-segment changes are not interpolated. Hardware observations expire after 0.25 seconds; missing or ambiguous bindings remain gaps. Physical amplitude and timing are preserved; only recorded binding polarity is applied.</p><p>Each physical episode is counted once using its first contact. Heatmap counts give each approach one vote per cell. Metric colours show the median of available flight values in each cell; missing channels do not become zero. Trajectory density uses reduced display tracks. Filters use upload date and exact aircraft title. Recording app version is the Landing Stats version; aircraft add-on versions are not recorded. Cohort B changes the chosen criterion while retaining the other filters; an empty range bound is open.</p><p>At most the 250 newest matching approaches enter a comparison; the count above always states the scope. Display tracks are reduced; statistical profiles use original observations. AGL is the recorded aircraft reference height, so it need not be zero at touchdown. Coverage varies with the recording window and schema. Source-state coverage is shown in flight details; unavailable or stale evidence stays unknown. Contact-state bars show observed intervals; a saved impact window is the analysis duration, not a measured force-pulse width.</p></details>
+    <footer><span>Landing Stats / Flight Explorer</span><p>Retained telemetry · read-only analytics · no external map requests</p></footer>
+  </main>
+</body>
+</html>

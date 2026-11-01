@@ -11,6 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from .dashboard_index import DashboardIndex
+from .dashboard_analytics import profile_display_channels
 
 
 def create_app(index=None, allowed_networks=None, allowed_hosts=None):
@@ -51,7 +52,8 @@ def create_app(index=None, allowed_networks=None, allowed_hosts=None):
         except ValueError:
             permitted = False
         if not permitted or request.headers.get("sec-fetch-site") == "cross-site":
-            response = Response("Private network access only", status_code=403)
+            reason = 'client network is not allowed' if not permitted else 'cross-site request is not allowed'
+            response = Response(f"Private network access only: {reason}", status_code=403)
         elif request.method not in ("GET", "HEAD"):
             response = Response(status_code=405, headers={"Allow": "GET, HEAD"})
         else:
@@ -100,6 +102,38 @@ def create_app(index=None, allowed_networks=None, allowed_hosts=None):
         if detail is None:
             raise HTTPException(status_code=404, detail="Capture not found")
         return detail
+
+    @app.get('/api/analytics/catalog')
+    def analytics_catalog(days: int = Query(0, ge=0, le=3650)):
+        return index.analytics_catalog(days)
+
+    @app.get('/api/analytics/cohort')
+    def analytics_cohort(days: int = Query(0, ge=0, le=3650), aircraft: str = Query('', max_length=256),
+                         airport: str = Query('', max_length=128), runway: str = Query('', max_length=32),
+                         creator: str = Query('', max_length=64), device: str = Query('', max_length=512),
+                         axis: str = Query('agl', pattern='^(agl|t|along)$'),
+                         wind_min: float | None = Query(None, ge=0, le=500), wind_max: float | None = Query(None, ge=0, le=500),
+                         weight_min: float | None = Query(None, ge=0, le=10000000), weight_max: float | None = Query(None, ge=0, le=10000000),
+                         ids: str = Query('', max_length=9000), channels: str = Query('', max_length=128)):
+        if wind_min is not None and wind_max is not None and wind_min > wind_max or weight_min is not None and weight_max is not None and weight_min > weight_max:
+            raise HTTPException(422, 'Minimum must not exceed maximum')
+        try:
+            profile_display_channels(channels)
+        except ValueError as error:
+            raise HTTPException(422, str(error)) from error
+        result = index.analytics_cohort(days, aircraft, airport, runway, creator, device, axis, wind_min, wind_max, weight_min, weight_max, ids, channels)
+        if result is None:
+            raise HTTPException(503, 'Another analytics query is running; try again shortly', headers={'Retry-After': '2'})
+        return result
+
+    @app.get('/api/analytics/landings/{landing_id}')
+    def analytics_landing(landing_id: str):
+        if not re.fullmatch(r'[a-zA-Z0-9_-]{1,128}', landing_id):
+            raise HTTPException(404, 'Landing not found')
+        result = index.analytics_landing(landing_id)
+        if result is None:
+            raise HTTPException(404, 'Landing not found')
+        return result
 
     static = Path(__file__).parent / "dashboard_static"
     app.mount("/static", StaticFiles(directory=static), name="assets")

@@ -35,6 +35,16 @@ class FakeIndex:
             return {"capture_id": capture_id}
         return None
 
+    def analytics_catalog(self, days):
+        return {'landings': [], 'days': days}
+
+    def analytics_cohort(self, *args):
+        self.calls.append(('analytics', args))
+        return {'included': 0}
+
+    def analytics_landing(self, identifier):
+        return None
+
 
 class PeerAddress:
     """Set the real ASGI peer independently of attacker-controlled headers."""
@@ -164,7 +174,7 @@ class DashboardAccessTests(unittest.TestCase):
 
     def test_dashboard_static_interface_is_english(self):
         with self.client() as client:
-            for path in ("/", "/static/app.js", "/static/app.css"):
+            for path in ("/", "/static/app.js", "/static/app.css", "/explore.html", "/static/explore.js", "/static/explore-math.js", "/static/explore.css"):
                 with self.subTest(path=path):
                     response = client.get(path)
                     self.assertEqual(200, response.status_code)
@@ -172,6 +182,17 @@ class DashboardAccessTests(unittest.TestCase):
                     self.assertNotIn("ru-RU", response.text)
             self.assertIn('<html lang="en">', client.get("/").text)
             self.assertIn('"en-GB"', client.get("/static/app.js").text)
+
+    def test_analytics_query_contract_and_bounds(self):
+        with self.client() as client:
+            self.assertEqual(200, client.get('/api/analytics/catalog?days=7').status_code)
+            self.assertEqual(200, client.get('/api/analytics/cohort?aircraft=A320&axis=agl&wind_min=5&wind_max=20&channels=ias,sink').status_code)
+            for suffix in ('axis=height', 'days=-1', 'wind_min=20&wind_max=5', 'weight_min=-1', 'ids=' + 'x' * 9001, 'channels=unknown', 'channels=gear_-1', 'channels=agl,ias,gs,sink,pitch,bank,aoa,beta,g'):
+                self.assertEqual(422, client.get('/api/analytics/cohort?' + suffix).status_code)
+            self.assertEqual(404, client.get('/api/analytics/landings/unknown').status_code)
+            self.assertEqual(405, client.post('/api/analytics/cohort').status_code)
+        self.assertEqual(1, len(self.index.calls))
+        self.assertEqual('ias,sink', self.index.calls[0][1][-1])
 
 
 if __name__ == "__main__":

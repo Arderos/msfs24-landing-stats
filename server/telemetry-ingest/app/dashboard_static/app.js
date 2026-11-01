@@ -436,5 +436,10 @@
   $("capture-dialog").addEventListener("close", () => { state.detailGeneration += 1; });
   document.addEventListener("visibilitychange", () => { if (!document.hidden && !state.loading) refresh(); });
   setInterval(() => { if (!document.hidden && !state.loading) refresh(); }, 30000);
-  initialSkeletons(); refresh();
+  function openLinkedCapture() {
+    const match = location.hash.match(/^#capture=([a-f0-9]{32})$/);
+    if (match) openDetail(match[1]);
+  }
+  window.addEventListener("hashchange", openLinkedCapture);
+  initialSkeletons(); refresh(); openLinkedCapture();
 })();

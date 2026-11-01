@@ -171,6 +171,81 @@ use `immutable=1` to bypass this: it can omit transactions still in the WAL.
 
 ## Private telemetry dashboard
 
+### Flight Explorer
+
+`/explore.html` provides linked approach profiles, a local world map and runway
+corridors (plan, side and 3D projection), touchdown footprints, contact-load and
+gear-compression histories, brushable scatter plots, and synchronized flight
+replay. Aircraft, airport, runway, creator version, physical device, crosswind,
+weight and upload-period filters define the cohort; a second aircraft, creator
+version, device, airport/runway, crosswind range or landing-weight range can be compared while
+retaining the other filters. Recording app version is the Landing Stats version;
+aircraft add-on versions are not recorded.
+
+Nine analysis entries expose the approach corridor, aircraft profile, flare,
+control response, touchdown map, crosswind, contact signature, relationships and
+cohort comparison. Replay is an additional view. Flare windows can be narrowed
+by height, time or distance. Pitch, roll and yaw responses keep physical inputs,
+simulator commands and control surfaces distinct. Crosswind plots pair values
+at first contact, with signed wind, common bins, per-channel counts and bands.
+Contact timelines show saved contact timestamps and analysis-window duration;
+selected-flight gear state bars keep missing/invalid intervals blank. An impact
+analysis window is not a measurement of force-pulse duration.
+
+The atlas includes a north-up local geographic map with runway outlines and
+equal distance scale, plus runway-relative plan/side/3D views. Paths can be
+coloured by indicated airspeed or descent rate, or displayed as density cells.
+Touchdown heatmaps use the same per-approach counting rule. Each approach gets
+one vote per cell; metric colours use per-flight medians within each cell, then
+the median across flights. Density uses reduced display tracks and never joins
+missing coordinates or distinct physics segments. Click a cell to filter every
+view. The comparison view shows normalized histograms using common bin edges,
+valid/missing counts and medians; histogram bins also select flights.
+
+Selected flights appear in gold over statistical profiles. Optional thin paths
+show at most the 50 newest approaches per cohort, with up to eight requested
+channels; aggregate statistics continue to use the full bounded cohort. Physical
+input, simulator command, surface deflection and aircraft response have separate
+pitch and roll/yaw channel sets. Individual detail includes its cached profiles,
+so overlays use the same height/time/distance alignment as the aggregate bands.
+
+The background indexer prepares flight analytics in the dashboard's own cache.
+Historical backfill gets a 10-second work budget per 30-second refresh cycle
+(an in-progress archive finishes). Previous summaries stay visible during a
+format upgrade, and new arrivals are reconsidered before older pending archives.
+Analytics with an older eligibility format are withheld until rebuilt; ordinary
+archive summaries remain visible.
+HTTP requests never unpack retained archives or access the receiver database.
+The read-only endpoints are `/api/analytics/catalog`, `/api/analytics/cohort`
+and `/api/analytics/landings/{id}`. Cohorts contain at most the 250 newest matching
+first-contact approaches, with matched/included counts returned explicitly.
+Only one aggregate query runs at a time; concurrent queries receive 503 and
+`Retry-After`. Original archives, ingestion contracts and retention are unchanged.
+
+Profiles use one interpolated observation per approach/grid coordinate and
+report count, minimum, p10, median, p90 and maximum. Height profiles use the last
+downward crossing before contact; time profiles align to first contact; distance
+profiles use the named runway's displaced landing threshold. Unknown threshold
+offsets remain unavailable. AGL retains the recorded aircraft reference datum.
+Physics pauses, segment changes and gaps over the client's 0.5-second replay
+interpolation limit are excluded. Optional LSR1 source observations exclude
+confirmed freeze, slew and SDK replay, using the client's 1.5-second observation
+freshness limit. Missing, stale or unavailable evidence remains unknown, with
+checked-frame coverage exposed in flight details. Physical inputs retain recorded amplitude and
+time, use profile or journal binding polarity, and expire at the client's
+0.25-second freshness limit. Device/catalog changes never join unrelated axes.
+Older unaligned records retain a visible state-evidence limitation. Repeated
+uploads and bounce contacts do not add votes to approach statistics.
+
+Display tracks retain at most 700 points (bucket endpoints and load extrema);
+statistics use original observations. Missing channels stay null, including
+missing physical roles. Gear charts retain contact-point indices rather than
+inventing left/right/nose roles for unsupported aircraft. The bundled Natural
+Earth land layer is public domain; no browser request goes to an external map
+provider. Analytics errors are reported separately from archive-index errors.
+
+### Deployment and isolation
+
 The optional `docker-compose.dashboard.yml` adds a private web dashboard on
 port 8091 of the configured host. It has no connection to
 the public ingress network or Cloudflare Tunnel. No application release or code
@@ -183,6 +258,12 @@ Before running Compose, set these values in the deployment's untracked `.env`:
   including `127.0.0.1` for the container health check;
 - `DASHBOARD_ALLOWED_NETWORKS`: comma-separated client CIDRs, including
   `127.0.0.0/8,::1/128` for local health checks.
+
+Optionally set `DASHBOARD_CACHE_DIRECTORY` to an absolute host directory on a
+filesystem with enough free space for derived flight analytics (outside the
+receiver data root, owned by UID/GID 10001). Otherwise the existing named Docker
+volume is used. When relocating an existing cache, copy it with SQLite's backup
+API before switching the dashboard mount; retain the original for rollback.
 
 Compose refuses to start when a value is missing or empty. Use the deployment's
 actual addresses only in that local file; do not commit them. Restrict the
@@ -256,3 +337,6 @@ Do not use `compose down` for dashboard rollback. `dashboard-cache` and
 `dashboard-snapshot` are separate disposable volumes; neither contains the original
 archives or receiver database. Tests run alongside the existing service tests:
 `python -m unittest discover -s tests -p 'test_*.py' -v`.
+The dependency-free visualization calculations are checked with
+`node --test tests/explore-math.test.cjs` (Node.js 20+); the server CI job runs
+these checks as well. Node.js is not required in the deployed dashboard.
