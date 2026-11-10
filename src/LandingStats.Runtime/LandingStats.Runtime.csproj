@@ -50,7 +50,6 @@
     <Compile Include="../LandingStats.App/Runtime/RuntimeInputPreparation.cs" Link="Runtime/RuntimeInputPreparation.cs" />
     <Compile Include="../LandingStats.App/Runtime/RuntimePresentation.cs" Link="Runtime/RuntimePresentation.cs" />
     <Compile Include="../LandingStats.App/Runtime/RuntimeRetentionOwner.cs" Link="Runtime/RuntimeRetentionOwner.cs" />
-    <Compile Include="../LandingStats.App/Runtime/RuntimeScratchLease.cs" Link="Runtime/RuntimeScratchLease.cs" />
     <Compile Include="../LandingStats.App/Runtime/RuntimeSession.cs" Link="Runtime/RuntimeSession.cs" />
     <Compile Include="../LandingStats.App/Runtime/RuntimeSessionOwners.cs" Link="Runtime/RuntimeSessionOwners.cs" />
     <Compile Include="../LandingStats.App/Runtime/RuntimeWorkerSource.cs" Link="Runtime/RuntimeWorkerSource.cs" />

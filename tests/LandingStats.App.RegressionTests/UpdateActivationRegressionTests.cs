@@ -3,9 +3,12 @@ using System;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Runtime.InteropServices;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
+using System.Windows.Interop;
 using System.Windows.Threading;
 using LandingStats.App.Runtime;
 using LandingStats.App.Updates;
@@ -27,7 +30,110 @@ internal static class UpdateActivationRegressionTests
         BackgroundWindowDoesNotActivate(Array.Empty<string>(), update: true);
         BackgroundWindowDoesNotActivate(new[] { SimulatorAutoStartManager.LaunchArgument }, update: false);
         DuplicateBackgroundLaunchDoesNotActivate();
+        BackgroundWindowCommandsIgnoreConsoleEncoding();
+        foreach (var update in new[] { false, true })
+        foreach (var sourceInitialized in new[] { false, true })
+        foreach (var taskbar in new[] { false, true })
+            BackgroundWindowStaysBehindExistingWindows(update, sourceInitialized, taskbar);
     }
+
+    private static void BackgroundWindowCommandsIgnoreConsoleEncoding()
+    {
+        var previous = Console.InputEncoding;
+        try
+        {
+            foreach (var encoding in new[] { Encoding.GetEncoding(437), Encoding.UTF8 })
+            {
+                Console.InputEncoding = encoding;
+                using var fixture = new BackgroundWindowRegressionFixture();
+                fixture.CloseSplash();
+            }
+        }
+        finally { Console.InputEncoding = previous; }
+    }
+
+    private static void BackgroundWindowStaysBehindExistingWindows(bool update, bool sourceInitialized, bool taskbar)
+    {
+        var variable = Protocol.BackgroundRestartEnvironmentVariable;
+        var previous = Environment.GetEnvironmentVariable(variable);
+        var shutdown = Application.Current.ShutdownMode;
+        Application.Current.ShutdownMode = ShutdownMode.OnExplicitShutdown;
+        // The simulator and its splash belong to another process. Putting all
+        // three windows on this dispatcher tests WPF's same-thread activation
+        // fallback when its active window closes, not simulator startup.
+        using var simulator = new BackgroundWindowRegressionFixture();
+        var background = new Window { Width = 180, Height = 80, Left = -10000, Top = -10000,
+            ShowInTaskbar = taskbar, WindowStyle = WindowStyle.None };
+        try
+        {
+            var foreground = GetForegroundWindow();
+            // Non-activation alone leaves a new window between the splash and
+            // the simulator, exposing it when the temporary foreground closes.
+            if (sourceInitialized) new WindowInteropHelper(background).EnsureHandle();
+            Environment.SetEnvironmentVariable(variable, update ? "1" : null);
+            App.ConfigureStartupWindow(background, update ? Array.Empty<string>() : new[] { SimulatorAutoStartManager.LaunchArgument });
+            background.Show();
+            Check(!background.IsActive, "Background startup activated its window.");
+            Check(IsAbove(simulator.Window, Handle(background)), "Background startup opened above an existing window behind the foreground splash.");
+            Check(GetForegroundWindow() == foreground, "Background startup changed the foreground window.");
+            simulator.CloseSplash();
+            Check(!background.IsActive && IsAbove(simulator.Window, Handle(background)), "Closing another process's splash exposed the background window.");
+            // Foreground permission belongs to Windows. A background CI agent's
+            // Activate() may legitimately return false. Test the native click
+            // activation contract without forcing focus from the user's app.
+            const int mouseActivate = 0x0021, leftButtonDown = 0x0201, client = 1;
+            var activation = SendMessage(Handle(background), mouseActivate, Handle(background),
+                new IntPtr((leftButtonDown << 16) | client)).ToInt64();
+            Check(activation == 1 || activation == 2, "Background startup disabled native mouse activation.");
+            background.Hide();
+            // Global HWND_TOP / Activate requests depend on foreground rights.
+            // Check a later explicit relative-order show inside this process:
+            // a persistent startup hook would change InsertAfter to HWND_BOTTOM.
+            var lower = new Window { Width = 180, Height = 80, Left = -10000, Top = -10000, ShowInTaskbar = taskbar, ShowActivated = false };
+            var upper = new Window { Width = 180, Height = 80, Left = -10000, Top = -10000, ShowInTaskbar = taskbar, ShowActivated = false };
+            try
+            {
+                lower.Show(); upper.Show();
+                const uint noSize = 0x0001, noMove = 0x0002, noActivate = 0x0010, showWindow = 0x0040;
+                Check(SetWindowPos(Handle(background), Handle(upper), 0, 0, 0, 0, noSize | noMove | noActivate | showWindow),
+                    "The later native window-show request failed.");
+                Check(IsAbove(Handle(upper), Handle(background)) && IsAbove(Handle(background), Handle(lower)),
+                    "Initial background placement was reapplied on a later show.");
+            }
+            finally { upper.Close(); lower.Close(); }
+        }
+        finally
+        {
+            background.Close();
+            Application.Current.ShutdownMode = shutdown;
+            Environment.SetEnvironmentVariable(variable, previous);
+        }
+    }
+
+    private static IntPtr Handle(Window window) => new WindowInteropHelper(window).Handle;
+
+    private static bool IsAbove(IntPtr first, IntPtr second)
+    {
+        const uint previousWindow = 3; // GW_HWNDPREV traverses upward in z-order.
+        for (var above = GetWindow(second, previousWindow);
+            above != IntPtr.Zero; above = GetWindow(above, previousWindow))
+            if (above == first) return true;
+        return false;
+    }
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetWindow(IntPtr window, uint command);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetForegroundWindow();
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr SendMessage(IntPtr window, int message, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SetWindowPos(IntPtr window, IntPtr insertAfter, int x, int y, int width, int height, uint flags);
+
     private static async Task WireRoundTrip(bool background)
     {
         var identity = GuardianDescriptor.Create(Guid.NewGuid(), 1);
@@ -107,12 +213,13 @@ internal static class UpdateActivationRegressionTests
         var name = "Local\\LandingStats.UpdateActivationTest-" + Guid.NewGuid().ToString("N");
         Check(GuardianInstance.TryAcquire(out var first, name), "Could not own the unique test instance.");
         using (first!)
-        using (var activated = EventWaitHandle.OpenExisting(name + ".Activate"))
+        using (var activated = new ManualResetEventSlim())
         {
-            Check(!GuardianInstance.TryAcquire(out var duplicate, name, activateExisting: false) && duplicate == null,
+            first!.StartActivation(() => { activated.Set(); return Task.FromResult(true); });
+            Check(!Task.Run(() => GuardianInstance.TryAcquire(out _, name, activateExisting: false)).GetAwaiter().GetResult(),
                 "A second background launcher acquired the existing instance.");
-            Check(!activated.WaitOne(0), "A background relaunch activated an existing instance.");
-            Check(!GuardianInstance.TryAcquire(out duplicate, name) && duplicate == null && activated.WaitOne(0),
+            Check(!activated.IsSet, "A background relaunch activated an existing instance.");
+            Check(!Task.Run(() => GuardianInstance.TryAcquire(out _, name)).GetAwaiter().GetResult() && activated.IsSet,
                 "An explicit user launch no longer activates the existing instance.");
         }
     }

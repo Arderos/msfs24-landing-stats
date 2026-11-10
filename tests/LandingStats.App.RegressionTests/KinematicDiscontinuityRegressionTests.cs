@@ -55,7 +55,7 @@ internal static class KinematicDiscontinuityRegressionTests
     {
         var samples = TwoFlights();
         var first = TouchdownAnalysis.Analyze(samples).First();
-        Assert(first.SimulationTimeSeconds == 10.02 && first.Impact.Status == TouchdownImpactStatus.InvalidTelemetry &&
+        Assert(first.SimulationTimeSeconds == 10.02 && first.Impact.Status == TouchdownImpactStatus.Incomplete &&
             !first.Impact.IsComplete, "relocation was misclassified as a genuine bounce/liftoff or erased the contact");
         Assert(first.PeakG == 1.5 && first.Impact.PeakG == 1.5 && first.LatchedNormalFpm == 240,
             "replacement-flight G or touchdown latch contaminated the first contact");

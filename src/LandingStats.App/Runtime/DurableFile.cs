@@ -90,7 +90,16 @@ internal static class DurableFile
         // file. Do not make a read-only observer block publication on Windows.
         using var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete);
         if (file.Length > maximumBytes) throw new InvalidDataException("Persisted metadata exceeds its limit.");
-        return (T)(new DataContractJsonSerializer(typeof(T)).ReadObject(file) ??
-            throw new InvalidDataException("Persisted metadata is empty."));
+        try
+        {
+            return (T)(new DataContractJsonSerializer(typeof(T)).ReadObject(file) ??
+                throw new InvalidDataException("Persisted metadata is empty."));
+        }
+        catch (System.Xml.XmlException error)
+        {
+            // The JSON serializer also uses an XML reader for encoding and
+            // truncated input. Expose malformed persisted bytes consistently.
+            throw new InvalidDataException("Persisted metadata is malformed.", error);
+        }
     }
 }

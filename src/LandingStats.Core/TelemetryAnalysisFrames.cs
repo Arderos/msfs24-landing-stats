@@ -19,16 +19,31 @@ public static class TelemetryAnalysisFrames
         var prepared = new AnalysisFrameList(samples.Count) { Prepared = true };
         TelemetrySample? previous = null;
         var paused = false;
+        var sourceBoundaryDuringPause = false;
+        var pauseContinuity = new TelemetryPauseContinuity();
         foreach (var source in samples)
         {
+            pauseContinuity.Observe(source);
             if (source.SimulatorState == TelemetrySimulatorState.Paused)
             {
                 paused = true;
+                if (TelemetryContactPhysics.IsBlocked(source))
+                {
+                    // Paused measurements have no active elapsed time, but an
+                    // authoritative source interruption must reach contact and
+                    // impact analysis. Retain a non-motion analysis-only row.
+                    var boundary = source.CopyForAnalysis();
+                    boundary.MotionSimulation = false;
+                    prepared.Add(boundary);
+                    sourceBoundaryDuringPause = true;
+                }
                 continue;
             }
 
-            var sample = source.SimulatorState == TelemetrySimulatorState.Legacy
+            var sample = source.SimulatorState == TelemetrySimulatorState.Legacy && !pauseContinuity.StartsNewMotion
                 ? source : source.CopyForAnalysis();
+            if (!ReferenceEquals(sample, source)) sample.AnalysisPauseEvaluated = true;
+            if (pauseContinuity.StartsNewMotion) sample.AnalysisPauseReposition = true;
             if (sample.SimulatorState == TelemetrySimulatorState.Inactive)
                 sample.MotionSimulation = false;
             if (sample.AnalysisDiscontinuity != null)
@@ -47,7 +62,8 @@ public static class TelemetryAnalysisFrames
 
             // A frozen-time resume is not a new physical measurement. In particular,
             // it must not replace a genuine contact or G peak during deduplication.
-            if (sameResumeTime && sample.OnGround == previous!.OnGround)
+            if (sameResumeTime && sample.OnGround == previous!.OnGround &&
+                !sourceBoundaryDuringPause && !TelemetryContactPhysics.IsBlocked(sample))
                 continue;
 
             TelemetryPositionDiscontinuity? discontinuity = null;
@@ -81,6 +97,7 @@ public static class TelemetryAnalysisFrames
             prepared.Add(sample);
             previous = sample;
             paused = false;
+            sourceBoundaryDuringPause = false;
         }
         return prepared;
     }

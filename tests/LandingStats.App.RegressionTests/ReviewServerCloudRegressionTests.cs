@@ -101,11 +101,13 @@ internal static class ReviewEnrollmentRegressionTests
                 var path = Path.Combine(root, enrolled + "-" + rejected);
                 var identity = new TelemetryUploadIdentityStore(path);
                 if (enrolled) identity.MarkEnrolled(endpoint, true);
-                var handler = new ClosedReceiver(rejected);
+                // The local enrollment marker may have been cleared by a transient upload 403.
+                identity.MarkEnrolled(endpoint, false);
+                var handler = new ClosedReceiver(rejected || !enrolled);
                 using var client = new TelemetryUploadClient(path, handler, path, startQueueWorker: false);
                 var result = client.PrepareAsync(CancellationToken.None).GetAwaiter().GetResult();
-                if (handler.Enrollments != (enrolled ? 1 : 0))
-                    throw new Exception("Closed mode must refresh only existing identities.");
+                if (handler.Enrollments != 1)
+                    throw new Exception("Closed mode must let the server authenticate existing identities despite a lost local marker.");
                 var expected = enrolled && !rejected ? TelemetryPreparationState.Ready : TelemetryPreparationState.Unavailable;
                 if (result.State != expected) throw new Exception("Closed registration returned " + result.State + " instead of " + expected);
                 var report = Path.Combine(path, "pending_raw.zip");
@@ -124,8 +126,9 @@ internal static class ReviewEnrollmentRegressionTests
                 if (enrolled && rejected)
                 {
                     if (new TelemetryUploadIdentityStore(path).IsEnrolled(endpoint)) throw new Exception("Server-pruned identity remained marked enrolled.");
+                    var previousAttempts = handler.Enrollments;
                     client.PrepareAsync(CancellationToken.None).GetAwaiter().GetResult();
-                    if (handler.Enrollments != 1) throw new Exception("Closed registration repeated a rejected new registration.");
+                    if (handler.Enrollments != previousAttempts + 1) throw new Exception("A later explicit preparation did not retry enrollment.");
                 }
             }
         }

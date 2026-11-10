@@ -32,10 +32,21 @@ internal sealed class DurableReceiptIndex<T> where T : class
     { if (id == Guid.Empty) throw new ArgumentException("Receipt identity is required."); return id.ToString("N"); }
     private Shard Load(string key)
     {
-        var prefix = key.Substring(0, 2); var path = Path.Combine(_root, prefix + ".json"); var file = new FileInfo(path);
-        var stamp = file.Exists ? file.LastWriteTimeUtc : DateTime.MinValue; var length = file.Exists ? file.Length : 0;
+        var prefix = key.Substring(0, 2); var path = Path.Combine(_root, prefix + ".json");
+        var exists = true; var stamp = DateTime.MinValue; long length = 0;
+        try
+        {
+            // Exists suppresses access errors and also treats a directory as a
+            // missing file. Callers use Contains as proof before retiring work,
+            // so only an actual missing path can represent an empty shard.
+            if ((File.GetAttributes(path) & FileAttributes.Directory) != 0)
+                throw new InvalidDataException("Terminal receipt shard is a directory.");
+            var file = new FileInfo(path); length = file.Length; stamp = file.LastWriteTimeUtc;
+        }
+        catch (FileNotFoundException) { exists = false; }
+        catch (DirectoryNotFoundException) { exists = false; }
         if (_cache.TryGetValue(prefix, out var cached) && cached.Stamp == stamp && cached.Length == length) return cached.Value;
-        var value = file.Exists ? DurableFile.ReadJson<Shard>(path, 64L * 1024 * 1024) : new Shard();
+        var value = exists ? DurableFile.ReadJson<Shard>(path, 64L * 1024 * 1024) : new Shard();
         if (value.Version != 1 || value.Entries == null || value.Entries.Count > 65536) throw new InvalidDataException("Invalid terminal receipt shard.");
         foreach (var item in value.Entries)
             if (!Guid.TryParseExact(item.Key, "N", out _) || !item.Key.StartsWith(prefix, StringComparison.Ordinal) || item.Value == null || item.Value.Length > 32768)

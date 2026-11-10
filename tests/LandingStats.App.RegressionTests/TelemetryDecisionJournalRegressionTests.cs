@@ -94,7 +94,7 @@ internal static class TelemetryDecisionJournalRegressionTests
             "enabling diagnostics changed calculated results");
         var entries = journal.Snapshot().Entries;
         foreach (var code in new[] { "air_to_ground", "configured_topology_accepted", "arm_selected",
-                     "compression_interpolation", "precontact_linear_fit_extrapolated", "fresh_update", "quadratic_fit_accepted" })
+                     "compression_interpolation", "precontact_adaptive_last_observation", "fresh_update", "quadratic_fit_accepted" })
             Assert(entries.Any(entry => entry.Code == code), "missing actual decision: " + code);
         Assert(entries.Any(entry => entry.Component == "impact_window" && entry.Code == diagnostic.Impact.Status.ToString()),
             "impact-window result was not recorded");

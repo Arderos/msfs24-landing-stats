@@ -78,7 +78,7 @@ internal sealed class RuntimeWorkerSource : IDisposable
         private Task _callbacksDrained = Task.CompletedTask;
         private RuntimeInputReceipt? _retirement;
         private long _lastAccepted, _connection;
-        private int _disposed;
+        private int _started, _disposed;
         public SourceGeneration(RuntimeWorkerSource source, string executable, WorkerIdentity identity, RuntimeClockEpoch clock, TimeSpan startup, string? fixture)
         {
             _source = source; Identity = identity;
@@ -90,10 +90,27 @@ internal sealed class RuntimeWorkerSource : IDisposable
         public Task Completion => _process.Completion;
         public Task Exit => _process.Exit;
         public ComponentHealthMessage? Health => _process.Health;
-        public Task StartAsync(CancellationToken token) => _process.StartAsync(token);
+        public async Task StartAsync(CancellationToken token)
+        {
+            await _process.StartAsync(token).ConfigureAwait(false);
+            Volatile.Write(ref _started, 1);
+        }
         public Task<bool> ProbeAsync(CancellationToken token) => _process.ProbeAsync(token);
-        public Task StopAsync(TimeSpan deadline) => _process.StopAsync(deadline);
-        public Task TerminateAsync(TimeSpan deadline) => _process.TerminateAsync(deadline);
+        public Task StopAsync(TimeSpan deadline)
+        {
+            // An unaccepted hello can block startup behind unavailable storage.
+            // Once started, retain intake until the worker drains its final output
+            // and receives the durable ACKs required for graceful process exit.
+            if (Volatile.Read(ref _started) == 0) _intake.Cancel();
+            return _process.StopAsync(deadline);
+        }
+        public Task TerminateAsync(TimeSpan deadline)
+        {
+            // Startup delivers its hello through the same bounded journal intake.
+            // Release that wait before the host waits for startup to retire.
+            _intake.Cancel();
+            return _process.TerminateAsync(deadline);
+        }
         private async Task ReceiveAsync(RuntimeEnvelope envelope, long receiptQpc)
         {
             using var callback = _callbacks.TryEnter() ?? throw new OperationCanceledException("Source intake has retired.");

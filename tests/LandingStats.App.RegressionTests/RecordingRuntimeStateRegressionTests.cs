@@ -31,6 +31,7 @@ internal static class RecordingRuntimeStateRegressionTests
     private static void LegacyCheckpointSequenceAfterRotation()
     {
         foreach (var version in new[] { 0x3253524c, 0x3353524c })
+        foreach (var coordinatorVersion in new[] { 0x3143454c, 0x3243454c, 0x3343454c, 0x3443454c })
         {
             var identity = new RecoveryJournalIdentity(Session, Capture, new RuntimeClockEpoch(Clock, 1000, 1000));
             var state = new RecordingRuntimeState(identity); var preparation = new ControllerInputPreparation(new ControllerJoiner(identity.Clock));
@@ -48,7 +49,7 @@ internal static class RecordingRuntimeStateRegressionTests
             Feed(new WorkerHello("fixture", new string('a', 64), 1, Clock, 1000)); Feed(new LifecycleMessage(SourceLifecycle.Connected));
             for (var i = 1; i <= 12; i++) Feed(Frame(i));
             segment = 2; journalSequence = 0; Feed(new SourceStatusMessage((byte)RecorderState.Connected, "Recorder.ConnectedGate", Array.Empty<string>()));
-            var checkpoint = LegacyCheckpoint(state.CaptureCheckpoint(), version);
+            var checkpoint = LegacyCheckpoint(state.CaptureCheckpoint(), version, coordinatorVersion);
             state = RecordingRuntimeState.RestoreCheckpoint(checkpoint, identity);
             Feed(Frame(13));
             var stopped = Feed(new LifecycleMessage(SourceLifecycle.Disconnected));
@@ -59,7 +60,7 @@ internal static class RecordingRuntimeStateRegressionTests
                 "Legacy checkpoint reused a parent sample sequence after journal rotation.");
         }
     }
-    private static byte[] LegacyCheckpoint(byte[] current, int version)
+    private static byte[] LegacyCheckpoint(byte[] current, int version, int coordinatorVersion)
     {
         using var source = new MemoryStream(current, false); using var reader = new BinaryReader(source);
         using var destination = new MemoryStream(); using var writer = new BinaryWriter(destination);
@@ -83,16 +84,40 @@ internal static class RecordingRuntimeStateRegressionTests
             var blob = reader.ReadBytes(reader.ReadInt32());
             if (i == 3)
             {
-                Check(BitConverter.ToInt32(blob, 0) == 0x3443454c, "Update the explicit legacy coordinator fixture.");
-                Check(blob.Skip(blob.Length - 2).All(b => b == 0), "Legacy fixture has unexpected replay approach state.");
-                blob = blob.Take(blob.Length - 2).ToArray();
-                // This fixture has one final observation, no pending frozen
-                // frames and no replay. Remove v3 state and the v2 axis cutoff.
-                const int replayTail = 3 + ReplaySourceEvidenceCodec.EvidenceSize + 2 * sizeof(int);
-                Check(blob[blob.Length - replayTail] == 0 && blob[blob.Length - replayTail + 1] == 0 &&
-                    blob[blob.Length - replayTail + 2] == 1 && blob.Skip(blob.Length - 8).All(b => b == 0), "Legacy fixture has unexpected replay state.");
-                blob = blob.Take(blob.Length - replayTail - sizeof(double)).ToArray();
-                Array.Copy(BitConverter.GetBytes(0x3143454c), blob, sizeof(int));
+                // Restore the actual recorder state and use its official writer;
+                // source annotations and normalized clocks belong to this blob.
+                blob = CumulativeGroundDepartureRegressionTests.RemoveCumulativeTail(blob);
+                // v6 retains the last two ground frames (11 and 12): two false
+                // rejection flags and two present 64-byte scalar observations.
+                const int groundContactTail = 4 + 2 * 64;
+                var groundOffset = blob.Length - groundContactTail;
+                Check(groundOffset >= sizeof(int) && blob[groundOffset] == 0 && blob[groundOffset + 1] == 0 &&
+                    blob[groundOffset + 2] == 1 && blob[groundOffset + 67] == 1,
+                    "Legacy fixture has unexpected grounded history.");
+                blob = blob.Take(blob.Length - groundContactTail).ToArray();
+                // v5 appends three false flags in this source-uncontrolled
+                // fixture: pending release, blocked source and release endpoint.
+                // Refuse to discard actual source-continuity evidence silently.
+                const int sourceContactTail = 3;
+                Check(blob.Length >= sizeof(int) + sourceContactTail &&
+                    blob.Skip(blob.Length - sourceContactTail).All(b => b == 0), "Legacy fixture has unexpected source-contact state.");
+                blob = blob.Take(blob.Length - sourceContactTail).ToArray();
+                if (coordinatorVersion < 0x3443454c)
+                {
+                    Check(blob.Skip(blob.Length - 2).All(b => b == 0), "Legacy fixture has unexpected replay approach state.");
+                    blob = blob.Take(blob.Length - 2).ToArray();
+                }
+                if (coordinatorVersion < 0x3343454c)
+                {
+                    // This fixture has one final observation, no pending frozen
+                    // frames and no replay. Remove the explicit v3 state.
+                    const int replayTail = 3 + ReplaySourceEvidenceCodec.EvidenceSize + 2 * sizeof(int);
+                    Check(blob[blob.Length - replayTail] == 0 && blob[blob.Length - replayTail + 1] == 0 &&
+                        blob[blob.Length - replayTail + 2] == 1 && blob.Skip(blob.Length - 8).All(b => b == 0), "Legacy fixture has unexpected replay state.");
+                    blob = blob.Take(blob.Length - replayTail).ToArray();
+                }
+                if (coordinatorVersion < 0x3243454c) blob = blob.Take(blob.Length - sizeof(double)).ToArray();
+                Array.Copy(BitConverter.GetBytes(coordinatorVersion), blob, sizeof(int));
             }
             writer.Write(blob.Length); writer.Write(blob);
         }

@@ -1,4 +1,4 @@
-<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+﻿<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
                     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
                     xmlns:system="clr-namespace:System;assembly=mscorlib">
     <system:String x:Key="Product.Name">Landing Stats</system:String>
@@ -18,6 +18,24 @@
     <system:String x:Key="Lifecycle.Closing">Saving local changes and closing…</system:String>
     <system:String x:Key="History.Filter">Filter by aircraft or airport</system:String>
     <system:String x:Key="History.Delete">Delete landing</system:String>
+    <system:String x:Key="Sharing.Share">Share landing</system:String>
+    <system:String x:Key="Sharing.ShareHint">Export this landing with its recorded contacts</system:String>
+    <system:String x:Key="Sharing.Import">Import</system:String>
+    <system:String x:Key="Sharing.ImportTitle">Import landings</system:String>
+    <system:String x:Key="Sharing.ImportHint">Import one or more landing files. You can also drop them onto this window.</system:String>
+    <system:String x:Key="Sharing.FileType">Landing Stats landing</system:String>
+    <system:String x:Key="Sharing.Imported">IMPORTED</system:String>
+    <system:String x:Key="Sharing.ImportedHint">Shared landing. Excluded from your monthly average.</system:String>
+    <system:String x:Key="Sharing.Exporting">Exporting landing…</system:String>
+    <system:String x:Key="Sharing.ExportedFormat">Saved: {0}</system:String>
+    <system:String x:Key="Sharing.ExportFailed">Could not export the landing.</system:String>
+    <system:String x:Key="Sharing.ImportingFormat">Importing files: {0}…</system:String>
+    <system:String x:Key="Sharing.ImportedFormat">Contacts added: {0} · already present: {1}&#10;Failed files: {2}</system:String>
+    <system:String x:Key="Sharing.ImportFailed">Could not import the landing files.</system:String>
+    <system:String x:Key="Sharing.Details">Details</system:String>
+    <system:String x:Key="Sharing.AssociationFailed">Could not register landing files.</system:String>
+    <system:String x:Key="Sharing.OperationFailed">Landing file operation failed.</system:String>
+    <system:String x:Key="Sharing.AssociationFailedFormat">Could not register landing files: {0}</system:String>
     <system:String x:Key="History.AverageRate">Average vertical rate this month</system:String>
     <system:String x:Key="History.NoLandingsTitle">NO LANDING SESSIONS</system:String>
     <system:String x:Key="History.NoLandingsBody">Start MSFS and descend through 500 ft AGL. Recording, analysis and storage happen automatically after touchdown.</system:String>
@@ -36,7 +54,7 @@
     <system:String x:Key="Metric.SurfaceDelta">Surface closure delta</system:String>
     <system:String x:Key="Help.Terrain">The part of the difference caused by the local surface rising or falling under the aircraft. A rising surface increases closure; a falling surface reduces it.</system:String>
     <system:String x:Key="Metric.Terrain">Terrain component</system:String>
-    <system:String x:Key="Help.Unresolved">What remains after the older, terrain-only comparison. It combines timing, flare, rotation and sampling effects; it is not the error of the Experimental Closure Reconstruction below.</system:String>
+    <system:String x:Key="Help.Unresolved">What remains after the older, terrain-only comparison. It combines timing, flare, rotation and sampling effects; it is not the error of the Closure Reconstruction below.</system:String>
     <system:String x:Key="Metric.Unresolved">Unresolved component</system:String>
     <system:String x:Key="Metric.PeakGAdaptive">PEAK G</system:String>
     <system:String x:Key="Help.PeakGAdaptive">The highest recorded vertical G-load for this contact. This is a peak value, not an average.</system:String>
@@ -54,10 +72,14 @@
     <system:String x:Key="Metric.AtContact">at contact</system:String>
     <system:String x:Key="Help.GroundSpeed">The aircraft's speed over the ground at contact. Wind can make it different from IAS.</system:String>
 
-    <system:String x:Key="Recon.Title">EXPERIMENTAL CLOSURE RECONSTRUCTION</system:String>
+    <system:String x:Key="Recon.Title">CLOSURE RECONSTRUCTION</system:String>
     <system:String x:Key="Recon.Help">This panel independently estimates closure from recorded aircraft motion, terrain and landing-gear data. When the data supports it, the calculation follows the actual contacting points at contact time. The MSFS surface-normal reading above remains a separate measurement.</system:String>
     <system:String x:Key="Recon.Model">CALCULATION METHOD</system:String>
-    <system:String x:Key="Recon.ModelHelp">The calculation selected from the available evidence. A validated contact-point calculation is preferred when geometry is recovered from telemetry; the longitudinal calculation remains available when the point model cannot be established. Selection never uses agreement with the MSFS reading.</system:String>
+    <system:String x:Key="Recon.ModelHelp.quad250-tc-minus-75ms-pitch-v1">Uses the last 250 ms before contact to combine the aircraft's vertical motion, terrain height change and the effect of pitch rotation at the landing gear. Fits quadratic curves and evaluates them 75 ms before the estimated contact time. The rotation contribution uses the longitudinal gear arm.</system:String>
+    <system:String x:Key="Recon.ModelHelp.quad250-tc-contact-point-v2">Estimates how quickly the actual contacting points approach the surface at the estimated contact time. Uses the last 250 ms of airborne motion and accounts for terrain and aircraft rotation. Contact-point geometry is recovered from recorded telemetry.</system:String>
+    <system:String x:Key="Recon.ModelHelp.quad250-tc-contact-point-bounds-v3">Estimates closure at the actual contacting points, accounting for aircraft motion, terrain and rotation. When the geometry is not uniquely determined, checks the range of geometries consistent with the recorded telemetry and includes the resulting spread in the uncertainty. The rate is evaluated at the estimated contact time.</system:String>
+    <system:String x:Key="Recon.ModelHelp.quad250-tc-contact-point-kinematic-v4">Estimates closure at the contacting points using the simulator's recorded angular velocities to calculate rotation. Cross-checks them against changes in attitude and altitude, and retains the uncertainty from the range of supported geometries. The rate is evaluated at the estimated contact time.</system:String>
+    <system:String x:Key="Recon.ModelHelp.Unknown">This record uses a reconstruction model that this version of Landing Stats does not describe.</system:String>
     <system:String x:Key="Recon.ModeledClosure">MODELED CLOSURE</system:String>
     <system:String x:Key="Recon.ModeledClosureHelp">The modeled rate of closing clearance above the surface. The contact-point calculation evaluates vertical closure at contact time; the longitudinal calculation uses an earlier effective time. Timing and surface direction can make this value differ from the MSFS reading.</system:String>
     <system:String x:Key="Recon.RawMinusModel">RAW − MODEL</system:String>
@@ -142,7 +164,9 @@
     <system:String x:Key="Footer.ReportBugHelp">Securely uploads the retained telemetry and calculated result for the latest landing. The report includes aircraft state, position and controller/input channels.</system:String>
 
     <system:String x:Key="Delete.Title">DELETE LANDING?</system:String>
-    <system:String x:Key="Delete.Body">This removes the saved landing and its recorded profile. This cannot be undone.</system:String>
+    <system:String x:Key="Delete.Body">All saved contacts of this landing and their recorded profiles will be deleted. This cannot be undone.</system:String>
+    <system:String x:Key="Delete.ContactCountFormat">Contacts to delete: {0}</system:String>
+    <system:String x:Key="Delete.ContactsChanged">The contacts in this landing have changed. Review the updated count and confirm again.</system:String>
     <system:String x:Key="Common.Cancel">CANCEL</system:String>
     <system:String x:Key="Common.Delete">DELETE</system:String>
     <system:String x:Key="Common.Done">DONE</system:String>
@@ -380,4 +404,26 @@
     <system:String x:Key="Workers.Impact.Upload">Reports are waiting locally and are not being sent. Flight recording continues; delivery resumes after recovery.</system:String>
     <system:String x:Key="Workers.Impact.Cloud">Cloud backup and synchronization are delayed. Local history and flight recording continue to work.</system:String>
     <system:String x:Key="Workers.Impact.Api">External applications cannot reliably receive data through the API. Flight recording continues.</system:String>
+    <system:String x:Key="Delivery.Idle">Diagnostic delivery is ready. Queued reports follow your automatic upload setting; manually requested reports remain eligible.</system:String>
+    <system:String x:Key="Delivery.Delivered">Diagnostic report delivered.</system:String>
+    <system:String x:Key="Delivery.Pending">Diagnostic report queued; delivery will retry automatically. Landing data is saved.</system:String>
+    <system:String x:Key="Delivery.NetworkPending">Diagnostic report queued: the server is unavailable. Delivery will retry when connectivity returns.</system:String>
+    <system:String x:Key="Delivery.StoragePending">Diagnostic delivery is waiting for file access. Reports are retained; check free space and access to the application data folder.</system:String>
+    <system:String x:Key="Delivery.DataPending">Diagnostic delivery could not read the report or server response. Reports are retained; delivery will retry automatically.</system:String>
+    <system:String x:Key="Delivery.Damaged">Some reports have damaged delivery metadata and are retained for inspection. Other reports can still be sent.</system:String>
+    <system:String x:Key="Delivery.IdentityUnavailable">Diagnostic signing key is unavailable. Reports are retained. Retry after restoring access to your Windows profile. If the original key is permanently unavailable, Settings can replace it; the new identity will need server registration.</system:String>
+    <system:String x:Key="Delivery.RegistrationClosed">Diagnostic reports are retained: the server is not accepting new registrations. Delivery will retry when registration reopens.</system:String>
+    <system:String x:Key="Delivery.RegistrationRejected">Diagnostic reports are retained: the server rejected this installation’s registration. Contact support if this persists.</system:String>
+    <system:String x:Key="Settings.TelemetryRecover">Restore diagnostic delivery</system:String>
+    <system:String x:Key="Settings.TelemetryRecoverConfirm">Replace the unavailable diagnostic signing identity? The original identity will be backed up, and the new identity will need server registration. Queued reports and manual requests will be retained. Your previous consent choice for legacy reports and your automatic upload setting will remain unchanged.</system:String>
+    <system:String x:Key="Settings.TelemetryRecovered">A new diagnostic identity is ready. Queued reports will retry under your current upload setting; server registration may still be required.</system:String>
+    <system:String x:Key="Settings.TelemetryRecoveryFailedFormat">Diagnostic identity recovery failed: {0}. Reports remain queued.</system:String>
+    <system:String x:Key="Runtime.ComponentFailedFormat">Application service failed ({0}): {1}.</system:String>
+    <system:String x:Key="Delivery.Paused">Automatic diagnostic reports are retained while automatic uploads are off. Manual requests remain eligible.</system:String>
+    <system:String x:Key="Delivery.Rejected">The diagnostic report was rejected and retained for inspection. It will not be retried automatically.</system:String>
+    <system:String x:Key="Settings.TelemetryRecoveredPending">The diagnostic identity is available. Updating the retained delivery queue is still pending; delivery will resume when file access is restored.</system:String>
+    <system:String x:Key="Settings.TelemetryAlreadyAvailable">The diagnostic signing identity is available again. The existing identity and server registration were retained.</system:String>
+    <system:String x:Key="Settings.TelemetryRecoveryNotNeeded">The delivery queue no longer requires signing-key recovery.</system:String>
+    <system:String x:Key="Settings.TelemetryRecoveryCancel">Cancel recovery</system:String>
+    <system:String x:Key="Settings.TelemetryRecoveryCancelled">Recovery cancelled before identity replacement. The original identity and queued reports were retained.</system:String>
 </ResourceDictionary>

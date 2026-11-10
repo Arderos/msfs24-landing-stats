@@ -24,7 +24,7 @@ behind them:
 | --- | --- | --- |
 | Landing rate | One FPM value | Aircraft vertical rate and surface closure rate, with explicit signs and definitions |
 | Sloped or uneven scenery | Can be folded into the displayed FPM | Local terrain contribution is measured and shown separately |
-| Simulator latch differences | Left unexplained | Experimental telemetry reconstruction separates effective timing, terrain, and pitch rotation with an explicit uncertainty band |
+| Simulator latch differences | Left unexplained | Telemetry reconstruction separates effective timing, terrain, and pitch rotation with an explicit uncertainty band |
 | Bounces | Often only the first or last contact survives | Every contact is analyzed and retained as its own event |
 | G-load | One value with an unspecified sampling window | An adaptive window isolates each contact's load response; SMOOTH / NORMAL / FIRM uses its recorded G peak, not descent rate |
 | Evidence | Summary values only | Synchronized black-box traces for motion, loads, controls, power, attitude, and gear |
@@ -43,10 +43,12 @@ data handling.
 
 - Automatic recording from the descending 500 ft AGL crossing through rollout.
 - Per-contact analysis for normal landings and bounces.
+- Adaptive touchdown-speed estimation within a 200 ms window, with measured,
+  linear, and quadratic estimates selected by their prediction quality.
 - Automatic nearest-airport resolution that remains available after MSFS exits.
 - Inertial vertical speed at contact and the raw MSFS surface-normal touchdown
   velocity remain separate headline measurements.
-- Experimental detail reconstructs the raw latch from effective timing, local
+- Detailed analysis reconstructs the raw latch from effective timing, local
   terrain motion, and pitch rotation around a gear arm read from the installed
   flight model when available. Readable wheel indices and per-wheel positions
   are used when they agree with live contact channels; complex or encrypted
@@ -71,6 +73,9 @@ data handling.
 - Automatic diagnostic reports (switchable in Settings) that securely bundle landing telemetry with
   its calculated results; no full-flight recording mode is exposed in the UI.
 - Compact local landing history containing only the data used by the dashboard.
+- Share a landing as one `.lslanding` file, including its available contacts,
+  charts and 3D replay. Import multiple files through the file picker, drag and
+  drop, or double-click; imported landings are marked and excluded from monthly averages.
 - Optional Google Drive backup for saved landings, language, and the MSFS 2024
   auto-start preference. Raw telemetry and bug reports are not included.
 - Optional auto-start with detected Steam or Microsoft Store installations of
@@ -85,10 +90,9 @@ unavailable while independent terrain measurements are retained.
 
 ## Requirements
 
-To run the application:
-
-- Windows 10 or Windows 11;
-- Microsoft Flight Simulator 2024.
+The application requires Windows 10 or Windows 11. Recording requires Microsoft
+Flight Simulator 2024. Viewing saved or [shared landings](docs/landing-sharing.md)
+works without a running simulator or connected controllers.
 
 To build locally:
 

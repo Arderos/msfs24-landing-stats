@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Threading.Tasks;
 using System.Windows;
 using LandingStats.App.Settings;
@@ -53,6 +53,7 @@ public partial class MainWindow
         SettingsLanguageEnglish.IsEnabled = enabled;
         SettingsLanguageRussian.IsEnabled = enabled;
         SettingsTelemetryCheckBox.IsEnabled = enabled;
+        RecoverTelemetryIdentityButton.IsEnabled = enabled && _runtime?.Ready == true && _telemetryIdentityUnavailable;
         SettingsIntegrationApiCheckBox.IsEnabled = enabled;
         SettingsAutoStartCheckBox.IsEnabled = enabled && _autoStartInitialized && !_autoStartPromptBusy;
         DeclineAutoStartButton.IsEnabled = enabled && !_autoStartPromptBusy;
@@ -97,7 +98,12 @@ public partial class MainWindow
             var languageChanged = _settings.Language != committed.Settings.Language;
             _settings.CopyFrom(committed.Settings); _settingsPersistedAndReadable = committed.Readable;
             if (_services.Settings.LastAutoStartResult is AutoStartOperationResult autoStart)
+            {
                 _autoStartProfileCount = autoStart.ConfigurationPaths.Count;
+                _autoStartErrorDetail = _autoStartLegacyCleanupError;
+            }
+            if (_services.Settings.LastAutoStartError is string autoStartError)
+                _autoStartErrorDetail = CombineAutoStartErrors(_autoStartLegacyCleanupError, autoStartError);
             if (_settings.StartWithSimulator.HasValue && AutoStartPromptOverlay.Visibility == Visibility.Visible) HideAutoStartPrompt();
             if (languageChanged) { LocalizationManager.Apply(_settings.Language); RefreshLocalizedPresentation(); }
             else RefreshSettingsPresentation();

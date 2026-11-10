@@ -1,4 +1,4 @@
-<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+﻿<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
                     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
                     xmlns:system="clr-namespace:System;assembly=mscorlib">
     <system:String x:Key="Product.Name">Landing Stats</system:String>
@@ -18,6 +18,24 @@
     <system:String x:Key="Lifecycle.Closing">Сохранение локальных изменений и закрытие…</system:String>
     <system:String x:Key="History.Filter">Фильтр по самолёту или аэропорту</system:String>
     <system:String x:Key="History.Delete">Удалить посадку</system:String>
+    <system:String x:Key="Sharing.Share">Поделиться посадкой</system:String>
+    <system:String x:Key="Sharing.ShareHint">Экспортировать посадку со всеми записанными касаниями</system:String>
+    <system:String x:Key="Sharing.Import">Импорт</system:String>
+    <system:String x:Key="Sharing.ImportTitle">Импорт посадок</system:String>
+    <system:String x:Key="Sharing.ImportHint">Импортировать один или несколько файлов посадок. Их также можно перетащить в это окно.</system:String>
+    <system:String x:Key="Sharing.FileType">Посадка Landing Stats</system:String>
+    <system:String x:Key="Sharing.Imported">ИМПОРТ</system:String>
+    <system:String x:Key="Sharing.ImportedHint">Полученная посадка. Не участвует в среднем за месяц.</system:String>
+    <system:String x:Key="Sharing.Exporting">Экспорт посадки…</system:String>
+    <system:String x:Key="Sharing.ExportedFormat">Сохранено: {0}</system:String>
+    <system:String x:Key="Sharing.ExportFailed">Не удалось экспортировать посадку.</system:String>
+    <system:String x:Key="Sharing.ImportingFormat">Импорт файлов: {0}…</system:String>
+    <system:String x:Key="Sharing.ImportedFormat">Добавлено касаний: {0} · уже есть: {1}&#10;Файлов с ошибкой: {2}</system:String>
+    <system:String x:Key="Sharing.ImportFailed">Не удалось импортировать файлы посадок.</system:String>
+    <system:String x:Key="Sharing.Details">Подробности</system:String>
+    <system:String x:Key="Sharing.AssociationFailed">Не удалось зарегистрировать файлы посадок.</system:String>
+    <system:String x:Key="Sharing.OperationFailed">Не удалось обработать файлы посадок.</system:String>
+    <system:String x:Key="Sharing.AssociationFailedFormat">Не удалось зарегистрировать файлы посадок: {0}</system:String>
     <system:String x:Key="History.AverageRate">Средняя вертикальная скорость за месяц</system:String>
     <system:String x:Key="History.NoLandingsTitle">ПОСАДОК ПОКА НЕТ</system:String>
     <system:String x:Key="History.NoLandingsBody">Запустите MSFS и начните снижение ниже 500 футов AGL. После касания запись, анализ и сохранение выполнятся автоматически.</system:String>
@@ -36,7 +54,7 @@
     <system:String x:Key="Metric.SurfaceDelta">Разница скоростей сближения</system:String>
     <system:String x:Key="Help.Terrain">Часть разницы, вызванная локальным подъёмом или снижением поверхности под самолётом. Поднимающаяся поверхность увеличивает скорость сближения, опускающаяся — уменьшает.</system:String>
     <system:String x:Key="Metric.Terrain">Составляющая рельефа</system:String>
-    <system:String x:Key="Help.Unresolved">Остаток старого сравнения, учитывавшего только рельеф. Он смешивает влияние времени измерения, выравнивания, вращения и дискретности данных и не является ошибкой экспериментальной реконструкции ниже.</system:String>
+    <system:String x:Key="Help.Unresolved">Остаток старого сравнения, учитывавшего только рельеф. Он смешивает влияние времени измерения, выравнивания, вращения и дискретности данных и не является ошибкой реконструкции ниже.</system:String>
     <system:String x:Key="Metric.Unresolved">Необъяснённая составляющая</system:String>
     <system:String x:Key="Metric.PeakGAdaptive">ПИК G</system:String>
     <system:String x:Key="Help.PeakGAdaptive">Максимальная записанная вертикальная перегрузка этого касания. Это пиковое, а не среднее значение.</system:String>
@@ -54,10 +72,14 @@
     <system:String x:Key="Metric.AtContact">при касании</system:String>
     <system:String x:Key="Help.GroundSpeed">Скорость самолёта относительно земли в момент касания. Из-за ветра она может отличаться от приборной скорости.</system:String>
 
-    <system:String x:Key="Recon.Title">ЭКСПЕРИМЕНТАЛЬНАЯ РЕКОНСТРУКЦИЯ СБЛИЖЕНИЯ</system:String>
+    <system:String x:Key="Recon.Title">РЕКОНСТРУКЦИЯ СБЛИЖЕНИЯ</system:String>
     <system:String x:Key="Recon.Help">Этот блок независимо оценивает сближение по записанному движению самолёта, рельефу и данным шасси. Когда данных достаточно, расчёт учитывает фактически коснувшиеся точки в момент контакта. Показание MSFS по нормали к поверхности выше остаётся отдельным измерением.</system:String>
     <system:String x:Key="Recon.Model">МЕТОД РАСЧЁТА</system:String>
-    <system:String x:Key="Recon.ModelHelp">Метод, выбранный по доступным данным. При восстановлении геометрии из телеметрии предпочтителен прошедший проверки расчёт фактических точек контакта; если построить его нельзя, используется расчёт по продольному плечу. Совпадение с показанием MSFS на выбор не влияет.</system:String>
+    <system:String x:Key="Recon.ModelHelp.quad250-tc-minus-75ms-pitch-v1">По последним 250 мс перед касанием складывает вертикальное движение самолёта, изменение высоты рельефа и движение шасси из-за вращения по тангажу. Строит квадратичные кривые и вычисляет результат за 75 мс до оценённого момента касания. Вклад вращения рассчитывается по продольному плечу шасси.</system:String>
+    <system:String x:Key="Recon.ModelHelp.quad250-tc-contact-point-v2">Оценивает скорость сближения фактически коснувшихся точек с поверхностью в оценённый момент касания. Использует последние 250 мс движения в воздухе, учитывает рельеф и вращение самолёта. Геометрия точек контакта восстанавливается из записанной телеметрии.</system:String>
+    <system:String x:Key="Recon.ModelHelp.quad250-tc-contact-point-bounds-v3">Оценивает сближение в фактических точках контакта с учётом движения самолёта, рельефа и вращения. Если геометрия не определяется однозначно, проверяет диапазон вариантов, согласующихся с телеметрией, и включает разброс результатов в оценку неопределённости. Скорость вычисляется в оценённый момент касания.</system:String>
+    <system:String x:Key="Recon.ModelHelp.quad250-tc-contact-point-kinematic-v4">Оценивает сближение в точках контакта, используя записанные симулятором угловые скорости для расчёта вращения. Сверяет их с изменением ориентации и высоты и учитывает неопределённость допустимых вариантов геометрии. Скорость вычисляется в оценённый момент касания.</system:String>
+    <system:String x:Key="Recon.ModelHelp.Unknown">В этой записи использована модель реконструкции, для которой в данной версии Landing Stats нет описания.</system:String>
     <system:String x:Key="Recon.ModeledClosure">РАСЧЁТНОЕ СБЛИЖЕНИЕ</system:String>
     <system:String x:Key="Recon.ModeledClosureHelp">Расчётная скорость уменьшения зазора над поверхностью. Модель точек контакта оценивает вертикальное сближение в момент касания; расчёт по продольному плечу использует более ранний эффективный момент. Различия во времени и направлении поверхности могут давать отличие от показания MSFS.</system:String>
     <system:String x:Key="Recon.RawMinusModel">MSFS − МОДЕЛЬ</system:String>
@@ -142,7 +164,9 @@
     <system:String x:Key="Footer.ReportBugHelp">Безопасно отправляет сохранённую телеметрию и результат расчёта последней посадки. В отчёт входят состояние самолёта, координаты и каналы управления.</system:String>
 
     <system:String x:Key="Delete.Title">УДАЛИТЬ ПОСАДКУ?</system:String>
-    <system:String x:Key="Delete.Body">Сохранённая посадка и её профиль будут удалены без возможности восстановления.</system:String>
+    <system:String x:Key="Delete.Body">Все сохранённые контакты этой посадки и их профили будут удалены без возможности восстановления.</system:String>
+    <system:String x:Key="Delete.ContactCountFormat">Количество удаляемых контактов: {0}</system:String>
+    <system:String x:Key="Delete.ContactsChanged">Состав контактов посадки изменился. Проверьте новое количество и подтвердите удаление ещё раз.</system:String>
     <system:String x:Key="Common.Cancel">ОТМЕНА</system:String>
     <system:String x:Key="Common.Delete">УДАЛИТЬ</system:String>
     <system:String x:Key="Common.Done">ГОТОВО</system:String>
@@ -380,4 +404,26 @@
     <system:String x:Key="Workers.Impact.Upload">Отчёты ожидают локально и не отправляются. Запись полёта продолжается; отправка возобновится после восстановления.</system:String>
     <system:String x:Key="Workers.Impact.Cloud">Резервное копирование и синхронизация с облаком задерживаются. Локальная история и запись полёта продолжают работать.</system:String>
     <system:String x:Key="Workers.Impact.Api">Внешние приложения не могут надёжно получать данные через API. Запись полёта продолжается.</system:String>
+    <system:String x:Key="Delivery.Idle">Отправка диагностики готова. Автоматические отчёты отправляются согласно настройке; ручные запросы сохраняются.</system:String>
+    <system:String x:Key="Delivery.Delivered">Диагностический отчёт отправлен.</system:String>
+    <system:String x:Key="Delivery.Pending">Диагностический отчёт в очереди; отправка повторится автоматически. Данные посадки сохранены.</system:String>
+    <system:String x:Key="Delivery.NetworkPending">Диагностический отчёт в очереди: сервер недоступен. Отправка повторится после восстановления связи.</system:String>
+    <system:String x:Key="Delivery.StoragePending">Отправка диагностики ожидает доступа к файлам. Отчёты сохранены; проверьте свободное место и доступ к папке данных приложения.</system:String>
+    <system:String x:Key="Delivery.DataPending">Не удалось прочитать отчёт или ответ сервера диагностики. Отчёты сохранены; отправка повторится автоматически.</system:String>
+    <system:String x:Key="Delivery.Damaged">У некоторых отчётов повреждены данные очереди отправки. Они сохранены для проверки; остальные отчёты могут отправляться.</system:String>
+    <system:String x:Key="Delivery.IdentityUnavailable">Ключ подписи диагностики недоступен. Отчёты сохранены. Повторите отправку после восстановления доступа к профилю Windows. Если исходный ключ утрачен, его можно заменить в настройках; новой идентичности потребуется регистрация на сервере.</system:String>
+    <system:String x:Key="Delivery.RegistrationClosed">Диагностические отчёты сохранены: сервер временно не принимает новые регистрации. Отправка повторится после открытия регистрации.</system:String>
+    <system:String x:Key="Delivery.RegistrationRejected">Диагностические отчёты сохранены: сервер отклонил регистрацию этой установки. Если ошибка сохраняется, обратитесь в поддержку.</system:String>
+    <system:String x:Key="Settings.TelemetryRecover">Восстановить отправку диагностики</system:String>
+    <system:String x:Key="Settings.TelemetryRecoverConfirm">Заменить недоступную идентичность подписи диагностики? Исходная идентичность сохранится в резервной копии, новой потребуется регистрация на сервере. Отчёты в очереди и ручные запросы сохранятся. Прежний выбор согласия для старой очереди и настройка автоматической отправки останутся без изменений.</system:String>
+    <system:String x:Key="Settings.TelemetryRecovered">Новая идентичность диагностики создана. Отправка отчётов из очереди повторится согласно текущей настройке; может потребоваться регистрация на сервере.</system:String>
+    <system:String x:Key="Settings.TelemetryRecoveryFailedFormat">Не удалось восстановить идентичность диагностики: {0}. Отчёты остаются в очереди.</system:String>
+    <system:String x:Key="Runtime.ComponentFailedFormat">Ошибка службы приложения ({0}): {1}.</system:String>
+    <system:String x:Key="Delivery.Paused">Автоматические диагностические отчёты сохранены до включения автоотправки. Ручные запросы остаются в очереди на отправку.</system:String>
+    <system:String x:Key="Delivery.Rejected">Диагностический отчёт отклонён и сохранён для проверки. Автоматических повторов отправки не будет.</system:String>
+    <system:String x:Key="Settings.TelemetryRecoveredPending">Идентичность диагностики доступна. Обновление сохранённой очереди ещё не завершено; отправка продолжится после восстановления доступа к файлам.</system:String>
+    <system:String x:Key="Settings.TelemetryAlreadyAvailable">Ключ подписи диагностики снова доступен. Существующая идентичность и регистрация на сервере сохранены.</system:String>
+    <system:String x:Key="Settings.TelemetryRecoveryNotNeeded">Очередь отправки больше не требует восстановления ключа подписи.</system:String>
+    <system:String x:Key="Settings.TelemetryRecoveryCancel">Отменить восстановление</system:String>
+    <system:String x:Key="Settings.TelemetryRecoveryCancelled">Восстановление отменено до замены идентичности. Исходная идентичность и отчёты в очереди сохранены.</system:String>
 </ResourceDictionary>

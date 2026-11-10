@@ -73,6 +73,7 @@ public partial class MainWindow
     {
         lock (_runtimeStartupGate)
             return _runtimeInitializationTask.IsCompleted && !Volatile.Read(ref _runtimeRetrying) &&
+                SharingStorageIdle &&
                 (Volatile.Read(ref _runtimeStartupFailed) || Volatile.Read(ref _runtime)?.SafeToRestart == true);
     }
 
@@ -89,6 +90,7 @@ public partial class MainWindow
                 await Task.WhenAny(startup, cancelled.Task).ConfigureAwait(false);
             cancellationToken.ThrowIfCancellationRequested();
             await startup.ConfigureAwait(false);
+            await WaitForSharingStorageAsync(cancellationToken).ConfigureAwait(false);
             LandingRuntime runtime;
             lock (_runtimeStartupGate)
             {
@@ -98,7 +100,7 @@ public partial class MainWindow
             }
             await runtime.WaitForSafeRestartAsync(cancellationToken).ConfigureAwait(false);
             lock (_runtimeStartupGate)
-                if (ReferenceEquals(startup, _runtimeInitializationTask) && ReferenceEquals(runtime, Volatile.Read(ref _runtime))) return;
+                if (ReferenceEquals(startup, _runtimeInitializationTask) && ReferenceEquals(runtime, Volatile.Read(ref _runtime)) && SharingStorageIdle) return;
         }
     }
 

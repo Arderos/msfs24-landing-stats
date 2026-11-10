@@ -62,7 +62,7 @@ internal sealed class UploadWorkerRole : IWorkerRole
                 case TelemetryUploadClient.UploadDisposition.Uploaded: return Result(UploadResultKind.Uploaded, outcome.StatusCode);
                 case TelemetryUploadClient.UploadDisposition.Rejected: return Result(UploadResultKind.Rejected, outcome.StatusCode);
                 case TelemetryUploadClient.UploadDisposition.EnrollmentRequired: return Result(UploadResultKind.EnrollmentRequired, outcome.StatusCode);
-                default: return Result(UploadResultKind.Deferred, outcome.StatusCode);
+                default: return Result(UploadResultKind.Deferred, outcome.StatusCode, outcome.Reason);
             }
         }
         catch (OperationCanceledException) { throw; }

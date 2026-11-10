@@ -28,6 +28,7 @@ internal static class PhysicsContinuityRegressionTests
         ShortAirborneResumeCannotBorrowThePrePauseFit();
         ReplayHeuristicCannotBorrowPrePauseEvidence();
         SamePhysicsStateStillKeepsTheLatestDelivery();
+        SameTimeGroundTransitionsAgreeWithLiveRecording();
         RecorderRetainsPauseEvidenceWithoutGrowingIdenticalFrames();
         RejectedOnlyCaptureDoesNotStartALanding();
         RejectedDiagnosticsDoNotResetRunwayMetadata();
@@ -101,20 +102,33 @@ internal static class PhysicsContinuityRegressionTests
         var paused = Frame(samples[pauseIndex].SimulationTimeSeconds, true, false);
         samples.Insert(pauseIndex, paused);
         var result = TouchdownAnalysis.Analyze(TelemetryDeduplicator.Deduplicate(samples)).Single();
-        Assert(result.Impact.Status == TouchdownImpactStatus.InvalidTelemetry,
+        Assert(result.Impact.Status == TouchdownImpactStatus.Incomplete,
             "impact's internal deduplication erased a same-time pause and certified its G window");
     }
 
     private static void SamePhysicsStateStillKeepsTheLatestDelivery()
     {
         var first = Frame(10, false);
-        var stale = Frame(11, true);
+        var stale = Frame(11, false);
+        stale.VelocityWorldYFps = -9;
         var latest = Frame(11, false);
+        latest.VelocityWorldYFps = -3;
         var contact = Frame(12, true);
         var samples = TelemetryDeduplicator.Deduplicate(new[] { first, stale, latest, contact });
         Assert(samples.Count == 3 && ReferenceEquals(samples[1], latest),
             "same-state deduplication did not retain the latest delivery");
         AssertContactTimes("latest same-state delivery", TouchdownAnalysis.Analyze(samples), new[] { 12.0 });
+    }
+
+    private static void SameTimeGroundTransitionsAgreeWithLiveRecording()
+    {
+        // These deliveries share a clock but change a discrete ground flag.
+        // The recorder has already consumed both transitions; keeping only the
+        // latest flag would erase its first contact from the stored evidence.
+        var samples = new[] { Frame(10, false), Frame(11, true), Frame(11, false), Frame(12, true) };
+        var unique = TelemetryDeduplicator.Deduplicate(samples);
+        Assert(unique.Count == samples.Length, "same-time ground/air edge was overwritten");
+        CheckBoth("same-time discrete ground transitions", samples, 11, 12);
     }
 
     private static void PostPauseValuesCannotContaminateAnEarlierContact()

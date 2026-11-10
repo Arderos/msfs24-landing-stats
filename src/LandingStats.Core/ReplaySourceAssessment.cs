@@ -56,7 +56,19 @@ public sealed class ReplaySourceAssessor
     }
     private static bool Finite(double value) => AnalysisNumericPolicy.IsFinite(value);
     private static bool Moved(ReplaySourceObservation left, ReplaySourceObservation right) =>
-        Math.Abs(left.Latitude - right.Latitude) > 1e-8 || Math.Abs(left.Longitude - right.Longitude) > 1e-8 ||
-        Math.Abs(left.AltitudeFeet - right.AltitudeFeet) > 1e-3 || Math.Abs(left.Pitch - right.Pitch) > 1e-4 ||
-        Math.Abs(left.Bank - right.Bank) > 1e-4 || Math.Abs(left.Heading - right.Heading) > 1e-4;
+        Math.Abs(left.Latitude - right.Latitude) > TelemetryPoseResolution.CoordinateDegrees ||
+        AngularDistance(left.Longitude, right.Longitude) > TelemetryPoseResolution.CoordinateDegrees ||
+        Math.Abs(left.AltitudeFeet - right.AltitudeFeet) > TelemetryPoseResolution.AltitudeFeet ||
+        AngularDistance(left.Pitch, right.Pitch) > TelemetryPoseResolution.AngleDegrees ||
+        AngularDistance(left.Bank, right.Bank) > TelemetryPoseResolution.AngleDegrees ||
+        AngularDistance(left.Heading, right.Heading) > TelemetryPoseResolution.AngleDegrees;
+
+    private static double AngularDistance(double left, double right)
+    {
+        // Compare equivalent representations across north, the dateline and
+        // signed attitude boundaries without changing the source observations.
+        // Reduce each finite operand first so their subtraction cannot overflow.
+        var difference = Math.Abs(left % 360 - right % 360) % 360;
+        return Math.Min(difference, 360 - difference);
+    }
 }

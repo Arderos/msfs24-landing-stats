@@ -183,6 +183,9 @@ internal static class MsfsControlProfileRegressionTests
         Action("KEY_THROTTLE1_AXIS_SET_EX1", "Джойстик: ось вращения X", 132, 770) +
         Action("KEY_THROTTLE2_AXIS_SET_EX1", "Джойстик: ось вращения Y", 4, 786)).Resolve(Aircraft);
 
+    internal static MsfsControlProfileResolution ThrottleDirectionFixture(string action, bool inverted) =>
+        Single(Action(action, "Joystick R-Axis X", inverted ? 132 : 4, 770)).Resolve(Aircraft);
+
     private static void LocalizedAxisIds()
     {
         // Full-axis IDs from the MSFS Input Profile Editor and Asobo profiles.

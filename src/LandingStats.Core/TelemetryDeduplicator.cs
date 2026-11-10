@@ -5,7 +5,7 @@ namespace LandingStats.Core;
 
 public static class TelemetryDeduplicator
 {
-    private const double TimeToleranceSeconds = 0.000000001;
+    internal const double TimeToleranceSeconds = 0.000000001;
 
     public static IReadOnlyList<TelemetrySample> Deduplicate(IReadOnlyList<TelemetrySample> samples)
     {
@@ -17,11 +17,13 @@ public static class TelemetryDeduplicator
         foreach (var sample in samples)
         {
             if (result.Count > 0 &&
-                result[result.Count - 1].MotionSimulation == sample.MotionSimulation &&
+                SameDiscreteState(result[result.Count - 1], sample) &&
                 Math.Abs(TouchdownAnalysis.TimeOf(result[result.Count - 1]) - TouchdownAnalysis.TimeOf(sample)) <=
                 TimeToleranceSeconds)
             {
-                // Keep the latest state within a physics segment, but never erase a pause/resume boundary.
+                // Numeric updates at one physics instant keep the latest value.
+                // Ground position and discrete source changes are evidence already consumed
+                // by live recording; offline analysis must retain the same edges.
                 result[result.Count - 1] = sample;
             }
             else
@@ -33,4 +35,26 @@ public static class TelemetryDeduplicator
         if (view != null) view.DeduplicatedView = result;
         return result;
     }
+
+    /// <summary>Whether numeric delivery updates can share one retained row without losing a discrete physics/source boundary.</summary>
+    public static bool SameDiscreteState(TelemetrySample previous, TelemetrySample current) =>
+        previous.MotionSimulation == current.MotionSimulation && previous.OnGround == current.OnGround &&
+        previous.SimulatorState == current.SimulatorState && previous.FlightSegment == current.FlightSegment &&
+        previous.AnalysisPauseReposition == current.AnalysisPauseReposition &&
+        SameSourceControlState(previous, current) && SameGroundPositionEvidence(previous, current);
+
+    private static bool SameGroundPositionEvidence(TelemetrySample previous, TelemetrySample current) =>
+        !previous.MotionSimulation || !previous.OnGround || previous.SimulatorState == TelemetrySimulatorState.Paused ||
+        previous.SimulatorState == TelemetrySimulatorState.Inactive ||
+        (previous.LatitudeDegrees.Equals(current.LatitudeDegrees) && previous.LongitudeDegrees.Equals(current.LongitudeDegrees) &&
+            previous.PlaneAltitudeFeet.Equals(current.PlaneAltitudeFeet));
+
+    /// <summary>Whether source control, availability and source identity carry the same contact-continuity evidence.</summary>
+    public static bool SameSourceControlState(TelemetrySample previous, TelemetrySample current) =>
+        SameSourceControlState(previous.SourceEvidence, current.SourceEvidence);
+
+    internal static bool SameSourceControlState(ReplaySourceEvidence? previous, ReplaySourceEvidence? current) =>
+        TelemetryContactPhysics.IsBlocked(previous) == TelemetryContactPhysics.IsBlocked(current) &&
+        TelemetryContactPhysics.IsFreshReleased(previous) == TelemetryContactPhysics.IsFreshReleased(current) &&
+        (previous == null || current == null || previous.SameSource(current));
 }

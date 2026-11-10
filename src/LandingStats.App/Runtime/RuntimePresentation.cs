@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
@@ -48,6 +48,11 @@ internal sealed class RuntimePresentationSnapshot
     public bool AnalysisPending { get; }
     public bool AnalysisFailed { get; }
     public RuntimeFailureNotice? Failure { get; internal set; }
+    public RuntimeFailureNotice? DeliveryFailure { get; internal set; }
+    public string UploadReason { get; internal set; } = "";
+    public bool UploadAutomatic { get; internal set; }
+    public bool UploadIdentityUnavailable { get; internal set; }
+    public bool DeliveryQuarantined { get; internal set; }
 }
 internal sealed class RuntimeFailureNotice
 {
@@ -75,14 +80,28 @@ internal sealed class RuntimePresentation
     private bool? _airborne;
     private Guid _activeEpisode, _upload, _pendingAnalysis, _failedAnalysis;
     private OutboxState? _uploadState;
-    private bool _simulatorExited;
+    private bool _simulatorExited, _uploadAutomatic;
+    private bool _uploadIdentityUnavailable, _deliveryQuarantined;
     private RuntimeCloudNotice? _cloud;
-    private RuntimeFailureNotice? _failure;
+    // Failures belong to work identities, not to the most recent UI slot.
+    // Each source scans at most 65,536 durable items; resolved work is removed.
+    private readonly Dictionary<string, Dictionary<Guid, RuntimeFailureNotice>> _failures = new Dictionary<string, Dictionary<Guid, RuntimeFailureNotice>>();
+    private static bool IsDelivery(string component) => component == "storage.reports" || component.StartsWith("delivery.", StringComparison.Ordinal);
+    private RuntimeFailureNotice? LatestFailure(bool delivery) => _failures.Where(pair => IsDelivery(pair.Key) == delivery)
+        .SelectMany(pair => pair.Value.Values).OrderByDescending(value => value.Revision).FirstOrDefault();
+    private string _uploadReason = "";
     public void Failure(string component, Guid entity, string message)
     {
         lock (_gate)
         {
-            _failure = new RuntimeFailureNotice(_revision + 1, component, entity, message);
+            if (!_failures.TryGetValue(component, out var failures))
+            {
+                if (_failures.Count >= 64) throw new InvalidOperationException("Runtime failure component registry exceeds its bound.");
+                _failures[component] = failures = new Dictionary<Guid, RuntimeFailureNotice>();
+            }
+            if (failures.TryGetValue(entity, out var previous) && previous.Message == message) return;
+            if (previous == null && failures.Count >= 65536) throw new InvalidOperationException("Runtime failure work registry exceeds its durable scan bound.");
+            failures[entity] = new RuntimeFailureNotice(_revision + 1, component, entity, message);
             if (component == "analysis.episodes" && entity == _activeEpisode) _failedAnalysis = entity;
             Changed();
         }
@@ -110,7 +129,7 @@ internal sealed class RuntimePresentation
                 if (!capture.Episode.IsDiagnosticOnly && capture.Episode.PersistentId == _activeEpisode && !_episodes.ContainsKey(_activeEpisode))
                 {
                     _pendingAnalysis = _activeEpisode;
-                    if (_failure?.Component == "analysis.episodes" && _failure.Entity == _activeEpisode) _failedAnalysis = _activeEpisode;
+                    if (_failures.TryGetValue("analysis.episodes", out var failures) && failures.ContainsKey(_activeEpisode)) _failedAnalysis = _activeEpisode;
                 }
             _simulatorExited |= effects.SimulatorExited; Changed();
         }
@@ -123,12 +142,62 @@ internal sealed class RuntimePresentation
             _episodes[update.Episode] = new RuntimeEpisodeNotice(update);
             if (_pendingAnalysis == update.Episode) _pendingAnalysis = Guid.Empty;
             if (_failedAnalysis == update.Episode) _failedAnalysis = Guid.Empty;
+            RemoveFailure("analysis.episodes", update.Episode);
             if (_episodes.Count > EpisodeNoticeCapacity) _episodes.Remove(_episodes.Values.OrderBy(value => value.TimestampUtc).ThenBy(value => value.Episode).First().Episode);
             Changed();
         }
     }
     public void Upload(OutboxEntry value)
-    { lock (_gate) { _upload = value.Id; _uploadState = value.State; Changed(); } }
+    {
+        lock (_gate)
+        {
+            if (_upload == value.Id && _uploadState == value.State && _uploadReason == value.LastFailure && _uploadAutomatic == value.Automatic) return;
+            _upload = value.Id; _uploadState = value.State; _uploadReason = value.LastFailure; _uploadAutomatic = value.Automatic;
+            Changed();
+        }
+    }
+    public void IdentityRecovered()
+    {
+        lock (_gate)
+        {
+            var changed = false;
+            if (_uploadReason == "CryptographicException") { _uploadReason = ""; changed = true; }
+            // Intake consent reads do not decrypt keys. Identity replacement
+            // cannot prove that an independent intake/outbox failure recovered.
+            if (changed) Changed();
+        }
+    }
+    public void IdentityAvailability(bool unavailable)
+    {
+        lock (_gate)
+        {
+            if (_uploadIdentityUnavailable == unavailable) return;
+            _uploadIdentityUnavailable = unavailable; Changed();
+        }
+    }
+    public void DeliveryQuarantine(bool quarantined)
+    {
+        lock (_gate)
+        {
+            if (_deliveryQuarantined == quarantined) return;
+            _deliveryQuarantined = quarantined; Changed();
+        }
+    }
+    public void DeliveryRecovered(Guid entity) => Recovered("storage.reports", entity);
+    public void Recovered(string component, Guid entity)
+    {
+        lock (_gate) if (RemoveFailure(component, entity)) Changed();
+    }
+    public void Retired(string component)
+    {
+        lock (_gate) if (_failures.Remove(component)) Changed();
+    }
+    private bool RemoveFailure(string component, Guid entity)
+    {
+        if (!_failures.TryGetValue(component, out var failures) || !failures.Remove(entity)) return false;
+        if (failures.Count == 0) _failures.Remove(component);
+        return true;
+    }
     public void Cloud(RuntimeCloudNotice value)
     {
         lock (_gate)
@@ -159,7 +228,9 @@ internal sealed class RuntimePresentation
                 _airborne, _activeEpisode, _activeOrdinal, _simulatorExited,
                 _episodes.Values.OrderBy(value => value.TimestampUtc).ToArray(), _health.Values.ToArray(), _upload, _uploadState, _cloud,
                 _activeEpisode != Guid.Empty && _pendingAnalysis == _activeEpisode,
-                _activeEpisode != Guid.Empty && _pendingAnalysis == _activeEpisode && _failedAnalysis == _activeEpisode) { Failure = _failure };
+                _activeEpisode != Guid.Empty && _pendingAnalysis == _activeEpisode && _failedAnalysis == _activeEpisode)
+                { Failure = LatestFailure(false), DeliveryFailure = LatestFailure(true), UploadReason = _uploadReason, UploadAutomatic = _uploadAutomatic,
+                    UploadIdentityUnavailable = _uploadIdentityUnavailable, DeliveryQuarantined = _deliveryQuarantined };
         }
     }
     public async Task RunAsync(ManagedComponentContext owner)

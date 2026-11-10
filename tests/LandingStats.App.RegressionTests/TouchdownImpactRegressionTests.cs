@@ -15,6 +15,7 @@ internal static class TouchdownImpactRegressionTests
         ASettledContactExcludesLaterRolloutLoads();
         LiftoffKeepsContactsIndependent();
         DuplicateDeliveryKeepsTheFinalFrameAndState();
+        SameTimeStateTransitionsKeepEachContactLoad();
         OptionalChannelsCanBeAbsentButNotDropOut();
         GapsReversalsAndSlewCannotCompleteAnImpact();
         UnevenCadencePreservesNativePeak();
@@ -130,8 +131,43 @@ internal static class TouchdownImpactRegressionTests
         var r = TouchdownImpactAnalysis.Analyze(rows, contact);
         Near(1.5, r.PeakG, 1e-12, "stale same-time G survived deduplication");
         rows.Insert(contact + 2, Sample(valid.TimeSeconds, 1, -2, false));
-        Equal(TouchdownImpactStatus.Unavailable, TouchdownImpactAnalysis.Analyze(rows, contact).Status,
-            "overwritten contact state was not discarded");
+        var immediateLiftoff = TouchdownImpactAnalysis.Analyze(rows, contact);
+        Equal(TouchdownImpactStatus.Liftoff, immediateLiftoff.Status, "same-time liftoff erased the contact");
+        Near(valid.GForce, immediateLiftoff.PeakG, 1e-12, "same-time liftoff replaced the contact load");
+        Near(0, immediateLiftoff.EndOffsetSeconds, 1e-12, "same-time liftoff acquired a duration");
+    }
+
+    private static void SameTimeStateTransitionsKeepEachContactLoad()
+    {
+        var rows = new List<TouchdownImpactSample>
+        {
+            Sample(-.05, 99, -2, false), Sample(0, 1.2, 0, true),
+            Sample(0, 99, -2, false), Sample(0, 1.4, 0, true), Sample(.01, 99, -2, false),
+        };
+        var raw = rows.Select((s, i) => new TelemetrySample
+        {
+            Sequence = i, SimulationTimeSeconds = s.TimeSeconds, HostElapsedSeconds = s.TimeSeconds,
+            MotionSimulation = true, OnGround = s.OnGround, GForce = s.GForce,
+            VelocityWorldYFps = s.VelocityWorldYFps,
+        }).ToList();
+        var canonical = TelemetryDeduplicator.Deduplicate(TelemetryAnalysisFrames.Prepare(raw));
+        Equal(raw.Count, canonical.Count, "canonical telemetry erased a discrete contact boundary");
+        var analyzed = TouchdownAnalysis.Analyze(raw);
+        Equal(2, analyzed.Count, "same-time impact changed touchdown detection");
+        for (var contact = 0; contact < 2; contact++)
+        {
+            var index = contact == 0 ? 1 : 3;
+            var expectedPeak = contact == 0 ? 1.2 : 1.4;
+            var expectedEnd = contact == 0 ? 0 : .01;
+            foreach (var impact in new[] { TouchdownImpactAnalysis.Analyze(rows, index),
+                TouchdownImpactAnalysis.Analyze(canonical, index), analyzed[contact].Impact })
+            {
+                Equal(TouchdownImpactStatus.Liftoff, impact.Status, "same-time state edge lost its impact");
+                Assert(impact.IsComplete, "ordered same-time state edges did not complete the contact");
+                Near(expectedPeak, impact.PeakG, 1e-12, "another contact or airborne load contaminated this peak");
+                Near(expectedEnd, impact.EndOffsetSeconds, 1e-12, "same-time state edge changed the contact endpoint");
+            }
+        }
     }
 
     public static void OptionalChannelsCanBeAbsentButNotDropOut()
@@ -165,7 +201,7 @@ internal static class TouchdownImpactRegressionTests
         Equal(TouchdownImpactStatus.InvalidTelemetry, Analyze(rows).Status, "clock reversal was ignored");
         rows = Trace();
         rows[Contact(rows) + 10].MotionSimulation = false;
-        Equal(TouchdownImpactStatus.InvalidTelemetry, Analyze(rows).Status, "slew was treated as landing motion");
+        Equal(TouchdownImpactStatus.Incomplete, Analyze(rows).Status, "slew must end observation without invalidating the preceding measured peak");
         rows = Trace();
         rows.RemoveAll(s => s.TimeSeconds < 0 && s.TimeSeconds > -.3);
         Equal(TouchdownImpactStatus.Incomplete, Analyze(rows).Status, "pre-contact gap was ignored");

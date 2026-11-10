@@ -123,7 +123,7 @@ internal static class TelemetryTopologyInference
             var sampleCount = 1;
             for (var index = contactIndex + 1; index < samples.Count; index++)
             {
-                if (!samples[index].MotionSimulation) break;
+                if (!samples[index].MotionSimulation || samples[index].FlightSegment != samples[contactIndex].FlightSegment) break;
                 var time = TouchdownAnalysis.TimeOf(samples[index]);
                 foreach (var nosePoint in topology.NoseContactPointIndices)
                 {
@@ -134,12 +134,15 @@ internal static class TelemetryTopologyInference
                 }
 
                 if (!HasContactEvidence(samples[index], point) ||
-                    time - previousTime <= 0.0 ||
+                    time - previousTime < -TelemetryDeduplicator.TimeToleranceSeconds ||
                     time - previousTime > MaximumFrameGapSeconds)
                 {
                     break;
                 }
 
+                // Revisions at one physics instant can change contact evidence,
+                // but cannot supply an additional sustained-contact sample.
+                if (time - previousTime <= TelemetryDeduplicator.TimeToleranceSeconds) continue;
                 sampleCount++;
                 previousTime = time;
                 if (sampleCount >= MinimumSustainedContactSamples &&

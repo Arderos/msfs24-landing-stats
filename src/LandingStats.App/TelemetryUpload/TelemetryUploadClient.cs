@@ -39,6 +39,7 @@ internal sealed class TelemetryPreparationResult
     public string MessageKey { get; }
     public object[] MessageArguments { get; }
     public string Message => LandingStats.App.Models.ModelText.Format(MessageKey, MessageArguments);
+    internal string FailureReason { get; set; } = "";
 }
 
 internal sealed class TelemetryUploadStatusEventArgs : EventArgs
@@ -68,14 +69,16 @@ internal sealed class TelemetryUploadClient : IDisposable
 
     internal readonly struct UploadOutcome
     {
-        public UploadOutcome(UploadDisposition disposition, int statusCode = 0)
+        public UploadOutcome(UploadDisposition disposition, int statusCode = 0, string reason = "")
         {
             Disposition = disposition;
             StatusCode = statusCode;
+            Reason = reason;
         }
 
         public UploadDisposition Disposition { get; }
         public int StatusCode { get; }
+        public string Reason { get; }
     }
 
     private const long MaximumQueueBytes = 256L * 1024 * 1024;
@@ -185,7 +188,8 @@ internal sealed class TelemetryUploadClient : IDisposable
         using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _cancellation.Token);
         var preparation = await PrepareAsync(lifetime.Token).ConfigureAwait(false);
         lifetime.Token.ThrowIfCancellationRequested();
-        if (preparation.State != TelemetryPreparationState.Ready) return new UploadOutcome(UploadDisposition.Deferred);
+        if (preparation.State != TelemetryPreparationState.Ready)
+            return new UploadOutcome(UploadDisposition.Deferred, reason: preparation.FailureReason.Length == 0 ? preparation.MessageKey : preparation.FailureReason);
         return await UploadAsync(path, lifetime.Token).ConfigureAwait(false);
     }
 
@@ -289,12 +293,8 @@ internal sealed class TelemetryUploadClient : IDisposable
             var config = await GetConfigAsync(cancellationToken).ConfigureAwait(false);
             cancellationToken.ThrowIfCancellationRequested();
             _receiverConfig = config;
-            if (!string.Equals(config.RegistrationMode, "open", StringComparison.OrdinalIgnoreCase) &&
-                !_identityStore.IsEnrolled(_endpoint))
-            {
-                return new TelemetryPreparationResult(TelemetryPreparationState.Unavailable, "Telemetry.RegistrationClosed");
-            }
-
+            // The receiver permits an existing key to refresh even while new
+            // registrations are closed. A local 403 cannot decide that policy.
             var identity = _identityStore.Identity();
             var sentAt = Timestamp();
             var nonce = Nonce();
@@ -320,7 +320,9 @@ internal sealed class TelemetryUploadClient : IDisposable
                 // A receiver may have pruned or revoked a previously enrolled key.
                 // Keep its identity and pending reports, but stop treating it as enrolled.
                 _identityStore.MarkEnrolled(_endpoint, false);
-                return new TelemetryPreparationResult(TelemetryPreparationState.Unavailable, "Telemetry.RegistrationRejected");
+                return new TelemetryPreparationResult(TelemetryPreparationState.Unavailable,
+                    string.Equals(config.RegistrationMode, "open", StringComparison.OrdinalIgnoreCase)
+                        ? "Telemetry.RegistrationRejected" : "Telemetry.RegistrationClosed");
             }
             if (!response.IsSuccessStatusCode)
             {
@@ -343,7 +345,8 @@ internal sealed class TelemetryUploadClient : IDisposable
             exception is InvalidDataException ||
             exception is FormatException)
         {
-            return new TelemetryPreparationResult(TelemetryPreparationState.Unavailable, "Telemetry.ReceiverUnavailableFormat", exception.Message);
+            return new TelemetryPreparationResult(TelemetryPreparationState.Unavailable, "Telemetry.ReceiverUnavailableFormat", exception.Message)
+                { FailureReason = exception.GetType().Name };
         }
     }
 
@@ -818,7 +821,10 @@ internal sealed class TelemetryUploadClient : IDisposable
         using var response = await _client.GetAsync(new Uri(_endpoint!, "v1/config"), cancellationToken).ConfigureAwait(false);
         response.EnsureSuccessStatusCode();
         using var input = await response.Content.ReadAsStreamAsync().ConfigureAwait(false);
-        var config = (ReceiverConfig?)new DataContractJsonSerializer(typeof(ReceiverConfig)).ReadObject(input);
+        ReceiverConfig? config;
+        try { config = (ReceiverConfig?)new DataContractJsonSerializer(typeof(ReceiverConfig)).ReadObject(input); }
+        catch (System.Xml.XmlException error)
+        { throw new SerializationException("Telemetry receiver configuration is malformed.", error); }
         if (config == null || config.Protocol != 1 ||
             (config.TelemetrySchema != TelemetryCsv.SchemaVersion &&
              (config.TelemetrySchemas == null || Array.IndexOf(config.TelemetrySchemas, TelemetryCsv.SchemaVersion) < 0)))

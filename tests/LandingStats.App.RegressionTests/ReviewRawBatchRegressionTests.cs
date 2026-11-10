@@ -15,7 +15,7 @@ internal static class ReviewRawBatchRegressionTests
     {
         var root = Path.Combine(Path.GetTempPath(), "raw-review-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root); var complete = false;
-        try { Batched(Path.Combine(root, "batch")); IsolatedFailure(Path.Combine(root, "failure")); complete = true; }
+        try { Batched(Path.Combine(root, "batch")); ReplayedPending(Path.Combine(root, "replayed")); IsolatedFailure(Path.Combine(root, "failure")); complete = true; }
         finally { if (complete && Path.GetFullPath(root).StartsWith(Path.GetFullPath(Path.GetTempPath()), StringComparison.OrdinalIgnoreCase)) Directory.Delete(root, true); }
     }
     private static void Batched(string root)
@@ -54,6 +54,15 @@ internal static class ReviewRawBatchRegressionTests
         Directory.Delete(blocked);
         batches.Commit(Input(session, 2), new object[] { new RawDebugSampleEventArgs(Sample(2)) });
         batches.Commit(Input(session, 3), new object[] { EventArgs.Empty }); batches.Flush();
+        var replayed = new RawEffectStore(Path.Combine(root, "replayed"));
+        var replayInput = Input(session, 2);
+        replayed.Commit(replayInput, new object[] { new RawDebugSampleEventArgs(Sample(2)) });
+        store.Import(replayed, replayInput.Input.Id, EpisodeTransactionStore.Hash(replayed.PathFor(replayInput.Input.Id)));
+        Check(store.Read(replayInput.Input.Id).Effects.First() is RawCaptureGap, "Recovery erased the committed RAW gap.");
+        var mismatch = new RawEffectStore(Path.Combine(root, "mismatch"));
+        mismatch.Commit(replayInput, new object[] { new RawDebugSampleEventArgs(Sample(200)) });
+        try { store.Import(mismatch, replayInput.Input.Id, EpisodeTransactionStore.Hash(mismatch.PathFor(replayInput.Input.Id))); throw new InvalidOperationException("A RAW gap hid a changed sample."); }
+        catch (InvalidDataException) { }
         var archives = Path.Combine(root, "archives"); var outbox = new DurableOutbox(Path.Combine(root, "outbox"), archives);
         var chunks = new RawChunkStore(Path.Combine(root, "chunks"), archives, outbox);
         new RawExportOwner(new RawEffectStore(store.Root), chunks, (_, __, ___) => { }, 25).Advance();
@@ -62,6 +71,14 @@ internal static class ReviewRawBatchRegressionTests
         var limited = new RawBatchPersistence(new RawEffectStore(Path.Combine(root, "quota"), 1));
         limited.Commit(Input(session, 4), new object[] { Start() }); limited.FlushAtCheckpointAsync().GetAwaiter().GetResult();
         Check(limited.LastGap != null, "RAW quota exhaustion escaped into recording or was hidden.");
+    }
+    private static void ReplayedPending(string root)
+    {
+        var store = new RawEffectStore(root); var batch = new RawBatchPersistence(store); var session = Guid.NewGuid();
+        for (var repeat = 0; repeat < 2; repeat++)
+            for (var n = 1; n <= 3; n++) batch.Commit(Input(session, n), new object[] { new RawDebugSampleEventArgs(Sample(n)) });
+        batch.Flush();
+        Check(new RawEffectStore(root).Enumerate().Count() == 3, "Replayed pending inputs duplicated or corrupted the durable RAW batch.");
     }
     private static DurableRuntimeInput Input(Guid session, int n) => new DurableRuntimeInput(new RuntimeInput(StableRuntimeIdentity.Command(session, n),
         JournalRecordKind.RuntimeCommand, n, n, new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc), new RecordingCommand(RecordingCommandKind.Tick).Encode()), new JournalCursor(1, n));

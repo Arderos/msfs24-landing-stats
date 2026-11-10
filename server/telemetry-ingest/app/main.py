@@ -30,7 +30,7 @@ from .security import (
     public_key,
     verify_signature,
 )
-from .store import InstallationRegistryFullError, Store
+from .store import InstallationByteQuotaExceededError, InstallationRegistryFullError, Store
 from .ingress_control import UploadPacer, rate_limited
 from .validation import CAPTURE_KINDS, DECISION_JOURNAL_FORMAT_VERSION, validate_capture
 
@@ -355,12 +355,6 @@ async def upload_capture(request: Request) -> dict[str, object]:
     if not await run_in_threadpool(STORE.use_nonce, install_id, nonce):
         raise HTTPException(status_code=409, detail="replayed nonce")
 
-    accepted_today = await run_in_threadpool(
-        STORE.accepted_bytes_since, install_id, int(time.time()) - 86400
-    )
-    if accepted_today + expected_size > DAILY_INSTALL_QUOTA_BYTES:
-        raise HTTPException(status_code=429, detail="installation daily byte quota exceeded",
-                            headers={"Retry-After": "86400"})
     free_bytes = (await run_in_threadpool(shutil.disk_usage, DATA_ROOT)).free
     if free_bytes - expected_size < MINIMUM_FREE_BYTES:
         raise HTTPException(status_code=507, detail="telemetry storage reserve is active")
@@ -377,6 +371,13 @@ async def upload_capture(request: Request) -> dict[str, object]:
     existing = await run_in_threadpool(STORE.capture_by_hash, expected_sha)
     if existing is not None:
         return {"status": "already_received", "capture_id": existing["capture_id"]}
+
+    # Fixed-window attempt budgets can reset while yesterday's accepted uploads
+    # still consume the rolling quota. Reject those requests before reading the
+    # body; add_capture still arbitrates concurrent acceptance atomically.
+    accepted_bytes = await run_in_threadpool(STORE.accepted_bytes_since, install_id, int(time.time()) - 86400)
+    if accepted_bytes + expected_size > DAILY_INSTALL_QUOTA_BYTES:
+        raise HTTPException(status_code=429, detail="installation daily byte quota exceeded", headers={"Retry-After": "86400"})
 
     capture_id = secrets.token_hex(16)
     incoming = DATA_ROOT / "incoming" / f"{capture_id}.part"
@@ -436,7 +437,11 @@ async def upload_capture(request: Request) -> dict[str, object]:
                     facts.capture_kind,
                     source_hash,
                 ),
+                daily_install_quota_bytes=DAILY_INSTALL_QUOTA_BYTES,
             )
+        except InstallationByteQuotaExceededError as exc:
+            await run_in_threadpool(destination.unlink, missing_ok=True)
+            raise HTTPException(status_code=429, detail=str(exc), headers={"Retry-After": "86400"}) from exc
         except Exception:
             await run_in_threadpool(destination.unlink, missing_ok=True)
             raise

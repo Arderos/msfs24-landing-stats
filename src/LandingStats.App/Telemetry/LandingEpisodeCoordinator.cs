@@ -176,6 +176,10 @@ internal sealed partial class LandingEpisodeCoordinator
     internal void ProcessSample(TelemetrySample sample)
     {
         if (_stopped) throw new ObjectDisposedException(nameof(LandingEpisodeCoordinator));
+        // Source control can begin while paused, inactive or awaiting replay
+        // classification. Retain the interruption before any of those paths
+        // withhold this row from the live contact detector.
+        if (TelemetryContactPhysics.IsBlocked(sample)) _contactContinuity.Observe(sample);
         // Decide before clocks, contact witnesses, pre-roll or RAW can consume a
         // replay frame. The first frozen observation waits for movement proof.
         if (ProcessReplaySource(sample)) return;
@@ -192,14 +196,14 @@ internal sealed partial class LandingEpisodeCoordinator
         {
             sample.AxisElevatorSetValid = false; sample.AxisElevatorSetPercent = 0; sample.AxisElevatorSetAgeSeconds = double.NaN;
         }
-        if (_sdkStateKnown && !double.IsNaN(_lastSimulationTime) &&
+        if (_sdkStateKnown && IsFinite(sample.SimulationTimeSeconds) && IsFinite(_lastSimulationTime) &&
             sample.SimulationTimeSeconds < _lastSimulationTime - 0.001)
             EndFlightSegment("simulation_time_reversed");
         AnnotateSdkFrame(sample);
         var sampleTime = TimeOf(sample);
         if (_replayActive)
         {
-            _lastSimulationTime = sample.SimulationTimeSeconds;
+            if (IsFinite(sample.SimulationTimeSeconds)) _lastSimulationTime = sample.SimulationTimeSeconds;
             _previousOnGround = sample.OnGround;
             return;
         }
@@ -224,9 +228,13 @@ internal sealed partial class LandingEpisodeCoordinator
         if (sample.SimulatorState == TelemetrySimulatorState.Paused ||
             sample.SimulatorState == TelemetrySimulatorState.Inactive)
         {
-            _lastSimulationTime = sample.SimulationTimeSeconds;
+            if (IsFinite(sample.SimulationTimeSeconds)) _lastSimulationTime = sample.SimulationTimeSeconds;
             if (sample.SimulatorState == TelemetrySimulatorState.Paused)
+            {
+                _contactContinuity.Observe(sample);
+                AddToPreRoll(sample);
                 AppendEpisodeSample(sample);
+            }
             else
             {
                 _contactContinuity.Reset();
@@ -236,7 +244,7 @@ internal sealed partial class LandingEpisodeCoordinator
         }
         UpdateAircraftGroundState(sample.OnGround);
 
-        if (!double.IsNaN(_lastSimulationTime) && sample.SimulationTimeSeconds < _lastSimulationTime - 0.001)
+        if (IsFinite(sample.SimulationTimeSeconds) && IsFinite(_lastSimulationTime) && sample.SimulationTimeSeconds < _lastSimulationTime - 0.001)
         {
             if (_lastContactTime.HasValue)
             {
@@ -263,7 +271,7 @@ internal sealed partial class LandingEpisodeCoordinator
             sampleTime = TimeOf(sample);
         }
         _lastKinematicFrame = sample.MotionSimulation ? sample.CopyForAnalysis() : null;
-        _lastSimulationTime = sample.SimulationTimeSeconds;
+        if (IsFinite(sample.SimulationTimeSeconds)) _lastSimulationTime = sample.SimulationTimeSeconds;
 
         if (_replayApproachDiscarded)
         {
@@ -281,6 +289,9 @@ internal sealed partial class LandingEpisodeCoordinator
             RecordLifecycle("replay_approach_reset", "A new airborne approach above the go-around reset height may be recorded.");
         }
         AddToPreRoll(sample);
+        if (_episodeSamples == null)
+            _contactContinuity.RestrictCumulativeGroundHistory(
+                _preRoll.OldestSample == null ? double.NaN : TimeOf(_preRoll.OldestSample));
 
         if (sample.MotionSimulation && !sample.OnGround)
         {
@@ -312,25 +323,26 @@ internal sealed partial class LandingEpisodeCoordinator
             AppendEpisodeSample(sample);
         }
 
+        if (_requireReplayHandoffHistory && (isContact || rejectedContact))
+        {
+            _requireReplayHandoffHistory = false;
+            var history = TelemetryDeduplicator.Deduplicate(TelemetryAnalysisFrames.Prepare(
+                (IReadOnlyList<TelemetrySample>?)_episodeSamples ?? Array.Empty<TelemetrySample>()));
+            if (!isContact || !TouchdownAnalysis.HasPreContactHistory(history, history.Count - 1))
+            {
+                _episodeDecisionJournal?.Record(sampleTime, "analysis", "insufficient_live_history",
+                    "First ground transition after replay lacks a released airborne interval or 325 ms of continuous airborne history with five finite fit samples spanning 150 ms before the final 75 ms; discard this approach including bounces.",
+                    new Dictionary<string, double> { ["contact_number"] = 1 });
+                CompleteEpisodeWithReason("replay_handoff_rejected", false);
+                _replayApproachDiscarded = true;
+                _armed = false;
+                _contactContinuity.Reset();
+                _previousOnGround = sample.OnGround;
+                return;
+            }
+        }
         if (isContact)
         {
-            if (_requireReplayHandoffHistory)
-            {
-                _requireReplayHandoffHistory = false;
-                var history = TelemetryDeduplicator.Deduplicate(TelemetryAnalysisFrames.Prepare(_episodeSamples!));
-                if (!TouchdownAnalysis.HasPreContactHistory(history, history.Count - 1))
-                {
-                    _episodeDecisionJournal?.Record(sampleTime, "analysis", "insufficient_live_history",
-                        "First live contact after replay lacks 325 ms of continuous airborne history and five finite fit samples spanning 150 ms before the final 75 ms; discard this approach including bounces.",
-                        new Dictionary<string, double> { ["contact_number"] = 1 });
-                    CompleteEpisodeWithReason("replay_handoff_rejected", false);
-                    _replayApproachDiscarded = true;
-                    _armed = false;
-                    _contactContinuity.Reset();
-                    _previousOnGround = sample.OnGround;
-                    return;
-                }
-            }
             _lastContactTime = sampleTime;
             _episodeDecisionJournal?.Record(sampleTime, "recorder", "contact_flag_transition",
                 "Observed an airborne-to-ground flag transition; restart post-contact capture from this contact.",
@@ -346,8 +358,8 @@ internal sealed partial class LandingEpisodeCoordinator
 
         if (rejectedContact && _episodeSamples != null)
         {
-            _episodeDecisionJournal?.Record(sampleTime, "recorder", "physics_discontinuity_rejected",
-                "Ground transition has no airborne evidence in the current active-physics segment; retain raw diagnostics, not a landing.");
+            _episodeDecisionJournal?.Record(sampleTime, "recorder", _contactContinuity.RejectionCode,
+                _contactContinuity.RejectionReason);
             if (!_lastContactTime.HasValue)
             {
                 CompleteEpisodeWithReason("rejected_contact_diagnostics", false);
@@ -456,11 +468,14 @@ internal sealed partial class LandingEpisodeCoordinator
 
         if (!sample.MotionSimulation && _episodeNonMotionFrameCount < int.MaxValue) _episodeNonMotionFrameCount++;
 
-        // Keep both ends of a confirmed pause, irrespective of stale motion flag
-        // chatter or a clock which continues running for hours in the menu.
+        // Keep both ends of each source-control state during a confirmed pause,
+        // irrespective of stale motion flag chatter or a clock which continues
+        // running for hours in the menu. A middle freeze cannot be coalesced away.
         if (sample.SimulatorState == TelemetrySimulatorState.Paused && _episodeSamples.Count >= 2 &&
             _episodeSamples[_episodeSamples.Count - 1].SimulatorState == TelemetrySimulatorState.Paused &&
-            _episodeSamples[_episodeSamples.Count - 2].SimulatorState == TelemetrySimulatorState.Paused)
+            _episodeSamples[_episodeSamples.Count - 2].SimulatorState == TelemetrySimulatorState.Paused &&
+            TelemetryDeduplicator.SameSourceControlState(_episodeSamples[_episodeSamples.Count - 2], _episodeSamples[_episodeSamples.Count - 1]) &&
+            TelemetryDeduplicator.SameSourceControlState(_episodeSamples[_episodeSamples.Count - 1], sample))
         {
             _episodeSamples[_episodeSamples.Count - 1] = sample;
             if (_episodeCoalescedFrameCount < int.MaxValue) _episodeCoalescedFrameCount++;
@@ -468,13 +483,11 @@ internal sealed partial class LandingEpisodeCoordinator
         }
 
         if (sample.SimulatorState != TelemetrySimulatorState.Paused && _episodeSamples.Count > 0 &&
-            _episodeSamples[_episodeSamples.Count - 1].MotionSimulation == sample.MotionSimulation &&
-            _episodeSamples[_episodeSamples.Count - 1].SimulatorState == sample.SimulatorState &&
-            _episodeSamples[_episodeSamples.Count - 1].FlightSegment == sample.FlightSegment &&
+            TelemetryDeduplicator.SameDiscreteState(_episodeSamples[_episodeSamples.Count - 1], sample) &&
             Math.Abs(TimeOf(_episodeSamples[_episodeSamples.Count - 1]) - TimeOf(sample)) <= 0.000000001)
         {
             // SIM_FRAME can continue while the simulator clock is paused. Keep the
-            // newest state within each physics state, preserving pause/resume boundaries.
+            // newest numeric state while preserving discrete contact/source boundaries.
             _episodeSamples[_episodeSamples.Count - 1] = sample;
             if (_episodeCoalescedFrameCount < int.MaxValue) _episodeCoalescedFrameCount++;
             return;

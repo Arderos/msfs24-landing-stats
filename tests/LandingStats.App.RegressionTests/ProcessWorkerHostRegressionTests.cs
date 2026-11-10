@@ -36,11 +36,27 @@ internal static class ProcessWorkerHostRegressionTests
                 Check(await host.Exit == 0 && host.LastAcknowledgedSequence == host.LastReceivedSequence, "Graceful stop lost its source prefix or did not exit.");
             }
         }
+        await StartupRetirement();
         await CrashAndHang();
         await IndependentControlDuringDataBackpressure();
         await DescendantsAndParentCrash();
         Check(OwnedProcess.Quote("a b\\") == "\"a b\\\\\"" && OwnedProcess.Quote("a\"b") == "\"a\\\"b\"", "Windows argument quoting changed its boundaries.");
     }
+    private static async Task StartupRetirement()
+    {
+        for (var i = 0; i < 8; i++)
+        {
+            var host = new ProcessWorkerHost(Executable, Worker(ComponentRole.Controllers), Clock(), (_, __) => Task.CompletedTask);
+            var started = Task.Run(() => host.StartAsync(TimeSpan.FromSeconds(5), "normal"));
+            if ((i & 1) == 0) host.Dispose();
+            else await host.StopAsync(TimeSpan.FromSeconds(1));
+            try { await started; }
+            catch (Exception error) when (error is OperationCanceledException || error is ObjectDisposedException || error is IOException || error is InvalidOperationException) { }
+            host.Dispose();
+            await Until(() => host.Exit.IsCompleted, "Startup retirement leaked a live worker.");
+        }
+    }
+
     private static async Task CrashAndHang()
     {
         ProcessWorkerHost? crash = null;

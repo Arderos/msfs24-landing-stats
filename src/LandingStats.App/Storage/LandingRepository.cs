@@ -21,10 +21,13 @@ public sealed class LandingRepository
     private List<LandingRecord>? _summaries;
     private readonly LandingDeletionLedger _deletions;
     private Dictionary<string, string>? _paths;
+    private readonly Dictionary<string, string> _detailHashes = new Dictionary<string, string>(StringComparer.Ordinal);
     private int _batchDepth;
     private bool _indexDirty;
     private bool _temporaryCleanupComplete;
     private string _indexGeneration = LandingIndexGeneration.Missing;
+    private long _historyRevision;
+    public long HistoryRevision => System.Threading.Interlocked.Read(ref _historyRevision);
     public IDisposable BeginBatch() { EnsureIndexLoaded(); _batchDepth++; return new Batch(this); }
     private sealed class Batch : IDisposable
     {
@@ -53,10 +56,7 @@ public sealed class LandingRepository
     public IReadOnlyList<LandingRecord> LoadAll()
     {
         EnsureIndexLoaded();
-        return _summaries!
-            .OrderByDescending(record => record.TimestampUtc)
-            .ThenByDescending(record => record.ContactNumber)
-            .ToArray();
+        return LandingHistoryOrder.Sort(_summaries!);
     }
 
     public LandingRecord? LoadDetail(LandingRecord summary)
@@ -99,17 +99,20 @@ public sealed class LandingRepository
         }
 
         if (_deletions.Contains(record.Id)) throw new InvalidOperationException("This landing was deleted by the user.");
+        EnsureIndexLoaded();
         Directory.CreateDirectory(RootPath);
         var path = RecordPath(record);
+        string hash;
         if (record.FormatVersion >= 7)
         {
-            WriteAtomic(path, _columnarSerializer, LandingRecordFile.FromRecord(record));
+            hash = WriteAtomic(path, _columnarSerializer, LandingRecordFile.FromRecord(record));
         }
         else
         {
-            WriteAtomic(path, _recordSerializer, record);
+            hash = WriteAtomic(path, _recordSerializer, record);
         }
         Paths()[record.Id] = path;
+        _detailHashes[record.Id] = hash;
         UpdateSummary(record);
         return path;
     }
@@ -125,7 +128,13 @@ public sealed class LandingRepository
         if (_deletions.Contains(record.Id)) return false;
         var existing = FindRecordPath(record.Id);
         if (existing == null) Save(record);
-        else UpdateSummary(ReadRecord(existing) ?? throw new InvalidDataException("The existing landing detail is unreadable; retained for recovery."));
+        else
+        {
+            EnsureIndexLoaded();
+            var detail = ReadRecord(existing, out var hash) ?? throw new InvalidDataException("The existing landing detail is unreadable; retained for recovery.");
+            _detailHashes[record.Id] = hash;
+            UpdateSummary(detail);
+        }
         return true;
     }
 
@@ -308,6 +317,7 @@ public sealed class LandingRepository
                     File.Copy(existing, existing + ".corrupt-" + Guid.NewGuid().ToString("N"));
                 BeginImportCommit(record, existing, compressedRecord);
                 publicationPath = existing; DurableFile.PublishTemporary(temporaryPath, existing);
+                _detailHashes[record.Id] = HashBytes(compressedRecord);
                 UpdateSummary(record);
                 return record;
             }
@@ -316,6 +326,7 @@ public sealed class LandingRepository
             BeginImportCommit(record, destination, compressedRecord);
             publicationPath = destination; DurableFile.PublishTemporary(temporaryPath, destination);
             Paths()[record.Id] = destination;
+            _detailHashes[record.Id] = HashBytes(compressedRecord);
             UpdateSummary(record);
             return record;
         }
@@ -399,6 +410,7 @@ public sealed class LandingRepository
             try { File.Delete(path); } catch (IOException) { } catch (UnauthorizedAccessException) { }
         }
         Paths().Remove(id);
+        _detailHashes.Remove(id);
         var summaryRemoved = _summaries!.RemoveAll(summary => string.Equals(summary.Id, id, StringComparison.Ordinal)) > 0;
         if (summaryRemoved || paths.Length > 0)
         {
@@ -414,26 +426,34 @@ public sealed class LandingRepository
             return;
         }
 
-        CleanupRedundantCloudTemporaryFiles();
-
-        var indexWasReadable = true;
-        _summaries = ReadIndex();
-        if (_summaries == null)
+        try
         {
-            indexWasReadable = false;
-            _summaries = new List<LandingRecord>();
+            CleanupRedundantCloudTemporaryFiles();
+
+            var indexWasReadable = true;
+            _summaries = ReadIndex();
+            if (_summaries == null)
+            {
+                indexWasReadable = false;
+                _summaries = new List<LandingRecord>();
+            }
+
+            foreach (var summary in _summaries)
+            {
+                summary.IsSummaryOnly = true;
+            }
+
+            var recovered = RecoverPendingImports();
+            var reconciled = ReconcileIndexWithDetailFiles();
+            if (recovered || reconciled || (!indexWasReadable && _summaries.Count > 0))
+            {
+                SaveIndex();
+            }
         }
-
-        foreach (var summary in _summaries)
+        catch
         {
-            summary.IsSummaryOnly = true;
-        }
-
-        var recovered = RecoverPendingImports();
-        var reconciled = ReconcileIndexWithDetailFiles();
-        if (recovered || reconciled || (!indexWasReadable && _summaries.Count > 0))
-        {
-            SaveIndex();
+            _summaries = null; _paths = null;
+            throw;
         }
     }
 
@@ -472,6 +492,7 @@ public sealed class LandingRepository
         var paths = Paths();
         var changed = _summaries!.RemoveAll(summary => _deletions.Contains(summary.Id) || !paths.ContainsKey(summary.Id)) > 0;
         var known = new HashSet<string>(_summaries.Select(summary => summary.Id), StringComparer.Ordinal);
+        foreach (var id in _detailHashes.Keys.Where(id => !known.Contains(id)).ToArray()) _detailHashes.Remove(id);
         foreach (var pair in paths.ToArray())
         {
             if (_deletions.Contains(pair.Key))
@@ -480,9 +501,11 @@ public sealed class LandingRepository
                 continue;
             }
             if (known.Contains(pair.Key)) continue;
-            var record = ReadRecord(pair.Value);
-            if (record == null || !known.Add(record.Id)) continue;
-            _summaries.Add(CreateSummary(record)); changed = true;
+            var record = ReadRecord(pair.Value, out var hash);
+            if (record == null || record.Id != pair.Key || !known.Add(record.Id)) continue;
+            _summaries.Add(CreateSummary(record));
+            _detailHashes[record.Id] = hash;
+            changed = true;
         }
 
         return changed;
@@ -496,6 +519,7 @@ public sealed class LandingRepository
 
     private List<LandingRecord>? ReadIndex()
     {
+        _detailHashes.Clear();
         if (!File.Exists(IndexPath))
         {
             return null;
@@ -511,7 +535,13 @@ public sealed class LandingRepository
                 var valid = new List<LandingRecord>();
                 foreach (var value in values)
                 {
-                    try { LandingRecordFile.RestoreSummary(value); valid.Add(value); }
+                    try
+                    {
+                        LandingRecordFile.RestoreSummary(value);
+                        if (!string.IsNullOrEmpty(value.IndexDetailHash)) _detailHashes[value.Id] = value.IndexDetailHash!;
+                        value.IndexDetailHash = null;
+                        valid.Add(value);
+                    }
                     catch (Exception error) when (IsStorageException(error) || error is ArgumentException) { }
                 }
                 return valid
@@ -525,36 +555,49 @@ public sealed class LandingRepository
         }
     }
 
-    private LandingRecord? ReadRecord(string path)
-    {
-        if (IsColumnarRecord(path))
-        {
-            return ReadColumnarRecord(path);
-        }
+    private LandingRecord? ReadRecord(string path, bool throwOnReadFailure = false)
+        => ReadRecord(path, false, out _, throwOnReadFailure);
 
+    private LandingRecord? ReadRecord(string path, out string hash, bool throwOnReadFailure = false)
+        => ReadRecord(path, true, out hash, throwOnReadFailure);
+
+    private LandingRecord? ReadRecord(string path, bool collectHash, out string hash, bool throwOnReadFailure)
+    {
+        hash = "";
         try
         {
-            using (var file = File.OpenRead(path))
-            using (var gzip = new GZipStream(file, CompressionMode.Decompress, false))
+            // Format detection, decoding and provenance share a single read
+            // handle. A competing writer cannot replace the observed version
+            // between these steps or turn a second open into a history failure.
+            using var file = File.OpenRead(path);
+            var columnar = IsColumnarRecord(file);
+            LandingRecord? record;
+            using (var gzip = new GZipStream(file, CompressionMode.Decompress, true))
             {
-                var record = _recordSerializer.ReadObject(new BoundedHistoryStream(gzip, BoundedHistoryStream.MaximumDetailBytes)) as LandingRecord;
-                return record != null && record.FormatVersion <= LandingRecord.CurrentFormatVersion
-                    ? record
-                    : null;
+                var bounded = new BoundedHistoryStream(gzip, BoundedHistoryStream.MaximumDetailBytes);
+                record = columnar ? (_columnarSerializer.ReadObject(bounded) as LandingRecordFile)?.ToRecord()
+                    : _recordSerializer.ReadObject(bounded) as LandingRecord;
             }
+            if (record == null || record.FormatVersion > LandingRecord.CurrentFormatVersion) return null;
+            if (collectHash)
+            {
+                file.Position = 0;
+                using var sha = SHA256.Create();
+                hash = Convert.ToBase64String(sha.ComputeHash(file));
+            }
+            return record;
         }
-        catch (Exception exception) when (IsStorageException(exception))
+        catch (Exception exception) when (!throwOnReadFailure && IsStorageException(exception))
         {
             return null;
         }
     }
 
-    private static bool IsColumnarRecord(string path)
+    private static bool IsColumnarRecord(Stream file)
     {
         try
         {
-            using (var file = File.OpenRead(path))
-            using (var gzip = new GZipStream(file, CompressionMode.Decompress, false))
+            using (var gzip = new GZipStream(file, CompressionMode.Decompress, true))
             using (var reader = new StreamReader(gzip))
             {
                 var prefix = new char[128];
@@ -565,36 +608,13 @@ public sealed class LandingRepository
                        text.Contains("\"summary\":");
             }
         }
-        catch (Exception exception) when (IsStorageException(exception))
-        {
-            return false;
-        }
-    }
-
-    private LandingRecord? ReadColumnarRecord(string path)
-    {
-        try
-        {
-            using (var file = File.OpenRead(path))
-            using (var gzip = new GZipStream(file, CompressionMode.Decompress, false))
-            {
-                var payload = _columnarSerializer.ReadObject(new BoundedHistoryStream(gzip, BoundedHistoryStream.MaximumDetailBytes)) as LandingRecordFile;
-                var record = payload?.ToRecord();
-                return record != null && record.FormatVersion <= LandingRecord.CurrentFormatVersion
-                    ? record
-                    : null;
-            }
-        }
-        catch (Exception exception) when (IsStorageException(exception))
-        {
-            return null;
-        }
+        finally { file.Position = 0; }
     }
 
     private Dictionary<string, string> Paths()
     {
         if (_paths != null) return _paths;
-        _paths = new Dictionary<string, string>(StringComparer.Ordinal);
+        var paths = new Dictionary<string, string>(StringComparer.Ordinal);
         if (Directory.Exists(RootPath))
             foreach (var path in Directory.EnumerateFiles(RootPath, "*.landing.json.gz"))
             {
@@ -602,9 +622,9 @@ public sealed class LandingRepository
                 const int prefix = 17; const string suffix = ".landing.json.gz";
                 if (name.Length <= prefix + suffix.Length || name[8] != '-' || name[15] != 'Z' || name[16] != '-') continue;
                 var id = name.Substring(prefix, name.Length - prefix - suffix.Length);
-                if (!_paths.ContainsKey(id)) _paths.Add(id, path);
+                if (!paths.ContainsKey(id)) paths.Add(id, path);
             }
-        return _paths;
+        return _paths = paths;
     }
     private string? FindRecordPath(string id)
     {
@@ -620,16 +640,17 @@ public sealed class LandingRepository
         return Path.Combine(RootPath, $"{safeTimestamp}-{record.Id}.landing.json.gz");
     }
 
-    private void SaveIndex()
+    private void SaveIndex(bool force = false)
     {
+        System.Threading.Interlocked.Increment(ref _historyRevision);
         _indexDirty = true;
-        if (_batchDepth != 0) return;
+        if (_batchDepth != 0 && !force) return;
         Directory.CreateDirectory(RootPath);
-        var ordered = _summaries!
-            .OrderByDescending(record => record.TimestampUtc)
-            .ThenByDescending(record => record.ContactNumber)
+        var ordered = LandingHistoryOrder.Sort(_summaries!)
             .Select(LandingRecordFile.SanitizedSummaryCopy)
             .ToList();
+        foreach (var summary in ordered)
+            if (_detailHashes.TryGetValue(summary.Id, out var hash)) summary.IndexDetailHash = hash;
         var generation = Guid.NewGuid();
         DurableFile.Write(IndexPath, file =>
         {
@@ -651,43 +672,126 @@ public sealed class LandingRepository
         [DataMember(Order = 2)] public string DetailName { get; set; } = "";
         [DataMember(Order = 3)] public string DetailHash { get; set; } = "";
         [DataMember(Order = 4, IsRequired = true)] public string PreviousIndexGeneration { get; set; } = "";
+        [DataMember(Order = 5)] public bool ReconcileDetail { get; set; }
     }
     private string ImportRoot => Path.Combine(RootPath, ".pending-imports");
     private static string HashBytes(byte[] bytes)
     { using var sha = SHA256.Create(); return Convert.ToBase64String(sha.ComputeHash(bytes)); }
     private static string HashFile(string path)
     { using var file = File.OpenRead(path); using var sha = SHA256.Create(); return Convert.ToBase64String(sha.ComputeHash(file)); }
-    private void BeginImportCommit(LandingRecord record, string destination, byte[] bytes)
+    private static string ImportCommitName(string id)
     {
         using var sha = SHA256.Create();
-        var name = BitConverter.ToString(sha.ComputeHash(Encoding.UTF8.GetBytes(record.Id))).Replace("-", "");
+        return BitConverter.ToString(sha.ComputeHash(Encoding.UTF8.GetBytes(id))).Replace("-", "").Substring(0, 32) + ".json";
+    }
+    private void BeginImportCommit(LandingRecord record, string destination, byte[] bytes)
+    {
+        // Upgrade old indexes lazily, before any replacement can alter detail
+        // bytes. The fingerprint and index-only metadata share one atomic file.
+        if (!_detailHashes.ContainsKey(record.Id) && File.Exists(destination) && _summaries!.Any(item => item.Id == record.Id))
+        {
+            _detailHashes[record.Id] = HashFile(destination);
+            try { SaveIndex(force: true); }
+            catch { _detailHashes.Remove(record.Id); throw; }
+        }
         Directory.CreateDirectory(ImportRoot);
-        var path = Path.Combine(ImportRoot, name.Substring(0, 32) + ".json");
+        var path = Path.Combine(ImportRoot, ImportCommitName(record.Id));
         var previous = File.Exists(path) ? DurableFile.ReadJson<ImportCommit>(path, 256 * 1024) : null;
-        if (previous != null && previous.Id != record.Id) throw new InvalidDataException("Pending import identity hash collision.");
+        if (previous != null && previous.Id != record.Id && !IsRetiredEmptyRecovery(previous))
+            throw new InvalidDataException("Pending import identity hash collision.");
         var commit = new ImportCommit { Id = record.Id, DetailName = Path.GetFileName(destination), DetailHash = HashBytes(bytes),
             PreviousIndexGeneration = _indexGeneration };
         DurableFile.WriteJson(path, commit);
     }
+    private bool IsRetiredEmptyRecovery(ImportCommit commit) => IsEmptyRecovery(commit) && commit.PreviousIndexGeneration != _indexGeneration;
+    private static bool IsEmptyRecovery(ImportCommit commit) => commit.ReconcileDetail && string.IsNullOrEmpty(commit.Id) &&
+        string.IsNullOrEmpty(commit.DetailName) && string.IsNullOrEmpty(commit.DetailHash);
     private bool RecoverPendingImports()
     {
         if (!Directory.Exists(ImportRoot)) return false;
         var changed = false;
-        foreach (var path in Directory.EnumerateFiles(ImportRoot, "*.json"))
+        foreach (var path in Directory.EnumerateFiles(ImportRoot, "*.json").ToArray())
         {
-            var commit = DurableFile.ReadJson<ImportCommit>(path, 256 * 1024);
-            if (string.IsNullOrEmpty(commit.Id) || string.IsNullOrEmpty(commit.DetailName) || Path.GetFileName(commit.DetailName) != commit.DetailName ||
-                !PathMatchesRecord(commit.DetailName, commit.Id)) throw new InvalidDataException("Invalid pending landing import.");
-            if (_deletions.Contains(commit.Id) || commit.PreviousIndexGeneration != _indexGeneration) continue;
-            var detail = Path.Combine(RootPath, commit.DetailName);
-            if (!File.Exists(detail) || HashFile(detail) != commit.DetailHash) continue; // Detail never published.
-            var existing = _summaries!.FindIndex(item => item.Id == commit.Id);
-            var record = ReadRecord(detail) ?? throw new InvalidDataException("Pending import detail is unreadable; retained for recovery.");
-            if (record.Id != commit.Id) throw new InvalidDataException("Pending import identity changed.");
-            if (existing < 0) _summaries.Add(CreateSummary(record)); else _summaries[existing] = CreateSummary(record);
-            changed = true;
+            ImportCommit? commit = null;
+            try
+            {
+                commit = DurableFile.ReadJson<ImportCommit>(path, 256 * 1024);
+                if (IsEmptyRecovery(commit))
+                { changed |= commit.PreviousIndexGeneration == _indexGeneration; continue; }
+                if (string.IsNullOrEmpty(commit.Id) || string.IsNullOrEmpty(commit.DetailName) ||
+                    commit.DetailName.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0 || Path.GetFileName(commit.DetailName) != commit.DetailName ||
+                    !PathMatchesRecord(commit.DetailName, commit.Id) ||
+                    !string.Equals(Path.GetFileName(path), ImportCommitName(commit.Id), StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidDataException("Invalid pending landing import.");
+                if (_deletions.Contains(commit.Id) || commit.PreviousIndexGeneration != _indexGeneration) continue;
+                var detail = Path.Combine(RootPath, commit.DetailName);
+                if (!File.Exists(detail) || HashFile(detail) != commit.DetailHash) continue; // Detail never published.
+                if (commit.ReconcileDetail) { RecoverInvalidImport(path); changed = true; continue; }
+                // Transient I/O must retain the active intent for a retry. Only
+                // proven malformed or unsupported content is isolated below.
+                var record = ReadRecord(detail, throwOnReadFailure: true) ??
+                    throw new InvalidDataException("Pending import detail is invalid or unsupported.");
+                if (record.Id != commit.Id) throw new InvalidDataException("Pending import identity changed.");
+                _detailHashes[record.Id] = commit.DetailHash;
+                var existing = _summaries!.FindIndex(item => item.Id == commit.Id);
+                if (existing < 0) _summaries.Add(CreateSummary(record)); else _summaries[existing] = CreateSummary(record);
+                changed = true;
+            }
+            catch (Exception error) when (error is InvalidDataException || error is SerializationException)
+            {
+                // Preserve the original evidence, then replace the active intent
+                // with a readable, generation-fenced recovery transaction. A
+                // failed cleanup after index publication must not roll back later
+                // index-only edits on the next restart.
+                PreserveInvalidImport(path);
+                var affected = Paths().FirstOrDefault(pair => string.Equals(ImportCommitName(pair.Key), Path.GetFileName(path), StringComparison.OrdinalIgnoreCase));
+                var recovery = new ImportCommit { PreviousIndexGeneration = _indexGeneration, ReconcileDetail = true };
+                if (affected.Key != null)
+                {
+                    recovery.Id = affected.Key; recovery.DetailName = Path.GetFileName(affected.Value);
+                    recovery.DetailHash = HashFile(affected.Value);
+                }
+                DurableFile.WriteJson(path, recovery);
+                RecoverInvalidImport(path);
+                changed = true;
+                System.Diagnostics.Trace.TraceWarning("Invalid pending landing import retained for recovery in {0}: {1}", path, error.Message);
+            }
         }
         return changed;
+    }
+    private void PreserveInvalidImport(string path)
+    {
+        using var sha = SHA256.Create();
+        using var source = File.OpenRead(path);
+        var hash = BitConverter.ToString(sha.ComputeHash(source)).Replace("-", "");
+        var quarantine = Path.Combine(ImportRoot, "quarantine", Path.GetFileNameWithoutExtension(path) + "-" + hash + ".json");
+        // The content-addressed copy is repeatable if interruption happens before
+        // the recovery intent is published. Never move the only active evidence.
+        source.Position = 0;
+        DurableFile.Write(quarantine, target => source.CopyTo(target));
+    }
+    private void RecoverInvalidImport(string intentPath)
+    {
+        var name = Path.GetFileName(intentPath);
+        foreach (var pair in Paths())
+        {
+            if (!string.Equals(ImportCommitName(pair.Key), name, StringComparison.OrdinalIgnoreCase) || _deletions.Contains(pair.Key)) continue;
+            var hash = HashFile(pair.Value);
+            // A damaged intent does not prove publication. If the committed
+            // detail is unchanged, its later index-only metadata remains valid.
+            if (_detailHashes.TryGetValue(pair.Key, out var committedHash) && hash == committedHash &&
+                _summaries!.Any(item => item.Id == pair.Key)) continue;
+            LandingRecord? record;
+            try { record = ReadRecord(pair.Value, throwOnReadFailure: true); }
+            catch (Exception error) when (error is InvalidDataException || error is SerializationException) { record = null; }
+            _summaries!.RemoveAll(item => item.Id == pair.Key);
+            _detailHashes.Remove(pair.Key);
+            if (record != null && record.Id == pair.Key)
+            {
+                _summaries.Add(CreateSummary(record));
+                _detailHashes[pair.Key] = hash;
+            }
+        }
     }
     private void CleanupImportCommits()
     {
@@ -715,6 +819,10 @@ public sealed class LandingRepository
             ContactCount = source.ContactCount,
             EstimatedContactTimeSeconds = source.EstimatedContactTimeSeconds,
             RecordingEpisodeId = source.RecordingEpisodeId,
+            IsImported = source.IsImported,
+            ImportedSourceId = source.ImportedSourceId,
+            ImportedSourceEpisodeId = source.ImportedSourceEpisodeId,
+            ImportedPackageHash = source.ImportedPackageHash,
             InertialFpm = source.InertialFpm,
             SurfaceFpm = source.SurfaceFpm,
             SurfaceDeltaFpm = source.SurfaceDeltaFpm,
@@ -783,13 +891,18 @@ public sealed class LandingRepository
         return summary;
     }
 
-    private static void WriteAtomic(string path, DataContractJsonSerializer serializer, object value)
+    private static string WriteAtomic(string path, DataContractJsonSerializer serializer, object value)
     {
+        var hash = "";
         DurableFile.Write(path, file =>
         {
-            using var gzip = new GZipStream(file, CompressionLevel.Optimal, true);
-            serializer.WriteObject(gzip, value);
+            using var sha = SHA256.Create();
+            using var hashing = new CryptoStream(file, sha, CryptoStreamMode.Write, true);
+            using (var gzip = new GZipStream(hashing, CompressionLevel.Optimal, true)) serializer.WriteObject(gzip, value);
+            hashing.FlushFinalBlock();
+            hash = Convert.ToBase64String(sha.Hash!);
         });
+        return hash;
     }
 
     private static bool IsStorageException(Exception exception) =>

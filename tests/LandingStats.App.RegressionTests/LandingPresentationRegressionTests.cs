@@ -15,6 +15,14 @@ internal static class LandingPresentationRegressionTests
 {
     internal static void RunAll()
     {
+        var partial = new LandingPresentation(new LandingRecord
+        {
+            ImpactAnalysisVersion = LandingStats.Core.TouchdownImpactAnalysis.CurrentVersion,
+            ImpactStatus = nameof(LandingStats.Core.TouchdownImpactStatus.Incomplete), ImpactPeakG = 1.5, ImpactPeakOffsetSeconds = .2,
+        });
+        Check(partial.ImpactPeakDisplay != LocalizationManager.Text("Model.NotAvailable") &&
+            partial.LandingFeelDisplay == LocalizationManager.Text("Model.NotAvailable"),
+            "An interrupted impact hid its measured peak or assigned a final landing category.");
         // This test enumerates the contract, so adding a scalar field without
         // updating either projection or non-finite normalization fails here.
         var fields = typeof(LandingRecord).GetProperties(BindingFlags.Public | BindingFlags.Instance)
@@ -23,6 +31,7 @@ internal static class LandingPresentationRegressionTests
         {
             nameof(LandingRecord.Series), nameof(LandingRecord.Engines), nameof(LandingRecord.ContactPoints),
             nameof(LandingRecord.ControllerTimeline), nameof(LandingRecord.SourceEvidenceTimeline),
+            nameof(LandingRecord.ShareData),
         };
         var collections = new HashSet<string>(StringComparer.Ordinal)
         {
@@ -46,9 +55,12 @@ internal static class LandingPresentationRegressionTests
         record.RawControllerSourceIndices = new List<int> { 2, 4 };
         record.RawControllerAxesSourceIndices = new List<int> { 1, 3 };
         record.ClosureReconstructionContactPointIndices = new[] { 0, 2 };
+        record.ShareData = new LandingShareData { Core = Convert.ToBase64String(new byte[] { 1, 2, 3 }) };
         var summary = LandingRepository.CreateSummary(record);
         var restored = LandingRecordFile.SanitizedSummaryCopy(record);
         LandingRecordFile.RestoreSummary(restored);
+        Check(summary.ShareData == null && restored.ShareData == null && record.ShareData != null,
+            "Retained exchange payload belongs only to the detail and must not inflate history summaries.");
         foreach (var property in fields.Where(property => !detailOnly.Contains(property.Name)))
         {
             Check(Same(property.GetValue(record), property.GetValue(summary)), "Index projection omitted " + property.Name);
@@ -58,6 +70,10 @@ internal static class LandingPresentationRegressionTests
         {
             property.SetValue(record, double.NaN);
         }
+        var missing = new LandingPresentation(record);
+        foreach (var display in new[] { missing.InertialDisplay, missing.G150Display, missing.G2SecondsDisplay,
+            missing.AttitudeDisplay, missing.AirspeedDisplay, missing.GroundSpeedDisplay, missing.AngleOfAttackDisplay })
+            Check(display == LocalizationManager.Text("Model.NotAvailable"), "An unavailable metric leaked NaN into presentation.");
         var sanitized = LandingRecordFile.SanitizedSummaryCopy(record);
         foreach (var property in fields.Where(property => property.PropertyType == typeof(double) || property.PropertyType == typeof(double?)))
             Check(Equals(property.GetValue(sanitized), LandingRecord.NonFiniteStorageSentinel), "Non-finite storage leak in " + property.Name);

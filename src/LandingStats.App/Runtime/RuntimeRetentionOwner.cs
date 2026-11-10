@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -24,8 +24,9 @@ internal sealed class RuntimeRetentionOwner
     private readonly string _root, _current;
     private readonly EpisodeTransactionStore _episodes;
     private readonly Action<Guid, string>? _failed;
-    public RuntimeRetentionOwner(string root, string current, EpisodeTransactionStore episodes, Action<Guid, string>? failed = null)
-    { _root = root; _current = current; _episodes = episodes; _failed = failed; }
+    private readonly Action<Guid>? _recovered;
+    public RuntimeRetentionOwner(string root, string current, EpisodeTransactionStore episodes, Action<Guid, string>? failed = null, Action<Guid>? recovered = null)
+    { _root = root; _current = current; _episodes = episodes; _failed = failed; _recovered = recovered; }
     public async Task RunAsync(ManagedComponentContext owner)
     {
         owner.MarkReady(); long nextCollection = 0;
@@ -101,28 +102,42 @@ internal sealed class RuntimeRetentionOwner
         {
             foreach (var session in (Directory.Exists(sessions) ? Directory.EnumerateDirectories(sessions) : Array.Empty<string>()).Where(path => Guid.TryParseExact(Path.GetFileName(path), "N", out _)))
             {
-                try { pinned.Add(RuntimeSessionDirectories.Validate(session).Engine); }
+                try
+                {
+                    pinned.Add(RuntimeSessionDirectories.Validate(session).Engine);
+                    if (Guid.TryParseExact(Path.GetFileName(session), "N", out var recovered)) _recovered?.Invoke(recovered);
+                }
                 catch (Exception error) when (error is FileNotFoundException || error is InvalidDataException || error is SerializationException)
                 {
                     using var owner = RuntimeSession.AcquireExistingOwnership(session);
                     RuntimeScratchLease.RequireUnlinked(session);
-                    foreach (var engine in RuntimeMetadataFailure.Pin(session, "runtime.json", root, error, _failed)) pinned.Add(engine);
+                    var id = Guid.ParseExact(Path.GetFileName(session), "N");
+                    try
+                    {
+                        // Creation may have finished while ownership was being
+                        // acquired. Only isolate metadata read under that lease.
+                        try { pinned.Add(RuntimeSessionDirectories.Validate(session).Engine); }
+                        catch (Exception invalid) when (invalid is FileNotFoundException || invalid is InvalidDataException || invalid is SerializationException)
+                        {
+                            foreach (var engine in RuntimeMetadataFailure.Pin(session, "runtime.json", root, invalid)) pinned.Add(engine);
+                        }
+                        _recovered?.Invoke(id);
+                    }
+                    catch (Exception blocked) when (Retain(blocked)) { _failed?.Invoke(id, blocked.Message); throw; }
                 }
+                catch (Exception blocked) when (Retain(blocked))
+                { _failed?.Invoke(Guid.ParseExact(Path.GetFileName(session), "N"), blocked.Message); throw; }
             }
             foreach (var id in _episodes.EnumeratePending())
             {
                 try
                 {
-                    var episode = _episodes.Read(id);
-                    if (episode.Stage < EpisodeWorkStage.ReportReady) pinned.Add(episode.Engine);
+                    var episode = _episodes.ReadForRecovery(id, out var retained);
+                    foreach (var engine in retained) pinned.Add(engine);
+                    _recovered?.Invoke(id);
+                    if (episode != null && episode.Stage < EpisodeWorkStage.ReportReady) pinned.Add(episode.Engine);
                 }
-                catch (Exception error) when (error is FileNotFoundException || error is InvalidDataException || error is SerializationException)
-                {
-                    var directory = Path.Combine(_episodes.Root, id.ToString("N"));
-                    if (!Directory.Exists(directory)) directory = Path.Combine(_root, "episode-history", id.ToString("N"));
-                    RuntimeScratchLease.RequireUnlinked(directory);
-                    foreach (var engine in RuntimeMetadataFailure.Pin(directory, "manifest.json", root, error, _failed)) pinned.Add(engine);
-                }
+                catch (Exception error) when (Retain(error)) { _failed?.Invoke(id, error.Message); throw; }
             }
         }
         catch (Exception error) when (Retain(error)) { return; } // An unreadable reference may pin any retained engine.
@@ -172,6 +187,7 @@ internal sealed class RuntimeRetentionOwner
         var retired = Path.Combine(Path.GetDirectoryName(directory)!, ".collected-" + session.Runtime.ToString("N"));
         Directory.Move(directory, retired);
         Directory.Delete(retired, true);
+        _recovered?.Invoke(session.Runtime);
     }
     private void PreserveEvidence(string directory, RuntimeSession session, bool recoveredTail)
     {

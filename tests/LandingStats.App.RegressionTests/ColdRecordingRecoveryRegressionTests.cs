@@ -23,7 +23,7 @@ internal static class ColdRecordingRecoveryRegressionTests
         try
         {
             var engines = Path.Combine(root, "e"); var lease = ProcessingEngineLease.Capture(engines, AppDomain.CurrentDomain.BaseDirectory);
-            for (var scenario = 0; scenario < 4; scenario++) await Scenario(Path.Combine(root, scenario.ToString()), engines, lease.Identity, scenario);
+            for (var scenario = 0; scenario < 5; scenario++) await Scenario(Path.Combine(root, scenario.ToString()), engines, lease.Identity, scenario);
             done = true;
         }
         finally { if (done && Path.GetFullPath(root).StartsWith(Path.GetFullPath(Path.GetTempPath()), StringComparison.OrdinalIgnoreCase)) Directory.Delete(root, true); }
@@ -72,16 +72,16 @@ internal static class ColdRecordingRecoveryRegressionTests
             Feed(JournalRecordKind.RuntimeCommand, new RecordingCommand(RecordingCommandKind.RawCapture, true).Encode());
             Sim(new WorkerHello("fixture", new string('a', 64), 1, identity.Clock.Id, identity.Clock.Frequency));
             Sim(new LifecycleMessage(SourceLifecycle.Connected)); Sim(new AircraftMessage("MSFS", "Original flight", "T", "M"));
-            if (scenario == 3) journal.SaveCheckpoint(last!, state.CaptureCheckpoint());
-            if (scenario == 1 || scenario == 3)
+            if (scenario >= 3) journal.SaveCheckpoint(last!, state.CaptureCheckpoint());
+            if (scenario == 1 || scenario >= 3)
             {
                 for (var i = 0; i < 220; i++) Frame(1 + i * .1, i >= 20);
                 Check(persisted.Count == 1, "Fixture failed to reach the captured landing before its checkpoint.");
             }
             else { Frame(1, false); Frame(1.1, scenario == 0); }
-            if (scenario != 3) journal.SaveCheckpoint(last!, state.CaptureCheckpoint());
+            if (scenario < 3) journal.SaveCheckpoint(last!, state.CaptureCheckpoint());
             persist = false;
-            Frame(scenario == 1 || scenario == 3 ? 23.1 : 1.2, scenario != 2); Frame(scenario == 1 || scenario == 3 ? 23.2 : 1.3, scenario != 2);
+            Frame(scenario == 1 || scenario >= 3 ? 23.1 : 1.2, scenario != 2); Frame(scenario == 1 || scenario >= 3 ? 23.2 : 1.3, scenario != 2);
         }
         var end = new RuntimeInput(StableRuntimeIdentity.Command(identity.RuntimeId, 0), JournalRecordKind.RuntimeCommand,
             1000 + order * 100, 1000 + order * 100, originalTime.AddMilliseconds(order * 100), new RecordingCommand(RecordingCommandKind.PreviousRuntimeEnded).Encode());
@@ -89,6 +89,13 @@ internal static class ColdRecordingRecoveryRegressionTests
         lastEffects.AddRange(expected.Captures);
         Check(lastEffects.Count == 1, "Cold-recovery fixture has no unique episode.");
         var original = lastEffects.Single();
+        if (scenario == 4)
+        {
+            // Crash after immutable input publication, before its commit marker.
+            var interrupted = oldStore.Read(original.Episode.PersistentId);
+            interrupted.Stage = EpisodeWorkStage.Created; interrupted.InputHash = ""; interrupted.FacilityHash = "";
+            DurableFile.WriteJson(Path.Combine(oldStore.Root, interrupted.Id.ToString("N"), "manifest.json"), interrupted);
+        }
         var clock = new RuntimeClockEpoch(Guid.NewGuid(), Stopwatch.GetTimestamp(), Stopwatch.Frequency);
         var executor = new RetainedAnalysisExecutor(engines, Path.Combine(root, "j"), newStore, Guid.NewGuid(), clock);
         var starts = 0; executor.WorkerStarted += _ => Interlocked.Increment(ref starts);
@@ -113,7 +120,7 @@ internal static class ColdRecordingRecoveryRegressionTests
         RecordingRecoveryBundle result;
         using (var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30))) result = await executor.RecoverRecordingAsync(sessionRoot, timeout.Token);
         var manifest = newStore.Read(original.Episode.PersistentId); var inputEpisode = newStore.ReadInputs(manifest).Episode;
-        Check(scenario != 3 || newStore.ReadInputs(manifest).Metadata.KnownAirports.Single().Ident == "LBSF", "Recovery replaced the authoritative airport cache.");
+        Check(scenario < 3 || newStore.ReadInputs(manifest).Metadata.KnownAirports.Single().Ident == "LBSF", "Recovery replaced the authoritative airport cache.");
         Check(newStore.Enumerate().Count() == 1 && manifest.Engine == engine && manifest.TimestampUtc == original.TimestampUtc &&
             manifest.AutomaticAllowedAtCapture == original.AutomaticAllowed && manifest.PolicyRevision == 1 &&
             (acceptedArchive == Guid.Empty || manifest.ArchiveId == acceptedArchive), "Cold recovery duplicated the episode or used the new runtime's engine, time or policy.");

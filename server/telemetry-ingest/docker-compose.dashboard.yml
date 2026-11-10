@@ -18,7 +18,7 @@ services:
       - "${DASHBOARD_BIND_ADDRESS:?Set the dashboard listen address in the local .env}:8091:8091"
     volumes:
       - /srv/msfs-landing-telemetry/data/accepted:/data/accepted:ro
-      - dashboard-cache:/cache
+      - ${DASHBOARD_CACHE_DIRECTORY:-dashboard-cache}:/cache
       - dashboard-snapshot:/snapshot:ro
     networks:
       - dashboard_lan

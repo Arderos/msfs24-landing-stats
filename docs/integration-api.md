@@ -11,6 +11,8 @@ The API runs in a separate supervised worker process. A disconnected or slow
 client does not own the recording, analysis or archive lifecycle. Landing Stats
 and client applications can start and stop independently.
 
+The worker explicitly sets and verifies the pipe owner's Windows SID before serving each connection slot. Clients must authenticate the connected server process's token SID against their own user before sending or accepting messages; the Python example performs this check. A predictable pipe name alone does not authenticate a server.
+
 ## Enable or disable
 
 Open **Settings → Local API → Allow local applications to read landing data**.
@@ -119,6 +121,7 @@ Landing projections include:
 | Field | Meaning |
 | --- | --- |
 | `id`, `episodeId`, `timestampUtc`, `sourceFormatVersion` | Stable identities, contact time and source recording format. |
+| `isImported` | `true` for a contact imported from a shared landing file. Exclude these contacts from the user's monthly averages. Older projections without this additive field represent recorded contacts. |
 | `aircraft` | Aircraft `title`, `type` and `simulator`. |
 | `site` | Airport/runway identifiers, contact latitude/longitude in degrees and airport distance in nautical miles. |
 | `contactNumber`, `contactCount` | Contact position and count within the recorded landing. |

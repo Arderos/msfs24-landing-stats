@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -8,7 +8,6 @@ using System.Threading.Tasks;
 using LandingStats.App.Storage;
 using LandingStats.App.Models;
 using LandingStats.App.Telemetry;
-using LandingStats.App.TelemetryUpload;
 using LandingStats.App.GoogleDrive;
 using LandingStats.Runtime.Contracts;
 
@@ -65,7 +64,11 @@ internal sealed class LandingRuntime : IDisposable
             var archivePolicy = new CaptureArchivePolicy(Path.Combine(Root, "receiver-capabilities.json"));
             _presentation = new RuntimePresentation(present);
             Outbox.RecoveryFailed += (id, error) => _presentation.Failure("delivery.outbox", id, error);
-            _ = new TelemetryUploadIdentityStore(uploadIdentityRoot).Identity();
+            Outbox.Recovered += id => _presentation.Recovered("delivery.outbox", id);
+            Outbox.IdentityFailuresChanged += _presentation.IdentityAvailability;
+            Outbox.QuarantineChanged += _presentation.DeliveryQuarantine;
+            _presentation.IdentityAvailability(Outbox.HasIdentityFailures);
+            _presentation.DeliveryQuarantine(Outbox.HasQuarantinedEntries);
             airportRepository ??= new AirportFacilityRepository(Path.Combine(Root, "airports.gz")); airportGate ??= new object();
             lock (airportGate) _knownAirports = airportRepository.Load();
             var worker = Path.Combine(Engine.DirectoryPath, "LandingStats.WorkerHost.exe");
@@ -74,7 +77,11 @@ internal sealed class LandingRuntime : IDisposable
                 worker, Identity.RuntimeId, Identity.Clock, escalate, _presentation.Health,
                 error => _presentation.Failure("integration.api", Guid.Empty, error),
                 recoveryOptions ?? RuntimeComponentCatalog.Create().Single(item => item.Component == RuntimeComponent.IntegrationApi).Options,
-                generation => fixture?.Invoke(ComponentRole.IntegrationApi, generation));
+                generation => fixture?.Invoke(ComponentRole.IntegrationApi, generation),
+                () => _presentation.Recovered("integration.api", Guid.Empty));
+            _integrationApi.WorkFailed += (id, error) => _presentation.Failure("integration.api", id, error);
+            _integrationApi.WorkRecovered += id => _presentation.Recovered("integration.api", id);
+            _integrationApi.Retired += () => _presentation.Retired("integration.api");
             if (cloud != null)
             {
                 var cloudRoot = Path.Combine(Root, "cloud");
@@ -84,12 +91,15 @@ internal sealed class LandingRuntime : IDisposable
             }
             var catalogWorker = new RetainedAnalysisExecutor(engines, scratch, Store, Identity.RuntimeId, Identity.Clock, generation => fixture?.Invoke(ComponentRole.Analysis, generation));
             var geometryCatalog = new GeometryCatalogRuntimeOwner(catalogWorker.RefreshGeometryCatalogAsync,
-                error => _presentation.Failure("analysis.catalog", Guid.Empty, error.ToString()));
+                error => { Trace.TraceWarning("Geometry catalog refresh: {0}", error); _presentation.Failure("analysis.catalog", Guid.Empty, error.GetType().Name); },
+                () => _presentation.Recovered("analysis.catalog", Guid.Empty));
             var analysis = new RetainedAnalysisExecutor(engines, scratch, Store, Identity.RuntimeId, Identity.Clock, generation => fixture?.Invoke(ComponentRole.Analysis, generation), geometryCatalog.WaitReadyAsync);
             var recovery = new RetainedAnalysisExecutor(engines, scratch, Store, Identity.RuntimeId, Identity.Clock, generation => fixture?.Invoke(ComponentRole.Analysis, generation));
             _uploads = new UploadRuntimeOwner(Outbox, worker, uploadIdentityRoot, Identity.RuntimeId, Identity.Clock, _presentation.Upload,
                 generation => fixture?.Invoke(ComponentRole.Upload, generation), archivePolicy.Observe);
             _intake = new ArchiveIntakeOwner(Path.Combine(Root, "intake"), Archives, legacyQueue, uploadIdentityRoot, Store, Outbox, _uploads.Wake, archivePolicy.UseZstd);
+            _intake.Failed += (id, error) => _presentation.Failure("storage.reports", id, error);
+            _intake.Recovered += _presentation.DeliveryRecovered;
             _episodes = new EpisodeRuntimeOwner(Store,
                 new EpisodeWorkCoordinator(Store, null, repository, repositoryGate, analysis, _integrationApi.Publish),
                 new BugReportRepository(Archives, archivePolicy.UseZstd), Outbox, update =>
@@ -105,6 +115,7 @@ internal sealed class LandingRuntime : IDisposable
                     if (update.Report != null) _cloud?.RequestBackground();
                 });
             _episodes.Failed += (id, error) => _presentation.Failure("analysis.episodes", id, error);
+            _episodes.Recovered += id => _presentation.Recovered("analysis.episodes", id);
             var raw = new RawEffectStore(Path.Combine(SessionRoot, "raw"));
             var rawBatches = new RawBatchPersistence(raw);
             _raw = new RuntimeRawExportOwner(sessions, SessionRoot, raw, new RawChunkStore(Path.Combine(Root, "chunks"), Archives, Outbox, archivePolicy.UseZstd, automatic: true), _uploads.Wake, rawChunkSize, rawBatches.Flush);
@@ -127,7 +138,7 @@ internal sealed class LandingRuntime : IDisposable
             Register("recovery.sessions", RuntimeComponent.Analysis, previous.RunAsync);
             Register("storage.raw", RuntimeComponent.HistoryArchiveOutbox, _raw.RunAsync);
             Register("storage.reports", RuntimeComponent.HistoryArchiveOutbox, _intake.RunAsync);
-            Register("storage.retention", RuntimeComponent.HistoryArchiveOutbox, new RuntimeRetentionOwner(Root, SessionRoot, Store, (id, error) => _presentation.Failure("storage.retention", id, error)).RunAsync);
+            Register("storage.retention", RuntimeComponent.HistoryArchiveOutbox, new RuntimeRetentionOwner(Root, SessionRoot, Store, (id, error) => _presentation.Failure("storage.retention", id, error), id => _presentation.Recovered("storage.retention", id)).RunAsync);
             Register("delivery.telemetry", RuntimeComponent.TelemetryUpload, _uploads.RunAsync);
             Register("presentation", RuntimeComponent.Presentation, _presentation.RunAsync);
             Register("integration.data", RuntimeComponent.IntegrationApi, _integrationApi.RunAsync);
@@ -262,6 +273,14 @@ internal sealed class LandingRuntime : IDisposable
             finally { await uploadStopped.ConfigureAwait(false); }
         }
     }
+    public async Task<TelemetryUpload.TelemetryIdentityRecoveryResult> RecoverUnavailableTelemetryIdentityAsync(bool replacementConfirmed,
+        CancellationToken cancellationToken = default)
+    {
+        using var accepted = AcceptReport();
+        var result = await _uploads.RecoverUnavailableIdentityAsync(replacementConfirmed, _presentation.IdentityRecovered, cancellationToken).ConfigureAwait(false);
+        _intake.Wake();
+        return result;
+    }
     public Task SetRawCaptureAsync(bool enabled, CancellationToken cancellationToken = default) => _acquisition.SetRawCaptureAsync(enabled, cancellationToken);
     public void WakeDelivery() => _uploads.Wake();
     public Task<GoogleDriveSyncResult> RequestCloudSyncAsync()
@@ -327,8 +346,9 @@ internal sealed class LandingRuntime : IDisposable
             _cloud?.StopIntake();
             var cloudStop = _cloudApi?.StopAsync() ?? Task.CompletedTask;
             var integrationStop = _integrationApi.StopAsync();
+            var acquisitionStop = _acquisition.StopAsync();
             await Attempt(() => _operations.Stop());
-            await Attempt(() => _acquisition.StopAsync());
+            await Attempt(() => acquisitionStop);
             await Attempt(() => Task.WhenAll(_owners.Select(owner => owner.StopAsync())));
             await Attempt(() => cloudStop);
             await Attempt(() => integrationStop);

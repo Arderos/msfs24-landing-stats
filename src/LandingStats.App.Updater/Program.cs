@@ -17,35 +17,38 @@ namespace LandingStats.App.Updater;
 internal static class Program
 {
     [STAThread]
-    private static int Main(string[] args)
+    private static int Main(string[] args) => Run(args, exception => MessageBox.Show(
+        "MSFS Landing Stats was not updated. The existing application was preserved.\r\n\r\n" + exception.Message,
+        "MSFS Landing Stats updater", MessageBoxButtons.OK, MessageBoxIcon.Error));
+
+    internal static int Run(string[] args, Action<Exception> reportFailure)
     {
         UpdateInvocation? invocation = null;
         var committed = false;
+        Process? target = null;
         try
         {
             invocation = ParseInvocation(args);
-            ApplyAsync(invocation, () => committed = true).GetAwaiter().GetResult();
+            using (Protocol.EnterInstallTransaction(invocation.TargetPath))
+                ApplyAsync(invocation, target = VerifyTargetProcess(invocation), () => committed = true).GetAwaiter().GetResult();
             return 0;
         }
         catch (Exception exception)
         {
-            if (committed && invocation != null) TryRestartExistingApplication(invocation);
-            MessageBox.Show(
-                "MSFS Landing Stats was not updated. The existing application was preserved.\r\n\r\n" + exception.Message,
-                "MSFS Landing Stats updater",
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Error);
+            if (committed && invocation != null) TryRestartExistingApplication(invocation, target!);
+            reportFailure(exception);
             return 1;
         }
+        finally { target?.Dispose(); }
     }
 
-    private static async Task ApplyAsync(UpdateInvocation invocation, Action committed)
+    private static async Task ApplyAsync(UpdateInvocation invocation, Process target, Action committed)
     {
         ServicePointManager.SecurityProtocol |= SecurityProtocolType.Tls12;
         var ownPath = Path.GetFullPath(Assembly.GetExecutingAssembly().Location);
         var updateRoot = Path.GetDirectoryName(ownPath) ?? throw new InvalidDataException("Updater directory is unavailable");
         VerifyUpdateRoot(updateRoot);
-        using var target = VerifyTargetProcess(invocation);
+        Protocol.VerifyInstallAccess(invocation.TargetPath);
         // Own the commit object before advertising readiness; the guardian may
         // signal and close its last handle immediately after ready.
         using var commit = invocation.CommitEventName == null ? null : EventWaitHandle.OpenExisting(invocation.CommitEventName);
@@ -308,29 +311,58 @@ internal static class Program
         }
 
         var targetDirectory = Path.GetDirectoryName(targetPath) ?? throw new InvalidDataException("Application directory is unavailable");
-        var backupPath = Path.Combine(targetDirectory, ".msfs-landing-stats-backup-" + Guid.NewGuid().ToString("N") + ".exe");
-        File.Move(targetPath, backupPath);
+        var transactionId = Guid.NewGuid().ToString("N");
+        var stagedPath = Path.Combine(targetDirectory, ".msfs-landing-stats-pending-" + transactionId + ".exe");
+        var backupPath = Path.Combine(targetDirectory, ".msfs-landing-stats-backup-" + transactionId + ".exe");
+        var targetAttributes = File.GetAttributes(targetPath);
+        var readOnlyCleared = false;
         try
         {
-            File.Move(replacementPath, targetPath);
-            VerifySingleFileBundle(targetPath);
-            VerifyAssemblyVersion(targetPath, expectedVersion, "MSFS-Landing-Stats");
-        }
-        catch
-        {
-            if (File.Exists(targetPath))
+            // Downloads can reside on a different volume. Prepare and validate
+            // on the target volume before publishing with one replacement.
+            using (var source = File.OpenRead(replacementPath))
+            using (var staged = new FileStream(stagedPath, FileMode.CreateNew, FileAccess.Write, FileShare.None))
             {
-                File.Delete(targetPath);
+                source.CopyTo(staged);
+                staged.Flush(true);
             }
-            if (File.Exists(backupPath))
+            VerifySingleFileBundle(stagedPath);
+            VerifyAssemblyVersion(stagedPath, expectedVersion, "MSFS-Landing-Stats");
+            if ((targetAttributes & FileAttributes.ReadOnly) != 0)
             {
-                File.Move(backupPath, targetPath);
+                File.SetAttributes(targetPath, targetAttributes & ~FileAttributes.ReadOnly);
+                readOnlyCleared = true;
+            }
+            // Never remove the installed path before publishing: process exit
+            // on either side of this operation leaves a complete executable.
+            File.Replace(stagedPath, targetPath, backupPath);
+        }
+        catch (Exception failure)
+        {
+            try
+            {
+                // Recover a backup if the filesystem reports a partial replace.
+                // A present target is already either the old or validated new file.
+                if (!File.Exists(targetPath) && File.Exists(backupPath)) File.Move(backupPath, targetPath);
+                if (readOnlyCleared) File.SetAttributes(targetPath, targetAttributes);
+            }
+            catch (Exception recoveryFailure)
+            {
+                throw new AggregateException("Executable replacement and recovery failed.", failure, recoveryFailure);
             }
             throw;
         }
-        // Replacement is committed. Failure to collect the old executable must
-        // never roll a verified new executable back.
-        try { File.Delete(backupPath); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+        finally { TryDeleteInstallFile(stagedPath); }
+        // Publication is committed. Cleanup must never roll back the new file.
+        TryDeleteInstallFile(backupPath);
+        TryDeleteInstallFile(replacementPath);
+    }
+
+    private static void TryDeleteInstallFile(string path)
+    {
+        try { File.Delete(path); }
+        catch (IOException error) { Debug.WriteLine("Updater cleanup failed: " + error); }
+        catch (UnauthorizedAccessException error) { Debug.WriteLine("Updater cleanup failed: " + error); }
     }
 
     private static void VerifySingleFileBundle(string path)
@@ -363,14 +395,13 @@ internal static class Program
         }
     }
 
-    private static void TryRestartExistingApplication(UpdateInvocation invocation)
+    private static void TryRestartExistingApplication(UpdateInvocation invocation, Process target)
     {
         try
         {
             // The target process is the guardian for a committed handoff. Its
             // mutex must be gone before a new launcher can become resident.
-            try { using var parent = Process.GetProcessById(invocation.ParentPid); if (!parent.WaitForExit(150000)) return; }
-            catch (ArgumentException) { }
+            WaitForTargetExit(target);
             var targetPath = invocation.TargetPath;
             if (!string.IsNullOrEmpty(targetPath) && File.Exists(targetPath))
             {

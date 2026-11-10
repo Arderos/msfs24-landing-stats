@@ -38,12 +38,19 @@ internal sealed class EpisodeRuntimeOwner
     private readonly HashSet<Guid> _presentedHistory = new HashSet<Guid>();
     private readonly HashSet<Guid> _presentedReport = new HashSet<Guid>();
     private readonly HashSet<Guid> _terminal = new HashSet<Guid>();
+    private readonly HashSet<Guid> _suspended = new HashSet<Guid>();
+    private readonly TimeSpan _attemptTimeout;
     private long _nextScan;
     private int _wakeRequested = 1;
     public event Action<Guid, string>? Failed;
+    public event Action<Guid>? Recovered;
     public EpisodeRuntimeOwner(EpisodeTransactionStore store, EpisodeWorkCoordinator work, BugReportRepository archives, DurableOutbox outbox,
-        Action<RuntimeEpisodeUpdate> present)
-    { _store = store; _work = work; _archives = archives; _outbox = outbox; _present = present; }
+        Action<RuntimeEpisodeUpdate> present, TimeSpan? attemptTimeout = null)
+    {
+        _store = store; _work = work; _archives = archives; _outbox = outbox; _present = present;
+        _attemptTimeout = attemptTimeout ?? TimeSpan.FromSeconds(120);
+        if (_attemptTimeout <= TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(attemptTimeout));
+    }
     public void Wake() { Interlocked.Exchange(ref _wakeRequested, 1); Volatile.Read(ref _owner)?.SignalWork(); }
     public async Task RunAsync(ManagedComponentContext owner)
     {
@@ -61,17 +68,21 @@ internal sealed class EpisodeRuntimeOwner
                 {
                     owner.CancellationToken.ThrowIfCancellationRequested();
                     var now = Stopwatch.GetTimestamp();
-                    if (_terminal.Contains(id)) continue;
+                    if (_terminal.Contains(id) || _suspended.Contains(id)) continue;
                     if (_retry.TryGetValue(id, out var previous) && now < previous.After) continue;
+                    var metadataRead = false;
                     try
                     {
                         if (_store.HasFailed(id)) { _terminal.Add(id); continue; }
-                        var manifest = _store.Read(id);
-                        if (manifest.IsFailed || _store.HasFailed(id) || manifest.Stage == EpisodeWorkStage.Completed) { _terminal.Add(id); continue; }
-                        if (manifest.Stage < EpisodeWorkStage.InputsCommitted) continue;
+                        var manifest = _store.ReadForRecovery(id, out _);
+                        if (manifest == null) { _retry.Remove(id); Recovered?.Invoke(id); continue; }
+                        metadataRead = true;
+                        if (manifest.IsFailed || _store.HasFailed(id)) { _terminal.Add(id); continue; }
+                        if (manifest.Stage == EpisodeWorkStage.Completed) { _retry.Remove(id); _terminal.Add(id); Recovered?.Invoke(id); continue; }
+                        if (manifest.Stage < EpisodeWorkStage.InputsCommitted) { _retry.Remove(id); Recovered?.Invoke(id); continue; }
                         owner.Progress(false, DependencyWait.Storage);
                         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(owner.CancellationToken);
-                        deadline.CancelAfter(TimeSpan.FromSeconds(120));
+                        deadline.CancelAfter(_attemptTimeout);
                         var operation = AdvanceAsync(id, deadline.Token);
                         while (!operation.IsCompleted)
                         {
@@ -79,7 +90,14 @@ internal sealed class EpisodeRuntimeOwner
                             await Task.WhenAny(operation, Task.Delay(250)).ConfigureAwait(false);
                         }
                         worked |= await operation.ConfigureAwait(false);
-                        if (_store.Read(id).Stage == EpisodeWorkStage.Completed) _terminal.Add(id);
+                        if (_store.Read(id).Stage == EpisodeWorkStage.Completed)
+                        {
+                            _terminal.Add(id);
+                            // A retry after report publication emits no duplicate
+                            // presentation update. Completion retires its remaining
+                            // storage failure before this episode leaves the scan.
+                            Recovered?.Invoke(id);
+                        }
                         _retry.Remove(id); owner.Progress(true);
                     }
                     catch (Exception error) when (error is IOException || error is UnauthorizedAccessException || error is InvalidDataException ||
@@ -87,14 +105,20 @@ internal sealed class EpisodeRuntimeOwner
                         error is OperationCanceledException && !owner.CancellationToken.IsCancellationRequested)
                     {
                         var count = Math.Min(20, (previous?.Count ?? 0) + 1);
-                        _retry[id] = new Retry(count, now + (long)(Math.Min(30, Math.Pow(2, count - 1)) * Stopwatch.Frequency));
-                        var terminal = count >= 5 && !(error is UnauthorizedAccessException) &&
+                        var timeouts = error is OperationCanceledException ? (previous?.Timeouts ?? 0) + 1 : 0;
+                        _retry[id] = new Retry(count, timeouts, Stopwatch.GetTimestamp() + (long)(Math.Min(30, Math.Pow(2, count - 1)) * Stopwatch.Frequency));
+                        var terminal = metadataRead && count >= 5 && !(error is UnauthorizedAccessException) && !(error is OperationCanceledException) &&
                             (!(error is IOException) || error.GetType().Name == "AnalysisJobException");
-                        try { _store.Fail(id, error, terminal); }
+                        try { if (metadataRead) _store.Fail(id, error, terminal); }
                         catch (Exception storageError) when (storageError is IOException || storageError is UnauthorizedAccessException)
                         { Failed?.Invoke(id, error.Message + "; diagnostic persistence: " + storageError.Message); }
                         if (terminal) _terminal.Add(id);
-                        Failed?.Invoke(id, error.ToString());
+                        // A deadline says nothing about input validity. Preserve the
+                        // transaction for restart recovery, but stop spending this
+                        // session's bounded retry budget on the same slow episode.
+                        var suspended = timeouts >= 5;
+                        if (suspended) _suspended.Add(id);
+                        Failed?.Invoke(id, suspended ? "Analysis retry budget exhausted after repeated timeouts; inputs retained for retry on the next application start. " + error : error.ToString());
                     }
                 }
                 owner.Progress(worked, DependencyWait.Idle);
@@ -148,8 +172,9 @@ internal sealed class EpisodeRuntimeOwner
     }
     private sealed class Retry
     {
-        public Retry(int count, long after) { Count = count; After = after; }
+        public Retry(int count, int timeouts, long after) { Count = count; Timeouts = timeouts; After = after; }
         public readonly int Count;
+        public readonly int Timeouts;
         public readonly long After;
     }
 }

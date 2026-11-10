@@ -69,6 +69,7 @@ internal sealed class EpisodeProcessor
         var anyReplay = false;
         var anyAnalyzed = false;
         var segmentOrdinal = 0;
+        var contactContinuity = new TelemetryContactContinuity();
         foreach (var rawSegment in TelemetryKinematicDiscontinuity.SplitPhysicalSegments(eventArgs.Samples))
         {
             var segmentId = StableRuntimeIdentity.Segment(eventArgs.PersistentId,
@@ -81,6 +82,11 @@ internal sealed class EpisodeProcessor
             RecordSourceObservations(rawSegment, journal, kinematicReplay);
             if (replayLike)
             {
+                // Skipping replay metrics does not establish released physics.
+                // Keep authoritative interruptions for the next physical segment.
+                foreach (var sample in rawSegment)
+                    if (TelemetryContactPhysics.IsBlocked(sample)) contactContinuity.Observe(sample);
+                contactContinuity.Reset();
                 journal.Record(TelemetryAnalysisFrames.TimeOf(segment[0]), "analysis", "replay_rejected",
                     sourceReplay ? "SDK replay or externally driven USER pose excludes this physical segment from landing analysis."
                         : "Kinematic consistency check rejected this physical segment as replay-like; other segments remain independent.");
@@ -107,7 +113,7 @@ internal sealed class EpisodeProcessor
                 geometrySnapshot = AnalysisGeometrySnapshot.Capture(segment, analysisOptions, resolution.Outcome);
             }
             analysisOptions.DecisionJournal = journal;
-            var touchdowns = TouchdownAnalysis.Analyze(segment, analysisOptions);
+            var touchdowns = TouchdownAnalysis.Analyze(segment, analysisOptions, contactContinuity);
             var segmentIdentity = segmentId.ToString("N");
             foreach (var touchdown in touchdowns)
             {

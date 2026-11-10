@@ -1,4 +1,4 @@
-<Window x:Class="LandingStats.App.MainWindow"
+﻿<Window x:Class="LandingStats.App.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:controls="clr-namespace:LandingStats.App.Controls"
@@ -13,9 +13,13 @@
         ResizeMode="CanResizeWithGrip"
         Icon="Assets/AppIcon.ico"
         Background="{StaticResource AppBackgroundBrush}"
+        AllowDrop="True"
+        PreviewDragOver="OnLandingFilesDragOver"
+        PreviewDrop="OnLandingFilesDrop"
         UseLayoutRounding="True">
     <Window.Resources>
         <presentation:LandingPresentationConverter x:Key="LandingPresentationConverter" />
+        <presentation:LandingHistoryEpisodeConverter x:Key="LandingHistoryEpisodeConverter" />
         <Style x:Key="NonReplayPanelStyle" TargetType="Border">
             <Style.Triggers>
                 <DataTrigger Binding="{Binding IsChecked, ElementName=ReconstructionTab}" Value="True">
@@ -147,6 +151,26 @@
                     <Setter Property="Visibility" Value="Visible" />
                 </DataTrigger>
             </Style.Triggers>
+        </Style>
+        <Style x:Key="HistoryShareButtonStyle" TargetType="{x:Type Button}" BasedOn="{StaticResource HistoryDeleteButtonStyle}">
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type Button}">
+                        <Border x:Name="Chrome" Background="{TemplateBinding Background}" CornerRadius="5">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Chrome" Property="Background" Value="{StaticResource AccentSoftBrush}" />
+                                <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="Chrome" Property="Background" Value="{StaticResource SurfaceRaisedBrush}" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
         </Style>
         <Style x:Key="DangerButtonStyle" TargetType="{x:Type Button}">
             <Setter Property="Foreground" Value="#FFD8CF" />
@@ -351,7 +375,9 @@
                 Background="Transparent"
                 BorderBrush="{StaticResource BorderBrush}"
                 BorderThickness="0,0,0,1"
-                MouseLeftButtonDown="OnTitleBarMouseDown">
+                MouseLeftButtonDown="OnTitleBarMouseDown"
+                MouseMove="OnTitleBarMouseMove"
+                MouseLeave="OnTitleBarMouseLeave">
             <Grid Margin="16,0,8,0">
                 <Grid.RowDefinitions><RowDefinition Height="44" /><RowDefinition Height="26" /></Grid.RowDefinitions>
                 <Grid.ColumnDefinitions>
@@ -395,12 +421,22 @@
                     <RowDefinition Height="46" />
                     <RowDefinition Height="42" />
                     <RowDefinition Height="*" />
+                    <RowDefinition Height="Auto" />
                     <RowDefinition Height="26" />
                 </Grid.RowDefinitions>
                 <Grid Grid.Row="0" Margin="16,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
                     <TextBlock Text="{DynamicResource History.Title}" Style="{StaticResource SectionLabelStyle}" Foreground="{StaticResource SubtleTextBrush}" VerticalAlignment="Center" />
-                    <TextBlock x:Name="HistoryCountText" HorizontalAlignment="Right" VerticalAlignment="Center"
+                    <TextBlock x:Name="HistoryCountText" Grid.Column="1" Margin="8,0,12,0" HorizontalAlignment="Right" VerticalAlignment="Center"
                                Foreground="{StaticResource SubtleTextBrush}" FontFamily="Cascadia Mono, Consolas" FontSize="11" />
+                    <Button x:Name="ImportLandingsButton" Grid.Column="2" Content="{DynamicResource Sharing.Import}"
+                            Style="{StaticResource OutlineButtonStyle}" Padding="9,5" FontSize="11" VerticalAlignment="Center"
+                            Click="OnImportLandingsClick" ToolTip="{DynamicResource Sharing.ImportHint}"
+                            AutomationProperties.Name="{DynamicResource Sharing.Import}" />
                 </Grid>
                 <Border Grid.Row="1" Height="30" Margin="12,0,12,12" Background="{StaticResource SurfaceBrush}" CornerRadius="7">
                     <Grid>
@@ -463,13 +499,41 @@
                         <Style TargetType="ListBoxItem">
                             <Setter Property="HorizontalContentAlignment" Value="Stretch" />
                             <Setter Property="Height" Value="58" />
+                            <Setter Property="Tag">
+                                <Setter.Value>
+                                    <MultiBinding Converter="{StaticResource LandingHistoryEpisodeConverter}">
+                                        <Binding />
+                                        <Binding Path="ItemsSource" RelativeSource="{RelativeSource AncestorType={x:Type ListBox}}" />
+                                    </MultiBinding>
+                                </Setter.Value>
+                            </Setter>
                             <Setter Property="Template">
                                 <Setter.Value>
                                     <ControlTemplate TargetType="ListBoxItem">
-                                        <Border x:Name="Row" Background="Transparent" BorderBrush="Transparent" BorderThickness="2,0,0,0" Padding="14,0,16,0">
-                                            <ContentPresenter VerticalAlignment="Center" />
-                                        </Border>
+                                        <Grid>
+                                            <Border x:Name="Row" Background="Transparent" BorderBrush="Transparent" BorderThickness="2,0,0,0"
+                                                    Padding="14,0,16,0">
+                                                <ContentPresenter VerticalAlignment="Center" />
+                                            </Border>
+                                            <Grid Width="5" Margin="7,0,0,0" HorizontalAlignment="Left" IsHitTestVisible="False"
+                                                  Visibility="{Binding Tag.ShowConnector, RelativeSource={RelativeSource TemplatedParent}, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                                <Grid.RowDefinitions>
+                                                    <RowDefinition Height="*" />
+                                                    <RowDefinition Height="5" />
+                                                    <RowDefinition Height="*" />
+                                                </Grid.RowDefinitions>
+                                                <Border x:Name="EpisodeConnectorAbove" Width="1" Background="{StaticResource SubtleTextBrush}"
+                                                        Visibility="{Binding Tag.ConnectAbove, RelativeSource={RelativeSource TemplatedParent}, Converter={StaticResource BooleanToVisibilityConverter}}" />
+                                                <Ellipse Grid.Row="1" Width="5" Height="5" Fill="{StaticResource SubtleTextBrush}" />
+                                                <Border x:Name="EpisodeConnectorBelow" Grid.Row="2" Width="1" Background="{StaticResource SubtleTextBrush}"
+                                                        Visibility="{Binding Tag.ConnectBelow, RelativeSource={RelativeSource TemplatedParent}, Converter={StaticResource BooleanToVisibilityConverter}}" />
+                                            </Grid>
+                                        </Grid>
                                         <ControlTemplate.Triggers>
+                                            <DataTrigger Binding="{Binding IsImported}" Value="True">
+                                                <Setter TargetName="Row" Property="Background" Value="#17252D" />
+                                                <Setter TargetName="Row" Property="BorderBrush" Value="#7EAABF" />
+                                            </DataTrigger>
                                             <Trigger Property="IsSelected" Value="True">
                                                 <Setter TargetName="Row" Property="Background" Value="{StaticResource SurfaceRaisedBrush}" />
                                                 <Setter TargetName="Row" Property="BorderBrush" Value="{StaticResource AccentBrush}" />
@@ -492,6 +556,10 @@
                                 </Grid.ColumnDefinitions>
                                 <StackPanel VerticalAlignment="Center">
                                     <TextBlock Text="{Binding AircraftTitle}" FontSize="12" FontWeight="Medium" TextTrimming="CharacterEllipsis" />
+                                    <TextBlock x:Name="ImportedLandingLabel" Text="{DynamicResource Sharing.Imported}"
+                                               Foreground="#9AC9DD" FontSize="9" FontWeight="SemiBold" Margin="0,2,0,0"
+                                               Visibility="{Binding Record.IsImported, Converter={StaticResource BooleanToVisibilityConverter}}"
+                                               ToolTip="{DynamicResource Sharing.ImportedHint}" />
                                     <StackPanel Orientation="Horizontal" Margin="0,3,0,0">
                                         <TextBlock Text="{Binding LocationDisplay}" Foreground="{StaticResource SubtleTextBrush}" FontSize="11" TextTrimming="CharacterEllipsis" />
                                         <TextBlock Text="  ·  " Foreground="{StaticResource SubtleTextBrush}" FontSize="11" />
@@ -512,7 +580,18 @@
                                     <TextBlock Text="{Binding ImpactPeakDisplay, StringFormat={}{0} G}" Foreground="{StaticResource SubtleTextBrush}"
                                                FontFamily="Cascadia Mono, Consolas" FontSize="10" Margin="0,2,0,0" HorizontalAlignment="Right" />
                                 </StackPanel>
-                                <Button Grid.Column="1"
+                                <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
+                                <Button x:Name="ShareLandingButton" Style="{StaticResource HistoryShareButtonStyle}" Margin="0,0,4,0"
+                                        Tag="{Binding Record}" Click="OnShareLandingClick"
+                                        ToolTip="{DynamicResource Sharing.ShareHint}"
+                                        AutomationProperties.Name="{DynamicResource Sharing.Share}">
+                                    <Viewbox Width="15" Height="15">
+                                        <Path Data="M 10,13 L 10,2 M 6,6 L 10,2 L 14,6 M 4,10 L 4,17 L 16,17 L 16,10"
+                                              Fill="Transparent" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType={x:Type Button}}}"
+                                              StrokeThickness="1.5" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round" />
+                                    </Viewbox>
+                                </Button>
+                                <Button x:Name="DeleteLandingButton"
                                         Style="{StaticResource HistoryDeleteButtonStyle}"
                                         HorizontalAlignment="Right"
                                         Tag="{Binding Record}"
@@ -529,6 +608,7 @@
                                               StrokeLineJoin="Round" />
                                     </Viewbox>
                                 </Button>
+                                </StackPanel>
                             </Grid>
                         </DataTemplate>
                     </ListBox.ItemTemplate>
@@ -547,7 +627,26 @@
                             Style="{StaticResource OutlineButtonStyle}" Click="OnRetryHistoryLoadClick" />
                 </StackPanel>
 
-                <Grid Grid.Row="3" Margin="16,0" VerticalAlignment="Center">
+                <Border x:Name="SharingStatusPanel" Grid.Row="3" Margin="12,6" Padding="10,8"
+                        Background="{StaticResource SurfaceBrush}" CornerRadius="7" Visibility="Collapsed">
+                    <Grid>
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                        <StackPanel>
+                            <TextBlock x:Name="SharingStatusText" Foreground="{StaticResource MutedTextBrush}" FontSize="11" TextWrapping="Wrap" />
+                            <Expander x:Name="SharingErrorDetails" Header="{DynamicResource Sharing.Details}" Visibility="Collapsed"
+                                      Foreground="{StaticResource MutedTextBrush}" FontSize="11" Margin="0,6,0,0">
+                                <ScrollViewer MaxHeight="120" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                                    <TextBlock x:Name="SharingErrorText" TextWrapping="Wrap" Margin="0,5,0,0" />
+                                </ScrollViewer>
+                            </Expander>
+                        </StackPanel>
+                        <Button x:Name="DismissSharingStatusButton" Grid.Column="1" Content="×" Width="20" Height="20"
+                                Margin="4,-3,-4,0" VerticalAlignment="Top" Style="{StaticResource OutlineButtonStyle}" Padding="0"
+                                Click="OnDismissSharingStatusClick" ToolTip="{DynamicResource Common.Close}"
+                                AutomationProperties.Name="{DynamicResource Common.Close}" />
+                    </Grid>
+                </Border>
+                <Grid Grid.Row="4" Margin="16,0" VerticalAlignment="Center">
                     <TextBlock Text="{DynamicResource History.AverageRate}" Foreground="{StaticResource SubtleTextBrush}" FontSize="11" />
                     <TextBlock x:Name="AverageRateText" HorizontalAlignment="Right" Foreground="{StaticResource MutedTextBrush}"
                                FontFamily="Cascadia Mono, Consolas" FontSize="11" />
@@ -829,14 +928,19 @@
                                        Foreground="{StaticResource SubtleTextBrush}"
                                        FontFamily="Cascadia Mono, Consolas" FontSize="9"
                                        TextTrimming="CharacterEllipsis"
-                                       HorizontalAlignment="Right" VerticalAlignment="Center" />
+                                       HorizontalAlignment="Right" VerticalAlignment="Center">
+                                <TextBlock.ToolTip>
+                                    <TextBlock Style="{StaticResource InfoToolTipTextStyle}"
+                                               Text="{Binding ClosureModelHelpDisplay}" />
+                                </TextBlock.ToolTip>
+                            </TextBlock>
                             <ContentControl Grid.Column="2"
                                             Style="{StaticResource InfoIconStyle}"
                                             AutomationProperties.Name="{DynamicResource Recon.Model}"
-                                            AutomationProperties.HelpText="{DynamicResource Recon.ModelHelp}">
+                                            AutomationProperties.HelpText="{Binding ClosureModelHelpDisplay}">
                                 <ContentControl.ToolTip>
                                     <TextBlock Style="{StaticResource InfoToolTipTextStyle}"
-                                               Text="{DynamicResource Recon.ModelHelp}" />
+                                               Text="{Binding ClosureModelHelpDisplay}" />
                                 </ContentControl.ToolTip>
                             </ContentControl>
                         </Grid>
@@ -1093,7 +1197,6 @@
                         Height="26"
                         Visibility="Collapsed"
                         IsEnabled="False"
-                        Opacity="0.42"
                         Click="OnReportBugClick"
                         ToolTip="{DynamicResource Footer.ReportBugHelp}" />
                 <TextBlock Grid.Column="5" x:Name="StoragePathText" Foreground="{StaticResource LabelTextBrush}"
@@ -1403,6 +1506,16 @@
                             <TextBlock Text="{DynamicResource Settings.TelemetryBody}"
                                        Foreground="{StaticResource MutedTextBrush}"
                                        FontSize="11" LineHeight="17" TextWrapping="Wrap" Margin="0,7,0,0" />
+                            <TextBlock x:Name="SettingsTelemetryStatusText" Text="{DynamicResource Delivery.Idle}"
+                                       Foreground="{StaticResource MutedTextBrush}" FontSize="11" TextWrapping="Wrap" Margin="0,8,0,0" />
+                            <Button x:Name="RecoverTelemetryIdentityButton" Visibility="Collapsed" IsEnabled="False" Content="{DynamicResource Settings.TelemetryRecover}"
+                                    Style="{StaticResource OutlineButtonStyle}" HorizontalAlignment="Left" Height="30" Margin="0,10,0,0"
+                                    Click="OnRecoverTelemetryIdentityClick" />
+                            <Button x:Name="CancelTelemetryRecoveryButton" Visibility="Collapsed" IsEnabled="False" Content="{DynamicResource Settings.TelemetryRecoveryCancel}"
+                                    Style="{StaticResource OutlineButtonStyle}" HorizontalAlignment="Left" Height="30" Margin="0,7,0,0"
+                                    Click="OnCancelTelemetryRecoveryClick" />
+                            <TextBlock x:Name="SettingsTelemetryRecoveryText" Visibility="Collapsed"
+                                       Foreground="{StaticResource MutedTextBrush}" FontSize="11" TextWrapping="Wrap" Margin="0,7,0,0" />
                             <TextBlock x:Name="SettingsTelemetryErrorText" Visibility="Collapsed"
                                        Foreground="{StaticResource DangerBrush}"
                                        FontSize="11" TextWrapping="Wrap" Margin="0,7,0,0" />

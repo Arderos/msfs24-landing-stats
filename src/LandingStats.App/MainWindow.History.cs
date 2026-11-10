@@ -138,14 +138,11 @@ public partial class MainWindow
             }
             // An episode can finish while the index is being read. Do not drop
             // those new records or reintroduce a locally deleted one.
-            _landings = _landings.Where(record => !initialIds.Contains(record.Id))
+            _landings = LandingHistoryOrder.Sort(_landings.Where(record => !initialIds.Contains(record.Id))
                 .Concat(stored)
                 .Where(record => !_locallyRemovedHistoryIds.Contains(record.Id))
                 .GroupBy(record => record.Id, StringComparer.Ordinal)
-                .Select(group => group.First())
-                .OrderByDescending(record => record.TimestampUtc)
-                .ThenByDescending(record => record.ContactNumber)
-                .ToArray();
+                .Select(group => group.First()));
             _historyLoading = false;
             // A user's selection made during a slow refresh outranks the
             // selection captured by a cloud-sync caller before its network await.

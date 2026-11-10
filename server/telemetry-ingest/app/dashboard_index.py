@@ -16,6 +16,8 @@ import sqlite3
 import threading
 import time
 import zipfile
+import zlib
+from bisect import bisect_right
 from collections import Counter, defaultdict
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -23,9 +25,10 @@ from pathlib import Path
 from .capture_archive import CaptureArchive, MAXIMUM_SESSION_METADATA_BYTES
 from .validation import MAXIMUM_RESULT_BYTES as MAX_RESULTS_BYTES
 from .validation import MAXIMUM_DECISION_JOURNAL_BYTES, MAXIMUM_DECISION_ENTRIES, _validate_controller_timeline, _validate_source_timeline, _validate_controller_samples
+from .dashboard_analytics import build_analytics, CHANNELS, MAX_COHORT, profile_display_channels, quantiles
 
 
-INDEX_VERSION = 6
+INDEX_VERSION = 13
 # LandingRecord.NonFiniteStorageSentinel / LandingRecordFile.Restore use exact
 # equality, not a magnitude threshold. Other finite values remain measurable.
 NONFINITE_STORAGE_SENTINEL = -1.7976931348623157E308
@@ -33,6 +36,8 @@ MAX_ARCHIVE_BYTES = 64 * 1024 * 1024
 MAX_EXPANDED_BYTES = 128 * 1024 * 1024
 MAX_ROWS = 65536
 SCAN_SECONDS = 30
+# Bound historical backfill work so new uploads are reconsidered every cycle.
+BACKFILL_SECONDS = 10
 UNKNOWN = "Unknown"
 LOG = logging.getLogger(__name__)
 
@@ -350,7 +355,16 @@ def _index_archive(path, row):
             warnings.append("Decision journal was truncated by the client")
         if landings and invalid:
             warnings.append("Saved contacts have no active-physics frames; excluded from landing statistics, not deleted")
+        analytics, analytics_error = [], None
+        if not invalid:
+            try:
+                analytics = build_analytics(archive, results, journal['entries'])
+            except (ValueError, TypeError, KeyError, IndexError, OverflowError) as exc:
+                # Derived analytics cannot make a retained archive disappear.
+                LOG.warning('Analytics unavailable for %s: %s', row['capture_id'], type(exc).__name__)
+                analytics_error = f'{type(exc).__name__}: flight analytics unavailable'
         return _json({"session": session, "creator_version": _creator_version(session), "telemetry": telemetry, "landings": landings, "journal": journal,
+                "analytics": analytics, "analysis_metadata": [item['meta'] for item in analytics], "analytics_error": analytics_error,
                 "results_available": results_available, "capture_outcome": outcome,
                 "interruptions": interruptions,
                 "members": [{"name": i.filename, "bytes": i.file_size, "compressed_bytes": i.compress_size} for i in infos],
@@ -374,6 +388,9 @@ class DashboardIndex:
         self._storage = {}
         self._registry = {}
         self._signed_budgets = []
+        self._analytics_lock = threading.Lock()
+        self._catalog_lock = threading.Lock()
+        self._catalog_snapshot = None  # Owned by _lock; retired with its published rows.
 
     @contextmanager
     def _connect_cache(self):
@@ -393,6 +410,7 @@ class DashboardIndex:
         with self._connect_cache() as connection:
             connection.execute("PRAGMA journal_mode=WAL")
             connection.execute("CREATE TABLE IF NOT EXISTS archive_index (sha256 TEXT PRIMARY KEY, version INTEGER NOT NULL, indexed_at REAL NOT NULL, payload TEXT, compact TEXT, error TEXT)")
+            connection.execute("CREATE TABLE IF NOT EXISTS flight_analytics (sha256 TEXT PRIMARY KEY, payload BLOB NOT NULL)")
 
     def start(self):
         if self._thread and self._thread.is_alive():
@@ -461,24 +479,41 @@ class DashboardIndex:
         now = time.time()
         with self._lock:
             initial_scan = self._state["last_success_at"] is None
-            self._state.update(state="indexing", total=len(rows), indexed=0, errors=0, pending=len(rows), last_scan_at=_iso(now), error=None)
+            self._state.update(state="indexing", total=len(rows), last_scan_at=_iso(now), error=None)
+            if initial_scan:
+                self._state.update(indexed=0, errors=0, pending=len(rows))
         accepted = (self.root / "accepted").resolve()
         output = []
+        started = time.monotonic()
+        rebuilt = 0
+        with self._connect_cache() as connection:
+            cached_rows = {r['sha256']: r for r in connection.execute('SELECT sha256,version,indexed_at,compact,error FROM archive_index')}
         for row in rows:
             if self._stop.is_set():
                 return
-            with self._connect_cache() as connection:
-                cached = connection.execute("SELECT version,indexed_at,compact,error FROM archive_index WHERE sha256=?", (row["sha256"],)).fetchone()
+            cached = cached_rows.get(row['sha256'])
             compact, error = None, None
+            pending = False
             if cached and cached["version"] == INDEX_VERSION and (not cached["error"] or now - cached["indexed_at"] < 300):
                 compact = json.loads(cached["compact"]) if cached["compact"] else None
                 error = cached["error"]
+            elif rebuilt and time.monotonic() - started >= BACKFILL_SECONDS:
+                # Keep the previous complete archive summary while its derived
+                # format is rebuilt. Original receiver metadata remains visible.
+                compact = json.loads(cached['compact']) if cached and cached['compact'] else None
+                if compact:
+                    # Old eligibility rules cannot feed new analytic cohorts.
+                    compact['analysis_metadata'] = []
+                error = cached['error'] if cached else None
+                pending = True
             else:
+                rebuilt += 1
                 try:
                     path = (self.root / row["relative_path"]).resolve()
                     if not path.is_relative_to(accepted) or not path.is_file():
                         raise ValueError("retained archive missing or outside accepted directory")
                     payload = _index_archive(path, row)
+                    analytics = payload.pop('analytics', [])
                     compact = {k: v for k, v in payload.items() if k not in ("journal", "session", "members")}
                     compact["landings"] = [{k: v for k, v in landing.items() if k != "summary"} for landing in payload["landings"]]
                     compact.update(aircraft=payload["session"].get("aircraft_title"), simulator=payload["session"].get("simulator"),
@@ -488,37 +523,49 @@ class DashboardIndex:
                     payload = None
                     error = f"{type(exc).__name__}: archive could not be indexed" if isinstance(exc, OSError) else f"{type(exc).__name__}: {str(exc)[:180]}"
                 with self._connect_cache() as connection:
+                    if payload:
+                        connection.execute('INSERT OR REPLACE INTO flight_analytics VALUES(?,?)',
+                                           (row['sha256'], zlib.compress(json.dumps(analytics, allow_nan=False, separators=(',', ':')).encode(), 3)))
                     connection.execute("INSERT OR REPLACE INTO archive_index VALUES(?,?,?,?,?,?)", (row["sha256"], INDEX_VERSION, now,
                                        json.dumps(payload, allow_nan=False) if payload else None, json.dumps(compact, allow_nan=False) if compact else None, error))
-            output.append({**row, **(compact or {}), "index_status": "error" if error else "ready", "index_error": error})
+            output.append({**row, **(compact or {}), "index_status": "pending" if pending else "error" if error else "ready", "index_error": error})
             with self._lock:
                 if initial_scan:
                     self._rows = output.copy()
-                self._state["indexed"] += not error
-                self._state["errors"] += bool(error)
-                self._state["pending"] -= 1
+                    self._catalog_snapshot = None
+                    self._state["indexed"] += not error and not pending
+                    self._state["errors"] += bool(error) and not pending
+                    self._state["pending"] -= not pending
         with self._lock:
             self._rows = output
-            self._state.update(state="ready", last_success_at=_iso(time.time()))
+            self._catalog_snapshot = None
+            self._state.update(indexed=sum(r['index_status'] == 'ready' for r in output),
+                               errors=sum(r['index_status'] == 'error' for r in output),
+                               pending=sum(r['index_status'] == 'pending' for r in output))
+            self._state.update(state="indexing" if self._state['pending'] else "ready", last_success_at=_iso(time.time()))
         # Bound the private cache to archives still retained by the receiver.
         hashes = {row["sha256"] for row in rows}
         with self._connect_cache() as connection:
             for cached in connection.execute("SELECT sha256 FROM archive_index").fetchall():
                 if cached["sha256"] not in hashes:
                     connection.execute("DELETE FROM archive_index WHERE sha256=?", (cached["sha256"],))
+                    connection.execute("DELETE FROM flight_analytics WHERE sha256=?", (cached["sha256"],))
 
     def _snapshot(self, days=0):
         cutoff = time.time() - max(0, days) * 86400 if days else 0
         with self._lock:
             rows = [row for row in self._rows if row["received_at"] >= cutoff]
             state = self._state.copy()
+        return rows, self._snapshot_state(state)
+
+    def _snapshot_state(self, state):
         last = state["last_success_at"]
         state["stale"] = not last or time.time() - datetime.fromisoformat(last.replace("Z", "+00:00")).timestamp() > SCAN_SECONDS * 3
         if self._source_generated_at:
             state["source_generated_at"] = _iso(self._source_generated_at)
             state["stale"] = state["stale"] or time.time() - self._source_generated_at > 120
         state["progress"] = (state["total"] - state["pending"]) / state["total"] if state["total"] else (1 if state["state"] == "ready" else 0)
-        return rows, state
+        return state
 
     @staticmethod
     def _item(row):
@@ -569,6 +616,158 @@ class DashboardIndex:
         if cached and cached["payload"]:
             result.update({key: value for key, value in json.loads(cached["payload"]).items() if key not in ("components", "codes", "replay_codes", "axis_codes", "roles")})
         return _json(result)
+
+    def analytics_catalog(self, days=0, page=1, page_size=MAX_COHORT):
+        if not 1 <= page_size <= MAX_COHORT or page < 1:
+            raise ValueError('Invalid catalog page')
+        # _refresh publishes replacement lists, newest capture first. Materialize
+        # references once per publication; page reads never walk all raw metadata
+        # again and never contend with archive decompression in analytics_cohort.
+        with self._catalog_lock:
+            with self._lock:
+                rows, state = self._rows, self._state.copy()
+                snapshot = self._catalog_snapshot
+            if snapshot is None or rows is not snapshot[0]:
+                seen, entries, times, error_times = set(), [], [], []
+                for row in rows:
+                    if row.get('analytics_error'):
+                        error_times.append(-row['received_at'])
+                    for meta in row.get('analysis_metadata', []):
+                        if not meta.get('id') or meta['id'] in seen:
+                            continue
+                        seen.add(meta['id'])
+                        entries.append((row, meta))
+                        times.append(-row['received_at'])
+                snapshot = (rows, tuple(entries), tuple(times), tuple(error_times))
+                with self._lock:
+                    # A refresh may publish while this reader builds its view.
+                    # The reader can finish, but cannot retain the retired rows.
+                    if rows is self._rows:
+                        self._catalog_snapshot = snapshot
+            _, entries, times, error_times = snapshot
+        cutoff = time.time() - max(0, days) * 86400 if days else 0
+        total = bisect_right(times, -cutoff)
+        start = (page - 1) * page_size
+        landings = [{**meta, 'capture_id': row['capture_id'],
+                     'creator': row.get('creator_version'), 'uploader': row.get('app_version'),
+                     'received_at': _iso(row['received_at'])} for row, meta in entries[start:min(start + page_size, total)]]
+        result = {'landings': landings, 'index': self._snapshot_state(state), 'total': total,
+                  'page': page, 'page_size': page_size,
+                  'next_page': page + 1 if start + page_size < total else None,
+                  'analytics_errors': bisect_right(error_times, -cutoff),
+                  'channels': {k: {'label': v[0], 'unit': v[1]} for k, v in CHANNELS.items()},
+                  'limit': MAX_COHORT}
+        if page == 1:
+            # Filter choices belong to the complete period, including records
+            # beyond the first page. The UI needs one consistent response, not
+            # every recording's device/channel/contact metadata.
+            aircraft, airports, runways, creators, devices = Counter(), set(), set(), set(), set()
+            for position in range(total):
+                row, meta = entries[position]
+                if meta.get('aircraft'):
+                    aircraft[meta['aircraft']] += meta.get('contact') == 1
+                if meta.get('airport'):
+                    airports.add(meta['airport'])
+                if meta.get('runway'):
+                    runways.add((meta.get('airport'), meta['runway']))
+                if row.get('creator_version'):
+                    creators.add(row['creator_version'])
+                devices.update(meta.get('devices', []))
+            result['filters'] = {'aircraft': [[name, count] for name, count in aircraft.items()],
+                                 'airports': sorted(airports),
+                                 'runways': [list(pair) for pair in sorted(runways, key=lambda pair: (pair[0] or '', pair[1]))],
+                                 'creators': sorted(creators), 'devices': sorted(devices)}
+        return result
+
+    def analytics_cohort(self, days=0, aircraft='', airport='', runway='', creator='', device='',
+                         axis='agl', wind_min=None, wind_max=None, weight_min=None, weight_max=None, ids='', channels=''):
+        # One bounded analytics query at a time, separate from ingestion and the
+        # background index. Callers receive an explicit busy response, not a queue.
+        if not self._analytics_lock.acquire(blocking=False):
+            return None
+        try:
+            rows, state = self._snapshot(days)
+            display_channels = profile_display_channels(channels)
+            requested = set(ids.split(',')) if ids else None
+            selected, episodes, seen = [], set(), set()
+            for row in rows:
+                for meta in row.get('analysis_metadata', []):
+                    identifier = meta.get('id')
+                    if not identifier or identifier in seen or meta.get('contact', 1) != 1:
+                        continue
+                    seen.add(identifier)
+                    if (aircraft and meta.get('aircraft') != aircraft or airport and meta.get('airport') != airport or
+                        runway and meta.get('runway') != runway or creator and row.get('creator_version') != creator or
+                        device and device not in meta.get('devices', []) or requested is not None and identifier not in requested):
+                        continue
+                    def within(value, low, high):
+                        return (low is None and high is None) or value is not None and (low is None or value >= low) and (high is None or value <= high)
+                    if not within(abs(meta['crosswind']) if meta.get('crosswind') is not None else None, wind_min, wind_max) or not within(meta.get('weight'), weight_min, weight_max):
+                        continue
+                    episode = (row.get('install_id'), meta.get('episode') or identifier)
+                    if episode in episodes:
+                        continue
+                    episodes.add(episode)
+                    selected.append((row, meta))
+            total = len(selected)
+            selected = selected[:MAX_COHORT]
+            grid = list(range(0, 1001, 10)) if axis == 'agl' else [round(i / 10, 1) for i in range(-300, 151)] if axis == 't' else list(range(-5000, 2001, 50))
+            buckets = {key: [[] for _ in grid] for key in CHANNELS}
+            tracks, members, individuals = [], [], []
+            # Group by archive; never hold the entire retained corpus in memory.
+            grouped = defaultdict(list)
+            for row, meta in selected:
+                grouped[row['sha256']].append((row, meta))
+            with self._connect_cache() as connection:
+                for digest, group in grouped.items():
+                    cached = connection.execute('SELECT payload FROM flight_analytics WHERE sha256=?', (digest,)).fetchone()
+                    if not cached:
+                        continue
+                    records = json.loads(zlib.decompress(cached['payload']))
+                    for row, meta in group:
+                        record = next((r for r in records if r['meta']['id'] == meta['id']), None)
+                        if not record:
+                            continue
+                        for key, values in record['profiles'][axis].items():
+                            if key not in buckets:
+                                buckets[key] = [[] for _ in grid]
+                            for index, value in enumerate(values):
+                                if value is not None:
+                                    buckets[key][index].append(value)
+                        series = record['series']
+                        stride = max(1, math.ceil((len(series['t']) - 1) / 99))
+                        indices = sorted(set([*range(0, len(series['t']), stride), len(series['t']) - 1]))
+                        track = {'id': meta['id'], **{key: [series[key][i] for i in indices] for key in ('t', 'lat', 'lon', 'along', 'cross', 'agl', 'ias', 'sink', 'run')}}
+                        for key in ('lat', 'lon', 'along', 'cross', 'agl', 'ias', 'sink'):
+                            for i in range(1, len(indices)):
+                                if track[key][i - 1] is not None and any(value is None for value in series[key][indices[i - 1] + 1:indices[i]]):
+                                    track[key][i] = None
+                        tracks.append(track)
+                        if display_channels and len(individuals) < 50:
+                            individuals.append({'id': meta['id'], 'channels': {
+                                key: record['profiles'][axis].get(key, [None] * len(grid)) for key in display_channels}})
+                        members.append({**meta, 'capture_id': row['capture_id'], 'creator': row.get('creator_version')})
+            return {'axis': axis, 'grid': grid, 'bands': {key: [quantiles(values) for values in channel] for key, channel in buckets.items()},
+                    'band_columns': ['n', 'min', 'p10', 'median', 'p90', 'max'], 'members': members, 'tracks': tracks,
+                    'individuals': individuals, 'individual_limit': 50,
+                    'matched': total, 'included': len(members), 'limit': MAX_COHORT, 'index': state}
+        finally:
+            self._analytics_lock.release()
+
+    def analytics_landing(self, landing_id):
+        rows, _ = self._snapshot()
+        row = next((r for r in rows if any(m.get('id') == landing_id for m in r.get('analysis_metadata', []))), None)
+        if row is None:
+            return None
+        with self._connect_cache() as connection:
+            cached = connection.execute('SELECT payload FROM flight_analytics WHERE sha256=?', (row['sha256'],)).fetchone()
+        if not cached:
+            return None
+        record = next((r for r in json.loads(zlib.decompress(cached['payload'])) if r['meta']['id'] == landing_id), None)
+        if record:
+            return {'meta': record['meta'], 'series': record['series'], 'profiles': record['profiles'],
+                    'contact_states': record.get('contact_states', []), 'capture_id': row['capture_id']}
+        return None
 
     def summary(self, days=0):
         rows, state = self._snapshot(days)

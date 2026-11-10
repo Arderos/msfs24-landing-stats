@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
@@ -13,12 +13,13 @@ internal sealed class GeometryCatalogRuntimeOwner
     private readonly object _gate = new object();
     private readonly Func<string, CancellationToken, Task> _refresh;
     private readonly Action<Exception> _failure;
+    private readonly Action? _recovered;
     private ManagedComponentContext? _owner;
     private string _simulator = "";
     private bool _physics;
     private Request? _request;
-    public GeometryCatalogRuntimeOwner(Func<string, CancellationToken, Task> refresh, Action<Exception> failure)
-    { _refresh = refresh; _failure = failure; }
+    public GeometryCatalogRuntimeOwner(Func<string, CancellationToken, Task> refresh, Action<Exception> failure, Action? recovered = null)
+    { _refresh = refresh; _failure = failure; _recovered = recovered; }
 
     public void Observe(RecordingRuntimeEffects effects)
     {
@@ -28,7 +29,10 @@ internal sealed class GeometryCatalogRuntimeOwner
             if (payload is LifecycleMessage lifecycle)
             {
                 if (lifecycle.State == SourceLifecycle.Connected || lifecycle.State == SourceLifecycle.Disconnected || lifecycle.State == SourceLifecycle.SimulatorQuit)
-                { _request?.Ready.TrySetResult(false); _request = null; _physics = false; _simulator = ""; }
+                {
+                    _request?.Ready.TrySetResult(false); _request = null; _physics = false; _simulator = "";
+                    _recovered?.Invoke();
+                }
                 else if (lifecycle.State == SourceLifecycle.PhysicsReady) _physics = true;
             }
             if (payload is AircraftMessage aircraft) _simulator = aircraft.Simulator;
@@ -80,10 +84,19 @@ internal sealed class GeometryCatalogRuntimeOwner
                             owner.Progress(false, DependencyWait.Storage, oldestPendingQpc: start, operationId: operationId);
                             await Task.WhenAny(refresh, Task.Delay(250)).ConfigureAwait(false);
                         }
-                        await refresh.ConfigureAwait(false); request.Ready.TrySetResult(true);
+                        await refresh.ConfigureAwait(false);
+                        lock (_gate)
+                        {
+                            if (ReferenceEquals(_request, request)) { _recovered?.Invoke(); request.Ready.TrySetResult(true); }
+                        }
                     }
                     catch (Exception error) when (!owner.CancellationToken.IsCancellationRequested)
-                    { request.Ready.TrySetResult(false); _failure(error); }
+                    {
+                        lock (_gate)
+                        {
+                            if (ReferenceEquals(_request, request)) { _failure(error); request.Ready.TrySetResult(false); }
+                        }
+                    }
                     owner.Progress(true);
                 }
                 owner.Progress(false, DependencyWait.Idle);

@@ -10,6 +10,10 @@ public sealed class LandingRecord : IExtensibleDataObject
 {
     public ExtensionDataObject? ExtensionData { get; set; }
     internal ExtensionDataObject? DetailExtensionData { get; set; }
+    // Repository index provenance only. Ordinary summary/detail copies omit it.
+    // Keeping this optional member preserves the existing index array contract.
+    [DataMember(Name = "_IndexDetailHash", EmitDefaultValue = false)]
+    internal string? IndexDetailHash { get; set; }
     public const int CurrentFormatVersion = 7;
     public const double NonFiniteStorageSentinel = -1.7976931348623157E+308;
 
@@ -254,6 +258,21 @@ public sealed class LandingRecord : IExtensibleDataObject
         set { if (value != 6 && value != 8) throw new ArgumentOutOfRangeException(nameof(value)); _controllerAxisCount = value == 6 ? 0 : value; }
     }
 
+    [DataMember(Order = 75, EmitDefaultValue = false)]
+    public bool IsImported { get; set; }
+
+    [DataMember(Order = 76, EmitDefaultValue = false)]
+    public string? ImportedSourceId { get; set; }
+
+    [DataMember(Order = 77, EmitDefaultValue = false)]
+    public string? ImportedSourceEpisodeId { get; set; }
+
+    [DataMember(Order = 78, EmitDefaultValue = false)]
+    public string? ImportedPackageHash { get; set; }
+
+    [DataMember(Order = 79, EmitDefaultValue = false)]
+    public LandingShareData? ShareData { get; set; }
+
     [IgnoreDataMember]
     public bool IsSummaryOnly { get; set; }
 
@@ -272,7 +291,7 @@ public sealed class LandingRecord : IExtensibleDataObject
         Math.Abs(RawPitchInputCorrelation) >= 0.75;
 
     internal TouchdownImpactResult ImpactResult =>
-        ImpactAnalysisVersion == TouchdownImpactAnalysis.CurrentVersion &&
+        ImpactAnalysisVersion >= 1 && ImpactAnalysisVersion <= TouchdownImpactAnalysis.CurrentVersion &&
         Enum.TryParse(ImpactStatus, out TouchdownImpactStatus status)
             ? new TouchdownImpactResult(status, ImpactPeakG ?? double.NaN,
                 ImpactPeakOffsetSeconds ?? double.NaN, ImpactEndOffsetSeconds ?? double.NaN)

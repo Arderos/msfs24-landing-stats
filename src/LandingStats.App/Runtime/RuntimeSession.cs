@@ -58,6 +58,8 @@ internal sealed class RuntimeSession
     {
         var session = DurableFile.ReadJson<RuntimeSession>(Path.Combine(root, "runtime.json"), 4096);
         if (session.Version != 1 || !EpisodeTransactionStore.ValidHash(session.Engine)) throw new InvalidDataException("Invalid runtime session.");
-        _ = session.Identity; return session;
+        try { _ = session.Identity; }
+        catch (ArgumentException error) { throw new InvalidDataException("Invalid persisted runtime identity.", error); }
+        return session;
     }
 }

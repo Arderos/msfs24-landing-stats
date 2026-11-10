@@ -16,8 +16,9 @@ internal sealed class ApplicationSettingsOwner
     private bool _readable;
     public ApplicationSettingsOwner(ApplicationSettingsRepository repository, SimulatorAutoStartManager autoStart)
     { _repository = repository; _autoStart = autoStart; }
-    public bool AutoStartInitialized { get; set; }
+    public bool AutoStartInitialized { get; private set; }
     public AutoStartOperationResult? LastAutoStartResult { get; private set; }
+    public string? LastAutoStartError { get; private set; }
     public (ApplicationSettings Settings, bool Readable) Snapshot => (Volatile.Read(ref _current)?.Clone() ?? new ApplicationSettings(), _readable);
     public event Action? Changed;
     public (ApplicationSettings Settings, bool Readable) Read()
@@ -32,6 +33,34 @@ internal sealed class ApplicationSettingsOwner
         var loaded = _repository.TryLoad(out _current);
         if (!loaded) _repository.TryMarkGoogleDriveRestorePending();
         _readable = loaded && !_repository.GoogleDriveRestorePending;
+    }
+    public async Task<AutoStartOperationResult?> InitializeAutoStartAsync()
+    {
+        await _gate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            // Initialization and later local/cloud writes share one owner.
+            // Read the committed preference inside that boundary, not a view
+            // snapshot captured before a concurrent cloud restore.
+            return await Task.Run(() =>
+            {
+                EnsureLoaded();
+                try
+                {
+                    LastAutoStartResult = _current!.StartWithSimulator.HasValue
+                        ? _autoStart.SetEnabled(_current.StartWithSimulator.Value) : null;
+                    LastAutoStartError = null;
+                    return LastAutoStartResult;
+                }
+                finally
+                {
+                    // Even a failed initial application must let subsequent
+                    // preference changes attempt the simulator configuration.
+                    AutoStartInitialized = true;
+                }
+            }).ConfigureAwait(false);
+        }
+        finally { _gate.Release(); }
     }
     public Task SaveAsync(ApplicationSettings expected, ApplicationSettings desired, Action? apply = null, Action? rollback = null)
     {
@@ -53,6 +82,7 @@ internal sealed class ApplicationSettingsOwner
                 var restore = baseline.StartWithSimulator != target.StartWithSimulator && rollback != null
                     ? () => _autoStart.SetEnabled(previousAutoStart == true) : rollback;
                 await SettingsPersistence.SaveAsync(_repository, merged, apply, restore).ConfigureAwait(false);
+                if (baseline.StartWithSimulator != target.StartWithSimulator) LastAutoStartError = null;
                 _current = merged; _readable = !_repository.GoogleDriveRestorePending; desired.CopyFrom(merged);
             }
             finally { _gate.Release(); }
@@ -76,9 +106,24 @@ internal sealed class ApplicationSettingsOwner
             var previousAutoStart = merged.StartWithSimulator;
             merged.Language = target.Language; merged.StartWithSimulator = target.StartWithSimulator ?? previousAutoStart;
             var updateAutoStart = AutoStartInitialized && merged.StartWithSimulator.HasValue && previousAutoStart != merged.StartWithSimulator;
+            var applied = false;
             await SettingsPersistence.SaveAsync(_repository, merged,
-                updateAutoStart ? () => LastAutoStartResult = _autoStart.SetEnabled(merged.StartWithSimulator!.Value) : (Action?)null,
-                updateAutoStart ? () => _autoStart.SetEnabled(previousAutoStart == true) : (Action?)null).ConfigureAwait(false);
+                updateAutoStart ? () =>
+                {
+                    try
+                    {
+                        LastAutoStartResult = _autoStart.SetEnabled(merged.StartWithSimulator!.Value);
+                        LastAutoStartError = null; applied = true;
+                    }
+                    catch (Exception error) when (error is System.IO.IOException || error is System.IO.InvalidDataException || error is UnauthorizedAccessException ||
+                        error is InvalidOperationException || error is System.Xml.XmlException || error is AggregateException)
+                    {
+                        // A portable preference may be inapplicable on this PC.
+                        // Keep its explicit local error without rejecting cloud data.
+                        LastAutoStartResult = null; LastAutoStartError = error.Message;
+                    }
+                } : (Action?)null,
+                updateAutoStart ? () => { if (applied) _autoStart.SetEnabled(previousAutoStart == true); } : (Action?)null).ConfigureAwait(false);
             _current = merged; _readable = !_repository.GoogleDriveRestorePending;
         }
         finally { _gate.Release(); }

@@ -40,8 +40,8 @@ def win32():
     return kernel
 
 
-def current_user_sid():
-    """Discover the current Windows user without a shell or third-party module."""
+def current_user_sid(process=None):
+    """Read a process token SID; default to the current Windows user."""
     kernel = win32()
     kernel.GetCurrentProcess.restype = wintypes.HANDLE
     kernel.LocalFree.argtypes = [ctypes.c_void_p]
@@ -54,7 +54,7 @@ def current_user_sid():
     security.ConvertSidToStringSidW.argtypes = [ctypes.c_void_p, ctypes.POINTER(wintypes.LPWSTR)]
     security.ConvertSidToStringSidW.restype = wintypes.BOOL
     token = wintypes.HANDLE()
-    if not security.OpenProcessToken(kernel.GetCurrentProcess(), 0x0008, ctypes.byref(token)):
+    if not security.OpenProcessToken(kernel.GetCurrentProcess() if process is None else process, 0x0008, ctypes.byref(token)):
         raise ctypes.WinError(ctypes.get_last_error())
     try:
         size = wintypes.DWORD()
@@ -75,6 +75,26 @@ def current_user_sid():
             kernel.LocalFree(ctypes.cast(text, ctypes.c_void_p))
     finally:
         kernel.CloseHandle(token)
+
+
+def verify_pipe_server(handle):
+    """Authenticate the connected server before sending or trusting API data."""
+    kernel = win32()
+    kernel.GetNamedPipeServerProcessId.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+    kernel.GetNamedPipeServerProcessId.restype = wintypes.BOOL
+    kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel.OpenProcess.restype = wintypes.HANDLE
+    pid = wintypes.DWORD()
+    if not kernel.GetNamedPipeServerProcessId(handle, ctypes.byref(pid)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    process = kernel.OpenProcess(0x1000, False, pid.value)  # QUERY_LIMITED_INFORMATION
+    if not process:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        if current_user_sid(process) != current_user_sid():
+            raise PermissionError("The integration pipe server belongs to another Windows user.")
+    finally:
+        kernel.CloseHandle(process)
 
 
 class Overlapped(ctypes.Structure):
@@ -111,6 +131,11 @@ class NamedPipe:
         while True:
             handle = kernel.CreateFileW(path, 0xC0000000, 0, None, 3, 0x40000000, None)
             if handle != ctypes.c_void_p(-1).value:
+                try:
+                    verify_pipe_server(handle)
+                except BaseException:
+                    kernel.CloseHandle(handle)
+                    raise
                 self.handle = handle
                 break
             error = ctypes.get_last_error()

@@ -94,7 +94,7 @@ internal sealed class TelemetryContactPointReconstruction
         if (datum == null) { CalibrationStopReason = "datum_unavailable"; return; }
         var start = -1;
         for (var i = 0; i < samples.Count; i++)
-            if (Math.Abs(TouchdownAnalysis.TimeOf(samples[i]) - firstContactTime) < 1e-7) { start = i; break; }
+            if (samples[i].OnGround && Math.Abs(TouchdownAnalysis.TimeOf(samples[i]) - firstContactTime) < 1e-7) { start = i; break; }
         if (start < 0) { CalibrationStopReason = "contact_not_found"; return; }
         var window = new List<TelemetrySample>();
         for (var i = start; i < samples.Count; i++)
@@ -105,7 +105,12 @@ internal sealed class TelemetryContactPointReconstruction
             { CalibrationStopReason = "physics_boundary"; break; }
             if (window.Count > 0 && !Continuous(window[window.Count - 1], s))
             { CalibrationStopReason = "sample_gap"; break; }
-            window.Add(s);
+            // A numeric revision is still the same physics instant. Keep its
+            // latest observation without inventing an independent fit row.
+            if (window.Count > 0 && window[window.Count - 1].OnGround == s.OnGround &&
+                Math.Abs(TouchdownAnalysis.TimeOf(window[window.Count - 1]) - TouchdownAnalysis.TimeOf(s)) <= TelemetryDeduplicator.TimeToleranceSeconds)
+                window[window.Count - 1] = s;
+            else window.Add(s);
         }
 
         var rows = Enumerable.Range(0, TelemetrySample.CapturedContactPointCount).Select(_ => new List<Row>()).ToArray();
@@ -119,6 +124,7 @@ internal sealed class TelemetryContactPointReconstruction
             while (localFirst < window.Count && time - TouchdownAnalysis.TimeOf(window[localFirst]) > .15) localFirst++;
             while (localLast < window.Count && TouchdownAnalysis.TimeOf(window[localLast]) - time <= .15) localLast++;
             var local = window.GetRange(localFirst, localLast - localFirst);
+            if (!TrySelectInstants(local, out local)) { CalibrationStopReason = "local_trajectory_unavailable"; break; }
             // At a low frame rate the first/last centered windows can be too
             // short. They supply no slope observation, not a physics boundary.
             if (local.Count < 5) continue;
@@ -182,7 +188,7 @@ internal sealed class TelemetryContactPointReconstruction
         decision = "point_precontact_unavailable";
         var contact = -1;
         for (var i = 1; i < samples.Count; i++)
-            if (Math.Abs(TouchdownAnalysis.TimeOf(samples[i]) - firstGroundTime) < 1e-7) { contact = i; break; }
+            if (samples[i].OnGround && Math.Abs(TouchdownAnalysis.TimeOf(samples[i]) - firstGroundTime) < 1e-7) { contact = i; break; }
         if (contact < 1 || !samples[contact].OnGround) return false;
         var last = contact - 1;
         if (samples[last].OnGround || !Continuous(samples[last], samples[contact]) ||
@@ -192,6 +198,7 @@ internal sealed class TelemetryContactPointReconstruction
         while (first > 0 && !samples[first - 1].OnGround && Continuous(samples[first - 1], samples[first]) &&
             TouchdownAnalysis.TimeOf(samples[first - 1]) >= contactTime - .25) first--;
         var pre = samples.Skip(first).Take(last - first + 1).ToList();
+        if (!TrySelectInstants(pre, out pre)) return false;
         if (!Polynomial.TryFit(pre, contactTime, 5, out var trajectory) ||
             !trajectory.TryQuery(0, out var query, out var flatQuery, kinematicMotion)) return false;
 
@@ -464,6 +471,25 @@ internal sealed class TelemetryContactPointReconstruction
         return true;
     }
 
+    // Fit counts, leave-one-out refits and independent kinematic checks must
+    // all use the same observations: one final revision per physics instant.
+    private static bool TrySelectInstants(List<TelemetrySample> rows, out List<TelemetrySample> instants)
+    {
+        instants = new List<TelemetrySample>(rows.Count);
+        foreach (var row in rows)
+        {
+            if (instants.Count != 0)
+            {
+                var previous = instants[instants.Count - 1];
+                if (!Continuous(previous, row)) return false;
+                if (Math.Abs(TouchdownAnalysis.TimeOf(row) - TouchdownAnalysis.TimeOf(previous)) <= TelemetryDeduplicator.TimeToleranceSeconds)
+                { instants[instants.Count - 1] = row; continue; }
+            }
+            instants.Add(row);
+        }
+        return true;
+    }
+
     private sealed class Polynomial
     {
         private double[,] coefficients = new double[3, 12];
@@ -692,7 +718,7 @@ internal sealed class TelemetryContactPointReconstruction
 
     private static bool Continuous(TelemetrySample before, TelemetrySample after) =>
         before.MotionSimulation && after.MotionSimulation && before.FlightSegment == after.FlightSegment &&
-        TouchdownAnalysis.TimeOf(after) - TouchdownAnalysis.TimeOf(before) > 1e-9 &&
+        TouchdownAnalysis.TimeOf(after) - TouchdownAnalysis.TimeOf(before) >= -TelemetryDeduplicator.TimeToleranceSeconds &&
         TouchdownAnalysis.TimeOf(after) - TouchdownAnalysis.TimeOf(before) <= MaximumGap;
     private static double Dot(double[] a, double[] b, int offset = 0)
     {

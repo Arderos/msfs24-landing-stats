@@ -42,6 +42,127 @@ internal sealed class UpdateManifest
 
 internal static class ReleaseUpdateProtocol
 {
+    // A replacement launcher can hand activation to an instance started by
+    // the user. Complete the updater's cleanup before that launcher retires.
+    internal static void CompleteUpdateCleanup(string[] arguments)
+    {
+        if (arguments.Length != 3 || arguments[0] != "--finish-update" ||
+            !int.TryParse(arguments[1], NumberStyles.None, CultureInfo.InvariantCulture, out var updaterPid) || updaterPid <= 0)
+            return;
+        try
+        {
+            var updateRoot = Path.GetFullPath(arguments[2]);
+            VerifyCleanupRoot(updateRoot);
+            try
+            {
+                using var updater = System.Diagnostics.Process.GetProcessById(updaterPid);
+                if (!updater.WaitForExit(30000)) return;
+            }
+            catch (ArgumentException) { /* The updater already exited. */ }
+            catch (InvalidOperationException) { /* The updater already exited. */ }
+            TryDeleteUpdateDirectory(updateRoot);
+        }
+        catch (Exception error) when (error is IOException || error is InvalidDataException || error is UnauthorizedAccessException ||
+            error is ArgumentException || error is NotSupportedException || error is System.ComponentModel.Win32Exception)
+        { System.Diagnostics.Debug.WriteLine("Completed update cleanup failed: " + error); }
+    }
+
+    internal static void VerifyCleanupRoot(string path, string? updatesRoot = null)
+    {
+        var allowed = Path.GetFullPath(updatesRoot ?? Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "MSFS Landing Stats", "Updates")).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+        var candidate = Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+        if (!candidate.StartsWith(allowed, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(candidate, allowed, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException("Updater cleanup path is unsafe");
+    }
+
+    internal static void TryDeleteUpdateDirectory(string path, string? updatesRoot = null)
+    {
+        try
+        {
+            VerifyCleanupRoot(path, updatesRoot);
+            if (Directory.Exists(path)) Directory.Delete(path, true);
+        }
+        catch (IOException error) { System.Diagnostics.Debug.WriteLine("Update directory cleanup failed: " + error); }
+        catch (UnauthorizedAccessException error) { System.Diagnostics.Debug.WriteLine("Update directory cleanup failed: " + error); }
+        catch (InvalidDataException error) { System.Diagnostics.Debug.WriteLine("Update directory cleanup refused: " + error); }
+    }
+
+    internal static IDisposable EnterInstallTransaction(string targetPath)
+    {
+        string key;
+        using (var hash = SHA256.Create()) key = BitConverter.ToString(hash.ComputeHash(
+            Encoding.UTF8.GetBytes(Path.GetDirectoryName(Path.GetFullPath(targetPath))!.ToUpperInvariant()))).Replace("-", "");
+        var mutex = new Mutex(false, "Local\\MSFSLandingStats.Install." + key);
+        try { try { mutex.WaitOne(); } catch (AbandonedMutexException) { } return new InstallTransaction(mutex); }
+        catch { mutex.Dispose(); throw; }
+    }
+    private sealed class InstallTransaction : IDisposable
+    {
+        private readonly Mutex _mutex;
+        internal InstallTransaction(Mutex mutex) { _mutex = mutex; }
+        public void Dispose() { _mutex.ReleaseMutex(); _mutex.Dispose(); }
+    }
+    // Called with install admission held and a validated installed bundle.
+    // Old helpers cannot still be publishing while these artifacts are collected.
+    internal static void CollectInstallArtifacts(string targetPath)
+    {
+        var directory = Path.GetDirectoryName(Path.GetFullPath(targetPath))!;
+        foreach (var prefix in new[] { ".msfs-landing-stats-backup-", ".msfs-landing-stats-pending-" })
+        {
+            try
+            {
+                foreach (var path in Directory.EnumerateFiles(directory, prefix + "*.exe"))
+                {
+                    var name = Path.GetFileNameWithoutExtension(path);
+                    if (!Guid.TryParseExact(name.Substring(prefix.Length), "N", out _) ||
+                        (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0) continue;
+                    try { File.Delete(path); }
+                    catch (IOException error) { System.Diagnostics.Debug.WriteLine(error); }
+                    catch (UnauthorizedAccessException error) { System.Diagnostics.Debug.WriteLine(error); }
+                }
+            }
+            catch (IOException error) { System.Diagnostics.Debug.WriteLine(error); }
+            catch (UnauthorizedAccessException error) { System.Diagnostics.Debug.WriteLine(error); }
+        }
+    }
+
+    // Exercise the target volume before publishing update readiness. Request
+    // delete/attribute rights on the installed image without modifying it.
+    internal static void VerifyInstallAccess(string targetPath)
+    {
+        targetPath = Path.GetFullPath(targetPath);
+        using (var target = OpenInstallTarget(targetPath, 0x00010000 | 0x00000100,
+            1 | 2 | 4, IntPtr.Zero, 3, 0, IntPtr.Zero))
+        {
+            if (target.IsInvalid) throw new System.ComponentModel.Win32Exception(
+                System.Runtime.InteropServices.Marshal.GetLastWin32Error(), "The installed application cannot be replaced from this account.");
+        }
+        var directory = Path.GetDirectoryName(targetPath)!;
+        var first = Path.Combine(directory, ".msfs-landing-stats-probe-" + Guid.NewGuid().ToString("N"));
+        var second = first + ".replace";
+        try
+        {
+            using (new FileStream(first, FileMode.CreateNew, FileAccess.Write, FileShare.None)) { }
+            using (new FileStream(second, FileMode.CreateNew, FileAccess.Write, FileShare.None)) { }
+            File.Replace(first, second, null);
+        }
+        finally
+        {
+            DeleteInstallProbes(first, second);
+        }
+    }
+    internal static void DeleteInstallProbes(string first, string second)
+    {
+        try { File.Delete(first); }
+        finally { File.Delete(second); }
+    }
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", EntryPoint = "CreateFileW", CharSet = System.Runtime.InteropServices.CharSet.Unicode, SetLastError = true)]
+    private static extern Microsoft.Win32.SafeHandles.SafeFileHandle OpenInstallTarget(string path, uint access, uint share,
+        IntPtr security, uint disposition, uint flags, IntPtr template);
+
     public const string LatestReleaseRoot = "https://github.com/Arderos/msfs24-landing-stats/releases/latest/download/";
     public const string ManifestName = "update-manifest.txt";
     public const string SignatureName = "update-manifest.sig";

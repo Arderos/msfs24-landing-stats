@@ -26,6 +26,8 @@ internal sealed class ProcessWorkerHost : IDisposable
     private readonly SemaphoreSlim _sourceWriter = new SemaphoreSlim(1, 1);
     private readonly SemaphoreSlim _controlWriter = new SemaphoreSlim(1, 1);
     private readonly OperationLifetime _operations = new OperationLifetime();
+    private readonly object _startupGate = new object();
+    private readonly TaskCompletionSource<bool> _startupFinished = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly object _commandGate = new object();
     private readonly Dictionary<Guid, PendingCommand> _commands = new Dictionary<Guid, PendingCommand>();
     private NamedPipeServerStream? _pipe, _controlPipe;
@@ -57,7 +59,17 @@ internal sealed class ProcessWorkerHost : IDisposable
     public async Task StartAsync(TimeSpan handshakeDeadline, string? fixture = null, CancellationToken cancellationToken = default)
     {
         using var owner = Enter();
-        if (Interlocked.Exchange(ref _started, 1) != 0 || Volatile.Read(ref _disposed) != 0) throw new InvalidOperationException("Worker generation has already started or stopped.");
+        lock (_startupGate)
+        {
+            if (_started != 0 || _stopping != 0 || Volatile.Read(ref _disposed) != 0)
+                throw new InvalidOperationException("Worker generation has already started or stopped.");
+            _started = 1;
+        }
+        try { await StartCoreAsync(handshakeDeadline, fixture, cancellationToken).ConfigureAwait(false); }
+        finally { _startupFinished.TrySetResult(true); }
+    }
+    private async Task StartCoreAsync(TimeSpan handshakeDeadline, string? fixture, CancellationToken cancellationToken)
+    {
         var name = "ls-runtime-" + Guid.NewGuid().ToString("N");
         var tokenBytes = new byte[32]; using (var rng = RandomNumberGenerator.Create()) rng.GetBytes(tokenBytes);
         var launchToken = BitConverter.ToString(tokenBytes).Replace("-", "").ToLowerInvariant();
@@ -92,7 +104,8 @@ internal sealed class ProcessWorkerHost : IDisposable
             using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _lifetime.Token);
             deadline.CancelAfter(handshakeDeadline);
             deadline.Token.ThrowIfCancellationRequested();
-            _process = OwnedProcess.Start(_executable, arguments, jobName: OwnedProcess.JobName(Identity));
+            _process = OwnedProcess.Start(_executable, arguments, jobName: OwnedProcess.JobName(Identity),
+                allowExternalApplications: Identity.Role == ComponentRole.CloudSync);
             using var cancelRead = deadline.Token.Register(() => { _pipe.Dispose(); _controlPipe.Dispose(); });
             var connections = Task.WhenAll(_pipe.WaitForConnectionAsync(deadline.Token), _controlPipe.WaitForConnectionAsync(deadline.Token));
             if (await Task.WhenAny(connections, _process.Exit).ConfigureAwait(false) != connections)
@@ -269,7 +282,7 @@ internal sealed class ProcessWorkerHost : IDisposable
     public async Task StopAsync(TimeSpan gracefulDeadline)
     {
         using var owner = Enter();
-        Interlocked.Exchange(ref _stopping, 1);
+        await RetireStartupAsync().ConfigureAwait(false);
         if (_process == null) return;
         using var deadline = new CancellationTokenSource(gracefulDeadline);
         try
@@ -287,19 +300,40 @@ internal sealed class ProcessWorkerHost : IDisposable
         // A role may have spawned descendants. Root exit alone is not a tree exit.
         await _process.TerminateAsync(TimeSpan.FromSeconds(3)).ConfigureAwait(false);
     }
-    public Task TerminateAsync(TimeSpan exitDeadline) => _process?.TerminateAsync(exitDeadline) ?? Task.CompletedTask;
+    public async Task TerminateAsync(TimeSpan exitDeadline)
+    {
+        using var owner = Enter();
+        await RetireStartupAsync().ConfigureAwait(false);
+        if (_process != null) await _process.TerminateAsync(exitDeadline).ConfigureAwait(false);
+    }
+    private Task RetireStartupAsync()
+    {
+        Task startup;
+        lock (_startupGate)
+        {
+            _stopping = 1;
+            startup = _started == 0 ? Task.CompletedTask : _startupFinished.Task;
+        }
+        if (!startup.IsCompleted) _lifetime.Cancel();
+        return startup;
+    }
     public void Dispose()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
         var drained = _operations.Stop();
         Interlocked.Exchange(ref _stopping, 1); _lifetime.Cancel(); _pipe?.Dispose(); _controlPipe?.Dispose();
+        _ = DisposeDrainedAsync(drained);
+    }
+    private async Task DisposeDrainedAsync(Task drained)
+    {
+        // Startup may still be acquiring an engine lease or publishing its process.
+        // Take ownership of those resources only after all accepted work returns.
+        await drained.ConfigureAwait(false);
         var pin = _engineUse; _engineUse = null;
         if (_process == null) pin?.Dispose();
-        else _ = RetirePinnedProcessAsync(_process, pin);
-        ReadFailureDiagnostic();
-        // The pumps and accepted commands own their CTS/semaphore until they return.
-        _ = drained.ContinueWith(_ => { _lifetime.Dispose(); _sourceWriter.Dispose(); _controlWriter.Dispose(); },
-            CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+        else await RetirePinnedProcessAsync(_process, pin).ConfigureAwait(false);
+        _pipe?.Dispose(); _controlPipe?.Dispose(); ReadFailureDiagnostic();
+        _lifetime.Dispose(); _sourceWriter.Dispose(); _controlWriter.Dispose();
     }
     private static async Task RetirePinnedProcessAsync(OwnedProcess process, IDisposable? pin)
     {

@@ -24,6 +24,10 @@ internal static class GuardianApplicationRegressionTests
         {
             await AppChannel(root, false);
             await AppChannel(root, true);
+            StartupSessionStopsAdmission(root);
+            StartupActivationStopsAdmission(root, false);
+            StartupActivationStopsAdmission(root, true);
+            await SessionStopBeforeConnection(root);
             await RuntimeProcess(root);
         }
         catch (Exception error) { failure = error; throw; }
@@ -41,7 +45,13 @@ internal static class GuardianApplicationRegressionTests
     // or opens the real user's history/UI.
     internal static int Probe(string mode, string directory)
     {
+        if (mode == "startup-session-stop") return StartupSessionStopFixture(directory);
+        if (mode == "startup-activation-stop" || mode == "startup-activation-exit")
+            return StartupActivationStopFixture(directory, mode == "startup-activation-exit");
+        if (mode == "preconnect-session-stop") return PreconnectSessionStopFixture(directory);
         var app = new App();
+        if (mode == "activation-stop" || mode == "activation-acknowledge")
+            return LandingFileActivationRegressionTests.ApplicationShutdownFixture(app, directory, mode == "activation-acknowledge");
         return Task.Run(async () =>
         {
             var connect = (Task)typeof(App).GetMethod("ConnectGuardianAsync", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(app, null)!;
@@ -72,6 +82,139 @@ internal static class GuardianApplicationRegressionTests
             await Task.Delay(Timeout.Infinite);
             return 99;
         }).GetAwaiter().GetResult();
+    }
+
+    private static void StartupSessionStopsAdmission(string root)
+    {
+        var directory = Path.Combine(root, "startup-session-stop"); Directory.CreateDirectory(directory);
+        using var process = Process.Start(new ProcessStartInfo(Assembly.GetExecutingAssembly().Location,
+            "--app-guardian-probe startup-session-stop " + OwnedProcess.Quote(directory))
+        { UseShellExecute = false, CreateNoWindow = true, WindowStyle = ProcessWindowStyle.Hidden })!;
+        if (!process.WaitForExit(10000)) { process.Kill(); process.WaitForExit(); throw new TimeoutException("Startup session stop did not finish."); }
+        Check(process.ExitCode == 0, "Session end raced startup admission: " +
+            (File.Exists(Path.Combine(directory, "failure")) ? File.ReadAllText(Path.Combine(directory, "failure")) : process.ExitCode.ToString()));
+    }
+
+    private sealed class StartupFixtureApp : App
+    {
+        // Exercise the actual App's session-stop and startup admission phases
+        // without registering file associations or opening the user's history.
+        protected override void OnStartup(System.Windows.StartupEventArgs e) { }
+    }
+
+    private static void StartupActivationStopsAdmission(string root, bool acknowledgeExit)
+    {
+        var mode = acknowledgeExit ? "startup-activation-exit" : "startup-activation-stop";
+        var directory = Path.Combine(root, mode); Directory.CreateDirectory(directory);
+        using var process = Process.Start(new ProcessStartInfo(Assembly.GetExecutingAssembly().Location,
+            "--app-guardian-probe " + mode + " " + OwnedProcess.Quote(directory))
+        { UseShellExecute = false, CreateNoWindow = true, WindowStyle = ProcessWindowStyle.Hidden })!;
+        if (!process.WaitForExit(10000)) { process.Kill(); process.WaitForExit(); throw new TimeoutException("Late activation fixture did not finish."); }
+        Check(process.ExitCode == 0, "Startup reopened activation after stop: " +
+            (File.Exists(Path.Combine(directory, "failure")) ? File.ReadAllText(Path.Combine(directory, "failure")) : process.ExitCode.ToString()));
+    }
+
+    private static int StartupActivationStopFixture(string directory, bool acknowledgeExit)
+    {
+        try
+        {
+            var app = new StartupFixtureApp(); var admitted = 0; var handled = 0; var failures = 0;
+            var inbox = Path.Combine(directory, "inbox"); var signal = "Local\\ls-startup-activation-" + Guid.NewGuid().ToString("N");
+            using (var requests = new LandingFileActivation(inbox, signal)) requests.Submit(new[] { Path.Combine(directory, "pending.lslanding") });
+            var startup = app.AdmitStartupAsync(() =>
+            {
+                admitted++;
+                // The actual startup delegate is already running. This barrier
+                // models a guardian stop during synchronous window construction.
+                Task.Run(async () =>
+                {
+                    if (acknowledgeExit) await App.AcknowledgeExitAsync(GuardianStopReason.SessionEnd);
+                    else App.StopFileActivationIntake();
+                }).GetAwaiter().GetResult();
+                Check(!app.StartFileActivationIntake(_ => { Interlocked.Increment(ref handled); return Task.CompletedTask; },
+                    _ => Interlocked.Increment(ref failures), inbox, signal), "Stopped startup admitted an activation receiver.");
+                _ = app.Dispatcher.BeginInvoke(new Action(() => app.Shutdown()));
+                return Task.CompletedTask;
+            });
+            app.Run(); startup.GetAwaiter().GetResult();
+            Check(admitted == 1 && handled == 0 && failures == 0, "Late activation executed or reported a failure after shutdown admission closed.");
+            Check(Directory.GetFiles(inbox, "*.request").Length == 1 && !File.Exists(Path.Combine(inbox, ".receiver")),
+                "Denied activation started a receiver or lost its durable request.");
+            return 0;
+        }
+        catch (Exception error) { File.WriteAllText(Path.Combine(directory, "failure"), error.ToString()); return 1; }
+    }
+
+    private static async Task SessionStopBeforeConnection(string root)
+    {
+        var directory = Path.Combine(root, "preconnect-session-stop"); Directory.CreateDirectory(directory);
+        var gate = "Local\\ls-preconnect-session-" + Guid.NewGuid().ToString("N");
+        using var release = new EventWaitHandle(false, EventResetMode.ManualReset, gate);
+        using var child = new GuardianGeneration(Guid.NewGuid(), 1);
+        var diagnostics = new System.Collections.Concurrent.ConcurrentQueue<string>();
+        child.Diagnostic += diagnostics.Enqueue;
+        Exception? failure = null;
+        var starting = child.StartAsync(Assembly.GetExecutingAssembly().Location,
+            new[] { "--app-guardian-probe", "preconnect-session-stop", directory }, AppDomain.CurrentDomain.BaseDirectory,
+            new Dictionary<string, string> { ["LS_REGRESSION_CONNECT_GATE"] = gate }, TimeSpan.FromSeconds(15), visible: false);
+        try
+        {
+            await Until(() => File.Exists(Path.Combine(directory, "before-connect")), "App did not reach its preconnection barrier.", 10);
+            await child.RequestSessionEndAsync();
+            Check(child.StopIntent == GuardianStopReason.SessionEnd, "Preconnection stop intent was deferred with its delivery.");
+            release.Set(); await Deadline(starting, 10); await Deadline(child.Exit, 10);
+            var errorPath = Path.Combine(directory, "failure");
+            Check(await child.Exit == 0 && File.Exists(Path.Combine(directory, "connected")) && !File.Exists(errorPath),
+                "Actual App could not complete its handshake and session stop: " + (File.Exists(errorPath) ? File.ReadAllText(errorPath) : "exit=" + await child.Exit));
+            Check(diagnostics.IsEmpty, "Queued session stop reported a channel error: " + string.Join(";", diagnostics));
+            Console.WriteLine("Preconnection session stop: actual App handshake and acknowledged exit completed without channel errors.");
+        }
+        catch (Exception error) { failure = error; throw; }
+        finally { release.Set(); await Retire(child, failure); try { await starting; } catch when (failure != null) { } }
+    }
+
+    private static int PreconnectSessionStopFixture(string directory)
+    {
+        var app = new StartupFixtureApp();
+        var connect = Task.Run(async () =>
+        {
+            try
+            {
+                using (var release = EventWaitHandle.OpenExisting(Environment.GetEnvironmentVariable("LS_REGRESSION_CONNECT_GATE")!))
+                {
+                    File.WriteAllText(Path.Combine(directory, "before-connect"), "ready");
+                    Check(release.WaitOne(10000), "App preconnection barrier was not released.");
+                }
+                await (Task)typeof(App).GetMethod("ConnectGuardianAsync", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(app, null)!;
+                File.WriteAllText(Path.Combine(directory, "connected"), "yes");
+            }
+            catch (Exception error)
+            {
+                File.WriteAllText(Path.Combine(directory, "failure"), error.ToString());
+                await app.Dispatcher.InvokeAsync(() => app.Shutdown(70));
+            }
+        });
+        var result = app.Run(); connect.GetAwaiter().GetResult();
+        return result;
+    }
+
+    private static int StartupSessionStopFixture(string directory)
+    {
+        try
+        {
+            var app = new StartupFixtureApp(); var admitted = 0;
+            var startup = app.AdmitStartupAsync(() => { admitted++; return Task.CompletedTask; });
+            var sessionEnd = (Task)typeof(App).GetMethod("EndSessionFromGuardianAsync", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(app, null)!;
+            app.Run();
+            Task.WhenAll(sessionEnd, startup).GetAwaiter().GetResult();
+            Check(admitted == 0, "An acknowledged session exit admitted window/activation initialization.");
+            // Also cover a handshake continuation arriving after the dispatcher
+            // has completed shutdown: InvokeAsync returns a cancelled operation.
+            app.AdmitStartupAsync(() => { admitted++; return Task.CompletedTask; }).GetAwaiter().GetResult();
+            Check(admitted == 0, "A retired dispatcher admitted application startup.");
+            return 0;
+        }
+        catch (Exception error) { File.WriteAllText(Path.Combine(directory, "failure"), error.ToString()); return 1; }
     }
 
     private static async Task AppChannel(string root, bool intentional)
@@ -138,10 +281,16 @@ internal static class GuardianApplicationRegressionTests
         var blocked = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         var release = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         var window = (MainWindow)FormatterServices.GetUninitializedObject(typeof(MainWindow));
+        // This runtime-only probe bypasses the constructor. Initialize the
+        // sharing ownership boundary consulted by guardian health and recovery.
+        const BindingFlags windowFields = BindingFlags.Instance | BindingFlags.NonPublic;
+        typeof(MainWindow).GetField("_sharingAdmissionGate", windowFields)!.SetValue(window, new object());
+        typeof(MainWindow).GetField("_sharingStorageTail", windowFields)!.SetValue(window, Task.CompletedTask);
+        typeof(MainWindow).GetField("_sharingAccepting", windowFields)!.SetValue(window, true);
         using var runtime = new LandingRuntime(root, AppDomain.CurrentDomain.BaseDirectory, Path.Combine(root, "identity"),
             new LandingRepository(Path.Combine(root, "history")), new object(), (_, __) => { blocked.TrySetResult(true); return release.Task; },
             App.RequestRuntimeRecovery, (_, __) => "normal"); // Real production recovery budgets.
-        typeof(MainWindow).GetField("_runtime", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(window, runtime);
+        typeof(MainWindow).GetField("_runtime", windowFields)!.SetValue(window, runtime);
         Exception? failure = null;
         var trace = Path.Combine(Path.GetDirectoryName(root)!, "runtime-trace.txt");
         void Trace(string phase) => File.AppendAllText(trace, DateTime.UtcNow.ToString("O") + " " + phase + Environment.NewLine +
@@ -196,7 +345,7 @@ internal static class GuardianApplicationRegressionTests
             [RuntimeComponent.Simulator] = 30, [RuntimeComponent.Controllers] = 10,
             [RuntimeComponent.IngressJournal] = 30, [RuntimeComponent.Episodes] = 30,
             [RuntimeComponent.Facilities] = 90, [RuntimeComponent.Analysis] = 180,
-            [RuntimeComponent.HistoryArchiveOutbox] = 60, [RuntimeComponent.TelemetryUpload] = 120,
+            [RuntimeComponent.HistoryArchiveOutbox] = 60, [RuntimeComponent.TelemetryUpload] = 240,
             [RuntimeComponent.CloudSync] = 180, [RuntimeComponent.Presentation] = 30, [RuntimeComponent.IntegrationApi] = 30
         };
         var catalog = RuntimeComponentCatalog.Create();

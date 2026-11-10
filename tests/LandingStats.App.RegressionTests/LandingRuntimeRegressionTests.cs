@@ -4,6 +4,9 @@ using System.Diagnostics;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using LandingStats.App.Runtime;
@@ -16,6 +19,81 @@ namespace LandingStats.App.RegressionTests;
 
 internal static class LandingRuntimeRegressionTests
 {
+    public static void UnavailableDeliveryIdentityPreservesRecording() => Task.Run(async () =>
+    {
+        var root = Path.Combine(Path.GetTempPath(), "runtime-unavailable-key-" + Guid.NewGuid().ToString("N"));
+        var completed = false;
+        try
+        {
+            var identityRoot = Path.Combine(root, "identity");
+            var originalIdentity = new TelemetryUploadIdentityStore(identityRoot);
+            originalIdentity.AcceptConsent();
+            var installation = originalIdentity.Identity().InstallId;
+            var identityPath = Path.Combine(identityRoot, "identity.json");
+            var originalBytes = File.ReadAllBytes(identityPath);
+            var unavailableKey = Convert.ToBase64String(ProtectedData.Protect(new byte[] { 1, 2, 3 },
+                Encoding.UTF8.GetBytes("unavailable runtime identity fixture"), DataProtectionScope.CurrentUser));
+            File.WriteAllText(identityPath, Regex.Replace(Encoding.UTF8.GetString(originalBytes),
+                "\"protected_private_key\":\"[^\"]*\"", "\"protected_private_key\":\"" + unavailableKey + "\""));
+            var unavailableBytes = File.ReadAllBytes(identityPath);
+            var legacy = Path.Combine(root, "legacy"); Directory.CreateDirectory(legacy);
+            string LegacyArchive(string name, long sequence)
+            {
+                var path = Path.Combine(legacy, name);
+                using var zip = ZipFile.Open(path, ZipArchiveMode.Create);
+                using (var info = new StreamWriter(zip.CreateEntry("session.txt").Open())) info.WriteLine("telemetry_schema=" + TelemetryCsv.SchemaVersion);
+                using var data = new StreamWriter(zip.CreateEntry("telemetry.csv").Open());
+                data.WriteLine(TelemetryCsv.Header);
+                data.WriteLine(TelemetryCsv.Format(new TelemetrySample { Sequence = sequence, SimulationTimeSeconds = 1 }));
+                return path;
+            }
+            // Plain prior-consent metadata remains readable with an unavailable key.
+            // Both legacy archives must be adopted while delivery waits for recovery.
+            var unknown = LegacyArchive("legacy_raw.zip", 1); var manual = LegacyArchive("manual_bug_raw.zip", 2);
+            var unknownHash = EpisodeTransactionStore.Hash(unknown); var manualHash = EpisodeTransactionStore.Hash(manual);
+            var unknownId = Guid.ParseExact(unknownHash.Substring(0, 32), "N"); var manualId = Guid.ParseExact(manualHash.Substring(0, 32), "N");
+            var repository = new LandingRepository(Path.Combine(root, "history")); var repositoryGate = new object();
+            var deliveryReasons = new ConcurrentQueue<string>(); var escalations = new ConcurrentQueue<string>();
+            using var runtime = new LandingRuntime(Path.Combine(root, "runtime"), AppDomain.CurrentDomain.BaseDirectory, identityRoot, repository, repositoryGate,
+                (snapshot, _) => { deliveryReasons.Enqueue(snapshot.UploadReason); return Task.CompletedTask; },
+                (name, _) => escalations.Enqueue(name), (role, _) => role == ComponentRole.Simulator ? "landing" :
+                    role == ComponentRole.Analysis ? "analysis-local" : role == ComponentRole.Upload ? "upload-ok" : "normal", legacyQueue: legacy);
+            try
+            {
+                await runtime.StartAsync(true, rawCapture: true);
+                await Until(() => runtime.Store.Enumerate().Any(id => runtime.Store.Read(id).Stage == EpisodeWorkStage.Completed),
+                    "An unavailable delivery key prevented the real source/recording/analysis pipeline from committing a landing.");
+                var episode = runtime.Store.Read(runtime.Store.Enumerate().Single());
+                await Until(() => runtime.Outbox.Enumerate().Contains(manualId) && runtime.Outbox.Read(manualId).LastFailure == nameof(CryptographicException) &&
+                    runtime.Outbox.Read(episode.ArchiveId).LastFailure == nameof(CryptographicException),
+                    "The isolated upload failure was not retained on pending manual and automatic reports.");
+                lock (repositoryGate) Check(repository.LoadAll().Count > 0, "Recording did not commit landing history with delivery unavailable.");
+                Check(runtime.Ready && File.Exists(runtime.Outbox.Read(episode.ArchiveId).Path) && !File.Exists(unknown) && !File.Exists(manual),
+                    "Identity failure lost capture bytes, consent-gated legacy data, or independent manual intake.");
+                Check(File.ReadAllBytes(identityPath).SequenceEqual(unavailableBytes) && Directory.GetFiles(identityRoot, "identity.json.unreadable-*").Length == 0,
+                    "Starting or running capture rotated an unavailable identity.");
+                Check(runtime.Health.Where(item => item.Component == "storage.reports" || item.Component == "delivery.telemetry").All(item => item.Generation == 1) && escalations.IsEmpty,
+                    "An optional delivery key failure restarted a storage owner or escalated the application.");
+                await Until(() => deliveryReasons.Contains(nameof(CryptographicException)),
+                    "The delivery identity failure was hidden from runtime presentation.");
+
+                // Restoring access to the same key resumes queued work in the same
+                // runtime; capture never needs a replacement installation identity.
+                File.WriteAllBytes(identityPath, originalBytes); runtime.WakeDelivery();
+                await Until(() => Delivered(runtime.Outbox, episode.ArchiveId) && Delivered(runtime.Outbox, manualId) && Delivered(runtime.Outbox, unknownId),
+                    "Restoring the original identity did not resume pending uploads and consent-gated legacy intake.");
+                Check(new TelemetryUploadIdentityStore(identityRoot).Identity().InstallId == installation && !File.Exists(unknown),
+                    "Delivery recovery replaced the installation identity or failed legacy adoption.");
+            }
+            finally { await Deadline(runtime.StopAsync()); }
+            completed = true;
+        }
+        finally
+        {
+            if (completed && Path.GetFullPath(root).StartsWith(Path.GetFullPath(Path.GetTempPath()), StringComparison.OrdinalIgnoreCase)) Directory.Delete(root, true);
+        }
+    }).GetAwaiter().GetResult();
+
     public static void RunAll() => Task.Run(Run).GetAwaiter().GetResult();
     private static async Task Run()
     {

@@ -13,6 +13,7 @@
     <Compile Include="../LandingStats.App/Models/LandingContactSeries.cs" Link="Models/LandingContactSeries.cs" />
     <Compile Include="../LandingStats.App/Models/LandingEngineSeries.cs" Link="Models/LandingEngineSeries.cs" />
     <Compile Include="../LandingStats.App/Models/LandingRecord.cs" Link="Models/LandingRecord.cs" />
+    <Compile Include="../LandingStats.App/Models/LandingShareData.cs" Link="Models/LandingShareData.cs" />
     <Compile Include="../LandingStats.App/Models/LandingReplayContacts.cs" Link="Models/LandingReplayContacts.cs" />
     <Compile Include="../LandingStats.App/Models/LandingReplayDiagnostics.cs" Link="Models/LandingReplayDiagnostics.cs" />
     <Compile Include="../LandingStats.App/Models/LandingReplayRunwayOffset.cs" Link="Models/LandingReplayRunwayOffset.cs" />

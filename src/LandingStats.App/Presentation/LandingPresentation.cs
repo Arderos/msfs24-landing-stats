@@ -25,7 +25,7 @@ public sealed class LandingPresentation
         ? Record.Airport
         : LocalizationManager.Format("Model.LocationRunwayFormat", Record.Airport, Record.Runway);
 
-    public string InertialDisplay => $"{-Record.InertialFpm:+0;-0;0}";
+    public string InertialDisplay => FormatSignedMetric(-Record.InertialFpm);
 
     public string ClosureModeledDisplay => Record.HasClosureReconstruction
         ? $"{-Record.ReconstructedClosureFpm:+0;-0;0} fpm"
@@ -97,6 +97,19 @@ public sealed class LandingPresentation
         ? Record.ClosureReconstructionModel
         : LocalizationManager.Text("Model.ReconstructionUnavailable");
 
+    public string ClosureModelHelpDisplay
+    {
+        get
+        {
+            if (!Record.HasClosureReconstruction) return LocalizationManager.Text("Recon.UnavailableBody");
+            // Model IDs are persisted with each contact. Describe that exact
+            // version, including imported records, without inferring from metrics.
+            var key = "Recon.ModelHelp." + Record.ClosureReconstructionModel;
+            var description = LocalizationManager.Text(key);
+            return description == key ? LocalizationManager.Text("Recon.ModelHelp.Unknown") : description;
+        }
+    }
+
     public string SurfaceDisplay => Record.HasSurfaceLatchData
         ? $"{-Record.SurfaceFpm:+0;-0;0} fpm"
         : LocalizationManager.Text("Model.NotAvailable");
@@ -115,17 +128,20 @@ public sealed class LandingPresentation
 
     public string UnresolvedMetricDisplay => LocalizationManager.Format("Model.UnresolvedFormat", FormatSignedMetric(-Record.UnresolvedFpm));
 
-    public string G150Display => Record.PeakG150Milliseconds.ToString("F2", CultureInfo.CurrentCulture);
+    public string G150Display => IsFinite(Record.PeakG150Milliseconds) ? Record.PeakG150Milliseconds.ToString("F2", CultureInfo.CurrentCulture) : LocalizationManager.Text("Model.NotAvailable");
 
-    public string G2SecondsDisplay => LocalizationManager.Format("Model.Peak2Format", Record.PeakG2Seconds);
+    public string G2SecondsDisplay => IsFinite(Record.PeakG2Seconds) ? LocalizationManager.Format("Model.Peak2Format", Record.PeakG2Seconds) : LocalizationManager.Text("Model.NotAvailable");
 
-    public string AttitudeDisplay => $"{-Record.PitchDegrees:+0.0;-0.0;0.0}° / {Record.BankDegrees:+0.0;-0.0;0.0}°";
+    public string AttitudeDisplay => IsFinite(Record.PitchDegrees) && IsFinite(Record.BankDegrees)
+        ? $"{-Record.PitchDegrees:+0.0;-0.0;0.0}° / {Record.BankDegrees:+0.0;-0.0;0.0}°" : LocalizationManager.Text("Model.NotAvailable");
 
-    public string AirspeedDisplay => LocalizationManager.Format("Model.SpeedKnotsFormat", Record.AirspeedKnots);
+    public string AirspeedDisplay => FormatOptionalMetric("Model.SpeedKnotsFormat", Record.AirspeedKnots);
 
-    public string GroundSpeedDisplay => LocalizationManager.Format("Model.SpeedKnotsFormat", Record.GroundSpeedKnots);
+    public string GroundSpeedDisplay => FormatOptionalMetric("Model.SpeedKnotsFormat", Record.GroundSpeedKnots);
 
-    public string AngleOfAttackDisplay => LocalizationManager.Format("Model.AoaFormat", Record.AngleOfAttackDegrees);
+    public string AngleOfAttackDisplay => FormatOptionalMetric("Model.AoaFormat", Record.AngleOfAttackDegrees);
+    private static string FormatOptionalMetric(string key, double value) => IsFinite(value)
+        ? LocalizationManager.Format(key, value) : LocalizationManager.Text("Model.NotAvailable");
 
     public string ContactDisplay => Record.ContactCount > 1
         ? LocalizationManager.Format("Model.ContactMultipleFormat", Record.ContactNumber, Record.ContactCount)

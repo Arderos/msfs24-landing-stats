@@ -10,6 +10,7 @@
   <ItemGroup>
     <Compile Include="..\..\src\LandingStats.ProcessControl\GuardianGeneration.cs" Link="Guardian\GuardianGeneration.cs" />
     <Compile Include="..\..\src\LandingStats.ProcessControl\GuardianInstance.cs" Link="Guardian\GuardianInstance.cs" />
+    <Compile Include="..\..\src\LandingStats.ProcessControl\GuardianSessionEnd.cs" Link="Guardian\GuardianSessionEnd.cs" />
     <Compile Include="..\..\src\LandingStats.ProcessControl\GuardianPolicy.cs" Link="Guardian\GuardianPolicy.cs" />
     <Compile Include="..\..\src\LandingStats.ProcessControl\GuardianUpdateLease.cs" Link="Guardian\GuardianUpdateLease.cs" />
     <Compile Include="..\..\src\LandingStats.ProcessControl\GuardianUpdater.cs" Link="Guardian\GuardianUpdater.cs" />
@@ -20,6 +21,9 @@
     <None Update="Fixtures\physical-input-*.csv" CopyToOutputDirectory="PreserveNewest" />
     <None Update="Fixtures\physical-legacy-a350.csv" CopyToOutputDirectory="PreserveNewest" />
     <None Update="Fixtures\geometry-ls001-*.csv" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="Fixtures\ground-noise-prefix.csv" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="Fixtures\ground-pause-settling.csv" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="Fixtures\ground-pause-then-bounce.csv" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\..\server\telemetry-ingest\schema-v5.header" Link="schema-v5.header" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\..\server\telemetry-ingest\schema-v6.header" Link="schema-v6.header" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\..\server\telemetry-ingest\schema-v7.header" Link="schema-v7.header" CopyToOutputDirectory="PreserveNewest" />
@@ -39,5 +43,6 @@
     <Reference Include="PresentationCore" />
     <Reference Include="PresentationFramework" />
     <Reference Include="WindowsBase" />
+    <Reference Include="System.Windows.Forms" />
   </ItemGroup>
 </Project>

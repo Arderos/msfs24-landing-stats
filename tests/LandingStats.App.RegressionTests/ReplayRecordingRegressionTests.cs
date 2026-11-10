@@ -330,7 +330,7 @@ internal static class ReplayRecordingRegressionTests
         return sample;
     }
 
-    private sealed class Harness
+    internal sealed class Harness
     {
         internal LandingEpisodeCoordinator Coordinator;
         internal readonly Port Port = new Port();
@@ -358,7 +358,7 @@ internal static class ReplayRecordingRegressionTests
         { Coordinator = LandingEpisodeCoordinator.RestoreCheckpoint(bytes, Port, () => _time, () => Array.Empty<string>()); Attach(); Coordinator.PublishCaptureStatus(); }
     }
 
-    private sealed class Port : IEpisodeFacilityPort
+    internal sealed class Port : IEpisodeFacilityPort
     {
         public long EpisodeId { get; private set; }
         public bool CanQuery => false;

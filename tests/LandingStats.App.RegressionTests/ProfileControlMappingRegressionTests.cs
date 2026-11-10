@@ -43,8 +43,8 @@ internal static class ProfileControlMappingRegressionTests
         Check(inputs.Throttle(0)?.IsExplicitBinding == true && inputs.Throttle(0)?.SourceIndex == 3 &&
             inputs.Throttle(1)?.IsExplicitBinding == true && inputs.Throttle(1)?.SourceIndex == 4,
             "Correlation replaced localized explicit throttle assignments.");
-        Equal(inputs.SampleThrottle(1, 0), 70, "Localized inverted Rx throttle");
-        Equal(inputs.SampleThrottle(1, 1), 80, "Localized Ry throttle");
+        Equal(inputs.SampleThrottle(1, 0), 30, "Localized inverted Rx throttle");
+        Equal(inputs.SampleThrottle(1, 1), 20, "Localized Ry throttle");
         Attach(record, (0, Catalog(Array.Empty<ControllerDescriptor>(), bindings)));
         inputs = ReplayControlInputs.Resolve(record);
         Check(inputs.HasPhysicalThrottle(0) && inputs.HasPhysicalThrottle(1) &&
@@ -62,7 +62,7 @@ internal static class ProfileControlMappingRegressionTests
         Attach(record, (0, first));
         var inputs = ReplayControlInputs.Resolve(record);
         Equal(inputs.Sample(1).PitchPercent, -60, "Duplicate simulator timestamp retained an obsolete physical stick position");
-        Equal(inputs.SampleThrottle(1, 0), 10, "Duplicate simulator timestamp retained an obsolete physical lever position");
+        Equal(inputs.SampleThrottle(1, 0), 90, "Duplicate simulator timestamp retained an obsolete physical lever position");
         Equal(inputs.Sample(.975).PitchPercent, -20, "Interpolation used an obsolete endpoint at a duplicate timestamp");
         record.Series[21].RawControllerAxesValid[0] = false;
         inputs = ReplayControlInputs.Resolve(record);
@@ -72,7 +72,7 @@ internal static class ProfileControlMappingRegressionTests
         Attach(record, (0, first), (21, second));
         inputs = ReplayControlInputs.Resolve(record);
         Equal(inputs.Sample(1).PitchPercent, -80, "A duplicate timestamp lost the latest catalog transition");
-        Equal(inputs.SampleThrottle(1, 0), 20, "A duplicate timestamp used the previous throttle assignment");
+        Equal(inputs.SampleThrottle(1, 0), 80, "A duplicate timestamp used the previous throttle assignment");
         Equal(inputs.Sample(.975).PitchPercent, 20, "A later catalog changed samples before its transition");
     }
 
@@ -102,7 +102,7 @@ internal static class ProfileControlMappingRegressionTests
         var value = inputs.Sample(1);
         Equal(value.PitchPercent, -20, "Explicit pitch inversion"); Equal(value.RollPercent, 30, "Eighth physical axis");
         Check(inputs.Throttle(0)?.SourceIndex == 67 && inputs.Throttle(1)?.SourceIndex == 67, "Shared lever was not assigned to both engines.");
-        Equal(inputs.SampleThrottle(1, 0), 70, "Throttle inversion"); Equal(inputs.SampleThrottle(1, 1), 70, "Shared throttle sample");
+        Equal(inputs.SampleThrottle(1, 0), 30, "Throttle inversion"); Equal(inputs.SampleThrottle(1, 1), 30, "Shared throttle sample");
         record.Series[20].RawControllerAxesValid[2] = false;
         inputs = ReplayControlInputs.Resolve(record);
         Check(inputs.SampleThrottle(1, 0) == null, "Invalid throttle sample was filled in.");
@@ -153,11 +153,11 @@ internal static class ProfileControlMappingRegressionTests
         var second = Catalog(devices, Binding(last, ControllerControlKind.Throttle, 7, true, 0));
         Attach(record, (0, first), (40, second), (80, Array.Empty<byte>()));
         var inputs = ReplayControlInputs.Resolve(record);
-        Equal(inputs.SampleThrottle(1, 0), 60, "First profile");
-        Equal(inputs.SampleThrottle(2, 0), 30, "Changed profile");
+        Equal(inputs.SampleThrottle(1, 0), 40, "First profile");
+        Equal(inputs.SampleThrottle(2, 0), 70, "Changed profile");
         Check(inputs.SampleThrottle(1.975, 0) == null, "Interpolation crossed a profile boundary.");
         Check(inputs.SampleThrottle(4, 0) == null, "Missing catalog reused a stale profile.");
-        Equal(inputs.SampleThrottle(1, 0), 60, "Backward replay did not restore its recorded profile");
+        Equal(inputs.SampleThrottle(1, 0), 40, "Backward replay did not restore its recorded profile");
         record.Series[20].RawControllerAxesAgeSeconds[0] = .5;
         inputs = ReplayControlInputs.Resolve(record);
         Check(inputs.SampleThrottle(1, 0) == null, "Stale physical samples were displayed.");
@@ -174,7 +174,7 @@ internal static class ProfileControlMappingRegressionTests
         Check(inputs.Pitch == null && inputs.Throttle(0) == null && inputs.Sample(1).PitchPercent == null && inputs.SampleThrottle(1, 0) == null,
             "Missing assigned hardware was replaced with another correlated controller.");
         Equal(inputs.Sample(2).PitchPercent, 20, "Reconnected stick did not use its saved GUID assignment");
-        Equal(inputs.SampleThrottle(2, 0), 30, "Reconnected throttle did not use its saved GUID assignment");
+        Equal(inputs.SampleThrottle(2, 0), 70, "Reconnected throttle did not use its saved GUID assignment");
         Check(inputs.SampleThrottle(1, 0) == null && inputs.Sample(1).PitchPercent == null, "Backward replay borrowed future device availability.");
     }
     private static void MissingAssignedAxisNeverFallsBack()
@@ -209,7 +209,7 @@ internal static class ProfileControlMappingRegressionTests
             Binding(last, ControllerControlKind.Throttle, 7, true, 0), Binding(old, ControllerControlKind.Throttle, 0, false, 0))));
         var inputs = ReplayControlInputs.Resolve(record);
         Check(inputs.Pitch?.IsExplicitBinding == true && inputs.Throttle(0)?.IsExplicitBinding == true, "Historic disconnected profile created a conflict with the attached hardware.");
-        Equal(inputs.Sample(1).PitchPercent, 20, "Current stick assignment"); Equal(inputs.SampleThrottle(1, 0), 30, "Current throttle assignment");
+        Equal(inputs.Sample(1).PitchPercent, 20, "Current stick assignment"); Equal(inputs.SampleThrottle(1, 0), 70, "Current throttle assignment");
     }
     private static void ConflictingPresentThrottlesUseRemainingAxes()
     {

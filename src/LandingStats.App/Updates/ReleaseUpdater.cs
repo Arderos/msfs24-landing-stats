@@ -3,6 +3,7 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
+using System.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Reflection;
@@ -99,6 +100,7 @@ internal sealed class ReleaseUpdater : IDisposable
             }
 
             var targetPath = ResolveUpdateTarget();
+            Protocol.VerifyInstallAccess(targetPath);
 
             updateRoot = Path.Combine(
                 _updatesRoot,
@@ -251,7 +253,7 @@ internal sealed class ReleaseUpdater : IDisposable
         {
             if (!updaterStarted && updateRoot != null)
             {
-                TryDeleteDirectory(updateRoot, _updatesRoot);
+                Protocol.TryDeleteUpdateDirectory(updateRoot, _updatesRoot);
             }
         }
     }
@@ -271,43 +273,8 @@ internal sealed class ReleaseUpdater : IDisposable
 
     public static void BeginCompletedUpdateCleanup(string[] commandLineArgs)
     {
-        if (commandLineArgs.Length != 4 ||
-            !string.Equals(commandLineArgs[1], "--finish-update", StringComparison.Ordinal) ||
-            !int.TryParse(commandLineArgs[2], NumberStyles.None, CultureInfo.InvariantCulture, out var updaterPid) ||
-            updaterPid <= 0)
-        {
-            return;
-        }
-
-        string updateRoot;
-        try
-        {
-            updateRoot = Path.GetFullPath(commandLineArgs[3]);
-            VerifyCleanupRoot(updateRoot);
-        }
-        catch
-        {
-            return;
-        }
-
-        Task.Run(() =>
-        {
-            try
-            {
-                using var updater = Process.GetProcessById(updaterPid);
-                updater.WaitForExit(30000);
-            }
-            catch (ArgumentException)
-            {
-                // The updater already exited.
-            }
-            catch (InvalidOperationException)
-            {
-                // The updater already exited.
-            }
-
-            TryDeleteDirectory(updateRoot);
-        });
+        var arguments = commandLineArgs.Skip(1).ToArray();
+        Task.Run(() => Protocol.CompleteUpdateCleanup(arguments));
     }
 
     public void Dispose()
@@ -321,16 +288,6 @@ internal sealed class ReleaseUpdater : IDisposable
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "MSFS Landing Stats",
             "Updates");
-    }
-
-    private static void VerifyCleanupRoot(string path, string? updatesRoot = null)
-    {
-        var allowed = Path.GetFullPath(updatesRoot ?? UpdatesRoot()).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
-        var candidate = Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
-        if (!candidate.StartsWith(allowed, StringComparison.OrdinalIgnoreCase) || string.Equals(candidate, allowed, StringComparison.OrdinalIgnoreCase))
-        {
-            throw new InvalidDataException("Updater cleanup path is unsafe");
-        }
     }
 
     private static void VerifyPortableExecutable(string path)
@@ -378,30 +335,6 @@ internal sealed class ReleaseUpdater : IDisposable
         }
 
         return targetPath;
-    }
-
-    private static void TryDeleteDirectory(string path, string? updatesRoot = null)
-    {
-        try
-        {
-            VerifyCleanupRoot(path, updatesRoot);
-            if (Directory.Exists(path))
-            {
-                Directory.Delete(path, true);
-            }
-        }
-        catch (IOException)
-        {
-            // A later application start can remove a stale bounded update directory.
-        }
-        catch (UnauthorizedAccessException)
-        {
-            // Cleanup failure must not affect the installed application.
-        }
-        catch (InvalidDataException)
-        {
-            // Never delete a path outside the dedicated update root.
-        }
     }
 
     private static string QuoteArgument(string argument)

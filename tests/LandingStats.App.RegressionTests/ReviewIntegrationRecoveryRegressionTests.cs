@@ -43,7 +43,7 @@ internal static class ReviewIntegrationRecoveryRegressionTests
     private static void IndexGenerationsPreserveMetadata(string root)
     {
         foreach (var legacy in new[] { false, true })
-        foreach (var boundary in new[] { "later-reversion", "batch-reversion", "metadata-first", "missing-index" })
+        foreach (var boundary in new[] { "later-reversion", "batch-reversion", "metadata-first", "missing-index", "transient-load" })
         {
             var path = Path.Combine(root, (legacy ? "legacy-" : "current-") + boundary);
             var repository = new LandingRepository(path); var original = Record("generation"); original.Airport = "ORIGINAL";
@@ -97,6 +97,12 @@ internal static class ReviewIntegrationRecoveryRegressionTests
                 repository.BeginBatch(); repository.Import(bytes, incoming.Id, true);
             }
             repository = new LandingRepository(path);
+            if (boundary == "transient-load")
+            {
+                var marker = Directory.GetFiles(Path.Combine(path, ".pending-imports"), "*.json").Single();
+                using (new FileStream(marker, FileMode.Open, FileAccess.Read, FileShare.None))
+                    ThrowsIo(() => repository.LoadAll());
+            }
             var expected = boundary.EndsWith("reversion", StringComparison.Ordinal) ? "ORIGINAL" : "IMPORTED";
             Check(repository.LoadAll().Single().Airport == expected, "Generation recovery lost index metadata at " + Path.GetFileName(path));
             Check(repository.Export(incoming.Id).SequenceEqual(bytes), "Generation recovery rewrote imported bytes.");
