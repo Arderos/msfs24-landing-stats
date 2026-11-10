@@ -20,8 +20,10 @@ public static class TelemetryAnalysisFrames
         TelemetrySample? previous = null;
         var paused = false;
         var sourceBoundaryDuringPause = false;
+        var pauseContinuity = new TelemetryPauseContinuity();
         foreach (var source in samples)
         {
+            pauseContinuity.Observe(source);
             if (source.SimulatorState == TelemetrySimulatorState.Paused)
             {
                 paused = true;
@@ -38,8 +40,10 @@ public static class TelemetryAnalysisFrames
                 continue;
             }
 
-            var sample = source.SimulatorState == TelemetrySimulatorState.Legacy
+            var sample = source.SimulatorState == TelemetrySimulatorState.Legacy && !pauseContinuity.StartsNewMotion
                 ? source : source.CopyForAnalysis();
+            if (!ReferenceEquals(sample, source)) sample.AnalysisPauseEvaluated = true;
+            if (pauseContinuity.StartsNewMotion) sample.AnalysisPauseReposition = true;
             if (sample.SimulatorState == TelemetrySimulatorState.Inactive)
                 sample.MotionSimulation = false;
             if (sample.AnalysisDiscontinuity != null)

@@ -27,6 +27,7 @@ public sealed class LandingTimeline : FrameworkElement
 
     public void SetZoomRange(double? startSeconds, double? endSeconds)
     {
+        LandingChart.NormalizeZoomRange(_record?.Series, ref startSeconds, ref endSeconds);
         _zoomStart = startSeconds;
         _zoomEnd = endSeconds;
         InvalidateVisual();

@@ -40,21 +40,15 @@ internal static class Program
     {
         try
         {
-            var payload = ReadPayload();
-            var bundledFiles = ValidateArchive(payload);
+
             if (args.Any(argument => string.Equals(argument, VerifyArgument, StringComparison.OrdinalIgnoreCase)))
             {
+                ValidateArchive(ReadPayload());
                 return 0;
             }
 
             var launcher = Assembly.GetExecutingAssembly().Location;
-            try { LandingFileAssociation.Register(launcher); }
-            catch (Exception error)
-            {
-                LogGuardian(0, "file_association_failed " + error.Message);
-                MessageBox.Show("Could not register landing files. The application can still import files from its window.\r\n\r\n" + error.Message,
-                    "MSFS Landing Stats", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            }
+            UpdateProtocol.ReleaseUpdateProtocol.CompleteUpdateCleanup(args);
             var landingFiles = LandingFileActivation.FileArguments(args);
             if (landingFiles.Length != 0)
             {
@@ -70,6 +64,12 @@ internal static class Program
             if (!GuardianInstance.TryAcquire(out var instance, activateExisting: !background)) return 0;
             using (instance!)
             {
+                byte[] payload; IReadOnlyCollection<string> bundledFiles;
+                using (UpdateProtocol.ReleaseUpdateProtocol.EnterInstallTransaction(launcher))
+                {
+                    payload = ReadPayload(); bundledFiles = ValidateArchive(payload);
+                    UpdateProtocol.ReleaseUpdateProtocol.CollectInstallArtifacts(launcher);
+                }
                 // Preserve simulator-owned launch policy through the external
                 // updater and its replacement launcher as well as App retries.
                 if (simulatorAutoStart)
@@ -77,9 +77,17 @@ internal static class Program
                 // An older/direct runtime has its own mutex but no guardian.
                 // Do not replace its extracted files or repeatedly spawn duplicates.
                 if (GuardianInstance.ApplicationAlreadyRunning()) return 0;
+                string? associationError = null;
+                try { LandingFileAssociation.Register(launcher); }
+                catch (Exception error)
+                {
+                    LogGuardian(0, "file_association_failed " + error.Message);
+                    associationError = error.Message;
+                }
                 var runtimeDirectory = RuntimeDirectoryPath();
                 var session = Guid.NewGuid();
                 var updates = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "MSFS Landing Stats", "Updates");
+                Task? applicationRun = null;
                 var supervisor = new GuardianSupervisor(generation =>
                 {
                     // The previous process tree has exited before this factory
@@ -89,18 +97,27 @@ internal static class Program
                     return new GuardianGeneration(session, generation,
                         (request, token) => GuardianUpdater.PrepareAsync(request, launcher, updates, token));
                 });
-                instance!.StartActivation(() => supervisor.Current!.ActivateAsync(), () => supervisor.Current?.Health?.Ready == true);
+                using var sessionEnd = new GuardianSessionEnd(() => applicationRun, supervisor.RequestSessionEndAsync,
+                    () => supervisor.ApplicationStoppingForSession);
+                supervisor.ConfirmSessionEnd = sessionEnd.ConfirmAsync;
+                supervisor.ApplicationStarting = sessionEnd.BeginApplication;
+                instance!.StartActivation(() => supervisor.Current!.ActivateAsync(), () =>
+                { var current = supervisor.Current; return current?.Health?.Ready == true && current.StopIntent == GuardianStopReason.None; });
                 supervisor.Changed += LogGuardian;
-                Microsoft.Win32.SessionEndingEventHandler ending = (_, _) => supervisor.Stop();
-                Microsoft.Win32.SystemEvents.SessionEnding += ending;
-                try
                 {
                     var runtimeArguments = landingFiles.Length == 0 ? args : args.Where(argument => argument != "--simulator-autostart").ToArray();
-                    supervisor.RunAsync(Path.Combine(runtimeDirectory, ChildExecutable), runtimeArguments,
+                    applicationRun = supervisor.RunAsync(Path.Combine(runtimeDirectory, ChildExecutable), runtimeArguments,
                         Path.GetDirectoryName(launcher) ?? Environment.CurrentDirectory,
-                        new Dictionary<string, string> { [LauncherPathEnvironmentVariable] = launcher }).GetAwaiter().GetResult();
+                        new Dictionary<string, string>
+                        {
+                            [LauncherPathEnvironmentVariable] = launcher,
+                            // The owning App reports this through its existing nonmodal
+                            // sharing status, preserving background startup policy.
+                            [LandingFileAssociation.RegistrationErrorEnvironmentVariable] = associationError ?? "",
+                        });
+                    applicationRun.GetAwaiter().GetResult();
                 }
-                finally { Microsoft.Win32.SystemEvents.SessionEnding -= ending; }
+
             }
 
             return 0;

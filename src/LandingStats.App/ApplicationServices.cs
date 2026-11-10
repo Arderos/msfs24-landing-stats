@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using LandingStats.App.GoogleDrive;
@@ -39,10 +40,6 @@ internal sealed class ApplicationServices
             Landings, LandingGate, present, escalate, legacyQueue: LegacyRaw.RootPath, airportRepository: Airports, airportGate: AirportGate,
             cloud: new RuntimeCloudServices(Tokens, Backup, CloudBinding, Settings.CompleteCloudRestoreAsync));
     }
-    public Task<Exception?> DeleteLandingAsync(string id) => Task.Run(async () =>
-    {
-        Backup.DeleteLandingLocally(id);
-        try { await Backup.QueueLandingDeletionAsync(id, CancellationToken.None).ConfigureAwait(false); return (Exception?)null; }
-        catch (Exception error) { return error; }
-    });
+    public Task<LandingDeletionResult> DeleteLandingsAsync(IEnumerable<string> ids) =>
+        LandingDeletionCommand.ExecuteAsync(Backup, ids);
 }

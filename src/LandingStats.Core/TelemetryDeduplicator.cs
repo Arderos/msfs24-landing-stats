@@ -5,7 +5,7 @@ namespace LandingStats.Core;
 
 public static class TelemetryDeduplicator
 {
-    private const double TimeToleranceSeconds = 0.000000001;
+    internal const double TimeToleranceSeconds = 0.000000001;
 
     public static IReadOnlyList<TelemetrySample> Deduplicate(IReadOnlyList<TelemetrySample> samples)
     {
@@ -22,7 +22,7 @@ public static class TelemetryDeduplicator
                 TimeToleranceSeconds)
             {
                 // Numeric updates at one physics instant keep the latest value.
-                // Discrete ground/source changes are evidence already consumed
+                // Ground position and discrete source changes are evidence already consumed
                 // by live recording; offline analysis must retain the same edges.
                 result[result.Count - 1] = sample;
             }
@@ -40,12 +40,21 @@ public static class TelemetryDeduplicator
     public static bool SameDiscreteState(TelemetrySample previous, TelemetrySample current) =>
         previous.MotionSimulation == current.MotionSimulation && previous.OnGround == current.OnGround &&
         previous.SimulatorState == current.SimulatorState && previous.FlightSegment == current.FlightSegment &&
-        SameSourceControlState(previous, current);
+        previous.AnalysisPauseReposition == current.AnalysisPauseReposition &&
+        SameSourceControlState(previous, current) && SameGroundPositionEvidence(previous, current);
+
+    private static bool SameGroundPositionEvidence(TelemetrySample previous, TelemetrySample current) =>
+        !previous.MotionSimulation || !previous.OnGround || previous.SimulatorState == TelemetrySimulatorState.Paused ||
+        previous.SimulatorState == TelemetrySimulatorState.Inactive ||
+        (previous.LatitudeDegrees.Equals(current.LatitudeDegrees) && previous.LongitudeDegrees.Equals(current.LongitudeDegrees) &&
+            previous.PlaneAltitudeFeet.Equals(current.PlaneAltitudeFeet));
 
     /// <summary>Whether source control, availability and source identity carry the same contact-continuity evidence.</summary>
     public static bool SameSourceControlState(TelemetrySample previous, TelemetrySample current) =>
+        SameSourceControlState(previous.SourceEvidence, current.SourceEvidence);
+
+    internal static bool SameSourceControlState(ReplaySourceEvidence? previous, ReplaySourceEvidence? current) =>
         TelemetryContactPhysics.IsBlocked(previous) == TelemetryContactPhysics.IsBlocked(current) &&
         TelemetryContactPhysics.IsFreshReleased(previous) == TelemetryContactPhysics.IsFreshReleased(current) &&
-        (previous.SourceEvidence == null || current.SourceEvidence == null ||
-            previous.SourceEvidence.SameSource(current.SourceEvidence));
+        (previous == null || current == null || previous.SameSource(current));
 }

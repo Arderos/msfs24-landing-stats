@@ -79,6 +79,7 @@ internal static class IntegrationApiDataRegressionTests
         var own = Record("own-recording", DateTime.UtcNow);
         var imported = Record("shared-recording", own.TimestampUtc, "shared:episode");
         imported.IsImported = true;
+        imported.FormatVersion = 3;
         f.Repository.Save(own);
         f.Repository.Save(imported);
         f.Data = f.CreateData();
@@ -89,6 +90,10 @@ internal static class IntegrationApiDataRegressionTests
         Require((bool?)f.Call("landings.get", new JObject { ["id"] = imported.Id })["isImported"] == true &&
             (bool?)f.Call("episodes.get", new JObject { ["id"] = imported.RecordingEpisodeId })["contacts"]?[0]?["isImported"] == true,
             "Detail or episode projection lost the imported origin.");
+        Require((int?)items.Single(item => (string?)item["id"] == imported.Id)["sourceFormatVersion"] == 3 &&
+            (int?)f.Call("landings.get", new JObject { ["id"] = imported.Id })["sourceFormatVersion"] == 3 &&
+            (int?)f.Call("episodes.get", new JObject { ["id"] = imported.RecordingEpisodeId })["contacts"]?[0]?["sourceFormatVersion"] == 3,
+            "API projections changed the source version of an imported legacy measurement.");
     }
 
     private static void DurableResultsBeforeHistoryAndRecovery(Fixture f)

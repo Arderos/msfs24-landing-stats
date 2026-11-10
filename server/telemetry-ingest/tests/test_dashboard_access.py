@@ -1,10 +1,15 @@
 """Independent checks for the LAN dashboard's read-only HTTP boundary."""
 
 import unittest
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
 from app.dashboard import create_app
+from app.dashboard_index import DashboardIndex
 
 
 class FakeIndex:
@@ -35,8 +40,8 @@ class FakeIndex:
             return {"capture_id": capture_id}
         return None
 
-    def analytics_catalog(self, days):
-        return {'landings': [], 'days': days}
+    def analytics_catalog(self, days, page=1, page_size=250):
+        return {'landings': [], 'days': days, 'page': page, 'page_size': page_size}
 
     def analytics_cohort(self, *args):
         self.calls.append(('analytics', args))
@@ -186,6 +191,9 @@ class DashboardAccessTests(unittest.TestCase):
     def test_analytics_query_contract_and_bounds(self):
         with self.client() as client:
             self.assertEqual(200, client.get('/api/analytics/catalog?days=7').status_code)
+            self.assertEqual(2, client.get('/api/analytics/catalog?page=2&page_size=25').json()['page'])
+            for suffix in ('page=0', 'page_size=0', 'page_size=251'):
+                self.assertEqual(422, client.get('/api/analytics/catalog?' + suffix).status_code)
             self.assertEqual(200, client.get('/api/analytics/cohort?aircraft=A320&axis=agl&wind_min=5&wind_max=20&channels=ias,sink').status_code)
             for suffix in ('axis=height', 'days=-1', 'wind_min=20&wind_max=5', 'weight_min=-1', 'ids=' + 'x' * 9001, 'channels=unknown', 'channels=gear_-1', 'channels=agl,ias,gs,sink,pitch,bank,aoa,beta,g'):
                 self.assertEqual(422, client.get('/api/analytics/cohort?' + suffix).status_code)
@@ -193,6 +201,16 @@ class DashboardAccessTests(unittest.TestCase):
             self.assertEqual(405, client.post('/api/analytics/cohort').status_code)
         self.assertEqual(1, len(self.index.calls))
         self.assertEqual('ias,sink', self.index.calls[0][1][-1])
+
+    def test_concurrent_catalog_requests_succeed_while_aggregate_query_is_busy(self):
+        with TemporaryDirectory() as directory:
+            base = Path(directory)
+            self.index = DashboardIndex(base / 'data', base / 'cache')
+            with patch.object(self.index, 'start'), patch.object(self.index, 'stop'), self.index._analytics_lock:
+                with self.client() as client, ThreadPoolExecutor(max_workers=2) as workers:
+                    responses = list(workers.map(lambda _: client.get('/api/analytics/catalog'), range(2)))
+            self.assertEqual([200, 200], [response.status_code for response in responses])
+            self.assertTrue(all('filters' in response.json() for response in responses))
 
 
 if __name__ == "__main__":

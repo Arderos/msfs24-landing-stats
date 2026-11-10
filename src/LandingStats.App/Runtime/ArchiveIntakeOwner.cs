@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -34,7 +34,7 @@ internal sealed class ArchiveIntakeOwner
     private readonly object _gate = new object();
     private readonly string _root, _archives;
     private readonly string? _legacy;
-    private readonly TelemetryUploadIdentityStore _identity;
+    private readonly Func<bool> _readLegacyConsent;
     private readonly EpisodeTransactionStore _episodes;
     private readonly DurableOutbox _outbox;
     private readonly Action _ready;
@@ -42,10 +42,18 @@ internal sealed class ArchiveIntakeOwner
     private ManagedComponentContext? _owner;
     private readonly DurableReceiptIndex<ArchiveIntakeRequest> _receipts;
     private readonly Dictionary<Guid, RuntimeWorkRetry> _retry = new Dictionary<Guid, RuntimeWorkRetry>();
-    public ArchiveIntakeOwner(string root, string archives, string? legacy, string identityRoot, EpisodeTransactionStore episodes, DurableOutbox outbox, Action ready, Func<bool>? useZstd = null)
+    private RuntimeWorkRetry? _identityRetry;
+    private int _identityChanged;
+    private readonly Dictionary<string, RuntimeWorkRetry> _legacyRetry = new Dictionary<string, RuntimeWorkRetry>(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, Tuple<Guid, string>> _legacyInputs = new Dictionary<string, Tuple<Guid, string>>(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, string> _failures = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+    public event Action<Guid>? Recovered;
+    public void Wake() { Interlocked.Exchange(ref _identityChanged, 1); Volatile.Read(ref _owner)?.SignalWork(); }
+    public event Action<Guid, string>? Failed;
+    public ArchiveIntakeOwner(string root, string archives, string? legacy, string identityRoot, EpisodeTransactionStore episodes, DurableOutbox outbox, Action ready, Func<bool>? useZstd = null, Func<bool>? readLegacyConsent = null)
     { _root = Path.GetFullPath(root); _archives = Path.GetFullPath(archives); _legacy = legacy == null ? null : Path.GetFullPath(legacy);
         _receipts = new DurableReceiptIndex<ArchiveIntakeRequest>(Path.Combine(_root, "receipts"));
-        _identity = new TelemetryUploadIdentityStore(identityRoot); _episodes = episodes; _outbox = outbox; _ready = ready; _useZstd = useZstd; }
+        var identity = new TelemetryUploadIdentityStore(identityRoot); _readLegacyConsent = readLegacyConsent ?? (() => identity.ConsentAccepted); _episodes = episodes; _outbox = outbox; _ready = ready; _useZstd = useZstd; }
     private string PathFor(Guid id) => Path.Combine(_root, id.ToString("N") + ".json");
     private bool Exists(Guid id) => File.Exists(PathFor(id)) || _receipts.Contains(id);
     private void Save(ArchiveIntakeRequest request) => DurableFile.WriteJson(PathFor(request.Id), request);
@@ -79,7 +87,9 @@ internal sealed class ArchiveIntakeOwner
             owner.MarkReady();
             while (true)
             {
-                owner.CancellationToken.ThrowIfCancellationRequested(); AdoptLegacy(owner);
+                owner.CancellationToken.ThrowIfCancellationRequested();
+                if (Interlocked.Exchange(ref _identityChanged, 0) != 0) _identityRetry = null;
+                AdoptLegacy(owner);
                 var files = Directory.Exists(_root) ? Directory.EnumerateFiles(_root, "*.json").Take(65536).ToArray() : Array.Empty<string>();
                 var worked = false;
                 foreach (var file in files)
@@ -91,9 +101,10 @@ internal sealed class ArchiveIntakeOwner
                     {
                         owner.Progress(false, DependencyWait.Storage, oldestPendingQpc: Stopwatch.GetTimestamp(), operationId: id);
                         lock (_gate) worked |= Advance(Read(id));
-                        _retry.Remove(id); owner.Progress(true);
+                        _retry.Remove(id); RecoveredFailure(id.ToString("N"), id); owner.Progress(true);
                     }
-                    catch (Exception error) when (Recoverable(error)) { _retry[id] = RuntimeWorkRetry.Next(previous); }
+                    catch (Exception error) when (Recoverable(error))
+                    { _retry[id] = RuntimeWorkRetry.Next(previous); ReportFailure(id.ToString("N"), id, error); }
                 }
                 owner.Progress(worked, DependencyWait.Idle); await owner.WaitForWorkAsync(TimeSpan.FromSeconds(1)).ConfigureAwait(false);
             }
@@ -103,31 +114,99 @@ internal sealed class ArchiveIntakeOwner
     private void AdoptLegacy(ManagedComponentContext owner)
     {
         if (_legacy == null || !Directory.Exists(_legacy)) return;
-        foreach (var file in Directory.EnumerateFiles(_legacy, "*_raw.zip").Take(65536))
+        var files = Directory.EnumerateFiles(_legacy, "*_raw.zip").Take(65536).ToArray();
+        var existing = new HashSet<string>(files, StringComparer.OrdinalIgnoreCase);
+        foreach (var gone in _legacyInputs.Keys.Where(path => !existing.Contains(path)).ToArray()) _legacyInputs.Remove(gone);
+        foreach (var gone in _legacyRetry.Keys.Where(path => !existing.Contains(path)).ToArray())
+        { _legacyRetry.Remove(gone); RecoveredFailure(gone, FailureIdentity(gone)); }
+        // One fresh consent snapshot per sweep, lazy so classified files need
+        // no identity I/O. Wake invalidates error backoff; the next sweep rereads.
+        bool? consentAccepted = null; var consentRead = false;
+        foreach (var file in files)
         {
             owner.CancellationToken.ThrowIfCancellationRequested();
+            _legacyRetry.TryGetValue(file, out var previous);
             try
             {
                 var name = Path.GetFileName(file); var manual = name.EndsWith("_bug_raw.zip", StringComparison.OrdinalIgnoreCase);
                 var automatic = name.EndsWith("_auto_raw.zip", StringComparison.OrdinalIgnoreCase);
-                if (!manual && !automatic && !_identity.ConsentAccepted) continue;
+                if (!manual && !automatic)
+                {
+                    if (!consentRead) { consentAccepted = LegacyConsentAccepted(); consentRead = true; }
+                    if (consentAccepted != true)
+                    {
+                        // Explicit opt-out retires this optional adoption. An
+                        // unreadable consent decision proves no such retirement.
+                        if (consentAccepted == false) { _legacyRetry.Remove(file); RecoveredFailure(file, FailureIdentity(file)); }
+                        continue;
+                    }
+                }
+                if (previous != null && Stopwatch.GetTimestamp() < previous.After) continue;
                 owner.Progress(false, DependencyWait.Storage, oldestPendingQpc: Stopwatch.GetTimestamp(), operationId: Guid.NewGuid());
-                var hash = EpisodeTransactionStore.Hash(file); var id = Guid.ParseExact(hash.Substring(0, 32), "N");
+                if (!_legacyInputs.TryGetValue(file, out var input) || !File.Exists(PathFor(input.Item1)))
+                {
+                    var hash = EpisodeTransactionStore.Hash(file);
+                    _legacyInputs[file] = input = Tuple.Create(Guid.ParseExact(hash.Substring(0, 32), "N"), hash);
+                }
                 lock (_gate)
                 {
-                    if (Exists(id))
+                    // An active durable request exclusively owns its cleanup and retry.
+                    // Adoption must not bypass that backoff, even after Stage 2.
+                    if (File.Exists(PathFor(input.Item1))) continue;
+                    if (_receipts.Contains(input.Item1))
                     {
-                        var request = Read(id);
-                        if (request.Hash != hash) throw new InvalidDataException("Legacy archive identity collision.");
-                        // An identical byte copy can appear under another name.
-                        // Its registered immutable copy owns delivery already.
-                        if (request.Stage == 2) File.Delete(file);
+                        var request = Read(input.Item1);
+                        if (request.Hash != input.Item2) throw new InvalidDataException("Legacy archive identity collision.");
+                        // A reappearing identical source has no active request. Its
+                        // cleanup is owned here, with the same per-source retry.
+                        EpisodeTransactionStore.Verify(file, input.Item2); File.Delete(file);
+                        _legacyInputs.Remove(file);
                     }
-                    else Save(new ArchiveIntakeRequest { Id = id, TimestampUtcTicks = File.GetLastWriteTimeUtc(file).Ticks,
-                        LegacyName = name, Hash = hash, Automatic = !manual });
+                    else Save(new ArchiveIntakeRequest { Id = input.Item1, TimestampUtcTicks = File.GetLastWriteTimeUtc(file).Ticks,
+                        LegacyName = name, Hash = input.Item2, Automatic = !manual });
                 }
+                _legacyRetry.Remove(file); RecoveredFailure(file, FailureIdentity(file));
             }
-            catch (Exception error) when (Recoverable(error)) { /* Keep the exact original and continue with independent inputs. */ }
+            catch (Exception error) when (Recoverable(error))
+            {
+                _legacyRetry[file] = RuntimeWorkRetry.Next(previous);
+                ReportFailure(file, FailureIdentity(file), error);
+            }
+        }
+    }
+    private static Guid FailureIdentity(string key)
+    {
+        using var sha = System.Security.Cryptography.SHA256.Create();
+        var hash = sha.ComputeHash(System.Text.Encoding.UTF8.GetBytes("archive-intake/" + key.ToUpperInvariant()));
+        var identity = new byte[16]; Array.Copy(hash, identity, identity.Length); return new Guid(identity);
+    }
+    private void ReportFailure(string key, Guid id, Exception error)
+    {
+        var reason = error.GetType().Name;
+        if (_failures.TryGetValue(key, out var previous) && previous == reason) return;
+        _failures[key] = reason;
+        Trace.TraceWarning("Archive intake {0}: {1}", key, error);
+        Failed?.Invoke(id, reason);
+    }
+    private void RecoveredFailure(string key, Guid id)
+    { if (_failures.Remove(key)) Recovered?.Invoke(id); }
+    private bool? LegacyConsentAccepted()
+    {
+        // All unclassified legacy archives share this optional dependency.
+        // A temporarily unavailable key must not restart intake or trigger one
+        // decrypt/report attempt per file while independent reports await adoption.
+        if (_identityRetry != null && Stopwatch.GetTimestamp() < _identityRetry.After) return null;
+        try
+        {
+            var accepted = _readLegacyConsent();
+            _identityRetry = null; RecoveredFailure("identity", FailureIdentity("identity"));
+            return accepted;
+        }
+        catch (Exception error) when (Recoverable(error))
+        {
+            _identityRetry = RuntimeWorkRetry.Next(_identityRetry);
+            ReportFailure("identity", FailureIdentity("identity"), error);
+            return null;
         }
     }
     private bool Advance(ArchiveIntakeRequest item)
@@ -139,7 +218,16 @@ internal sealed class ArchiveIntakeOwner
             if (item.Episode == Guid.Empty)
             {
                 if (_legacy == null) throw new InvalidDataException("Legacy queue is not configured.");
-                path = Path.Combine(_archives, item.LegacyName);
+                // Legacy names can be reused for different captures. The
+                // durable content identity owns the new archive's filename;
+                // keep the report-kind suffix used by the upload client.
+                var suffix = item.LegacyName.EndsWith("_bug_raw.zip", StringComparison.OrdinalIgnoreCase) ? "_bug_raw.zip"
+                    : item.LegacyName.EndsWith("_auto_raw.zip", StringComparison.OrdinalIgnoreCase) ? "_auto_raw.zip" : "_raw.zip";
+                path = Path.Combine(_archives, item.Id.ToString("N") + suffix);
+                // Earlier versions copied under the legacy basename before
+                // journaling Stage 1. Reuse that exact verified crash artifact.
+                var previousPath = Path.Combine(_archives, item.LegacyName);
+                if (File.Exists(previousPath) && EpisodeTransactionStore.Hash(previousPath) == item.Hash) path = previousPath;
                 EpisodeTransactionStore.CopyImmutable(Path.Combine(_legacy, item.LegacyName), path, item.Hash);
             }
             else
@@ -167,5 +255,6 @@ internal sealed class ArchiveIntakeOwner
         if (!File.Exists(file)) return;
         EpisodeTransactionStore.Verify(file, item.Hash); File.Delete(file);
     }
-    private static bool Recoverable(Exception error) => error is IOException || error is UnauthorizedAccessException || error is InvalidDataException || error is SerializationException;
+    private static bool Recoverable(Exception error) => error is IOException || error is UnauthorizedAccessException || error is InvalidDataException ||
+        error is SerializationException || error is System.Security.Cryptography.CryptographicException;
 }

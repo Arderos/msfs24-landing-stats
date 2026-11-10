@@ -22,11 +22,55 @@ internal static class LandingFileActivationRegressionTests
     {
         RegistrationTracksPortableLocation();
         ArgumentsAndExplicitActivation();
+        AssociationFailureHandoff();
         RequestsSurviveStartupAndRecovery().GetAwaiter().GetResult();
         FailedHandlerRetainsRequest().GetAwaiter().GetResult();
+        CancelledHandlerKeepsReceiverAlive().GetAwaiter().GetResult();
+        ApplicationShutdownStopsActivationIntake();
         SignalSurvivesReceiverReplacement().GetAwaiter().GetResult();
         ForegroundGrantTargetsReceiver().GetAwaiter().GetResult();
         SecondaryLaunchesAndInvalidRequests();
+    }
+
+    private static void ApplicationShutdownStopsActivationIntake()
+    {
+        using var fixture = new InboxFixture();
+        Directory.CreateDirectory(fixture.Root);
+        foreach (var mode in new[] { "activation-stop", "activation-acknowledge" })
+        {
+            using var process = Process.Start(new ProcessStartInfo(Assembly.GetExecutingAssembly().Location,
+                "--app-guardian-probe " + mode + " " + OwnedProcess.Quote(fixture.Root))
+            { UseShellExecute = false, CreateNoWindow = true, WindowStyle = ProcessWindowStyle.Hidden })!;
+            if (!process.WaitForExit(10000)) { process.Kill(); process.WaitForExit(); throw new TimeoutException("Activation shutdown fixture timed out."); }
+            Check(process.ExitCode == 0, "Intentional shutdown reported a cancelled activation: " +
+                (File.Exists(Path.Combine(fixture.Root, "failure")) ? File.ReadAllText(Path.Combine(fixture.Root, "failure")) : process.ExitCode.ToString()));
+        }
+    }
+
+    internal static int ApplicationShutdownFixture(App app, string directory, bool acknowledgeExit)
+    {
+        try
+        {
+            Task.Run(async () =>
+            {
+                var root = Path.Combine(directory, acknowledgeExit ? "acknowledge" : "window-close");
+                var signal = "Local\\ls-activation-close-" + Guid.NewGuid().ToString("N");
+                using (var requests = new LandingFileActivation(root, signal)) requests.Submit(new[] { Path.Combine(root, "pending.lslanding") });
+                var admitted = Completion<bool>(); var pending = Completion<bool>(); var reported = 0;
+                Check(app.StartFileActivationIntake(_ => { admitted.TrySetResult(true); return pending.Task; },
+                    _ => Interlocked.Increment(ref reported), root, signal), "Live App did not admit activation.");
+                var receiver = (LandingFileActivation)typeof(App).GetField("_landingFileActivation", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(app)!;
+                await Within(admitted.Task);
+                if (acknowledgeExit) await App.AcknowledgeExitAsync(GuardianStopReason.UserExit);
+                else App.StopFileActivationIntake();
+                pending.TrySetCanceled();
+                await Within(receiver.Completion);
+                Check(reported == 0 && Directory.GetFiles(root, "*.request").Length == 1,
+                    "Expected shutdown cancellation produced a crash report or acknowledged an unfinished durable request.");
+            }).GetAwaiter().GetResult();
+            return 0;
+        }
+        catch (Exception error) { File.WriteAllText(Path.Combine(directory, "failure"), error.ToString()); return 1; }
     }
 
     // Called by the regression executable before creating WPF state. This is a
@@ -153,6 +197,44 @@ internal static class LandingFileActivationRegressionTests
         replacement.Dispose(); await Within(replacement.Completion);
     }
 
+    private static void AssociationFailureHandoff()
+    {
+        var variable = LandingFileAssociation.RegistrationErrorEnvironmentVariable;
+        var previous = Environment.GetEnvironmentVariable(variable);
+        try
+        {
+            Environment.SetEnvironmentVariable(variable, "Registry access denied");
+            Check(LandingFileAssociation.TakeStartupError() == "Registry access denied" &&
+                LandingFileAssociation.TakeStartupError() == null,
+                "The launcher association failure reaches its owning App once without leaking into child workers.");
+        }
+        finally { Environment.SetEnvironmentVariable(variable, previous); }
+    }
+
+    private static async Task CancelledHandlerKeepsReceiverAlive()
+    {
+        using var fixture = new InboxFixture();
+        fixture.Submit(new[] { Path.Combine(fixture.Root, "cancelled.lslanding") });
+        var retained = Directory.GetFiles(fixture.Root, "*.request").Single();
+        var reported = Completion<Exception>();
+        var secondHandled = Completion<bool>();
+        var calls = 0;
+        using var receiver = fixture.Receiver();
+        receiver.Start(paths =>
+        {
+            if (Interlocked.Increment(ref calls) == 1) return Task.FromCanceled(new CancellationToken(true));
+            if (paths.Any(path => Path.GetFileName(path) == "later.lslanding")) secondHandled.TrySetResult(true);
+            return Task.CompletedTask;
+        }, error => reported.TrySetResult(error));
+        Check(await Within(reported.Task) is OperationCanceledException && File.Exists(retained) && !receiver.Completion.IsCompleted,
+            "An operation cancellation is reported and retained without retiring the live receiver.");
+        using var deleted = new DeletionWitness(fixture.Root, Path.GetFileName(retained));
+        fixture.Submit(new[] { Path.Combine(fixture.Root, "later.lslanding") });
+        await Within(secondHandled.Task); await Within(deleted.Deleted);
+        Check(calls == 3, "A later activation must drain both durable requests without a timed retry loop.");
+        receiver.Dispose(); await Within(receiver.Completion);
+    }
+
     private static async Task ForegroundGrantTargetsReceiver()
     {
         using var fixture = new InboxFixture();
@@ -182,7 +264,10 @@ internal static class LandingFileActivationRegressionTests
         var mutex = "Local\\ls-sharing-test-" + Guid.NewGuid().ToString("N");
         Check(GuardianInstance.TryAcquire(out var owner, mutex, activateExisting: false), "Cannot create isolated guardian owner.");
         using (owner!)
-            RunSecondaryLaunches(fixture, mutex).GetAwaiter().GetResult(); // Mutex release stays on its owning thread.
+        {
+            owner!.StartActivation(() => Task.FromResult(true));
+            RunSecondaryLaunches(fixture, mutex).GetAwaiter().GetResult();
+        } // Mutex release stays on its owning thread.
     }
 
     private static async Task RunSecondaryLaunches(InboxFixture fixture, string mutex)

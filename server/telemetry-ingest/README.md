@@ -112,6 +112,12 @@ retained and a 2 GiB free-space reserve is preserved on the dedicated
 filesystem. Stale partial uploads are removed on startup and container logs
 rotate at 3 x 10 MiB.
 
+The rolling installation quota is checked atomically when a validated
+archive is accepted. Concurrent uploads that exceed it receive `429`, and their
+temporary archive files are removed. A retained duplicate returns its existing
+receipt without consuming additional retained-byte quota; signed-attempt limits
+still apply.
+
 The expanded archive limit accommodates full 30,000-sample v7 diagnostic
 captures with controller and source-state metadata. CSV validation streams
 rows; sample-count, per-member, JSON-structure and compressed-upload bounds
@@ -140,6 +146,10 @@ bounded to about 60 seconds, and released on cancellation. Full queues or a lost
 admission race still return 429. All 429 responses include `Retry-After` (older
 clients may ignore it). Daily byte budgets and archive validation are unchanged;
 byte-budget checks/reservations are serialized atomically in SQLite.
+The accepted-byte quota covers the preceding 24 hours. New captures are checked
+against it before body reception, including after fixed UTC attempt budgets
+reset; acceptance rechecks it atomically for concurrent uploads. Retained
+duplicates keep their existing receipt without consuming accepted-byte capacity.
 
 API requests produce structured `telemetry_ingress` JSON lines in the existing
 rotated container logs: status, bounded reason, duration/pacing time, validated
@@ -181,6 +191,8 @@ weight and upload-period filters define the cohort; a second aircraft, creator
 version, device, airport/runway, crosswind range or landing-weight range can be compared while
 retaining the other filters. Recording app version is the Landing Stats version;
 aircraft add-on versions are not recorded.
+Chart labels and contact-signature queries use the last successfully applied
+selection; editing the filter form does not change existing charts before Apply.
 
 Nine analysis entries expose the approach corridor, aircraft profile, flare,
 control response, touchdown map, crosswind, contact signature, relationships and
@@ -219,14 +231,22 @@ HTTP requests never unpack retained archives or access the receiver database.
 The read-only endpoints are `/api/analytics/catalog`, `/api/analytics/cohort`
 and `/api/analytics/landings/{id}`. Cohorts contain at most the 250 newest matching
 first-contact approaches, with matched/included counts returned explicitly.
-Only one aggregate query runs at a time; concurrent queries receive 503 and
-`Retry-After`. Original archives, ingestion contracts and retention are unchanged.
+Catalog responses use `page` and `page_size` (1–250, default 250), with `total`
+and `next_page`. The first page also includes complete filter facets for the
+requested period; Flight Explorer obtains those options in one request.
+Chart selections narrow their own cohort; airport map selections clear the runway.
+Only one aggregate query runs at a time; concurrent aggregate queries receive 503
+and `Retry-After`. Catalog metadata uses a separate cache tied to the published
+index snapshot and remains available while an aggregate query runs. Original
+archives, ingestion contracts and retention are unchanged.
 
 Profiles use one interpolated observation per approach/grid coordinate and
 report count, minimum, p10, median, p90 and maximum. Height profiles use the last
 downward crossing before contact; time profiles align to first contact; distance
 profiles use the named runway's displaced landing threshold. Unknown threshold
 offsets remain unavailable. AGL retains the recorded aircraft reference datum.
+An unobserved final crossing across a physics gap remains unavailable instead of
+retaining a value from an earlier descent; exact observations remain available.
 Physics pauses, segment changes and gaps over the client's 0.5-second replay
 interpolation limit are excluded. Optional LSR1 source observations exclude
 confirmed freeze, slew and SDK replay, using the client's 1.5-second observation
@@ -311,6 +331,18 @@ their uploader meaning for existing API clients. The UI uses the explicit fields
 The dashboard shares the receiver's 64 MiB expanded result-member limit.
 An index-format update rebuilds its private cache, including earlier size errors,
 without rewriting archives or receiver metadata.
+Flight Explorer metadata accepts string identifiers, display fields and device
+labels, and positive integer contact counters. Non-string device labels and
+non-list `ControlInputSources` remain unavailable without discarding valid axis
+samples or other device labels. Malformed values in these metadata fields remain
+unavailable without discarding other records; a record without a valid ID is
+excluded from the catalog and cohort, and an invalid contact number is excluded
+from first-contact cohorts. Structural analytics errors (for example, a non-object
+`RunwayGeometry` or malformed controller-axis mapping) make analytics unavailable
+for the affected archive. Index version 13 rebuilds older cached metadata and
+analytics errors under this contract without changing retained uploads.
+Catalog snapshots are retired on index publication; in-flight readers
+finish against their own snapshot without retaining it in the shared cache.
 
 Daily buckets use UTC; individual timestamps display in the browser's local time.
 A landing ID uploaded in multiple reports is
@@ -337,6 +369,6 @@ Do not use `compose down` for dashboard rollback. `dashboard-cache` and
 `dashboard-snapshot` are separate disposable volumes; neither contains the original
 archives or receiver database. Tests run alongside the existing service tests:
 `python -m unittest discover -s tests -p 'test_*.py' -v`.
-The dependency-free visualization calculations are checked with
-`node --test tests/explore-math.test.cjs` (Node.js 20+); the server CI job runs
+The dependency-free visualization calculations and selection/replay controller are checked with
+`node --test tests/explore-math.test.cjs tests/explore-state.test.cjs` (Node.js 20+); the server CI job runs
 these checks as well. Node.js is not required in the deployed dashboard.

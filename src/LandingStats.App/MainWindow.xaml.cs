@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
@@ -60,6 +60,7 @@ public partial class MainWindow : Window
     private bool _bugReportSubmitting;
     private bool _deleteLandingInProgress;
     private LandingRecord? _pendingDeleteRecord;
+    private LandingRecord[] _pendingDeleteRecords = Array.Empty<LandingRecord>();
     private double? _zoomStartSeconds;
     private double? _zoomEndSeconds;
     private RecorderState _lastRecorderState = RecorderState.Waiting;
@@ -208,7 +209,6 @@ public partial class MainWindow : Window
         if (_isClosed) return;
         await InitializeAutoStartSettingAsync();
         if (_isClosed) return;
-        _autoStartInitialized = true; _services.Settings.AutoStartInitialized = true;
         ShowGoogleDrivePromptIfNeeded();
         await googleDriveStartupSync;
         await updateCheck;
@@ -235,7 +235,8 @@ public partial class MainWindow : Window
     private void PresentRecord(LandingRecord detail, IReadOnlyList<LandingRecord> replayContacts)
     {
         var sameRecord = DataContext is LandingRecord currentRecord && currentRecord.Id == detail.Id;
-        if (ReferenceEquals(DataContext, detail))
+        var sameDetail = ReferenceEquals(DataContext, detail);
+        if (sameDetail)
         {
             // Airport resolution mutates cached details after they have already been bound.
             // LandingRecord is intentionally a storage DTO, not INotifyPropertyChanged, so
@@ -258,6 +259,14 @@ public partial class MainWindow : Window
         UpdateMainLegend(MainChart.Mode);
         UpdateChartDescription(MainChart.Mode);
         ApplyZoom(_showFullApproach ? null : -6, _showFullApproach ? null : 8);
+        }
+        else if (!sameDetail)
+        {
+            // A refreshed copy can change sample coverage without changing its
+            // identity. Preserve the user's mode/range and normalize it against
+            // this detail, including empty or newly restored chart data.
+            ApplyZoom(_zoomStartSeconds ?? (_showFullApproach ? (double?)null : -6),
+                _zoomEndSeconds ?? (_showFullApproach ? (double?)null : 8));
         }
         UpdateLaneReadouts(detail, sameRecord ? ReplayView.CurrentTimeSeconds : 0);
         if (Interlocked.Exchange(ref _firstDetailPresented, 1) == 0) _startupTimeline?.Mark("first_detail_presented");
@@ -283,12 +292,15 @@ public partial class MainWindow : Window
 
     private void OnChartZoomRangeSelected(object? sender, LandingChartZoomEventArgs eventArgs)
     {
-        _showFullApproach = !eventArgs.StartSeconds.HasValue || !eventArgs.EndSeconds.HasValue;
-        ApplyZoom(eventArgs.StartSeconds, eventArgs.EndSeconds);
+        var start = eventArgs.StartSeconds; var end = eventArgs.EndSeconds;
+        LandingChart.NormalizeZoomRange((DataContext as LandingRecord)?.Series, ref start, ref end);
+        _showFullApproach = !start.HasValue;
+        ApplyZoom(start, end);
     }
 
     private void ApplyZoom(double? startSeconds, double? endSeconds)
     {
+        LandingChart.NormalizeZoomRange((DataContext as LandingRecord)?.Series, ref startSeconds, ref endSeconds);
         _zoomStartSeconds = startSeconds;
         _zoomEndSeconds = endSeconds;
         foreach (var chart in _charts)
@@ -297,6 +309,7 @@ public partial class MainWindow : Window
         }
 
         Timeline.SetZoomRange(_showReplay ? null : startSeconds, _showReplay ? null : endSeconds);
+        ChartWindowButton.IsEnabled = DataContext is LandingRecord chartRecord && chartRecord.Series.Count > 1;
         if (startSeconds.HasValue && endSeconds.HasValue)
         {
             ChartWindowButton.Content = LocalizationManager.Format(
@@ -310,11 +323,13 @@ public partial class MainWindow : Window
                 "View.FullApproachFormat",
                 record.Series[0].TimeSeconds);
         }
+        else ChartWindowButton.Content = LocalizationManager.Text("Chart.NoData");
     }
 
 
     private void OnChartWindowClick(object sender, RoutedEventArgs eventArgs)
     {
+        if (!ChartWindowButton.IsEnabled) return;
         _showFullApproach = !_showFullApproach;
         ApplyZoom(_showFullApproach ? null : -6, _showFullApproach ? null : 8);
     }
@@ -423,147 +438,7 @@ public partial class MainWindow : Window
         MiniGChart.Record = null;
         MiniAltitudeChart.Record = null;
         Timeline.Record = null;
-    }
-
-    private void OnDeleteLandingClick(object sender, RoutedEventArgs eventArgs)
-    {
-        eventArgs.Handled = true;
-        if (sender is not Button button || button.Tag is not LandingRecord record)
-        {
-            return;
-        }
-
-        _pendingDeleteRecord = record;
-        UpdateDeleteLandingDescription(record);
-        DeleteLandingErrorText.Text = string.Empty;
-        DeleteLandingErrorText.Visibility = Visibility.Collapsed;
-        ConfirmDeleteLandingButton.IsEnabled = true;
-        DeleteLandingOverlay.Visibility = Visibility.Visible;
-        DeleteLandingOverlay.Focus();
-        Keyboard.Focus(CancelDeleteLandingButton);
-    }
-
-    private void OnCancelDeleteLandingClick(object sender, RoutedEventArgs eventArgs)
-    {
-        if (_deleteLandingInProgress)
-        {
-            return;
-        }
-        HideDeleteLandingConfirmation();
-    }
-
-    private void OnDeleteLandingOverlayKeyDown(object sender, KeyEventArgs eventArgs)
-    {
-        if (eventArgs.Key != Key.Escape || _deleteLandingInProgress)
-        {
-            return;
-        }
-
-        eventArgs.Handled = true;
-        HideDeleteLandingConfirmation();
-    }
-
-    private async void OnConfirmDeleteLandingClick(object sender, RoutedEventArgs eventArgs)
-    {
-        if (_isClosed || _historyStopped || _deleteLandingInProgress) return;
-        var record = _pendingDeleteRecord;
-        if (record == null)
-        {
-            HideDeleteLandingConfirmation();
-            return;
-        }
-
-        var visibleRecords = LandingHistoryList.Items.Cast<LandingRecord>().ToList();
-        var selectedId = (LandingHistoryList.SelectedItem as LandingRecord)?.Id;
-        string? preferredSelectionId;
-        if (!string.Equals(selectedId, record.Id, StringComparison.Ordinal))
-        {
-            preferredSelectionId = selectedId;
-        }
-        else
-        {
-            var deletedIndex = visibleRecords.FindIndex(candidate =>
-                string.Equals(candidate.Id, record.Id, StringComparison.Ordinal));
-            var remainingVisible = visibleRecords
-                .Where(candidate => !string.Equals(candidate.Id, record.Id, StringComparison.Ordinal))
-                .ToList();
-            var nextIndex = remainingVisible.Count == 0
-                ? -1
-                : Math.Min(Math.Max(0, deletedIndex), remainingVisible.Count - 1);
-            preferredSelectionId = nextIndex >= 0 ? remainingVisible[nextIndex].Id : null;
-        }
-
-        var signedIn = _googleDriveTokenStore.HasRefreshToken();
-        Exception? queueError = null;
-        try
-        {
-            _deleteLandingInProgress = true;
-            ConfirmDeleteLandingButton.IsEnabled = false;
-            CancelDeleteLandingButton.IsEnabled = false;
-            // Reserve the ID before yielding so any earlier history/detail read
-            // cannot republish the record while its deletion waits for storage.
-            _locallyRemovedHistoryIds.Add(record.Id);
-            ApplySessionFilter(preferredSelectionId);
-            var deletion = _services.DeleteLandingAsync(record.Id);
-            _localDeletionTask = deletion;
-            queueError = await deletion;
-            if (_isClosed || _historyStopped) return;
-            _loadedDetails.Remove(record.Id);
-            _landings = _landings
-                .Where(candidate => !string.Equals(candidate.Id, record.Id, StringComparison.Ordinal))
-                .ToArray();
-            HideDeleteLandingConfirmation(true);
-            ApplySessionFilter();
-        }
-        catch (Exception exception)
-        {
-            _locallyRemovedHistoryIds.Remove(record.Id);
-            if (_isClosed || _historyStopped) return;
-            if (!_landings.Any(candidate => candidate.Id == record.Id))
-                _landings = _landings.Concat(new[] { record }).OrderByDescending(candidate => candidate.TimestampUtc).ToArray();
-            ApplySessionFilter();
-            _deleteLandingInProgress = false;
-            ConfirmDeleteLandingButton.IsEnabled = true;
-            CancelDeleteLandingButton.IsEnabled = true;
-            DeleteLandingErrorText.Text = LocalizationManager.Format("Delete.ErrorFormat", exception.Message);
-            DeleteLandingErrorText.Visibility = Visibility.Visible;
-            Keyboard.Focus(CancelDeleteLandingButton);
-            return;
-        }
-
-        try
-        {
-            if (queueError != null) throw queueError;
-            if (signedIn)
-            {
-                QueueGoogleDriveSync();
-            }
-        }
-        catch (OperationCanceledException) when (_lifetimeCancellation.IsCancellationRequested)
-        {
-        }
-        catch (Exception exception)
-        {
-            _googleDriveErrorDetail = exception.Message; _googleDriveErrorKey = null;
-            RefreshGoogleDrivePresentation();
-        }
-        finally
-        {
-            _deleteLandingInProgress = false;
-        }
-    }
-
-    private void HideDeleteLandingConfirmation(bool force = false)
-    {
-        if (_deleteLandingInProgress && !force)
-        {
-            return;
-        }
-        _pendingDeleteRecord = null;
-        DeleteLandingOverlay.Visibility = Visibility.Collapsed;
-        ConfirmDeleteLandingButton.IsEnabled = true;
-        CancelDeleteLandingButton.IsEnabled = true;
-        Keyboard.Focus(LandingHistoryList);
+        ApplyZoom(null, null);
     }
 
     private void OnSettingsClick(object sender, RoutedEventArgs eventArgs)
@@ -723,24 +598,18 @@ public partial class MainWindow : Window
         await RunSettingsOperationAsync(async () =>
         {
             _autoStartLegacyCleanupError = await RemoveLegacyAutoStartEntriesAsync();
-            if (!_settings.StartWithSimulator.HasValue)
-            {
-                _autoStartErrorDetail = _autoStartLegacyCleanupError;
-                _autoStartInitialized = true; _services.Settings.AutoStartInitialized = true;
-                return true;
-            }
-            var enabled = _settings.StartWithSimulator.Value;
             try
             {
-                var result = await Task.Run(() => _autoStartManager.SetEnabled(enabled));
-                _autoStartProfileCount = result.ConfigurationPaths.Count;
+                var result = await _services.Settings.InitializeAutoStartAsync();
+                _autoStartProfileCount = result?.ConfigurationPaths.Count ?? 0;
                 _autoStartErrorDetail = _autoStartLegacyCleanupError;
             }
             catch (Exception exception)
             {
                 _autoStartErrorDetail = CombineAutoStartErrors(_autoStartLegacyCleanupError, exception.Message);
             }
-            _autoStartInitialized = true; _services.Settings.AutoStartInitialized = true;
+            _settings.StartWithSimulator = _services.Settings.Snapshot.Settings.StartWithSimulator;
+            _autoStartInitialized = true;
             return true;
         });
         if (!_isClosed && !_settings.StartWithSimulator.HasValue)
@@ -1309,18 +1178,6 @@ public partial class MainWindow : Window
         }
     }
 
-    private void UpdateDeleteLandingDescription(LandingRecord record)
-    {
-        var contact = record.ContactCount > 1
-            ? LocalizationManager.Format(
-                "Delete.ContactSuffixFormat",
-                record.ContactNumber,
-                record.ContactCount)
-            : string.Empty;
-        DeleteLandingDescription.Text =
-            $"{record.AircraftTitle}\n{new LandingStats.App.Presentation.LandingPresentation(record).LocationDisplay} · {new LandingStats.App.Presentation.LandingPresentation(record).TimestampDisplay}{contact}";
-    }
-
     internal static void UpdateControlTab(bool hasReplay, RadioButton reconstructionTab, RadioButton controlsTab)
     {
         var selected = reconstructionTab.IsChecked == true || controlsTab.IsChecked == true;
@@ -1350,6 +1207,7 @@ public partial class MainWindow : Window
         ChartWindowButton.Visibility = replay ? Visibility.Collapsed : Visibility.Visible;
         var mode = replay ? MainChart.Mode : (LandingChartMode)Enum.Parse(typeof(LandingChartMode), modeName);
         MainChart.Mode = mode;
+        MainChart.SetIsolatedSeries(null);
         _mainIsolatedSeriesIndex = null;
         UpdateChartDescription(mode);
         UpdateModeUnit(mode);
@@ -1453,6 +1311,10 @@ public partial class MainWindow : Window
                 };
                 brushes = new[] { LandingChart.SeriesBrushAt(0), LandingChart.SeriesBrushAt(1), LandingChart.SeriesBrushAt(2) };
                 dashed = new[] { false, false, false };
+                if (record?.FormatVersion < 3)
+                {
+                    labels = labels.Take(1).ToArray(); brushes = brushes.Take(1).ToArray(); dashed = dashed.Take(1).ToArray();
+                }
                 break;
             case LandingChartMode.FlightControls:
                 labels = new[]
@@ -1656,11 +1518,10 @@ public partial class MainWindow : Window
 
         var available = _startupReady && !AutomaticTelemetryUploadEnabled &&
             _runtimeReportEpisode != Guid.Empty;
-        UploadStatusText.Visibility = _startupReady && !AutomaticTelemetryUploadEnabled ? Visibility.Visible : Visibility.Collapsed;
+        UploadStatusText.Visibility = _startupReady && (!AutomaticTelemetryUploadEnabled || _runtimeHasFailure) ? Visibility.Visible : Visibility.Collapsed;
         ReportBugButton.Visibility = available ? Visibility.Visible : Visibility.Collapsed;
         var enabled = !_bugReportSubmitting && available;
         ReportBugButton.IsEnabled = enabled;
-        ReportBugButton.Opacity = enabled ? 1.0 : 0.42;
     }
 
     private void StartPendingBugReportRetry() => Volatile.Read(ref _runtime)?.WakeDelivery();
@@ -1729,6 +1590,7 @@ public partial class MainWindow : Window
 
         if (eventArgs.ClickCount == 2)
         {
+            _titleDragStart = null;
             WindowState = WindowState == WindowState.Maximized
                 ? WindowState.Normal
                 : WindowState.Maximized;
@@ -1737,11 +1599,30 @@ public partial class MainWindow : Window
 
         if (WindowState == WindowState.Maximized)
         {
-            WindowState = WindowState.Normal;
+            _titleDragStart = eventArgs.GetPosition(this);
+            return;
         }
 
         if (Mouse.LeftButton == MouseButtonState.Pressed)
             try { DragMove(); } catch (InvalidOperationException error) { Debug.WriteLine(error); }
+    }
+
+    private Point? _titleDragStart;
+    private void OnTitleBarMouseLeave(object sender, MouseEventArgs eventArgs) => _titleDragStart = null;
+    private void OnTitleBarMouseMove(object sender, MouseEventArgs eventArgs)
+    {
+        if (eventArgs.LeftButton != MouseButtonState.Pressed) { _titleDragStart = null; return; }
+        if (!_titleDragStart.HasValue || WindowState != WindowState.Maximized) return;
+        var position = eventArgs.GetPosition(this); var start = _titleDragStart.Value;
+        if (Math.Abs(position.X - start.X) < SystemParameters.MinimumHorizontalDragDistance &&
+            Math.Abs(position.Y - start.Y) < SystemParameters.MinimumVerticalDragDistance) return;
+        _titleDragStart = null;
+        var screen = PointToScreen(position);
+        var transform = PresentationSource.FromVisual(this)?.CompositionTarget?.TransformFromDevice;
+        if (transform.HasValue) screen = transform.Value.Transform(screen);
+        var offset = start.X / ActualWidth * RestoreBounds.Width;
+        WindowState = WindowState.Normal; Left = screen.X - offset; Top = screen.Y - start.Y;
+        try { DragMove(); } catch (InvalidOperationException error) { Debug.WriteLine(error); }
     }
 
     private void OnMinimizeClick(object sender, RoutedEventArgs eventArgs)
@@ -1759,11 +1640,11 @@ public partial class MainWindow : Window
         Close();
     }
 
-    private void OnReleasesLinkNavigate(object sender, RequestNavigateEventArgs eventArgs)
+    private async void OnReleasesLinkNavigate(object sender, RequestNavigateEventArgs eventArgs)
     {
-        try { Process.Start(new ProcessStartInfo(eventArgs.Uri.AbsoluteUri) { UseShellExecute = true }); }
-        catch (Exception error) when (error is System.ComponentModel.Win32Exception || error is InvalidOperationException)
-        { Debug.WriteLine(error); SetConnectionWarning("Common.OpenLinkFailedFormat", error.Message); }
         eventArgs.Handled = true;
+        try { await Task.Run(() => ExternalUriLauncher.Open(eventArgs.Uri.AbsoluteUri)); }
+        catch (Exception error) when (error is System.ComponentModel.Win32Exception || error is InvalidOperationException || error is ArgumentException)
+        { Debug.WriteLine(error); SetConnectionWarning("Common.OpenLinkFailedFormat", error.Message); }
     }
 }

@@ -306,6 +306,7 @@ public sealed partial class LandingChart : FrameworkElement
 
     public void SetZoomRange(double? startSeconds, double? endSeconds)
     {
+        NormalizeZoomRange(_record?.Series, ref startSeconds, ref endSeconds);
         if (!startSeconds.HasValue || !endSeconds.HasValue || endSeconds.Value - startSeconds.Value < 0.05)
         {
             _zoomStartSeconds = null;
@@ -319,6 +320,17 @@ public sealed partial class LandingChart : FrameworkElement
 
         _hoveredIndex = -1;
         InvalidateChart();
+    }
+
+    internal static void NormalizeZoomRange(IReadOnlyList<LandingSeriesPoint>? points, ref double? start, ref double? end)
+    {
+        if (points == null || points.Count < 2 || !start.HasValue || !end.HasValue ||
+            !ChartValueSanitizer.IsFinite(start.Value) || !ChartValueSanitizer.IsFinite(end.Value))
+        { start = end = null; return; }
+        var minimum = Math.Max(points[0].TimeSeconds, Math.Min(start.Value, end.Value));
+        var maximum = Math.Min(points[points.Count - 1].TimeSeconds, Math.Max(start.Value, end.Value));
+        if (maximum - minimum < .05) { start = end = null; return; }
+        start = minimum; end = maximum;
     }
 
     private DrawingGroup? _staticDrawing;
@@ -357,12 +369,15 @@ public sealed partial class LandingChart : FrameworkElement
         context.DrawRectangle(Brushes.Transparent, null, new Rect(RenderSize));
         var points = _record?.Series;
         _drawingHasData = points != null && points.Count >= 2 && ActualWidth >= 140 && ActualHeight >= (CompactLane ? 18 : 90);
-        if (!_drawingHasData)
+        if (!_drawingHasData || points == null)
         { DrawText(context, LocalizationManager.Text("Chart.NoData"), new Point(18, 18), MutedBrush, 12); return; }
         GetTimeRange(points!, out _drawingMinTime, out _drawingMaxTime);
-        var visible = points!.Where(point => point.TimeSeconds >= _drawingMinTime && point.TimeSeconds <= _drawingMaxTime).ToArray();
-        if (visible.Length < 2)
-        { visible = points!.ToArray(); _drawingMinTime = points[0].TimeSeconds; _drawingMaxTime = points[points.Count - 1].TimeSeconds; }
+        // Include the bracketing observations so a narrow window between sparse
+        // frames preserves the same time mapping as hover, lanes and the timeline.
+        var visible = points!.Where((point, index) =>
+            point.TimeSeconds >= _drawingMinTime && point.TimeSeconds <= _drawingMaxTime ||
+            index + 1 < points.Count && point.TimeSeconds < _drawingMinTime && points[index + 1].TimeSeconds > _drawingMinTime ||
+            index > 0 && point.TimeSeconds > _drawingMaxTime && points[index - 1].TimeSeconds < _drawingMaxTime).ToArray();
         if (Mode == LandingChartMode.HeightAboveGround && !visible.Any(point => ChartValueSanitizer.IsFinite(point.AglFeet)))
         {
             _drawingHasData = false;

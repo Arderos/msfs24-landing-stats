@@ -112,6 +112,15 @@ internal static class LandingImpactStorageRegressionTests
             Equal(detail.ImpactWindowSeconds, imported.ImpactWindowSeconds, "window duration survives cloud export/import");
             Assert(imported.IsFirmLanding, "cloud copy uses native classification");
 
+            record.ImpactAnalysisVersion = 1;
+            repository.Save(record);
+            var historical = new LandingRepository(root).LoadAll().Single();
+            Assert(historical.IsFirmLanding && repository.LoadDetail(historical)!.IsFirmLanding,
+                "A supported historical adaptive version lost its stored measured impact.");
+            Equal(1, repository.LoadDetail(historical)!.ImpactAnalysisVersion, "reading v1 does not relabel or recompute its measurement");
+            Equal(2, TouchdownImpactAnalysis.CurrentVersion, "changed impact classification has a distinct producer version");
+            record.ImpactAnalysisVersion = TouchdownImpactAnalysis.CurrentVersion;
+
             record.ImpactStatus = nameof(TouchdownImpactStatus.Incomplete);
             Assert(!record.HasImpactClassification, "incomplete native impact cannot fall back to old smooth G");
             Equal(record.ImpactPeakG!.Value.ToString("F2", CultureInfo.CurrentCulture), new LandingStats.App.Presentation.LandingPresentation(record).ImpactPeakDisplay, "incomplete observed peak remains visible");

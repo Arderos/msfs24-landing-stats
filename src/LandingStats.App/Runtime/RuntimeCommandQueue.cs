@@ -160,7 +160,12 @@ internal sealed class RuntimeCommandQueue
                 if (host == null || host.Exit.IsCompleted)
                     result = new CommandResultMessage(CommandOutcome.Rejected, "source_retired");
                 else
-                    result = await host.CommandAsync((RuntimeCommand)request.Payload, owner.CancellationToken).ConfigureAwait(false);
+                {
+                    try { result = await host.CommandAsync((RuntimeCommand)request.Payload, owner.CancellationToken).ConfigureAwait(false); }
+                    catch (Exception error) when (!owner.CancellationToken.IsCancellationRequested &&
+                        (error is IOException && !(error is InvalidDataException) || error is ObjectDisposedException || error is OperationCanceledException))
+                    { result = new CommandResultMessage(CommandOutcome.Rejected, "source_retired"); }
+                }
                 await owner.WaitForDependencyAsync(_commitOutcome(new RuntimeCommandOutcome(request, result)), DependencyWait.Storage).ConfigureAwait(false);
                 lock (_gate) DurableFile.WriteJson(ProgressPath(batch.Input), new RuntimeCommandProgress { Input = batch.Input, Completed = index + 1 });
                 owner.Progress(true);

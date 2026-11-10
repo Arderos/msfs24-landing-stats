@@ -13,19 +13,20 @@ internal sealed class GuardianClient : IDisposable
     private readonly NamedPipeClientStream _pipe;
     private readonly GuardianWire _wire;
     private readonly Func<GuardianStatus> _health;
-    private readonly Action _activate;
+    private readonly Func<Task<bool>> _activate;
     private readonly Func<Task<bool>> _prepare;
+    private readonly Func<Task>? _endSession;
     private readonly CancellationTokenSource _lifetime = new CancellationTokenSource();
     private readonly SemaphoreSlim _requests = new SemaphoreSlim(1, 1);
     private GuardianSignals? _signals;
     private Process? _parent;
     private TaskCompletionSource<GuardianPacket>? _pending;
     private long _request = 1;
-    private int _preparing, _disposed;
+    private int _preparing, _endingSession, _disposed;
     private Task _completion = Task.CompletedTask;
-    public GuardianClient(GuardianDescriptor descriptor, Func<GuardianStatus> health, Action activate, Func<Task<bool>> prepare)
+    public GuardianClient(GuardianDescriptor descriptor, Func<GuardianStatus> health, Func<Task<bool>> activate, Func<Task<bool>> prepare, Func<Task>? endSession = null)
     {
-        _descriptor = descriptor; _health = health; _activate = activate; _prepare = prepare;
+        _descriptor = descriptor; _health = health; _activate = activate; _prepare = prepare; _endSession = endSession;
         _pipe = new NamedPipeClientStream(".", descriptor.Pipe, PipeDirection.InOut, PipeOptions.Asynchronous); _wire = new GuardianWire(_pipe, descriptor);
     }
     public Task Completion => _completion;
@@ -62,7 +63,18 @@ internal sealed class GuardianClient : IDisposable
                 if (packet.Request > current || packet.Request <= 1) throw new InvalidDataException("Unknown guardian acknowledgement.");
                 if (packet.Request == current) Volatile.Read(ref _pending)?.TrySetResult(packet);
             }
-            else if (packet.Kind == GuardianMessageKind.Activate) _activate();
+            else if (packet.Kind == GuardianMessageKind.Activate) _ = AcknowledgeActivationAsync(packet.Request);
+            else if (packet.Kind == GuardianMessageKind.Stop && packet.Stop == GuardianStopReason.SessionEnd && _endSession != null)
+            {
+                // The drain acknowledges its own stop and may need the UI
+                // dispatcher; keep the independent control reader available.
+                if (Interlocked.Exchange(ref _endingSession, 1) == 0)
+                    _ = Task.Run(async () =>
+                    {
+                        try { await _endSession().ConfigureAwait(false); }
+                        catch (Exception error) { Debug.WriteLine("Guardian session drain failed: " + error); }
+                    });
+            }
             else if (packet.Kind == GuardianMessageKind.PrepareRecovery)
             {
                 if (Interlocked.Exchange(ref _preparing, 1) == 0)
@@ -79,6 +91,17 @@ internal sealed class GuardianClient : IDisposable
             }
             else throw new InvalidDataException("Unexpected guardian control packet.");
         }
+    }
+    private async Task AcknowledgeActivationAsync(long request)
+    {
+        try
+        {
+            // UI activation must not hold the independent control reader. A
+            // stalled dispatcher still needs to receive PrepareRecovery.
+            var accepted = await _activate().ConfigureAwait(false);
+            await _wire.SendAsync(new GuardianPacket(GuardianMessageKind.ActivationResult, request, accepted: accepted), _lifetime.Token).ConfigureAwait(false);
+        }
+        catch (Exception error) { Debug.WriteLine("Guardian activation did not complete: " + error); }
     }
     private async Task HealthPumpAsync()
     {

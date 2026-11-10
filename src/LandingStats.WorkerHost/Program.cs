@@ -22,6 +22,7 @@ internal static class Program
     private static int Main(string[] args)
     {
         SetErrorMode(3); // Background faults must not display a system error dialog.
+        if (args.Length == 2 && args[0] == "--open-external-uri") return LandingStats.App.ExternalUriLauncher.RunBroker(args[1]);
         if (args.Length == 1 && args[0] == "--fixture-child") { FixtureFactory().GetMethod("RunChild")!.Invoke(null, null); return 0; }
         try { return RunAsync(args).GetAwaiter().GetResult(); }
         catch (Exception error)

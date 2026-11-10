@@ -88,9 +88,9 @@ public partial class MainWindow
         _workerHealth.Acknowledge(_workerItems.Where(item => item.Warning).Select(item => item.Key));
         RefreshWorkerHealthPresentation();
     }
-    private void OnWorkerSupportClick(object sender, RoutedEventArgs args)
+    private async void OnWorkerSupportClick(object sender, RoutedEventArgs args)
     {
-        try { Process.Start(new ProcessStartInfo("mailto:support@landingstats.app") { UseShellExecute = true }); }
+        try { await System.Threading.Tasks.Task.Run(() => ExternalUriLauncher.Open("mailto:support@landingstats.app")); }
         catch (Exception error) when (error is System.ComponentModel.Win32Exception || error is InvalidOperationException)
         { WorkerSupportError.Text = LocalizationManager.Text("Workers.MailUnavailable"); WorkerSupportError.Visibility = Visibility.Visible; }
     }

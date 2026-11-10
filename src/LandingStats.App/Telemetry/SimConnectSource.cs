@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
@@ -310,7 +310,7 @@ internal sealed partial class SimConnectSource : ISimulatorSource, IAircraftConf
         _guardSubscription.Reject(data.dwSendID, _subscriptionClock());
         _fullSubscription.Reject(data.dwSendID, _subscriptionClock());
         var operation = _simConnectOperations.Name(data.dwSendID) is string value
-            ? $" Â· {value}"
+            ? $" · {value}"
             : string.Empty;
         _recoverStatusAfterFrame = true;
         SetStatus(

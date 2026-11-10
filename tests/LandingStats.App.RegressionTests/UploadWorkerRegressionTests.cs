@@ -38,6 +38,7 @@ internal static class UploadWorkerRegressionTests
         try
         {
             var item = Capture(root, true); var workers = new List<ProcessWorkerHost>(); var claims = new List<Guid>(); var overlap = false;
+            var restarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             var owner = new UploadRuntimeOwner(item.Box, Executable, Path.Combine(root, "identity"), Guid.NewGuid(), Clock(), _ => { },
                 generation => generation == 1 ? "upload-late" : "upload-ok");
             ProcessWorkerHost? first = null;
@@ -48,6 +49,7 @@ internal static class UploadWorkerRegressionTests
                     overlap |= workers.Count != 0 && !workers.Last().Exit.IsCompleted;
                     workers.Add(worker); claims.Add(item.Box.Read(item.Id).Attempt);
                     if (workers.Count == 1) Volatile.Write(ref first, worker);
+                    else restarted.TrySetResult(true);
                 }
             };
             using var generation = new ManagedComponentGeneration(1, owner.RunAsync);
@@ -62,6 +64,8 @@ internal static class UploadWorkerRegressionTests
                 Check(!stopped.IsCompleted, "Opt-out acknowledged before the held worker retired.");
                 item.Box.SetAutomaticEnabled(true); await owner.SetAutomaticAllowed(true);
                 await stopped;
+                Check(await Task.WhenAny(restarted.Task, Task.Delay(TimeSpan.FromSeconds(4))) == restarted.Task,
+                    "Explicit policy cancellation incorrectly incurred the five-second first transport backoff.");
                 await Until(() => item.Box.Read(item.Id).State == OutboxState.Delivered,
                     "Rapid re-enable was lost while the previous upload was unwinding.");
             }
@@ -96,7 +100,7 @@ internal static class UploadWorkerRegressionTests
     private static async Task HungHttpRecovers(string root, string identity)
     {
         var item = Capture(root, true); var workers = new List<ProcessWorkerHost>(); var attempts = new List<Guid>(); var overlapped = false;
-        var owner = new UploadRuntimeOwner(item.Box, Executable, identity, Guid.NewGuid(), Clock(), _ => { }, n => n == 1 ? "upload-hang" : "upload-ok");
+        var owner = new UploadRuntimeOwner(item.Box, Executable, identity, Guid.NewGuid(), Clock(), _ => { }, n => n == 1 ? "upload-hang" : "upload-ok", attemptTimeout: TimeSpan.FromSeconds(2));
         owner.WorkerStarted += host =>
         {
             lock (workers)
@@ -108,7 +112,7 @@ internal static class UploadWorkerRegressionTests
         var escalations = 0;
         using var supervisor = new ComponentSupervisor("upload.fixture", generation => new ManagedComponentGeneration(generation, owner.RunAsync),
             _ => Task.CompletedTask, (_, __) => Interlocked.Increment(ref escalations), new ComponentRecoveryOptions
-            { OperationDeadline = TimeSpan.FromSeconds(3), CheckInterval = TimeSpan.FromMilliseconds(25), InitialBackoff = TimeSpan.FromMilliseconds(20), MaximumBackoff = TimeSpan.FromMilliseconds(50) });
+            { OperationDeadline = TimeSpan.FromSeconds(10), CheckInterval = TimeSpan.FromMilliseconds(25), InitialBackoff = TimeSpan.FromMilliseconds(20), MaximumBackoff = TimeSpan.FromMilliseconds(50) });
         supervisor.Start();
         try { await Until(() => item.Box.Read(item.Id).State == OutboxState.Delivered, "Hung HTTP was not replaced and retried."); }
         finally { await supervisor.StopAsync(); }
@@ -127,7 +131,7 @@ internal static class UploadWorkerRegressionTests
         item.Box.SetAutomaticEnabled(false);
         await owner.SetAutomaticAllowed(false);
         Check(worker!.Exit.IsCompleted, "Opt-out completed before the upload process exited.");
-        try { await attempt; throw new InvalidOperationException("Opt-out did not cancel the active automatic attempt."); } catch (OperationCanceledException) { }
+        Check(!await attempt, "Opt-out was classified as a completed transport attempt.");
         Check(item.Box.Read(item.Id).State == OutboxState.Revoked && File.Exists(item.Path) && EpisodeTransactionStore.Hash(item.Path) == item.Hash && worker!.Exit.IsCompleted,
             "Late automatic result survived policy cancellation or its process still owns the attempt.");
         item.Box.SetAutomaticEnabled(true); await owner.SetAutomaticAllowed(true);

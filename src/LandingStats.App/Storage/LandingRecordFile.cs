@@ -38,6 +38,9 @@ internal sealed class LandingRecordFile : IExtensibleDataObject
     [DataMember(Name = "source_state", Order = 9, EmitDefaultValue = false)]
     public string? SourceState { get; set; }
 
+    [DataMember(Name = "share", Order = 10, EmitDefaultValue = false)]
+    public LandingShareData? ShareData { get; set; }
+
     public static LandingRecordFile FromRecord(LandingRecord record)
     {
         var file = new LandingRecordFile
@@ -49,8 +52,17 @@ internal sealed class LandingRecordFile : IExtensibleDataObject
             Inputs = LandingPhysicalInputColumns.FromRecord(record),
             ControllerCatalogs = record.ControllerTimeline?.Copy(),
             SourceState = record.SourceEvidenceTimeline,
+            ShareData = record.ShareData?.Copy(),
         };
         file.Summary.IsSummaryOnly = false;
+        if (record.FormatVersion >= 1 && record.FormatVersion < 7 && file.Summary.RawControllerSourceIndices.Count == 0 && file.Series.RawY.Length != 0)
+        {
+            // Legacy row storage addressed raw Y channels by their source
+            // index. FromPoints has already validated one consistent width;
+            // make that implicit mapping explicit in the columnar copy only.
+            for (var source = 0; source < file.Series.RawY[0].Length; source++)
+                file.Summary.RawControllerSourceIndices.Add(source);
+        }
         foreach (var engine in record.Engines)
         {
             file.Engines.Add(LandingEngineColumns.FromSeries(engine));
@@ -82,6 +94,7 @@ internal sealed class LandingRecordFile : IExtensibleDataObject
         Inputs?.ApplyTo(record.Series);
         record.ControllerTimeline = ControllerCatalogs?.Copy();
         record.SourceEvidenceTimeline = SourceState;
+        record.ShareData = ShareData?.Copy();
         record.Engines = new List<LandingEngineSeries>();
         foreach (var engine in Engines ?? new List<LandingEngineColumns>())
         {
@@ -210,8 +223,16 @@ internal sealed class LandingRecordFile : IExtensibleDataObject
         if (Inputs == null && Summary.RawControllerAxesSourceIndices.Count != 0)
             throw new InvalidDataException("Physical input mapping has no corresponding columns.");
         Inputs?.Validate(Series?.Time?.Length ?? 0, Summary.RawControllerAxesSourceIndices.Count);
-        foreach (var engine in Engines ?? new List<LandingEngineColumns>()) engine.Validate();
-        foreach (var contact in Contacts ?? new List<LandingContactColumns>()) contact.Validate();
+        foreach (var engine in Engines ?? new List<LandingEngineColumns>())
+        {
+            if (engine == null) throw new InvalidDataException("Landing engine columns contain a null item.");
+            engine.Validate();
+        }
+        foreach (var contact in Contacts ?? new List<LandingContactColumns>())
+        {
+            if (contact == null) throw new InvalidDataException("Landing contact columns contain a null item.");
+            contact.Validate();
+        }
     }
 }
 

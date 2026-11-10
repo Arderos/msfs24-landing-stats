@@ -4,7 +4,7 @@ using System.Linq;
 
 namespace LandingStats.Core;
 
-public static class TouchdownAnalysis
+public static partial class TouchdownAnalysis
 {
     private const double EpisodeGapSeconds = AnalysisNumericPolicy.EpisodeGapSeconds;
     private const double GWindowAfterSeconds = 2.0;
@@ -33,7 +33,9 @@ public static class TouchdownAnalysis
         continuity.Reset();
         if (options != null && !Enum.IsDefined(typeof(TelemetryDatumCalibrationVersion), options.DatumCalibrationVersion))
             throw new ArgumentOutOfRangeException(nameof(options), "Unsupported datum calibration revision.");
-        samples = TelemetryAnalysisFrames.Prepare(samples, options?.DecisionJournal);
+        // Contact barriers and measurements must consume the same final numeric
+        // observation at each instant as recording and episode processing.
+        samples = TelemetryDeduplicator.Deduplicate(TelemetryAnalysisFrames.Prepare(samples, options?.DecisionJournal));
         var starts = TelemetryKinematicDiscontinuity.FindSegmentStarts(samples);
         if (starts.Count == 1) return AnalyzeSegment(samples, options, continuity);
 
@@ -86,8 +88,9 @@ public static class TouchdownAnalysis
         TelemetryContactContinuity continuity)
     {
         var journal = options?.DecisionJournal;
-        var candidates = TelemetryContactDetector.Find(samples, EpisodeGapSeconds, journal, continuity);
-        samples = PrepareMeasurementFrames(samples, journal);
+        var groundMeasurementBoundaries = new HashSet<int>();
+        var candidates = TelemetryContactDetector.Find(samples, EpisodeGapSeconds, journal, continuity, groundMeasurementBoundaries);
+        samples = PrepareMeasurementFrames(samples, journal, groundMeasurementBoundaries);
         var analysisTime = samples.Count > 0 ? TimeOf(samples[samples.Count - 1]) : 0;
 
         var longitudinalArmFeet = double.NaN;
@@ -314,7 +317,7 @@ public static class TouchdownAnalysis
     }
 
     private static IReadOnlyList<TelemetrySample> PrepareMeasurementFrames(IReadOnlyList<TelemetrySample> samples,
-        TelemetryDecisionJournal? journal)
+        TelemetryDecisionJournal? journal, ISet<int> groundMeasurementBoundaries)
     {
         // Contact eligibility consumes the original source timeline first. Only
         // measurement windows receive these same-index barriers: feeding them
@@ -325,7 +328,8 @@ public static class TouchdownAnalysis
         for (var index = 0; index < samples.Count; index++)
         {
             var sample = samples[index];
-            var blocked = TelemetryContactPhysics.IsBlocked(sample);
+            var groundReplacement = groundMeasurementBoundaries.Contains(index);
+            var blocked = groundReplacement || TelemetryContactPhysics.IsBlocked(sample);
             if (blocked && sample.MotionSimulation)
             {
                 measurements ??= new AnalysisFrameList(samples) { Prepared = true };
@@ -333,8 +337,11 @@ public static class TouchdownAnalysis
                 boundary.MotionSimulation = false;
                 measurements[index] = boundary;
                 if (!previousBlocked)
-                    journal?.Record(TimeOf(sample), "analysis", "source_physics_measurement_boundary",
-                        "Observed freeze, slew or SDK replay ends measurement support; raw telemetry and previously accepted contacts remain unchanged.",
+                    journal?.Record(TimeOf(sample), "analysis", groundReplacement
+                            ? "ground_reposition_measurement_boundary" : "source_physics_measurement_boundary",
+                        groundReplacement
+                            ? "An unsupported ground departure ends measurement support; later settling cannot change the preceding contact's measured impact, compression or latch."
+                            : "Observed freeze, slew or SDK replay ends measurement support; raw telemetry and previously accepted contacts remain unchanged.",
                         new Dictionary<string, double> { ["sample_index"] = index });
             }
             previousBlocked = blocked;
@@ -729,8 +736,16 @@ public static class TouchdownAnalysis
             decision = "precontact_fit_prediction_unavailable";
             return ToDescentFpm(last.VelocityWorldYFps);
         }
-        extrapolated = true;
-        decision = "precontact_linear_fit_extrapolated";
+        // Admission remains the existing linear-model contract. Selection may
+        // replace only an already accepted prediction, using the same window.
+        estimatedVelocity = SelectInertialVelocity(samples, fitStartIndex, lastAirborneIndex,
+            horizon, estimatedVelocity, out var selectedModel);
+        extrapolated = selectedModel != InertialVelocityModel.LastObservation;
+        decision = selectedModel == InertialVelocityModel.Quadratic
+            ? "precontact_quadratic_fit_extrapolated"
+            : selectedModel == InertialVelocityModel.LastObservation
+                ? "precontact_adaptive_last_observation"
+                : "precontact_linear_fit_extrapolated";
         return ToDescentFpm(estimatedVelocity);
     }
 

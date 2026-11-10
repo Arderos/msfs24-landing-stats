@@ -70,12 +70,15 @@ internal static class DirectInputControllerRegressionTests
         }
         Check(api.Disposed && api.Handles.All(value => value.DisposeCount == 1), "Controller owner leaked or double-released a device.");
 
-        var failed = new FakeApi(); failed.Devices.Add(new FakeSource(1, 255) { OpenFailure = true }); failed.Devices.Add(new FakeSource(2, 255));
+        foreach (var malformed in new[] { false, true })
+        {
+        var failed = new FakeApi(); failed.Devices.Add(new FakeSource(1, 255) { OpenFailure = !malformed, MalformedAxes = malformed }); failed.Devices.Add(new FakeSource(2, 255));
         using (var reader = new DirectInputJoystickReader(failed))
         {
             var sample = new TelemetrySample(); reader.ReadInto(sample);
             Check(reader.Count == 2 && !sample.RawControllerAxesValid.Take(8).Any(value => value) && sample.RawControllerAxesValid.Skip(8).All(value => value),
                 "One unavailable device stopped or contaminated another controller.");
+        }
         }
         var duplicate = new FakeApi(); var same = new FakeSource(1, 255); duplicate.Devices.Add(same); duplicate.Devices.Add(same);
         try { using var unused = new DirectInputJoystickReader(duplicate); throw new Exception("Duplicate device identity was accepted."); }
@@ -134,7 +137,7 @@ internal static class DirectInputControllerRegressionTests
         { Identity = new DirectInputIdentity(new Guid(id, 0, 0, new byte[8]), new Guid("00000001-0000-0000-0000-000000000000"), "Controller " + id); Axes = axes; }
         internal DirectInputIdentity Identity { get; }
         internal byte Axes { get; }
-        internal bool Readable = true, OpenFailure;
+        internal bool Readable = true, OpenFailure, MalformedAxes;
     }
     private sealed class FakeApi : IDirectInputApi
     {
@@ -146,6 +149,7 @@ internal static class DirectInputControllerRegressionTests
         public IDirectInputDevice Open(DirectInputIdentity identity)
         {
             var source = Devices.Single(value => value.Identity.InstanceId == identity.InstanceId);
+            if (source.MalformedAxes) throw new InvalidOperationException("Fixture malformed axis enumeration.");
             if (source.OpenFailure) throw new COMException("Fixture device disappeared.", unchecked((int)0x80040209));
             var value = new FakeDevice(source); Handles.Add(value); return value;
         }

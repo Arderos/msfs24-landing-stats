@@ -29,7 +29,8 @@ internal static class TelemetryContactDetector
         IReadOnlyList<TelemetrySample> samples,
         double episodeGapSeconds,
         TelemetryDecisionJournal? journal = null,
-        TelemetryContactContinuity? continuity = null)
+        TelemetryContactContinuity? continuity = null,
+        ISet<int>? groundMeasurementBoundaries = null)
     {
         var candidates = new List<TelemetryContactCandidate>();
         continuity ??= new TelemetryContactContinuity();
@@ -51,6 +52,7 @@ internal static class TelemetryContactDetector
                 previousFlightSegment = current.FlightSegment;
             }
             var isContact = continuity.Observe(current);
+            if (continuity.GroundMeasurementBlocked) groundMeasurementBoundaries?.Add(index);
             if (!current.MotionSimulation || (!current.OnGround && !continuity.HasAirborneWitness)) previousAirborneIndex = -1;
             else if (!current.OnGround && continuity.HasAirborneWitness)
             {

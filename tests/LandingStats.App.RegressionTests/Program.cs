@@ -80,6 +80,7 @@ internal static class Program
         if (args.Length == 2 && args[0] == "--live-source-probe") return LiveSourceProbe.Run(args[1]);
         if (args.Length == 2 && args[0] == "--live-stream-probe") return LiveStreamFreshnessProbe.Run(args[1]);
         if (args.Length == 2 && args[0] == "--live-runtime-probe") return LiveRuntimeRecoveryProbe.Run(args[1]);
+        if (args.Length == 3 && args[0] == "--external-fixture") return ExternalApplicationRegressionTests.Fixture(args[1], args[2]);
         if (args.Length == 3 && args[0] == "--guardian-fixture") return GuardianRegressionTests.Fixture(args[1], args[2]);
         if (args.Length == 5 && args[0] == "--guardian-update-helper") return GuardianUpdateRegressionTests.Helper(args[1], args[2], args[3], args[4]);
         if (args.Length == 2 && args[0] == "--guardian-parent") return GuardianRegressionTests.Parent(args[1]);
@@ -92,8 +93,41 @@ internal static class Program
         _ = new System.Windows.Application();
         LocalizationManager.Apply("en");
 
+        Run("followup corrupt auto-start keeps cloud synchronization usable", GoogleDriveBackupRegressionTests.CorruptAutoStartDoesNotBlockCloudSync);
+        Run("followup pending imports isolate unsupported data and preserve ordinary history", FollowupStorageRegressionTests.RunAll);
+        Run("delivery recovery preserves reports, consent, identity and presentation", DeliveryRecoveryRegressionTests.RunAll);
+        Run("identity recovery preserves consent and commit boundaries through cancellation", IdentityRecoveryRegressionTests.RunAll);
+        Run("runtime failure notices follow independent work and confirmed recovery", RuntimeFailureLifecycleRegressionTests.RunAll);
+        Run("metadata quarantine preserves evidence across restarts and resumes repaired episodes", () => MetadataQuarantineRegressionTests.RunAll().GetAwaiter().GetResult());
+        Run("low integration lifecycle retires errors and preserves deferred publication", LowIntegrationRegressionTests.RunAll);
+        Run("low delivery recovery isolates damaged metadata and retains worker ownership", LowDeliveryRegressionTests.RunAll);
+        Run("low presentation preserves aggregate delivery state and identity compatibility", LowPresentationRegressionTests.RunAll);
+        Run("low intake retires declined legacy work without hiding independent errors", LowIntakeRegressionTests.RunAll);
+        Run("low receipt lookup distinguishes unavailable evidence from confirmed removal", LowReceiptRegressionTests.RunAll);
+        Run("fresh audit recovered running identity failure stays cleared after retirement", FreshDeliveryAuditRegressionTests.ResolvedRunningFailureSurvivesRetirement);
+        Run("fresh audit repeated identity recovery owns the latest cleanup", FreshDeliveryAuditRegressionTests.RepeatedRecoveryReplacesObsoleteCleanup);
+        Run("fresh audit retired damaged claim preserves independent upload progress", FreshDeliveryAuditRegressionTests.RetiredDamagedArchiveDoesNotBlockIndependentDelivery);
+        Run("fresh audit completed episode retires its recovered failure", () => FreshRuntimeAuditRegressionTests.EpisodeCompletionRetiresRecoveredFailure().GetAwaiter().GetResult());
+        Run("fresh audit quarantine recognizes timestamp-preserving repair", FreshRuntimeAuditRegressionTests.QuarantineRecognizesTimestampPreservingRepair);
+        Run("fresh audit quarantine upgrades legacy receipts without new engine pins", FreshRuntimeAuditRegressionTests.QuarantineUpgradesLegacyReceiptsWithoutNewEnginePins);
+        Run("fresh audit quarantine read failure remains visible until access recovers", FreshRuntimeAuditRegressionTests.QuarantineReadFailureRemainsVisibleUntilAccessRecovers);
+        Run("fresh audit busy integration capture keeps its failure until publication", FreshRuntimeAuditRegressionTests.BusyIntegrationCaptureKeepsItsFailureUntilPublished);
+        Run("fresh audit delivery footer retires only its own stale status", FreshPresentationAuditRegressionTests.RunAll);
+        Run("fresh audit identity recovery preserves independent delivery state", FreshPresentationAuditRegressionTests.IdentityRecoveryPreservesIndependentDeliveryState);
+        Run("followup backpressured startup retires before storage recovery", RuntimeSourceDispatchRegressionTests.BackpressuredStartupRetiresBeforeStorageRecovers);
+        Run("round2 unavailable delivery identity preserves recording and pending uploads", LandingRuntimeRegressionTests.UnavailableDeliveryIdentityPreservesRecording);
+        Run("round2 graceful source stop drains final frames and acknowledges exit", RuntimeSourceDispatchRegressionTests.GracefulStopDrainsFinalSourceBurst);
+        Run("round2 reconstruction uses independent instants through refits and kinematic checks", ContactPointGeometryRegressionTests.IndependentInstantsAcrossReconstructionPaths);
+        Run("followup repeated analysis timeouts suspend recoverable work", RetainedAnalysisRegressionTests.RepeatedTimeoutsSuspendRecoverableEpisode);
+        Run("followup simultaneous contact preserves reconstructed closure", ContactPointGeometryRegressionTests.SimultaneousContactAndNumericRevisions);
+        Run("followup nonfinite source clocks preserve live episode", CoordinatorOwnershipRegressionTests.NonfiniteClockCannotRetireLiveEpisode);
+        Run("external applications survive retirement while worker descendants remain owned", ExternalApplicationRegressionTests.RunAll);
+        Run("review data boundaries reject unreadable lifecycle and recover portable caches", ReviewDataBoundaryRegressionTests.RunAll);
+        Run("landing episode history preserves chronology and confirms complete deletion", LandingEpisodeHistoryRegressionTests.RunAll);
         Run("landing file activation preserves portable associations and durable multi-file handoff", LandingFileActivationRegressionTests.RunAll);
         Run("landing sharing archive preserves complete episodes and validates portable files", LandingShareArchiveRegressionTests.RunAll);
+        Run("landing sharing extensions preserve unknown data and stable revisions", LandingShareExtensionRegressionTests.RunAll);
+        Run("landing sharing resource budgets reject amplification before publication", LandingShareResourceRegressionTests.RunAll);
         Run("landing sharing UI imports multiple files, separates statistics and drains accepted writes", LandingSharingUiRegressionTests.RunAll);
         Run("delivery acknowledgements and OAuth failures preserve durable evidence", DeliveryRemediationRegressionTests.RunAll);
         Run("behavior parity preserves lifecycle and simulator controls across gaps", BehaviorParityRegressionTests.Recording);
@@ -133,10 +167,16 @@ internal static class Program
         Run("deduplicator keeps the last same-time frame", DeduplicatorKeepsLastFrame);
         Run("physics continuity rejects paused contacts and preserves real landings and bounces", PhysicsContinuityRegressionTests.RunAll);
         Run("source contact continuity requires a released airborne interval and survives recovery", ContactSourceContinuityRegressionTests.RunAll);
+        Run("ground repositioning rejects unsupported departures and preserves physical landings", GroundRepositionRegressionTests.RunAll);
+        Run("cumulative ground motion preserves physical departures and recorder recovery", CumulativeGroundDepartureRegressionTests.RunAll);
+        Run("recorded ground noise preserves coherent vertical contacts and checkpoint parity", GroundNoiseRegressionTests.RunAll);
+        Run("recorded ground noise preserves live recording and recovery", GroundNoiseRecordingRegressionTests.RunAll);
         Run("inertial velocity fit validates observed support and prediction quality", InertialFitSupportRegressionTests.RunAll);
+        Run("adaptive inertial velocity selects from causal 200 ms history", AdaptiveInertialRegressionTests.RunAll);
         Run("source contact analysis preserves control boundaries across preparation and segmentation", ContactSourceAnalysisRegressionTests.RunAll);
         Run("source contact pipeline preserves eligibility across geometry and result processing", ContactSourcePipelineRegressionTests.RunAll);
         Run("SDK pause telemetry preserves physics and legacy CSV compatibility", PauseTelemetryRegressionTests.RunAll);
+        Run("pause relocation rejects recorded settling and permits a fresh approach", PauseRepositionRegressionTests.RunAll);
         Run("SDK recorder stitches pauses and saves interrupted landings without crossing flight changes", PauseRecorderRegressionTests.RunAll);
         Run("SDK pause pipeline keeps raw provenance and settles scenery lookups", PausePipelineRegressionTests.RunAll);
         Run("position replacement cannot join contacts, forces or reconstruction across flights", KinematicDiscontinuityRegressionTests.RunAll);
@@ -207,6 +247,7 @@ internal static class Program
         Run("hidden replay defers visual work and restores the latest selection", ReplayVisibilityRegressionTests.RunAll);
         Run("airport metadata persistence is asynchronous, ordered, and deletion safe", AirportMetadataPersistenceRegressionTests.RunAll);
         Run("settings mutations stay asynchronous, serialized and drain on close", SettingsOperationsRegressionTests.RunAll);
+        Run("auto-start initialization agrees with serialized local and cloud preferences", AutoStartInitializationRegressionTests.RunAll);
         Run("history loads stay asynchronous and reject stale selections", AsyncHistoryRegressionTests.RunAll);
         Run("history retry and loading resources remain accessible", Review089UiRegressionTests.RunAll);
         Run("busy placeholders appear only after sustained waiting", DelayedBusyIndicatorRegressionTests.RunAll);
@@ -266,7 +307,8 @@ internal static class Program
         Run("updater extracts only one bundled executable from legacy package", UpdaterExtractsLegacySingleExecutable);
         Run("updater cleanup refuses paths outside its private root", UpdaterCleanupRefusesUnsafePath);
         Run("updater installs one valid executable transactionally", UpdaterInstallsSingleExecutable);
-        Run("updater rolls back an invalid executable replacement", UpdaterRollsBackInvalidExecutableReplacement);
+        Run("updater rejects an invalid executable replacement", UpdaterRollsBackInvalidExecutableReplacement);
+        Run("updater publication preserves installed files across validation and sharing failures", UpdaterPublicationRegressionTests.RunAll);
         Run("valid frame clears transient error state", ValidFrameClearsTransientErrorState);
         Run("simulator exit completes the landing before notification and ignores connection loss", SimulatorExitCompletesLanding);
         Run("MSFS replay flow events disable and re-arm landing capture", ReplayFlowEventsDisableCapture);
@@ -325,6 +367,7 @@ internal static class Program
         Run("power charts preserve signed MSFS commands and reverser-door positions", PowerChartRegressionTests.RunAll);
         Run("fourth-engine throttle uses the fourth-engine color", FourthEngineThrottleUsesMatchingColor);
         Run("closure reconstruction survives history round-trip", ClosureReconstructionSurvivesHistoryRoundTrip);
+        Run("reconstruction model tooltips describe each recorded method in both languages", ReconstructionModelTooltipsDescribeRecordedMethod);
         Run("legacy reconstruction provenance remains telemetry", LegacyReconstructionProvenanceRemainsTelemetry);
         Run("bounce history shows the latest contact first", BounceHistoryShowsLatestContactFirst);
         Run("monthly average counts each landing once", MonthlyAverageCountsPrimaryContactsOnly);
@@ -1850,7 +1893,8 @@ internal static class Program
 
             using var client = new TelemetryUploadClient(queue, new TelemetryEnrollmentFixtureHandler(), identity);
             var preparation = client.PrepareAsync(CancellationToken.None).GetAwaiter().GetResult();
-            Equal(TelemetryPreparationState.Unavailable, preparation.State, "corrupt identity preparation state");
+            Equal(TelemetryPreparationState.Ready, preparation.State, "recovered identity preparation state");
+            Equal(1, Directory.GetFiles(identity, "identity.json.unreadable-*").Length, "unreadable identity is preserved");
             Thread.Sleep(100);
             var worker = (Task)Field(client, "_worker")!;
             Equal(false, worker.IsFaulted, "upload worker remains alive");
@@ -2077,8 +2121,8 @@ internal static class Program
             File.Copy(target, replacement);
             File.SetAttributes(target, FileAttributes.ReadOnly);
             UpdaterProgram.InstallExecutableTransactionally(replacement, target, replacementVersion);
-            Equal(false, File.Exists(replacement), "verified replacement remained after backup collection failed");
-            Equal(1, Directory.GetFiles(root, ".msfs-landing-stats-backup-*.exe").Length, "read-only backup should remain without rolling back the verified new application");
+            Equal(false, File.Exists(replacement), "read-only target replacement was not collected");
+            Equal(0, Directory.GetFiles(root, ".msfs-landing-stats-backup-*.exe").Length, "read-only target update backup was not collected");
             foreach (var file in Directory.EnumerateFiles(root)) File.SetAttributes(file, FileAttributes.Normal);
         }
         finally
@@ -2932,6 +2976,43 @@ internal static class Program
         {
             if (Directory.Exists(root)) Directory.Delete(root, true);
         }
+    }
+
+    private static void ReconstructionModelTooltipsDescribeRecordedMethod()
+    {
+        var models = new[] { TouchdownClosureReconstruction.ModelName, TelemetryContactPointReconstruction.ModelName,
+            TelemetryContactPointReconstruction.BoundedModelName, TelemetryContactPointReconstruction.KinematicModelName };
+        var record = new LandingRecord { ClosureReconstructionAvailable = true, ReconstructedClosureFpm = 250, IsImported = true };
+        var presentation = new LandingStats.App.Presentation.LandingPresentation(record);
+        try
+        {
+            foreach (var language in new[] { "en", "ru" })
+            {
+                LocalizationManager.Apply(language);
+                var descriptions = new HashSet<string>(StringComparer.Ordinal);
+                foreach (var model in models)
+                {
+                    record.ClosureReconstructionModel = model;
+                    var key = "Recon.ModelHelp." + model;
+                    var description = presentation.ClosureModelHelpDisplay;
+                    Equal(model, presentation.ClosureModelDisplay, "card preserves the stored model identity");
+                    Equal(LocalizationManager.Text(key), description, "tooltip describes the recorded model");
+                    Equal(false, description == key || string.IsNullOrWhiteSpace(description), "model description is translated");
+                    Equal(true, descriptions.Add(description), "each model has its own explanation");
+                }
+                foreach (var unknown in new[] { "future-model-v5", string.Empty })
+                {
+                    record.ClosureReconstructionModel = unknown;
+                    Equal(LocalizationManager.Text("Recon.ModelHelp.Unknown"), presentation.ClosureModelHelpDisplay,
+                        "unknown or absent model identity is never described as a known model");
+                }
+                record.ClosureReconstructionAvailable = false;
+                Equal(LocalizationManager.Text("Recon.UnavailableBody"), presentation.ClosureModelHelpDisplay,
+                    "unavailable reconstruction explains missing data");
+                record.ClosureReconstructionAvailable = true;
+            }
+        }
+        finally { LocalizationManager.Apply("en"); }
     }
 
     private static void ContactPointReconstructionSurvivesHistoryRoundTrip()

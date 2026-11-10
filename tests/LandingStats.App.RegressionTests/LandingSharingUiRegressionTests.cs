@@ -92,6 +92,7 @@ internal static class LandingSharingUiRegressionTests
             Assert((bool)Invoke(window, "CanInstallUpdate")!, "A failed export releases update readiness.");
 
             Complete(window.QueueLandingImports(new[] { brokenPath, firstPath }));
+            VerifyRestartAdmission(window, firstPath);
             VerifyRenderedHistory(window, own.Id);
             VerifyStorageDrain(window, repository, directory);
         }
@@ -199,6 +200,20 @@ internal static class LandingSharingUiRegressionTests
             Complete(blocker);
             if (queued != null) PumpUntil(() => queued.IsCompleted);
         }
+    }
+
+    private static void VerifyRestartAdmission(MainWindow window, string package)
+    {
+        Assert((bool)Invoke(window, "TrySealSharingForRestart")!, "An idle window can prepare for recovery.");
+        var queued = window.QueueLandingImports(new[] { package });
+        var pulse = window.Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle);
+        PumpUntil(() => pulse.Task.IsCompleted);
+        Assert(!queued.IsCompleted, "A temporary recovery seal keeps shell imports pending instead of cancelling their receiver.");
+        // Runtime stop failure is observed on a worker continuation.
+        Complete(Task.Run(() => Invoke(window, "ResumeSharingAfterFailedRestart")));
+        Complete(queued);
+        Assert(Get<TextBlock>(window, "SharingStatusText").Text == LocalizationManager.Format("Sharing.ImportedFormat", 0, 1, 0),
+            "Failed recovery preparation resumes the original import without another file-open signal.");
     }
 
     private static void VerifyRenderedHistory(MainWindow window, string ownId)

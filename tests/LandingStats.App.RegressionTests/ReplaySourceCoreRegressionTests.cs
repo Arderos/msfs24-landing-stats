@@ -10,11 +10,12 @@ internal static class ReplaySourceCoreRegressionTests
     internal static readonly Guid Worker = Guid.Parse("d9a58e43-71ec-483f-b2c7-6aa09388951e");
     internal static ReplaySourceEvidence Evidence(long observed = 1000, long frame = 1100, int mask = 7, double latitude = 42,
         long generation = 1, long connection = 1, int slew = 0, SdkReplayState sdk = SdkReplayState.Unknown,
-        SourceObservationAvailability availability = SourceObservationAvailability.Available) =>
+        SourceObservationAvailability availability = SourceObservationAvailability.Available,
+        double longitude = 23, double pitch = 3, double bank = -0.0, double heading = 180) =>
         new ReplaySourceEvidence(Worker, generation, connection, observed, frame, 1000, sdk,
             availability == SourceObservationAvailability.Available
                 ? new ReplaySourceObservation(availability, SourceObservationReason.None, mask, slew, (uint)observed,
-                    simulationTime: 12, latitude: latitude, longitude: 23, altitudeFeet: 1000, pitch: 3, bank: -0.0, heading: 180)
+                    simulationTime: 12, latitude: latitude, longitude: longitude, altitudeFeet: 1000, pitch: pitch, bank: bank, heading: heading)
                 : new ReplaySourceObservation(availability, availability == SourceObservationAvailability.Gap ? SourceObservationReason.ConnectionGap : SourceObservationReason.RequestTimeout));
     internal static void RunAll()
     {
@@ -59,6 +60,44 @@ internal static class ReplaySourceCoreRegressionTests
         Check(!assessor.Observe(Evidence(sdk: SdkReplayState.Active, availability: SourceObservationAvailability.Gap)).ConfirmsReplay,
             "Connection gap retained SDK state.");
         Check(assessor.Observe(Evidence(mask: 0), true).Kind == ReplaySourceKind.SuspiciousKinematics, "Compound kinematic evidence was lost.");
+        CircularPoseDifferences();
+    }
+
+    private static void CircularPoseDifferences()
+    {
+        var cases = new[]
+        {
+            (First: Evidence(heading: 360), Second: Evidence(heading: 0), Moved: false),
+            (First: Evidence(heading: 359.99998), Second: Evidence(heading: .00002), Moved: false),
+            (First: Evidence(heading: 180), Second: Evidence(heading: 180.00004), Moved: false),
+            (First: Evidence(longitude: 180), Second: Evidence(longitude: -180), Moved: false),
+            (First: Evidence(longitude: 179.999999999), Second: Evidence(longitude: -179.999999999), Moved: false),
+            (First: Evidence(bank: 180), Second: Evidence(bank: -180), Moved: false),
+            (First: Evidence(bank: 179.99998), Second: Evidence(bank: -179.99998), Moved: false),
+            (First: Evidence(pitch: 360), Second: Evidence(pitch: 0), Moved: false),
+            (First: Evidence(heading: 359.999), Second: Evidence(heading: .001), Moved: true),
+            (First: Evidence(heading: 180), Second: Evidence(heading: 180.002), Moved: true),
+            (First: Evidence(longitude: 179.9999999), Second: Evidence(longitude: -179.9999999), Moved: true),
+            (First: Evidence(longitude: 23), Second: Evidence(longitude: 23.0000002), Moved: true),
+            (First: Evidence(bank: 179.999), Second: Evidence(bank: -179.999), Moved: true),
+            (First: Evidence(pitch: 3), Second: Evidence(pitch: 3.002), Moved: true),
+        };
+        foreach (var item in cases)
+        foreach (var reverse in new[] { false, true })
+        {
+            var first = reverse ? item.Second : item.First;
+            var second = reverse ? item.First : item.Second;
+            second = new ReplaySourceEvidence(second.WorkerInstance, second.Generation, second.Connection,
+                1250, 1300, second.QpcFrequency, second.SdkReplay, second.Observation);
+            var assessor = new ReplaySourceAssessor();
+            assessor.Observe(first);
+            var actual = assessor.Observe(second);
+            Check(actual.Kind == (item.Moved ? ReplaySourceKind.ExternallyDrivenPose : ReplaySourceKind.Unknown),
+                "Circular pose coordinates changed the movement tolerance or hid real motion.");
+            Check(ReplayTelemetryDetector.HasReplaySourceEvidence(new[]
+                { new TelemetrySample { SourceEvidence = first }, new TelemetrySample { SourceEvidence = second } }) == item.Moved,
+                "Circular pose comparison disagrees with the offline source policy.");
+        }
     }
     private static void Reject(Action action)
     { try { action(); } catch (InvalidDataException) { return; } throw new InvalidOperationException("Malformed source evidence accepted."); }

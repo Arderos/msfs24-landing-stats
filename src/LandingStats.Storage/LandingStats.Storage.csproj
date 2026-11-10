@@ -18,11 +18,15 @@
     <Compile Include="../LandingStats.App/Storage/LandingReplayColumns.cs" Link="Storage/LandingReplayColumns.cs" />
     <Compile Include="../LandingStats.App/Storage/LandingRepository.cs" Link="Storage/LandingRepository.cs" />
     <Compile Include="../LandingStats.App/Storage/LandingShareArchive.cs" Link="Storage/LandingShareArchive.cs" />
+    <Compile Include="../LandingStats.App/Storage/LandingShareArchive.Contents.cs" Link="Storage/LandingShareArchive.Contents.cs" />
+    <Compile Include="../LandingStats.App/Storage/LandingShareContent.cs" Link="Storage/LandingShareContent.cs" />
+    <Compile Include="../LandingStats.App/Storage/LandingShareReadBudget.cs" Link="Storage/LandingShareReadBudget.cs" />
     <Compile Include="../LandingStats.App/Storage/LandingSiteMetadataPersistence.cs" Link="Storage/LandingSiteMetadataPersistence.cs" />
     <Compile Include="../LandingStats.App/Storage/RawCaptureRepository.cs" Link="Storage/RawCaptureRepository.cs" />
     <Compile Include="../LandingStats.App/Storage/ReplaySourceArchive.cs" Link="Storage/ReplaySourceArchive.cs" />
     <Compile Include="../LandingStats.App/Storage/TelemetryDecisionArchive.cs" Link="Storage/TelemetryDecisionArchive.cs" />
     <Compile Include="../LandingStats.App/Runtime/EpisodeTransactionStore.cs" Link="Runtime/EpisodeTransactionStore.cs" />
+    <Compile Include="../LandingStats.App/Runtime/RuntimeScratchLease.cs" Link="Runtime/RuntimeScratchLease.cs" />
     <Compile Include="../LandingStats.App/Runtime/EpisodeTransactionStore.Import.cs" Link="Runtime/EpisodeTransactionStore.Import.cs" />
     <Compile Include="../LandingStats.App/Runtime/EpisodeTransactionStore.Facilities.cs" Link="Runtime/EpisodeTransactionStore.Facilities.cs" />
     <InternalsVisibleTo Include="MSFS-Landing-Stats" />

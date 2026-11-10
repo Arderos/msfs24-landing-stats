@@ -117,13 +117,18 @@ internal static class ContactSourceContinuityRegressionTests
     {
         var harness = new ReplayRecordingRegressionTests.Harness();
         harness.Feed(Frame(0));
-        var current = harness.Coordinator.CaptureCheckpoint();
-        // Version 4 ended before the three absent source-continuity flags.
-        var legacy = current.Take(current.Length - 3).ToArray();
-        Array.Copy(BitConverter.GetBytes(0x3443454c), legacy, 4);
-        harness.Restore(legacy);
-        harness.Feed(Frame(.01, true));
-        Check(harness.Coordinator.HasContact, "A version-4 airborne checkpoint no longer accepts an ordinary contact.");
+        var current = CumulativeGroundDepartureRegressionTests.RemoveCumulativeTail(
+            harness.Coordinator.CaptureCheckpoint());
+        // Version 6 appends four flags for empty grounded history. Version 4
+        // also predates the three absent source-continuity flags from version 5.
+        foreach (var version in new[] { 0x3443454c, 0x3543454c, 0x3643454c })
+        {
+            var legacy = current.Take(current.Length - (version == 0x3443454c ? 7 : version == 0x3543454c ? 4 : 0)).ToArray();
+            Array.Copy(BitConverter.GetBytes(version), legacy, 4);
+            harness.Restore(legacy);
+            harness.Feed(Frame(.01, true));
+            Check(harness.Coordinator.HasContact, "An older airborne checkpoint no longer accepts an ordinary contact.");
+        }
     }
 
     private static void PausedSourceControlSurvivesResume()

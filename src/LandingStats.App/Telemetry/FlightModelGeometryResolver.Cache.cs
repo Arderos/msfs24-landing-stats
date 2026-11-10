@@ -189,7 +189,7 @@ internal sealed partial class FlightModelGeometryResolver
         public FlightModelGeometryMatch Restore()
         {
             if (string.IsNullOrEmpty(Title) || MainIndices == null || MainArms == null || Nose == null || MainIndices.Length != MainArms.Length ||
-                MainIndices.Length > 20 || Nose.Length > 20 || MainIndices.Concat(Nose).Any(index => index < 0 || index >= 20) ||
+                MainIndices.Concat(Nose).Any(index => index < 0) ||
                 MainArms.Any(value => double.IsNaN(value) || double.IsInfinity(value)) || double.IsNaN(Arm) || double.IsInfinity(Arm) || double.IsNaN(Datum) || double.IsInfinity(Datum))
                 throw new InvalidDataException("Invalid cached geometry.");
             return new FlightModelGeometryMatch(Title, Model, new FlightModelGearGeometry(Arm,

@@ -3,9 +3,10 @@ namespace LandingStats.Core;
 /// <summary>Source observations constrain contact evidence without classifying an external control as replay.</summary>
 public static class TelemetryContactPhysics
 {
-    public static bool IsBlocked(TelemetrySample sample)
+    public static bool IsBlocked(TelemetrySample sample) => IsBlocked(sample.SourceEvidence);
+
+    internal static bool IsBlocked(ReplaySourceEvidence? evidence)
     {
-        var evidence = sample.SourceEvidence;
         if (evidence == null) return false;
         if (evidence.SdkReplay == SdkReplayState.Active) return true;
         return Fresh(evidence) && (evidence.Observation.FreezeMask != 0 || evidence.Observation.Slew != 0);

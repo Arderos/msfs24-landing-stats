@@ -7,6 +7,108 @@ namespace LandingStats.App.RegressionTests;
 
 internal static class ContactPointGeometryRegressionTests
 {
+    public static void IndependentInstantsAcrossReconstructionPaths()
+    {
+        var baseline = Analytic(.02, 11);
+        foreach (var sample in baseline) { sample.SimulatorState = TelemetrySimulatorState.Running; sample.AnalysisTimeSeconds = sample.SimulationTimeSeconds; }
+        var control = new TelemetryContactPointReconstruction(baseline, 0);
+        Assert(control.TryEstimate(0, -.01, out var expected, out _), "pre-contact control unavailable");
+        var revised = new List<TelemetrySample>();
+        foreach (var sample in baseline)
+        {
+            if (!sample.OnGround && sample.SimulationTimeSeconds >= -.3)
+            {
+                var revision = TelemetryBinaryCodec.Decode(TelemetryBinaryCodec.Encode(sample));
+                revision.SimulatorState = TelemetrySimulatorState.Legacy;
+                revised.Add(revision);
+            }
+            revised.Add(sample);
+        }
+        Assert(new TelemetryContactPointReconstruction(revised, 0).TryEstimate(0, -.01, out var actual, out var decision),
+            "pre-contact discrete revisions lost reconstruction: " + decision);
+        Assert(actual.FitPointCount == expected.FitPointCount, "revisions counted as independent fit observations");
+        // Full-flight datum calibration has separate phase sampling; inserted
+        // lifecycle observations can change that fit slightly. The independent
+        // physical trajectory still closes at exactly 4 ft/s.
+        Near(240, actual.Closure, 1, "revised observations preserve physical closure");
+        Assert(actual.TemporalUncertainty > 0 && actual.Uncertainty >= actual.TemporalUncertainty,
+            "independent-instant refits must contribute to the uncertainty band");
+
+        var recorded = Recorded("e78d3f80");
+        var before = TouchdownAnalysis.Analyze(recorded);
+        var afterRows = new List<TelemetrySample>();
+        foreach (var sample in recorded)
+        {
+            if (!sample.OnGround && sample.SimulationTimeSeconds >= before[2].EstimatedContactTimeSeconds - .3 &&
+                sample.SimulationTimeSeconds <= before[2].SimulationTimeSeconds)
+            {
+                var revision = TelemetryBinaryCodec.Decode(TelemetryBinaryCodec.Encode(sample));
+                revision.SimulatorState = sample.SimulatorState == TelemetrySimulatorState.Running
+                    ? TelemetrySimulatorState.Legacy : TelemetrySimulatorState.Running;
+                afterRows.Add(revision);
+            }
+            afterRows.Add(sample);
+        }
+        var after = TouchdownAnalysis.Analyze(afterRows);
+        Assert(after.Count == before.Count && after[2].ClosureReconstructionAvailable &&
+            after[2].ClosureReconstructionModel == TelemetryContactPointReconstruction.KinematicModelName,
+            "equal-time revisions disabled the recorded bounce's kinematic reconstruction");
+        Near(before[2].ReconstructedClosureFpm, after[2].ReconstructedClosureFpm,
+            before[2].ClosureReconstructionUncertaintyFpm, "kinematic reconstruction remains within its physical uncertainty");
+
+        var sparse = Analytic(.02, 11).Where((_, i) => i % 3 == 2).ToList(); // Includes t=0 at 13 1/3 Hz.
+        for (var i = sparse.Count - 1; i >= 0; i--)
+        {
+            if (sparse[i].SimulationTimeSeconds <= 0 || sparse[i].SimulationTimeSeconds > .16) continue;
+            var airborne = TelemetryBinaryCodec.Decode(TelemetryBinaryCodec.Encode(sparse[i]));
+            airborne.OnGround = false; airborne.ContactPointOnGround[11] = false;
+            sparse.Insert(i, airborne);
+        }
+        var lowRate = new TelemetryContactPointReconstruction(sparse, 0);
+        Assert(lowRate.CalibrationDurationSeconds > 1 && lowRate.CalibrationStopReason != "local_trajectory_unavailable",
+            "sparse revision rows fabricated five independent observations and truncated calibration");
+    }
+
+    public static void SimultaneousContactAndNumericRevisions()
+    {
+        foreach (var groundRevisions in new[] { false, true })
+        {
+            var samples = Analytic(.02, 11);
+            var index = samples.FindIndex(s => s.OnGround);
+            var airborne = TelemetryBinaryCodec.Decode(TelemetryBinaryCodec.Encode(samples[index]));
+            airborne.OnGround = false; airborne.ContactPointOnGround[11] = false; airborne.ContactPointCompression[11] = 0;
+            // The pre-contact pose at the shared instant has the airborne velocity.
+            airborne.VelocityWorldYFps = samples[index - 1].VelocityWorldYFps;
+            samples.Insert(index, airborne);
+            if (groundRevisions)
+            {
+                for (var i = samples.Count - 1; i >= index + 1; i--)
+                {
+                    var revision = samples[i].CopyForAnalysis();
+                    revision.LongitudeDegrees += 1e-12;
+                    samples.Insert(i + 1, revision);
+                }
+            }
+            var model = new TelemetryContactPointReconstruction(samples, 0);
+            Assert(model.CalibrationDurationSeconds > 1 && model.CalibrationStopReason != "sample_gap", "Equal-time rows truncated calibration.");
+            Assert(model.TryEstimate(0, 0, out var estimate, out var decision), "Equal-time AIR/GROUND contact lost reconstruction: " + decision);
+            Near(240, estimate.Closure, 5, "same-time contact closure");
+        }
+
+        var topology = new TelemetryGearTopology(new[] { 1, 2 }, new[] { 0 });
+        var contact = new List<TelemetrySample>();
+        for (var i = -1; i <= 8; i++)
+        {
+            var sample = new TelemetrySample { SimulationTimeSeconds = Math.Max(0, i * .025), MotionSimulation = true, OnGround = i >= 0 };
+            sample.ContactPointOnGround[1] = sample.ContactPointOnGround[2] = i >= 0;
+            contact.Add(sample);
+            if (i >= 0) { var revision = sample.CopyForAnalysis(); revision.LatitudeDegrees += 1e-12; contact.Add(revision); }
+        }
+        Assert(TelemetryTopologyInference.IsSustainedMainContact(contact, 1, 0, topology), "Numeric revisions broke configured sustained contact.");
+        contact.RemoveAll(s => s.SimulationTimeSeconds > 0);
+        Assert(!TelemetryTopologyInference.IsSustainedMainContact(contact, 1, 0, topology), "Repeated instant fabricated sustained contact.");
+    }
+
     public static void KnownRotatingPointOnSlopedGround()
     {
         foreach (var slope in new[] { -.02, 0, .02 })

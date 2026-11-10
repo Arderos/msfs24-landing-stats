@@ -43,6 +43,13 @@ internal static class AltitudeChartRegressionTests
         chart.SetHoverTime(null);
         Check(beforeHover.SequenceEqual(Pixels(Render(chart))), "Clearing shared hover must restore the altitude lane.");
 
+        chart.SetZoomRange(-0.8, -0.6);
+        Render(chart);
+        Check(Vertices(HeightCurve(chart)).Count() == 2 && HeightCurve(chart).Bounds.Width > 400,
+            "A window between sparse samples silently reverted to the full approach.");
+        double? start = 50, end = 60;
+        LandingChart.NormalizeZoomRange(chart.Record!.Series, ref start, ref end);
+        Check(start == null && end == null, "An out-of-range zoom retained stale UI bounds.");
         chart.SetZoomRange(null, null);
         chart.Record = Record(100, 80, double.NaN, 20, 0);
         Render(chart);

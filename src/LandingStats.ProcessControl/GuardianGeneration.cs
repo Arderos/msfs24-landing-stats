@@ -22,6 +22,9 @@ internal sealed class GuardianGeneration : IDisposable
     private int _stop, _recoveryReady, _recoveryDeferred;
     private Task _completion = Task.CompletedTask;
     private long _lastRequest;
+    private TaskCompletionSource<bool>? _activation;
+    private bool _handshakeComplete, _sessionEndRequested;
+    private Task? _sessionEndDelivery;
     private int _disposed;
     public GuardianGeneration(Guid session, long generation, Func<GuardianUpdateRequest, CancellationToken, Task<GuardianUpdateLease>>? update = null)
     {
@@ -64,7 +67,7 @@ internal sealed class GuardianGeneration : IDisposable
         {
             timeout.Token.ThrowIfCancellationRequested();
             _process = OwnedProcess.Start(executable, arguments, directory, jobName: "Local\\MSFS.LandingStats.App." + _descriptor.Session.ToString("N") + "." + _descriptor.Generation,
-                environment: values, hideWindow: !visible);
+                environment: values, hideWindow: !visible, allowExternalApplications: true);
         }
         var connection = _pipe.WaitForConnectionAsync(timeout.Token);
         if (await Task.WhenAny(connection, _process.Exit).ConfigureAwait(false) != connection)
@@ -78,6 +81,13 @@ internal sealed class GuardianGeneration : IDisposable
             throw new InvalidDataException("Application guardian handshake differs.");
         await _wire.SendAsync(new GuardianPacket(GuardianMessageKind.Ack, hello.Request), timeout.Token).ConfigureAwait(false);
         _lastRequest = 1; _completion = ReadPumpAsync();
+        Task? sessionEndDelivery;
+        lock (_transitionGate)
+        {
+            _handshakeComplete = true;
+            sessionEndDelivery = _sessionEndRequested ? _sessionEndDelivery ??= DeliverSessionEndAsync() : null;
+        }
+        if (sessionEndDelivery != null) await sessionEndDelivery.ConfigureAwait(false);
     }
     private async Task ReadPumpAsync()
     {
@@ -105,6 +115,8 @@ internal sealed class GuardianGeneration : IDisposable
             { if (packet.Request != 0) throw new InvalidDataException("Invalid recovery acknowledgement."); Interlocked.Exchange(ref _recoveryReady, 1); continue; }
             if (packet.Kind == GuardianMessageKind.RecoveryDeferred)
             { if (packet.Request != 0) throw new InvalidDataException("Invalid recovery deferral."); Interlocked.Exchange(ref _recoveryDeferred, 1); continue; }
+            if (packet.Kind == GuardianMessageKind.ActivationResult)
+            { if (packet.Request != 0) throw new InvalidDataException("Invalid activation acknowledgement."); Volatile.Read(ref _activation)?.TrySetResult(packet.Accepted); continue; }
             if (packet.Request <= _lastRequest) throw new InvalidDataException("Guardian request identity was reused.");
             _lastRequest = packet.Request;
             if (packet.Kind == GuardianMessageKind.Stop)
@@ -154,8 +166,37 @@ internal sealed class GuardianGeneration : IDisposable
             else throw new InvalidDataException("Unexpected application control packet.");
         }
     }
-    public Task ActivateAsync()
-    { AllowSetForegroundWindow(ProcessId); return _wire.SendAsync(new GuardianPacket(GuardianMessageKind.Activate), _lifetime.Token); }
+    public async Task<bool> ActivateAsync()
+    {
+        if (StopIntent != GuardianStopReason.None) return false;
+        var completion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        if (Interlocked.CompareExchange(ref _activation, completion, null) != null) throw new InvalidOperationException("Activation is already pending.");
+        try
+        {
+            using var cancelled = _lifetime.Token.Register(() => completion.TrySetCanceled());
+            AllowSetForegroundWindow(ProcessId);
+            await _wire.SendAsync(new GuardianPacket(GuardianMessageKind.Activate), _lifetime.Token).ConfigureAwait(false);
+            return await completion.Task.ConfigureAwait(false) && StopIntent == GuardianStopReason.None;
+        }
+        finally { Interlocked.Exchange(ref _activation, null); }
+    }
+    internal Task RequestSessionEndAsync()
+    {
+        lock (_transitionGate)
+        {
+            Interlocked.CompareExchange(ref _stop, (int)GuardianStopReason.SessionEnd, (int)GuardianStopReason.None);
+            _sessionEndRequested = true;
+            // Retain intent immediately, including before pipe connection. The
+            // authenticated Hello/ACK must own the first packet in each direction.
+            // Startup delivers a queued request once that exchange has completed.
+            return _handshakeComplete ? _sessionEndDelivery ??= DeliverSessionEndAsync() : Task.CompletedTask;
+        }
+    }
+    private async Task DeliverSessionEndAsync()
+    {
+        try { await _wire.SendAsync(new GuardianPacket(GuardianMessageKind.Stop, stop: GuardianStopReason.SessionEnd), _lifetime.Token).ConfigureAwait(false); }
+        catch (Exception error) { Report("session_stop_delivery_failed error=" + error); }
+    }
     [System.Runtime.InteropServices.DllImport("user32.dll")]
     private static extern bool AllowSetForegroundWindow(int processId);
     public void Cancel() { lock (_transitionGate) { try { _lifetime.Cancel(); _pipe.Dispose(); } catch (ObjectDisposedException) { } } }
@@ -184,17 +225,39 @@ internal sealed class GuardianSupervisor
     private readonly Func<long, GuardianGeneration> _factory;
     private readonly object _lifecycle = new object();
     private GuardianGeneration? _current;
-    private int _stop;
+    private int _stop, _retiredSessionStop;
+    private readonly TaskCompletionSource<bool> _stopped = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
     public GuardianSupervisor(Func<long, GuardianGeneration> factory, GuardianPolicy? policy = null)
     { _factory = factory; _policy = policy ?? new GuardianPolicy(); _policy.Validate(); }
     public GuardianGeneration? Current => Volatile.Read(ref _current);
+    internal bool ApplicationStoppingForSession
+    {
+        get
+        {
+            // StopIntent reads generation-owned signal handles. Hold the same
+            // boundary that removes Current before that generation is disposed.
+            lock (_lifecycle) return Current?.StopIntent == GuardianStopReason.SessionEnd || _retiredSessionStop != 0;
+        }
+    }
     public event Action<long, string>? Changed;
-    public void Stop() { lock (_lifecycle) { Interlocked.Exchange(ref _stop, 1); Current?.Cancel(); } }
+    internal Func<Task<bool>>? ConfirmSessionEnd { get; set; }
+    internal Action? ApplicationStarting { get; set; }
+    internal Task RequestSessionEndAsync()
+    {
+        lock (_lifecycle)
+        {
+            if (Current != null) return Current.RequestSessionEndAsync();
+            Stop(); return Task.CompletedTask;
+        }
+    }
+    public void Stop() { lock (_lifecycle) { Interlocked.Exchange(ref _stop, 1); _stopped.TrySetResult(true); Current?.Cancel(); } }
     public async Task RunAsync(string executable, IReadOnlyList<string> arguments, string directory, IReadOnlyDictionary<string, string>? environment = null, bool visible = true)
     {
         var failures = 0; long generation = 0; var startupFailures = 0;
         while (Volatile.Read(ref _stop) == 0)
         {
+            lock (_lifecycle) _retiredSessionStop = 0;
+            ApplicationStarting?.Invoke();
             GuardianGeneration prepared;
             try { prepared = _factory(++generation); }
             catch (Exception error)
@@ -261,9 +324,20 @@ internal sealed class GuardianSupervisor
                     catch (Exception error) when (error is IOException || error is TimeoutException || error is System.ComponentModel.Win32Exception)
                     { Publish(generation, "retirement_pending error=" + error); await Task.Delay(250).ConfigureAwait(false); }
                 }
-                Volatile.Write(ref _current, null);
+                lock (_lifecycle)
+                {
+                    _retiredSessionStop = child.StopIntent == GuardianStopReason.SessionEnd ? 1 : 0;
+                    Volatile.Write(ref _current, null);
+                }
             }
-            if (intentional || child.StopIntent != GuardianStopReason.None || Volatile.Read(ref _stop) != 0) return;
+            if (Volatile.Read(ref _stop) != 0) return;
+            if (child.StopIntent == GuardianStopReason.SessionEnd && ConfirmSessionEnd != null)
+            {
+                var confirmation = ConfirmSessionEnd();
+                if (await Task.WhenAny(confirmation, _stopped.Task).ConfigureAwait(false) != confirmation || Volatile.Read(ref _stop) != 0) return;
+                if (!await confirmation.ConfigureAwait(false)) { failures = startupFailures = 0; continue; }
+            }
+            if (intentional || child.StopIntent != GuardianStopReason.None) return;
             if (child.Health?.Ready != true)
             { if (++startupFailures >= _policy.MaximumStartupFailures) throw new IOException("The application repeatedly failed before becoming ready. See crash.log and guardian.log."); }
             else startupFailures = 0;

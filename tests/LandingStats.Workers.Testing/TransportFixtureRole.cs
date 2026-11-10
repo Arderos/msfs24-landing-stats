@@ -19,7 +19,7 @@ internal sealed class TransportFixtureRole : IWorkerRole
         if (mode == "legacy-quota") mode = "normal";
         if (mode == "crash") Environment.Exit(73);
         if (mode == "hang") { await Task.Delay(Timeout.Infinite).ConfigureAwait(false); return; }
-        if (mode != "normal" && mode != "owner-stall" && mode != "source-flood" && mode != "descendant" && mode != "landing") throw new ArgumentException("Unknown worker fixture.");
+        if (mode != "normal" && mode != "owner-stall" && mode != "source-flood" && mode != "source-stop-tail" && mode != "descendant" && mode != "landing") throw new ArgumentException("Unknown worker fixture.");
         using var descendant = mode == "descendant" ? Process.Start(new ProcessStartInfo
         {
             FileName = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "LandingStats.WorkerHost.exe"), Arguments = "--fixture-child", UseShellExecute = false,
@@ -44,10 +44,18 @@ internal sealed class TransportFixtureRole : IWorkerRole
                     if (!context.Transport.TryPublish(new CommandResultMessage(command == null ? CommandOutcome.Rejected : CommandOutcome.Completed,
                             command == null ? "fixture_no_scenery" : descendant == null ? "owner_observed" : "child:" + descendant.Id.ToString(CultureInfo.InvariantCulture)), 0,
                             Stopwatch.GetTimestamp(), envelope.CorrelationId, envelope.CommandRevision)) throw new IOException("Fixture output overflow.");
-                    if (command?.Command == WorkerCommand.Stop) return;
+                    if (command?.Command == WorkerCommand.Stop)
+                    {
+                        if (mode == "source-stop-tail")
+                            for (var frame = 1; frame <= 256; frame++)
+                                if (!context.Transport.TryPublish(new TelemetryFrameMessage(new TelemetrySample
+                                    { Sequence = ++progress, SimulationTimeSeconds = progress / 40.0, MotionSimulation = true, OnGround = true }),
+                                    1, Stopwatch.GetTimestamp())) throw new IOException("Fixture final source output overflow.");
+                        return;
+                    }
                 }
                 progress++;
-                if (mode == "source-flood" && !context.Transport.TryPublish(new TelemetryFrameMessage(new TelemetrySample
+                if ((mode == "source-flood" || mode == "source-stop-tail") && !context.Transport.TryPublish(new TelemetryFrameMessage(new TelemetrySample
                         { Sequence = progress, SimulationTimeSeconds = progress / 40.0, MotionSimulation = true }), 1, Stopwatch.GetTimestamp()))
                     throw new IOException("Fixture source output overflow.");
                 if (mode == "landing" && progress <= 220)

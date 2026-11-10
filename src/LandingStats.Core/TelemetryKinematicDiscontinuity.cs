@@ -262,7 +262,7 @@ public static class TelemetryKinematicDiscontinuity
     private static double MaximumNonnegative(double first, double second) =>
         Finite(first) && first >= 0 && Finite(second) && second >= 0 ? Math.Max(first, second) : double.NaN;
 
-    private static double AccelerationAllowance(TelemetrySample sample)
+    internal static double AccelerationAllowance(TelemetrySample sample)
     {
         var x = Finite(sample.AccelerationBodyXFps2) ? Math.Abs(sample.AccelerationBodyXFps2) * FeetToMeters : 0;
         var z = Finite(sample.AccelerationBodyZFps2) ? Math.Abs(sample.AccelerationBodyZFps2) * FeetToMeters : 0;

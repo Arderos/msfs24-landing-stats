@@ -27,7 +27,7 @@ internal sealed partial class OwnedProcess : IDisposable
     public Task<int> Exit { get; }
 
     public static OwnedProcess Start(string executable, IReadOnlyList<string> arguments, string? directory = null, Action<int>? beforeResume = null, string? jobName = null,
-        IReadOnlyDictionary<string, string>? environment = null, bool hideWindow = true)
+        IReadOnlyDictionary<string, string>? environment = null, bool hideWindow = true, bool allowExternalApplications = false)
     {
         executable = Path.GetFullPath(executable);
         if (!File.Exists(executable)) throw new FileNotFoundException("Worker executable is missing.", executable);
@@ -43,7 +43,7 @@ internal sealed partial class OwnedProcess : IDisposable
         var information = new Native.ProcessInformation();
         try
         {
-            var limits = new Native.JobLimits { Basic = new Native.BasicLimits { Flags = 0x2000 } }; // KILL_ON_JOB_CLOSE
+            var limits = new Native.JobLimits { Basic = new Native.BasicLimits { Flags = (uint)(0x2000 | (allowExternalApplications ? 0x0800 : 0)) } }; // KILL_ON_JOB_CLOSE; explicit BREAKAWAY_OK
             if (!Native.SetInformationJobObject(job, 9, ref limits, (uint)Marshal.SizeOf(typeof(Native.JobLimits))))
                 throw new Win32Exception(Marshal.GetLastWin32Error(), "Cannot configure the worker job.");
             IntPtr size = IntPtr.Zero;

@@ -102,7 +102,7 @@ internal static class PhysicsContinuityRegressionTests
         var paused = Frame(samples[pauseIndex].SimulationTimeSeconds, true, false);
         samples.Insert(pauseIndex, paused);
         var result = TouchdownAnalysis.Analyze(TelemetryDeduplicator.Deduplicate(samples)).Single();
-        Assert(result.Impact.Status == TouchdownImpactStatus.InvalidTelemetry,
+        Assert(result.Impact.Status == TouchdownImpactStatus.Incomplete,
             "impact's internal deduplication erased a same-time pause and certified its G window");
     }
 

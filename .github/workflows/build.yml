@@ -297,7 +297,7 @@ jobs:
         run: |
           node --check app/dashboard_static/explore.js
           node --check app/dashboard_static/explore-math.js
-          node --test tests/explore-math.test.cjs
+          node --test tests/explore-math.test.cjs tests/explore-state.test.cjs
 
   release:
     if: startsWith(github.ref, 'refs/tags/')

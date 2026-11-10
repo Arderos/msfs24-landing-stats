@@ -20,9 +20,7 @@ public sealed partial class LandingChart
 
         var top = ShowLegend ? 31.0 : 0.0;
         var bottom = ShowXAxisLabels ? 30.0 : 0.0;
-        var right = Mode == LandingChartMode.Power && _powerHasRpm
-            ? Formatted(LocalizationManager.Format("Chart.RpmFormat", _powerRpmMaximum), MutedBrush, 10).Width + 10 : 0;
-        return new Rect(96, top, Math.Max(10, ActualWidth - 96 - right), Math.Max(10, ActualHeight - top - bottom));
+        return new Rect(96, top, Math.Max(10, ActualWidth - 96), Math.Max(10, ActualHeight - top - bottom));
     }
 
     private void GetTimeRange(IReadOnlyList<LandingSeriesPoint> points, out double minimum, out double maximum)
@@ -543,7 +541,8 @@ public sealed partial class LandingChart
             foreach (var fraction in new[] { 0d, .25, .5, .75, 1 })
             {
                 var y = MapY(fraction * 100, plot, minValue, maxValue);
-                DrawText(context, LocalizationManager.Format("Chart.RpmFormat", fraction * _powerRpmMaximum), new Point(plot.Right + 6, y - 8), MutedBrush, 10);
+                var label = LocalizationManager.Format("Chart.RpmFormat", fraction * _powerRpmMaximum);
+                DrawText(context, label, new Point(plot.Right - Formatted(label, MutedBrush, 10).Width - 6, y - 8), MutedBrush, 10);
             }
 
         var tickInterval = maxTime - minTime > 35 ? 10.0 : 5.0;

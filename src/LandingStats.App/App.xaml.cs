@@ -14,6 +14,7 @@ public partial class App : Application
     internal const string SimulatorAutoStartEnvironmentVariable = "MSFS_LANDING_STATS_SIMULATOR_AUTOSTART";
     private ApplicationInstanceGuard? _instanceGuard;
     private Runtime.LandingFileActivation? _landingFileActivation;
+    private bool _fileActivationStopped;
     internal static readonly System.Collections.Concurrent.ConcurrentDictionary<string, long> RecoveryRequests = new System.Collections.Concurrent.ConcurrentDictionary<string, long>();
     internal static void RequestRuntimeRecovery(string component, long generation)
     { RecoveryRequests.AddOrUpdate(component, generation, (_, previous) => Math.Max(previous, generation)); }
@@ -34,11 +35,11 @@ public partial class App : Application
             // A bundled App has already been registered and its file arguments
             // committed by the outer launcher. Direct developer launches use the
             // same durable handoff before the inner single-instance boundary.
-            Exception? associationError = null;
+            var associationError = Runtime.LandingFileAssociation.TakeStartupError();
             if (string.IsNullOrEmpty(Environment.GetEnvironmentVariable(SimulatorAutoStartManager.LauncherPathEnvironmentVariable)))
             {
                 try { Runtime.LandingFileAssociation.Register(typeof(App).Assembly.Location); }
-                catch (Exception error) { associationError = error; WriteCrashLog("file-association", error); }
+                catch (Exception error) { associationError = error.Message; WriteCrashLog("file-association", error); }
             }
             var files = Runtime.LandingFileActivation.FileArguments(e.Args);
             if (files.Length != 0)
@@ -48,24 +49,22 @@ public partial class App : Application
                 Environment.SetEnvironmentVariable(UpdateProtocol.ReleaseUpdateProtocol.BackgroundRestartEnvironmentVariable, null);
             }
             await ConnectGuardianAsync();
-            await Dispatcher.InvokeAsync(async () =>
+            await AdmitStartupAsync(async () =>
             {
             if (!ApplicationInstanceGuard.TryAcquire(out _instanceGuard))
             {
                 // A direct launch can race the outer single-instance check.
                 // Acknowledge this duplicate's exit instead of retrying forever.
                 await AcknowledgeExitAsync(Runtime.GuardianStopReason.UserExit);
-                if (associationError != null) MessageBox.Show(associationError.Message, "MSFS Landing Stats", MessageBoxButton.OK, MessageBoxImage.Warning);
                 ShutdownMode = ShutdownMode.OnExplicitShutdown; Shutdown(0); return;
             }
             var window = new MainWindow(); Volatile.Write(ref _runtimeWindow, window);
             ConfigureStartupWindow(window, e.Args);
             MainWindow = window; MainWindow.Show();
-            if (associationError != null) window.ShowLandingSharingError(LocalizationManager.Format("Sharing.AssociationFailedFormat", associationError.Message));
+            if (!string.IsNullOrEmpty(associationError)) window.ShowLandingSharingError(LocalizationManager.Format("Sharing.AssociationFailedFormat", associationError!));
             try
             {
-                _landingFileActivation = new Runtime.LandingFileActivation();
-                _landingFileActivation.Start(paths => Dispatcher.InvokeAsync(() =>
+                StartFileActivationIntake(paths => Dispatcher.InvokeAsync(() =>
                 {
                     if (Volatile.Read(ref _intentionalExit) != 0) return Task.FromCanceled(new CancellationToken(true));
                     ActivateFromGuardian();
@@ -77,9 +76,41 @@ public partial class App : Application
                 });
             }
             catch (Exception error) { WriteCrashLog("file-activation-start", error); window.ShowLandingSharingError(error.Message); }
-            }).Task.Unwrap();
+            });
         }
         catch (Exception error) { WriteCrashLog("startup", error); await Dispatcher.InvokeAsync(() => Shutdown(70)); }
+    }
+
+    internal bool StartFileActivationIntake(Func<string[], Task> handle, Action<Exception> failed,
+        string? root = null, string? signalName = null)
+    {
+        // Window construction can overlap a guardian stop. Recheck admission
+        // at the receiver's ownership boundary, shared with every disposal path.
+        lock (_intentGate)
+        {
+            if (_fileActivationStopped || _stopIntent != null) return false;
+            if (_landingFileActivation != null) throw new InvalidOperationException("File activation is already admitted.");
+            var receiver = new Runtime.LandingFileActivation(root, signalName);
+            try { receiver.Start(handle, failed); }
+            catch { receiver.Dispose(); throw; }
+            _landingFileActivation = receiver;
+            return true;
+        }
+    }
+
+    internal async Task AdmitStartupAsync(Func<Task> startup)
+    {
+        try
+        {
+            await Dispatcher.InvokeAsync(() => Volatile.Read(ref _intentionalExit) != 0
+                ? Task.CompletedTask : startup()).Task.Unwrap().ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (Volatile.Read(ref _intentionalExit) != 0)
+        {
+            // Session end can retire the dispatcher between the guardian
+            // handshake and window admission. Its acknowledged exit owns this
+            // cancellation; no window or activation receiver should start.
+        }
     }
 
     internal static void ConfigureStartupWindow(Window window, string[] arguments)
@@ -95,8 +126,7 @@ public partial class App : Application
     {
         DispatcherUnhandledException -= OnDispatcherUnhandledException;
         AppDomain.CurrentDomain.UnhandledException -= OnDomainUnhandledException;
-        _landingFileActivation?.Dispose();
-        _landingFileActivation = null;
+        StopFileActivationIntake();
         _instanceGuard?.Dispose();
         _instanceGuard = null;
         _guardian?.Dispose();

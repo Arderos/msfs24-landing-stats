@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.IO;
 using System.Linq;
 using LandingStats.App.Runtime;
@@ -23,8 +23,8 @@ internal static class DurableOutboxRegressionTests
         var claim = box.TryClaim(good, worker)!;
         var entry = box.Read(invalid); entry.Hash = "invalid";
         DurableFile.WriteJson(Path.Combine(root, "outbox", invalid.ToString("N") + ".json"), entry);
-        box.RecoverTerminalEntries(); box.RetireConfirmedWorker(worker); box.RecoverAfterPreviousRuntimeExited(Guid.NewGuid());
-        Check(box.RecoveryErrors.Count == 3 && box.Read(good).State == OutboxState.Pending && File.Exists(claim.Path),
+        box.RecoverTerminalEntries(); box.RetireConfirmedWorker(worker, good); box.RecoverAfterPreviousRuntimeExited(Guid.NewGuid());
+        Check(box.RecoveryErrors.Count == 2 && box.Read(good).State == OutboxState.Pending && File.Exists(claim.Path),
             "An invalid-data entry blocked recovery of another archive.");
         Check(box.Acknowledge(box.TryClaim(good, Worker(2))!), "A bad neighbor blocked a valid upload.");
         Check(File.Exists(Path.Combine(queue, invalid.ToString("N") + ".zip")), "Recovery deleted damaged archive evidence.");
@@ -43,7 +43,7 @@ internal static class DurableOutboxRegressionTests
         Check(box.TryClaim(id, Worker(2)) == null, "Two workers owned one archive.");
         box.SetAutomaticEnabled(false);
         Check(!box.Acknowledge(claim) && !box.Reject(claim, 422) && File.Exists(claim.Path), "A late opted-out reply removed evidence.");
-        box.RetireConfirmedWorker(worker);
+        box.RetireConfirmedWorker(worker, id);
         Check(box.TryClaim(id, Worker(2)) == null, "Opt-out did not survive worker retirement.");
         box = new DurableOutbox(Path.Combine(root, "outbox"), queue);
         Check(!box.Policy.AutomaticEnabled && box.TryClaim(id, Worker(2)) == null, "Opt-out did not survive app restart.");
@@ -95,7 +95,7 @@ internal static class DurableOutboxRegressionTests
             "A changed archive was deleted or marked delivered.");
         var next = Register(box, queue, false); box.TryClaim(next, worker);
         var invalid = Path.Combine(root, "outbox", first.ToString("N") + ".json"); File.WriteAllText(invalid, "broken");
-        box.RetireConfirmedWorker(worker);
+        box.RetireConfirmedWorker(worker, first); box.RetireConfirmedWorker(worker, next);
         Check(box.Read(next).State == OutboxState.Pending && box.RecoveryErrors.Count == 1 && File.ReadAllText(invalid) == "broken",
             "A corrupt record blocked independent recovery or was removed.");
         var outside = Path.Combine(root, "outside.zip"); File.WriteAllBytes(outside, new byte[] { 5 });

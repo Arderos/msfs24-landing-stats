@@ -7,6 +7,8 @@ namespace LandingStats.Core;
 public sealed class TelemetryContactContinuity
 {
     private bool _airborne;
+    private readonly TelemetryGroundDeparture _groundDeparture = new TelemetryGroundDeparture();
+    private readonly TelemetryPauseContinuity _pauseContinuity = new TelemetryPauseContinuity();
     private bool _requiresReleasedInterval;
     private ReplaySourceEvidence? _blockedSource;
     private ReplaySourceEvidence? _releasedAirSource;
@@ -15,11 +17,19 @@ public sealed class TelemetryContactContinuity
 
     public string RejectionCode { get; private set; } = "physics_discontinuity_rejected";
     public string RejectionReason { get; private set; } = "Ground transition has no airborne evidence in the current active-physics segment.";
+    internal bool GroundMeasurementBlocked { get; private set; }
 
     public bool Observe(TelemetrySample sample)
     {
+        GroundMeasurementBlocked = false;
         RejectionCode = "physics_discontinuity_rejected";
         RejectionReason = "Ground transition has no airborne evidence in the current active-physics segment.";
+        _pauseContinuity.Observe(sample);
+        if (_pauseContinuity.StartsNewMotion)
+        {
+            _groundDeparture.Reset();
+            ResetAirborneWitness();
+        }
         if (TelemetryContactPhysics.IsBlocked(sample))
         {
             _requiresReleasedInterval = true;
@@ -27,6 +37,16 @@ public sealed class TelemetryContactContinuity
             Reset();
             RejectionCode = "source_controlled_contact_rejected";
             RejectionReason = "Frozen, slewing or SDK replay physics cannot establish an airborne witness or touchdown.";
+            return false;
+        }
+        if (sample.SimulatorState == TelemetrySimulatorState.Paused) return false;
+        var groundDepartureRejected = _groundDeparture.Observe(sample);
+        GroundMeasurementBlocked = groundDepartureRejected || _groundDeparture.HasPendingGroundReplacement;
+        if (_pauseContinuity.RequiresAirborneInterval)
+        {
+            ResetAirborneWitness();
+            RejectionCode = "pause_reposition_airborne_interval_required";
+            RejectionReason = "Grounded pose changed across a confirmed pause; require an airborne interval entirely in resumed physics before accepting a contact.";
             return false;
         }
         if (_requiresReleasedInterval)
@@ -37,11 +57,18 @@ public sealed class TelemetryContactContinuity
             var time = TelemetryAnalysisFrames.TimeOf(sample);
             var fresh = TelemetryContactPhysics.IsFreshReleased(sample) &&
                 (_blockedSource == null || !evidence!.SameSource(_blockedSource) || evidence.ObservedQpc > _blockedSource.ObservedQpc);
-            if (!fresh || !sample.MotionSimulation || sample.OnGround ||
+            if (!fresh || !sample.MotionSimulation ||
                 sample.SimulatorState == TelemetrySimulatorState.Paused || sample.SimulatorState == TelemetrySimulatorState.Inactive ||
                 !AnalysisNumericPolicy.IsFinite(time))
             {
                 Reset();
+                return false;
+            }
+            if (sample.OnGround)
+            {
+                // Released ground observations cannot establish an airborne
+                // interval, but they do support the next departure's motion.
+                ResetAirborneWitness();
                 return false;
             }
             // The first released airborne point starts an interval. Its preceding
@@ -54,7 +81,7 @@ public sealed class TelemetryContactContinuity
             _releasedAirSource = evidence;
             _releasedAirTime = time;
             _releasedAirSegment = sample.FlightSegment;
-            _airborne = interval;
+            _airborne = interval && !groundDepartureRejected;
             if (interval)
             {
                 _requiresReleasedInterval = false;
@@ -64,12 +91,26 @@ public sealed class TelemetryContactContinuity
             }
             return false;
         }
+        if (groundDepartureRejected)
+        {
+            _airborne = false;
+            RejectionCode = "ground_reposition_contact_rejected";
+            RejectionReason = "Ground-origin motion exceeded the displacement or rotation supported by observed velocities and local channel mismatch; settling cannot establish a landing.";
+            return false;
+        }
         var contact = _airborne && sample.MotionSimulation && sample.OnGround;
         _airborne = sample.MotionSimulation && !sample.OnGround;
         return contact;
     }
 
     public void Reset()
+    {
+        _groundDeparture.ResetHistory();
+        _pauseContinuity.ResetContext();
+        ResetAirborneWitness();
+    }
+
+    private void ResetAirborneWitness()
     {
         _airborne = false;
         _releasedAirSource = null;
@@ -78,6 +119,24 @@ public sealed class TelemetryContactContinuity
     }
     public bool HasAirborneWitness => _airborne;
     public void RestoreAirborneWitness(bool airborne) => _airborne = airborne;
+
+    /// <summary>Limit provisional ground-motion evidence to observations retained for a future capture.</summary>
+    public void RestrictCumulativeGroundHistory(double firstRetainedAnalysisTime) =>
+        _groundDeparture.RestrictCumulativeHistory(firstRetainedAnalysisTime);
+
+    public void WriteGroundCheckpoint(BinaryWriter writer) => _groundDeparture.WriteCheckpoint(writer);
+    public void WritePauseCheckpoint(BinaryWriter writer) => _pauseContinuity.WriteCheckpoint(writer);
+    public void RestorePauseCheckpoint(BinaryReader reader) => _pauseContinuity.RestoreCheckpoint(reader);
+    public void WriteGroundRevisionCheckpoint(BinaryWriter writer) => _groundDeparture.WriteRevisionCheckpoint(writer);
+    public void RestoreGroundRevisionCheckpoint(BinaryReader reader) => _groundDeparture.RestoreRevisionCheckpoint(reader);
+    public void WriteCumulativeCheckpoint(BinaryWriter writer) => _groundDeparture.WriteCumulativeCheckpoint(writer);
+    public void RestoreCumulativeCheckpoint(BinaryReader reader) => _groundDeparture.RestoreCumulativeCheckpoint(reader);
+    public void RestoreGroundCheckpoint(BinaryReader reader)
+    {
+        _groundDeparture.RestoreCheckpoint(reader);
+        if (_airborne && _groundDeparture.HasUnverifiedAirborneRun)
+            throw new InvalidDataException("An unverified ground departure cannot have an airborne contact witness.");
+    }
 
     public void WriteSourceCheckpoint(BinaryWriter writer)
     {

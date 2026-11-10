@@ -49,7 +49,12 @@ internal static class AsyncHistoryRegressionTests
                 AircraftTitle = first.AircraftTitle, TimestampUtc = first.TimestampUtc,
                 ContactNumber = 2, ContactCount = 2, RawPitchInputSourceIndex = 4,
             };
-            var second = new LandingRecord { AircraftTitle = "Synthetic B", TimestampUtc = first.TimestampUtc.AddMinutes(-1) };
+            var second = new LandingRecord { AircraftTitle = "Synthetic B", TimestampUtc = first.TimestampUtc.AddMinutes(-1),
+                Series = new[] { -5d, 5d }.Select(time => new LandingSeriesPoint
+                {
+                    TimeSeconds = time, RawControllerYAxisPercent = Array.Empty<double>(),
+                    RawControllerYAxisValid = Array.Empty<bool>(), RawControllerYAxisAgeSeconds = Array.Empty<double>(),
+                }).ToList() };
             repository.Save(first);
             repository.Save(sibling);
             repository.Save(second);
@@ -85,6 +90,7 @@ internal static class AsyncHistoryRegressionTests
             Invoke(window, "SelectRecord", new[] { list.SelectedItem });
             Assert(ReferenceEquals(window.DataContext, cachedSecond) && Get<double?>(window, "_zoomStartSeconds") == -1.25,
                 "cached metadata refresh preserves the detail instance and the user's zoom");
+            ZoomPreferenceSurvivesSparseRecords(window, (LandingRecord)cachedSecond!);
 
             var refresh = (Task)Invoke(window, "LoadHistoryAsync", new object?[] { first.Id })!;
             var diskRead = (Task)typeof(MainWindow).GetProperty("PendingHistoryOperations", Private)!.GetValue(window)!;
@@ -210,6 +216,47 @@ internal static class AsyncHistoryRegressionTests
                 SynchronizationContext.SetSynchronizationContext(previousContext);
             }
         }
+    }
+
+    private static void ZoomPreferenceSurvivesSparseRecords(MainWindow window, LandingRecord ordinary)
+    {
+        foreach (var full in new[] { false, true })
+        foreach (var count in new[] { 0, 1 })
+        {
+            Set(window, "_showFullApproach", full);
+            var sparse = new LandingRecord { Series = ordinary.Series.Take(count).ToList() };
+            Invoke(window, "PresentRecord", new object?[] { sparse, Array.Empty<LandingRecord>() });
+            Assert(Get<bool>(window, "_showFullApproach") == full, "a sparse record changed the user's view preference");
+            Assert(Get<double?>(window, "_zoomStartSeconds") == null &&
+                Equals(Get<Button>(window, "ChartWindowButton").Content, LocalizationManager.Text("Chart.NoData")),
+                "a sparse record retained stale zoom coordinates or button text");
+            Assert(!Get<Button>(window, "ChartWindowButton").IsEnabled, "an empty chart offered an invisible mode change");
+            Invoke(window, "OnChartWindowClick", new object?[] { window, null });
+            Assert(Get<bool>(window, "_showFullApproach") == full, "empty-chart activation changed the saved mode");
+            Invoke(window, "PresentRecord", new object?[] { ordinary, new[] { ordinary } });
+            Assert(Get<Button>(window, "ChartWindowButton").IsEnabled, "chart mode stayed disabled after loading samples");
+            Assert(Get<bool>(window, "_showFullApproach") == full &&
+                Get<double?>(window, "_zoomStartSeconds").HasValue == !full,
+                "the next ordinary landing did not restore the selected view mode");
+        }
+        Set(window, "_showFullApproach", false);
+        Invoke(window, "ApplyZoom", new object?[] { -1.25, 2.5 });
+        var shortened = new LandingRecord { Id = ordinary.Id, Series = new List<LandingSeriesPoint>
+            { new LandingSeriesPoint { TimeSeconds = -0.5 }, new LandingSeriesPoint { TimeSeconds = 0.5 } } };
+        Invoke(window, "PresentRecord", new object?[] { shortened, new[] { shortened } });
+        Assert(Get<double?>(window, "_zoomStartSeconds") == -0.5 && Get<double?>(window, "_zoomEndSeconds") == 0.5,
+            "a refreshed same-ID detail left stale window zoom coordinates");
+        var emptyRefresh = new LandingRecord { Id = ordinary.Id };
+        Invoke(window, "PresentRecord", new object?[] { emptyRefresh, new[] { emptyRefresh } });
+        Assert(!Get<bool>(window, "_showFullApproach") && Get<double?>(window, "_zoomStartSeconds") == null &&
+            Equals(Get<Button>(window, "ChartWindowButton").Content, LocalizationManager.Text("Chart.NoData")),
+            "an empty same-ID refresh changed the mode or retained the previous range label");
+        Invoke(window, "PresentRecord", new object?[] { ordinary, new[] { ordinary } });
+        Assert(Get<double?>(window, "_zoomStartSeconds").HasValue, "restored same-ID samples did not restore contact mode");
+        Invoke(window, "ApplyZoom", new object?[] { -1.25, 2.5 });
+        Set(window, "_titleDragStart", new Point(20, 10));
+        Invoke(window, "OnTitleBarMouseLeave", new object?[] { window, null });
+        Assert(Get<Point?>(window, "_titleDragStart") == null, "leaving the title bar retained a stale drag gesture");
     }
 
     private static void FreshStorageMetadataSurvivesQueuedMigration(MainWindow window,

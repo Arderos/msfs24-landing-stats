@@ -17,6 +17,7 @@ import threading
 import time
 import zipfile
 import zlib
+from bisect import bisect_right
 from collections import Counter, defaultdict
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -27,7 +28,7 @@ from .validation import MAXIMUM_DECISION_JOURNAL_BYTES, MAXIMUM_DECISION_ENTRIES
 from .dashboard_analytics import build_analytics, CHANNELS, MAX_COHORT, profile_display_channels, quantiles
 
 
-INDEX_VERSION = 8
+INDEX_VERSION = 13
 # LandingRecord.NonFiniteStorageSentinel / LandingRecordFile.Restore use exact
 # equality, not a magnitude threshold. Other finite values remain measurable.
 NONFINITE_STORAGE_SENTINEL = -1.7976931348623157E308
@@ -388,6 +389,8 @@ class DashboardIndex:
         self._registry = {}
         self._signed_budgets = []
         self._analytics_lock = threading.Lock()
+        self._catalog_lock = threading.Lock()
+        self._catalog_snapshot = None  # Owned by _lock; retired with its published rows.
 
     @contextmanager
     def _connect_cache(self):
@@ -529,11 +532,13 @@ class DashboardIndex:
             with self._lock:
                 if initial_scan:
                     self._rows = output.copy()
+                    self._catalog_snapshot = None
                     self._state["indexed"] += not error and not pending
                     self._state["errors"] += bool(error) and not pending
                     self._state["pending"] -= not pending
         with self._lock:
             self._rows = output
+            self._catalog_snapshot = None
             self._state.update(indexed=sum(r['index_status'] == 'ready' for r in output),
                                errors=sum(r['index_status'] == 'error' for r in output),
                                pending=sum(r['index_status'] == 'pending' for r in output))
@@ -551,13 +556,16 @@ class DashboardIndex:
         with self._lock:
             rows = [row for row in self._rows if row["received_at"] >= cutoff]
             state = self._state.copy()
+        return rows, self._snapshot_state(state)
+
+    def _snapshot_state(self, state):
         last = state["last_success_at"]
         state["stale"] = not last or time.time() - datetime.fromisoformat(last.replace("Z", "+00:00")).timestamp() > SCAN_SECONDS * 3
         if self._source_generated_at:
             state["source_generated_at"] = _iso(self._source_generated_at)
             state["stale"] = state["stale"] or time.time() - self._source_generated_at > 120
         state["progress"] = (state["total"] - state["pending"]) / state["total"] if state["total"] else (1 if state["state"] == "ready" else 0)
-        return rows, state
+        return state
 
     @staticmethod
     def _item(row):
@@ -609,19 +617,67 @@ class DashboardIndex:
             result.update({key: value for key, value in json.loads(cached["payload"]).items() if key not in ("components", "codes", "replay_codes", "axis_codes", "roles")})
         return _json(result)
 
-    def analytics_catalog(self, days=0):
-        rows, state = self._snapshot(days)
-        unique = {}
-        for row in rows:
-            for meta in row.get('analysis_metadata', []):
-                if meta.get('id') and meta['id'] not in unique:
-                    unique[meta['id']] = {**meta, 'capture_id': row['capture_id'],
-                        'creator': row.get('creator_version'), 'uploader': row.get('app_version'),
-                        'received_at': _iso(row['received_at'])}
-        return {'landings': list(unique.values()), 'index': state,
-                'analytics_errors': sum(bool(row.get('analytics_error')) for row in rows),
-                'channels': {k: {'label': v[0], 'unit': v[1]} for k, v in CHANNELS.items()},
-                'limit': MAX_COHORT}
+    def analytics_catalog(self, days=0, page=1, page_size=MAX_COHORT):
+        if not 1 <= page_size <= MAX_COHORT or page < 1:
+            raise ValueError('Invalid catalog page')
+        # _refresh publishes replacement lists, newest capture first. Materialize
+        # references once per publication; page reads never walk all raw metadata
+        # again and never contend with archive decompression in analytics_cohort.
+        with self._catalog_lock:
+            with self._lock:
+                rows, state = self._rows, self._state.copy()
+                snapshot = self._catalog_snapshot
+            if snapshot is None or rows is not snapshot[0]:
+                seen, entries, times, error_times = set(), [], [], []
+                for row in rows:
+                    if row.get('analytics_error'):
+                        error_times.append(-row['received_at'])
+                    for meta in row.get('analysis_metadata', []):
+                        if not meta.get('id') or meta['id'] in seen:
+                            continue
+                        seen.add(meta['id'])
+                        entries.append((row, meta))
+                        times.append(-row['received_at'])
+                snapshot = (rows, tuple(entries), tuple(times), tuple(error_times))
+                with self._lock:
+                    # A refresh may publish while this reader builds its view.
+                    # The reader can finish, but cannot retain the retired rows.
+                    if rows is self._rows:
+                        self._catalog_snapshot = snapshot
+            _, entries, times, error_times = snapshot
+        cutoff = time.time() - max(0, days) * 86400 if days else 0
+        total = bisect_right(times, -cutoff)
+        start = (page - 1) * page_size
+        landings = [{**meta, 'capture_id': row['capture_id'],
+                     'creator': row.get('creator_version'), 'uploader': row.get('app_version'),
+                     'received_at': _iso(row['received_at'])} for row, meta in entries[start:min(start + page_size, total)]]
+        result = {'landings': landings, 'index': self._snapshot_state(state), 'total': total,
+                  'page': page, 'page_size': page_size,
+                  'next_page': page + 1 if start + page_size < total else None,
+                  'analytics_errors': bisect_right(error_times, -cutoff),
+                  'channels': {k: {'label': v[0], 'unit': v[1]} for k, v in CHANNELS.items()},
+                  'limit': MAX_COHORT}
+        if page == 1:
+            # Filter choices belong to the complete period, including records
+            # beyond the first page. The UI needs one consistent response, not
+            # every recording's device/channel/contact metadata.
+            aircraft, airports, runways, creators, devices = Counter(), set(), set(), set(), set()
+            for position in range(total):
+                row, meta = entries[position]
+                if meta.get('aircraft'):
+                    aircraft[meta['aircraft']] += meta.get('contact') == 1
+                if meta.get('airport'):
+                    airports.add(meta['airport'])
+                if meta.get('runway'):
+                    runways.add((meta.get('airport'), meta['runway']))
+                if row.get('creator_version'):
+                    creators.add(row['creator_version'])
+                devices.update(meta.get('devices', []))
+            result['filters'] = {'aircraft': [[name, count] for name, count in aircraft.items()],
+                                 'airports': sorted(airports),
+                                 'runways': [list(pair) for pair in sorted(runways, key=lambda pair: (pair[0] or '', pair[1]))],
+                                 'creators': sorted(creators), 'devices': sorted(devices)}
+        return result
 
     def analytics_cohort(self, days=0, aircraft='', airport='', runway='', creator='', device='',
                          axis='agl', wind_min=None, wind_max=None, weight_min=None, weight_max=None, ids='', channels=''):
@@ -684,7 +740,7 @@ class DashboardIndex:
                         track = {'id': meta['id'], **{key: [series[key][i] for i in indices] for key in ('t', 'lat', 'lon', 'along', 'cross', 'agl', 'ias', 'sink', 'run')}}
                         for key in ('lat', 'lon', 'along', 'cross', 'agl', 'ias', 'sink'):
                             for i in range(1, len(indices)):
-                                if any(value is None for value in series[key][indices[i - 1]:indices[i]]):
+                                if track[key][i - 1] is not None and any(value is None for value in series[key][indices[i - 1] + 1:indices[i]]):
                                     track[key][i] = None
                         tracks.append(track)
                         if display_channels and len(individuals) < 50:

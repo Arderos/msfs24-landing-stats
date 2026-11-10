@@ -13,6 +13,10 @@ class InstallationRegistryFullError(RuntimeError):
     pass
 
 
+class InstallationByteQuotaExceededError(RuntimeError):
+    pass
+
+
 class Store:
     def __init__(self, root: Path):
         self.root = root
@@ -334,16 +338,26 @@ class Store:
 
     def accepted_bytes_since(self, install_id: str, since: int) -> int:
         with self.connect() as connection:
-            row = connection.execute(
-                "SELECT COALESCE(SUM(compressed_bytes), 0) AS total FROM captures WHERE install_id=? AND received_at>=?",
-                (install_id, since),
-            ).fetchone()
-            return int(row["total"])
+            return self._accepted_bytes_since(connection, install_id, since)
 
-    def add_capture(self, values: tuple) -> str:
-        """Return the winning capture identity, including concurrent duplicates."""
+    @staticmethod
+    def _accepted_bytes_since(connection, install_id: str, since: int) -> int:
+        row = connection.execute(
+            "SELECT COALESCE(SUM(compressed_bytes), 0) AS total FROM captures WHERE install_id=? AND received_at>=?",
+            (install_id, since),
+        ).fetchone()
+        return int(row["total"])
+
+    def add_capture(self, values: tuple, *, daily_install_quota_bytes: int) -> str:
+        """Atomically enforce the rolling quota and return the winning identity."""
         with self.connect(immediate=True) as connection:
-            self._retained_capture(connection, values[2])
+            existing = self._retained_capture(connection, values[2])
+            # Serialize the quota read with acceptance of concurrent uploads.
+            # Retained duplicates consume no additional accepted-data capacity.
+            if existing is None:
+                accepted = self._accepted_bytes_since(connection, values[1], int(time.time()) - 86400)
+                if accepted + values[5] > daily_install_quota_bytes:
+                    raise InstallationByteQuotaExceededError("installation daily byte quota exceeded")
             connection.execute(
                 """
                 INSERT INTO captures(

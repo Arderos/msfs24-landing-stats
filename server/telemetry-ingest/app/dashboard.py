@@ -11,7 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from .dashboard_index import DashboardIndex
-from .dashboard_analytics import profile_display_channels
+from .dashboard_analytics import MAX_COHORT, profile_display_channels
 
 
 def create_app(index=None, allowed_networks=None, allowed_hosts=None):
@@ -104,8 +104,9 @@ def create_app(index=None, allowed_networks=None, allowed_hosts=None):
         return detail
 
     @app.get('/api/analytics/catalog')
-    def analytics_catalog(days: int = Query(0, ge=0, le=3650)):
-        return index.analytics_catalog(days)
+    def analytics_catalog(days: int = Query(0, ge=0, le=3650), page: int = Query(1, ge=1),
+                          page_size: int = Query(MAX_COHORT, ge=1, le=MAX_COHORT)):
+        return index.analytics_catalog(days, page, page_size)
 
     @app.get('/api/analytics/cohort')
     def analytics_cohort(days: int = Query(0, ge=0, le=3650), aircraft: str = Query('', max_length=256),

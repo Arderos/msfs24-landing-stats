@@ -25,7 +25,7 @@ public partial class App
         if (string.IsNullOrEmpty(configuration)) return; // Direct developer launch has no resident bundle.
         var descriptor = GuardianDescriptor.Parse(configuration);
         Environment.SetEnvironmentVariable(GuardianDescriptor.EnvironmentName, null);
-        _guardian = new GuardianClient(descriptor, ReadGuardianHealth, ActivateFromGuardian, PrepareGuardianRecoveryAsync);
+        _guardian = new GuardianClient(descriptor, ReadGuardianHealth, ActivateFromGuardian, PrepareGuardianRecoveryAsync, EndSessionFromGuardianAsync);
         await _guardian.ConnectAsync();
         _ = _guardian.Completion.ContinueWith(_ =>
         {
@@ -52,16 +52,17 @@ public partial class App
         var window = Volatile.Read(ref _runtimeWindow);
         return window?.ReadGuardianHealth(Interlocked.Read(ref _uiProgressQpc)) ?? new GuardianStatus(false, 0, Interlocked.Read(ref _uiProgressQpc), false);
     }
-    private void ActivateFromGuardian()
+    private Task<bool> ActivateFromGuardian()
     {
-        _ = Dispatcher.BeginInvoke(new Action(() =>
+        return Dispatcher.InvokeAsync(new Func<bool>(() =>
         {
             var window = MainWindow;
-            if (window == null || Volatile.Read(ref _intentionalExit) != 0) return;
+            if (window == null || Volatile.Read(ref _intentionalExit) != 0) return false;
             if (!window.IsVisible) window.Show();
             if (window.WindowState == WindowState.Minimized) window.WindowState = WindowState.Normal;
             window.Activate();
-        }), DispatcherPriority.Background);
+            return true;
+        }), DispatcherPriority.Background).Task;
     }
     private Task<bool> PrepareGuardianRecoveryAsync() => Volatile.Read(ref _runtimeWindow)?.PrepareGuardianRecoveryAsync() ?? Task.FromResult(false);
     internal static Task AcknowledgeExitAsync(GuardianStopReason reason)
@@ -70,8 +71,20 @@ public partial class App
         lock (app._intentGate)
         {
             if (app._stopIntent != null) return app._stopIntent;
+            StopFileActivationIntake();
             Interlocked.Exchange(ref app._intentionalExit, 1);
             return app._stopIntent = app._guardian == null ? Task.CompletedTask : app.RequireExitAcknowledgementAsync(reason);
+        }
+    }
+    internal static void StopFileActivationIntake()
+    {
+        if (!(Current is App app)) return;
+        lock (app._intentGate)
+        {
+            app._fileActivationStopped = true;
+            var receiver = app._landingFileActivation;
+            app._landingFileActivation = null;
+            receiver?.Dispose();
         }
     }
     private async Task RequireExitAcknowledgementAsync(GuardianStopReason reason)
@@ -83,6 +96,15 @@ public partial class App
         catch (Exception error) { WriteCrashLog("exit-intent", error); }
     }
     internal static GuardianClient? Guardian => (Current as App)?._guardian;
+    private async Task EndSessionFromGuardianAsync()
+    {
+        await AcknowledgeExitAsync(GuardianStopReason.SessionEnd).ConfigureAwait(false);
+        await Dispatcher.InvokeAsync(() =>
+        {
+            Volatile.Read(ref _runtimeWindow)?.DrainSessionEnding(TimeSpan.FromSeconds(15));
+            Shutdown();
+        }).Task.ConfigureAwait(false);
+    }
     protected override void OnSessionEnding(SessionEndingCancelEventArgs e)
     {
         try { Volatile.Read(ref _runtimeWindow)?.DrainSessionEnding(TimeSpan.FromSeconds(15)); }

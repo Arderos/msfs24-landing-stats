@@ -26,9 +26,17 @@ internal sealed partial class EpisodeTransactionStore
             if (manifest.Stage < EpisodeWorkStage.InputsCommitted)
             {
                 Save(manifest);
-                CopyImmutable(source.PathFor(id, "inputs.bin.gz"), PathFor(id, "inputs.bin.gz"), incoming.InputHash);
-                ReadInputFile(manifest, PathFor(id, "inputs.bin.gz"));
-                manifest.InputHash = incoming.InputHash; manifest.Stage = EpisodeWorkStage.InputsCommitted; Save(manifest);
+                var destination = PathFor(id, "inputs.bin.gz");
+                if (File.Exists(destination))
+                {
+                    // Publication precedes its commit marker. Retain verified live
+                    // bytes, including the advisory airport cache absent from replay.
+                    if (RecoveryContentHash(ReadInputFile(manifest, destination)) != RecoveryContentHash(incomingInputs))
+                        throw new InvalidDataException("Recovered input differs from the published episode; both sources retained.");
+                }
+                else CopyImmutable(source.PathFor(id, "inputs.bin.gz"), destination, incoming.InputHash);
+                ReadInputFile(manifest, destination);
+                manifest.InputHash = Hash(destination); manifest.Stage = EpisodeWorkStage.InputsCommitted; Save(manifest);
             }
             else ReadInputs(manifest);
             if (ValidHash(incoming.FacilityHash) && !ValidHash(manifest.FacilityHash))

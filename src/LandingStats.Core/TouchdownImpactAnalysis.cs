@@ -74,7 +74,7 @@ public sealed class TouchdownImpactResult
 /// </summary>
 public static class TouchdownImpactAnalysis
 {
-    public const int CurrentVersion = 1;
+    public const int CurrentVersion = 2;
     private const double DuplicateTolerance = 1e-9;
     private const double MaximumFrameGap = .15;
     private const double FitSpan = .30;
@@ -117,6 +117,7 @@ public static class TouchdownImpactAnalysis
         {
             var s = samples[i];
             if (unique.Count > 0 && s.MotionSimulation == unique[unique.Count - 1].MotionSimulation &&
+                s.OnGround == unique[unique.Count - 1].OnGround &&
                 Math.Abs(s.TimeSeconds - unique[unique.Count - 1].TimeSeconds) <= DuplicateTolerance)
                 unique[unique.Count - 1] = s;
             else
@@ -133,7 +134,7 @@ public static class TouchdownImpactAnalysis
         {
             var previous = unique[contact - 1];
             if (previous.OnGround) return new TouchdownImpactResult();
-            if (!IsFinite(previous.TimeSeconds) || previous.TimeSeconds >= first.TimeSeconds || !previous.MotionSimulation)
+            if (!IsFinite(previous.TimeSeconds) || previous.TimeSeconds - first.TimeSeconds > DuplicateTolerance || !previous.MotionSimulation)
                 return new TouchdownImpactResult(TouchdownImpactStatus.InvalidTelemetry);
             if (first.TimeSeconds - previous.TimeSeconds > MaximumFrameGap + DuplicateTolerance)
                 return new TouchdownImpactResult(TouchdownImpactStatus.Incomplete, first.GForce, 0);
@@ -151,19 +152,24 @@ public static class TouchdownImpactAnalysis
         for (var i = contact; i < unique.Count; i++)
         {
             var s = unique[i];
-            if (!IsFinite(s.TimeSeconds) || !s.MotionSimulation)
+            if (!IsFinite(s.TimeSeconds))
                 return Result(TouchdownImpactStatus.InvalidTelemetry, peak, peakTime);
+            if (!s.MotionSimulation)
+                return Result(TouchdownImpactStatus.Incomplete, peak, peakTime);
             if (i > contact)
             {
                 var dt = s.TimeSeconds - unique[i - 1].TimeSeconds;
-                if (dt <= 0) return Result(TouchdownImpactStatus.InvalidTelemetry, peak, peakTime);
+                if (dt < -DuplicateTolerance || (dt <= DuplicateTolerance && s.OnGround == unique[i - 1].OnGround))
+                    return Result(TouchdownImpactStatus.InvalidTelemetry, peak, peakTime);
                 if (dt > MaximumFrameGap + DuplicateTolerance)
                     return Result(TouchdownImpactStatus.Incomplete, peak, peakTime);
             }
             // First airborne sample is an exclusive ownership boundary. Its G
             // belongs to flight/the next contact and cannot overwrite this peak.
             if (!s.OnGround)
-                return Complete(TouchdownImpactStatus.Liftoff, peak, peakTime, s.TimeSeconds - first.TimeSeconds);
+                // A distinct AIR delivery can end this contact at the same
+                // physics instant. Its load still belongs to the next flight.
+                return Complete(TouchdownImpactStatus.Liftoff, peak, peakTime, Math.Max(peakTime, s.TimeSeconds - first.TimeSeconds));
             if (!IsFinite(s.GForce) || !IsFinite(s.VelocityWorldYFps) ||
                 !ObserveOptional(s.GroundAltitudeFeet, ref terrainState) ||
                 !ObserveOptional(s.RotationVelocityBodyXRadiansPerSecond, ref rotationXState) ||

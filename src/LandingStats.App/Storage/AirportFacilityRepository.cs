@@ -74,13 +74,15 @@ public sealed class AirportFacilityRepository
             existing = Array.Empty<AirportFacility>();
         }
 
-        var merged = existing
-            .Concat(facilities ?? Enumerable.Empty<AirportFacility>())
+        // Persist most recently observed facilities first. The list order is
+        // the eviction order, so newly observed Y/Z identifiers survive a full cache.
+        var observed = (facilities ?? Enumerable.Empty<AirportFacility>())
+            .Where(facility => !string.IsNullOrWhiteSpace(facility.Ident))
+            .GroupBy(facility => facility.Key, StringComparer.OrdinalIgnoreCase).Select(group => group.Last());
+        var merged = observed.Concat(existing)
             .Where(facility => !string.IsNullOrWhiteSpace(facility.Ident))
             .GroupBy(facility => facility.Key, StringComparer.OrdinalIgnoreCase)
-            .Select(group => group.Last())
-            .OrderBy(facility => facility.Ident, StringComparer.OrdinalIgnoreCase)
-            .ThenBy(facility => facility.Region, StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.First())
             .Take(32768)
             .ToList();
 

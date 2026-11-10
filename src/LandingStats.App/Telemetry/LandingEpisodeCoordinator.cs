@@ -196,14 +196,14 @@ internal sealed partial class LandingEpisodeCoordinator
         {
             sample.AxisElevatorSetValid = false; sample.AxisElevatorSetPercent = 0; sample.AxisElevatorSetAgeSeconds = double.NaN;
         }
-        if (_sdkStateKnown && !double.IsNaN(_lastSimulationTime) &&
+        if (_sdkStateKnown && IsFinite(sample.SimulationTimeSeconds) && IsFinite(_lastSimulationTime) &&
             sample.SimulationTimeSeconds < _lastSimulationTime - 0.001)
             EndFlightSegment("simulation_time_reversed");
         AnnotateSdkFrame(sample);
         var sampleTime = TimeOf(sample);
         if (_replayActive)
         {
-            _lastSimulationTime = sample.SimulationTimeSeconds;
+            if (IsFinite(sample.SimulationTimeSeconds)) _lastSimulationTime = sample.SimulationTimeSeconds;
             _previousOnGround = sample.OnGround;
             return;
         }
@@ -228,9 +228,13 @@ internal sealed partial class LandingEpisodeCoordinator
         if (sample.SimulatorState == TelemetrySimulatorState.Paused ||
             sample.SimulatorState == TelemetrySimulatorState.Inactive)
         {
-            _lastSimulationTime = sample.SimulationTimeSeconds;
+            if (IsFinite(sample.SimulationTimeSeconds)) _lastSimulationTime = sample.SimulationTimeSeconds;
             if (sample.SimulatorState == TelemetrySimulatorState.Paused)
+            {
+                _contactContinuity.Observe(sample);
+                AddToPreRoll(sample);
                 AppendEpisodeSample(sample);
+            }
             else
             {
                 _contactContinuity.Reset();
@@ -240,7 +244,7 @@ internal sealed partial class LandingEpisodeCoordinator
         }
         UpdateAircraftGroundState(sample.OnGround);
 
-        if (!double.IsNaN(_lastSimulationTime) && sample.SimulationTimeSeconds < _lastSimulationTime - 0.001)
+        if (IsFinite(sample.SimulationTimeSeconds) && IsFinite(_lastSimulationTime) && sample.SimulationTimeSeconds < _lastSimulationTime - 0.001)
         {
             if (_lastContactTime.HasValue)
             {
@@ -267,7 +271,7 @@ internal sealed partial class LandingEpisodeCoordinator
             sampleTime = TimeOf(sample);
         }
         _lastKinematicFrame = sample.MotionSimulation ? sample.CopyForAnalysis() : null;
-        _lastSimulationTime = sample.SimulationTimeSeconds;
+        if (IsFinite(sample.SimulationTimeSeconds)) _lastSimulationTime = sample.SimulationTimeSeconds;
 
         if (_replayApproachDiscarded)
         {
@@ -285,6 +289,9 @@ internal sealed partial class LandingEpisodeCoordinator
             RecordLifecycle("replay_approach_reset", "A new airborne approach above the go-around reset height may be recorded.");
         }
         AddToPreRoll(sample);
+        if (_episodeSamples == null)
+            _contactContinuity.RestrictCumulativeGroundHistory(
+                _preRoll.OldestSample == null ? double.NaN : TimeOf(_preRoll.OldestSample));
 
         if (sample.MotionSimulation && !sample.OnGround)
         {

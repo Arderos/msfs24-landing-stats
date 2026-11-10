@@ -82,16 +82,17 @@ internal static class InertialFitSupportRegressionTests
 
     private static void SmoothSignalsRetainTheirMeasuredTrendAtDifferentCadences()
     {
-        foreach (var times in new[]
+        foreach (var cadence in new[]
         {
-            Enumerable.Range(0, 21).Select(i => -.2 + i * .01).ToArray(),
-            new[] { -.2, -.16, -.12, -.08, -.04, 0 },
-            new[] { -.2, -.15, -.1, -.05, 0 },
-            new[] { -.2, -.1, 0 },
-            new[] { -.2, -.13, -.05, 0 },
-            new[] { -.15, -.1, -.05, 0 },
+            (Times: Enumerable.Range(0, 21).Select(i => -.2 + i * .01).ToArray(), ConstantUsesLast: true),
+            (Times: new[] { -.2, -.16, -.12, -.08, -.04, 0 }, ConstantUsesLast: true),
+            (Times: new[] { -.2, -.15, -.1, -.05, 0 }, ConstantUsesLast: true),
+            (Times: new[] { -.2, -.1, 0 }, ConstantUsesLast: false),
+            (Times: new[] { -.2, -.13, -.05, 0 }, ConstantUsesLast: false),
+            (Times: new[] { -.15, -.1, -.05, 0 }, ConstantUsesLast: false),
         })
         {
+            var times = cadence.Times;
             foreach (var origin in new[] { 0.0, 1000000.0 })
             {
                 var linear = Samples(times, time => -2 + 3 * time);
@@ -100,7 +101,9 @@ internal static class InertialFitSupportRegressionTests
                 Check(trend.Extrapolated, "A smooth lower-rate trend lost valid support.");
                 Equal(trend.Fpm, 115.5, "Linear prediction", 1e-6);
                 var constant = Run(Samples(times, time => -2), .025);
-                Check(constant.Extrapolated, "Constant descent was rejected as a noisy trend.");
+                Check(constant.Extrapolated == !cadence.ConstantUsesLast && constant.Decision ==
+                    (cadence.ConstantUsesLast ? "precontact_adaptive_last_observation" : "precontact_linear_fit_extrapolated"),
+                    "Constant descent did not retain the expected admitted-model decision.");
                 Equal(constant.Fpm, 120, "Constant descent");
             }
         }

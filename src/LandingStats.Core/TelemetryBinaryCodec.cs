@@ -105,10 +105,7 @@ public static class TelemetryBinaryCodec
             AxisElevatorSetValid = ReadBoolean(reader),
             AxisElevatorSetAgeSeconds = BitConverter.Int64BitsToDouble(reader.ReadInt64()),
         };
-        if (sample.SimulatorState < TelemetrySimulatorState.Legacy || sample.SimulatorState > TelemetrySimulatorState.Inactive)
-            throw new InvalidDataException("Unknown simulator state.");
-        if (double.IsInfinity(sample.AnalysisTimeSeconds) || sample.PauseFlags < -1 || sample.FlightSegment < 0)
-            throw new InvalidDataException("Invalid lifecycle telemetry values.");
+        sample.ValidateLifecycle();
         sample.ResizeControllers(controllerCount, axisCount);
         for (var i = 0; i < 4; i++) sample.EngineThrottlePercent[i] = BitConverter.Int64BitsToDouble(reader.ReadInt64());
         for (var i = 0; i < 4; i++) sample.EngineN1Percent[i] = BitConverter.Int64BitsToDouble(reader.ReadInt64());
@@ -138,6 +135,7 @@ public static class TelemetryBinaryCodec
 
     private static void Write(BinaryWriter writer, TelemetrySample sample, bool canonical)
     {
+        sample.ValidateLifecycle();
         writer.Write(sample.HasLegacyControllerLayout ? Version : (ushort)2);
         if (!sample.HasLegacyControllerLayout) { writer.Write(sample.ControllerCount); writer.Write(sample.ControllerAxisCount); }
         writer.Write(sample.Sequence);

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
@@ -326,7 +326,7 @@ internal sealed class IntegrationApiData
             _events.Publish(physical.Key, physical.First().TimestampUtc, revision, payload);
         }
     }
-    public void ReconcileCommitted(CancellationToken cancellationToken = default)
+    public bool ReconcileCommitted(CancellationToken cancellationToken = default, Action<Guid, string>? failed = null, Action<Guid>? recovered = null)
     {
         // Called only by the API owner's background loop. The scan has bounded
         // work per tick, and skips already observed immutable analysis hashes.
@@ -337,31 +337,51 @@ internal sealed class IntegrationApiData
             if (System.Threading.Interlocked.Exchange(ref _resetObserved, 0) != 0) { _observed.Clear(); _nextScan = DateTime.MinValue; }
             if (_scan == null)
             {
-                if (DateTime.UtcNow < _nextScan) return;
+                if (DateTime.UtcNow < _nextScan) return false;
                 _scan = _store.Enumerate().GetEnumerator();
             }
             var budget = System.Diagnostics.Stopwatch.StartNew();
             for (var i = 0; i < 16 && budget.ElapsedMilliseconds < 50; i++)
             {
-                if (!_scan.MoveNext()) { _scan.Dispose(); _scan = null; _nextScan = DateTime.UtcNow.AddSeconds(30); return; }
-                var id = _scan.Current;
+                Guid id;
                 try
                 {
-                    var manifest = _store.Read(id); if (manifest.Stage < EpisodeWorkStage.Analysed) continue;
+                    if (!_scan.MoveNext())
+                    {
+                        var completed = _scan; _scan = null; completed.Dispose();
+                        _nextScan = DateTime.UtcNow.AddSeconds(30);
+                        return true; // Only a completed scan proves owner-level recovery.
+                    }
+                    id = _scan.Current;
+                }
+                catch
+                {
+                    // Iterator state after MoveNext/Current failed cannot prove
+                    // recovery. Dispose it and start a real scan on the next tick.
+                    var failedScan = _scan; _scan = null; _nextScan = DateTime.MinValue;
+                    failedScan?.Dispose();
+                    throw;
+                }
+                try
+                {
+                    var manifest = _store.ReadForRecovery(id, out _);
+                    if (manifest == null) { recovered?.Invoke(id); continue; }
+                    if (manifest.Stage < EpisodeWorkStage.Analysed) { recovered?.Invoke(id); continue; }
                     var signature = manifest.AnalysisHash + ":" + manifest.ReportHash;
-                    if (_observed.TryGetValue(id, out var known) && known == signature) continue;
+                    if (_observed.TryGetValue(id, out var known) && known == signature) { recovered?.Invoke(id); continue; }
                     if (_events.CoversCapture(id, manifest.TimestampUtc, manifest.Stage >= EpisodeWorkStage.ReportReady ? 2 : 1))
-                    { Remember(id, signature); continue; }
+                    { Remember(id, signature); recovered?.Invoke(id); continue; }
                     // Append the initial revision as well as a ready report when
                     // repairing a crash between durable analysis and publication.
                     Publish(id, _store.ReadAnalysis(manifest), false, cancellationToken);
                     if (manifest.Stage >= EpisodeWorkStage.ReportReady) Publish(id, _store.ReadReport(manifest), true, cancellationToken);
-                    Remember(id, signature);
-                    return; // At most one full analysis/report read per owner tick.
+                    Remember(id, signature); recovered?.Invoke(id);
+                    return false; // At most one full analysis/report read per owner tick.
                 }
-                catch (Exception error) when (error is IOException || error is UnauthorizedAccessException || error is SerializationException || error is InvalidOperationException || error is ArgumentException)
-                { /* Canonical episode is retained; a later bounded scan retries it. */ }
+                catch (Exception error) when (error is IOException || error is InvalidDataException || error is UnauthorizedAccessException || error is SerializationException || error is InvalidOperationException || error is ArgumentException || error is IntegrationApiException)
+                { failed?.Invoke(id, error.GetType().Name); /* A later bounded scan retries this retained episode. */ }
             }
+            return false;
         }
     }
     private void Remember(Guid id, string signature)

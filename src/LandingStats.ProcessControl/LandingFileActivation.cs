@@ -120,7 +120,7 @@ internal sealed class LandingFileActivation : IDisposable
                         if (_stop.IsCancellationRequested) return;
                         File.Delete(path);
                     }
-                    catch (OperationCanceledException) { return; } // Retain the intent across window shutdown.
+                    catch (OperationCanceledException) when (_stop.IsCancellationRequested) { return; }
                     catch (Exception error) { failed(error); } // One batch must not hide other queued requests.
                 }
                 if (WaitHandle.WaitAny(handles) == 1) return;

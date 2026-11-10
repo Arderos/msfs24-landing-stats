@@ -138,9 +138,7 @@ internal sealed class GoogleOAuthClient : IDisposable
 
     private async Task<UserCredential> AuthorizeAsync(CancellationToken cancellationToken)
     {
-        var receiver = new LocalServerCodeReceiver(
-            ClosePage,
-            LocalServerCodeReceiver.CallbackUriChooserStrategy.ForceLoopbackIp);
+        var receiver = new DesktopCodeReceiver();
         return await GoogleWebAuthorizationBroker.AuthorizeAsync(
                 CreateInitializer(
                     GoogleDriveOAuthConfiguration.ClientId,
@@ -153,6 +151,16 @@ internal sealed class GoogleOAuthClient : IDisposable
                 _tokenStore,
                 receiver)
             .ConfigureAwait(false);
+    }
+
+    private sealed class DesktopCodeReceiver : LocalServerCodeReceiver
+    {
+        public DesktopCodeReceiver() : base(ClosePage, CallbackUriChooserStrategy.ForceLoopbackIp) { }
+        protected override bool OpenBrowser(string url)
+        {
+            ExternalUriLauncher.Open(url);
+            return true;
+        }
     }
 
     private static GoogleAuthorizationCodeFlow.Initializer CreateInitializer(

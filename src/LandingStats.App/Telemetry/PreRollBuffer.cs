@@ -11,7 +11,7 @@ internal sealed class PreRollBuffer : IEnumerable<TelemetrySample>
 {
     private readonly double _durationSeconds;
     private readonly int _maximumSamples;
-    private readonly Queue<Entry> _entries = new Queue<Entry>();
+    private readonly LinkedList<Entry> _entries = new LinkedList<Entry>();
     private double _lastReceivedHostSeconds = double.NaN;
 
     public PreRollBuffer(double durationSeconds, int maximumSamples)
@@ -31,6 +31,7 @@ internal sealed class PreRollBuffer : IEnumerable<TelemetrySample>
     }
 
     public int Count => _entries.Count;
+    internal TelemetrySample? OldestSample => _entries.First?.Value.Sample;
 
     public void Add(TelemetrySample sample, double receivedHostSeconds)
     {
@@ -53,18 +54,27 @@ internal sealed class PreRollBuffer : IEnumerable<TelemetrySample>
         }
 
         _lastReceivedHostSeconds = receivedHostSeconds;
-        _entries.Enqueue(new Entry(sample, receivedHostSeconds));
+        // Preserve both ends of each paused source state without allowing a long
+        // pause to evict the active ground/approach history by its frame count.
+        var last = _entries.Last;
+        if (sample.SimulatorState == TelemetrySimulatorState.Paused && last?.Previous != null &&
+            last.Value.Sample.SimulatorState == TelemetrySimulatorState.Paused &&
+            last.Previous.Value.Sample.SimulatorState == TelemetrySimulatorState.Paused &&
+            TelemetryDeduplicator.SameSourceControlState(last.Previous.Value.Sample, last.Value.Sample) &&
+            TelemetryDeduplicator.SameSourceControlState(last.Value.Sample, sample))
+            last.Value = new Entry(sample, receivedHostSeconds);
+        else _entries.AddLast(new Entry(sample, receivedHostSeconds));
         while (_entries.Count > 1 &&
-               receivedHostSeconds - _entries.Peek().ReceivedHostSeconds > _durationSeconds)
+               receivedHostSeconds - _entries.First!.Value.ReceivedHostSeconds > _durationSeconds)
         {
-            _entries.Dequeue();
+            _entries.RemoveFirst();
         }
 
         // The time window is the primary limit. The count limit protects the UI process if MSFS
         // emits an unexpectedly high frame rate or a malformed stream repeats one timestamp forever.
         while (_entries.Count > _maximumSamples)
         {
-            _entries.Dequeue();
+            _entries.RemoveFirst();
         }
     }
 
@@ -101,7 +111,7 @@ internal sealed class PreRollBuffer : IEnumerable<TelemetrySample>
         }
         if ((count == 0 && !double.IsNaN(last)) || (count != 0 && (double.IsNaN(last) || double.IsInfinity(last) || last != previous)))
             throw new InvalidDataException("Invalid pre-roll checkpoint boundary.");
-        _entries.Clear(); foreach (var entry in entries) _entries.Enqueue(entry); _lastReceivedHostSeconds = last;
+        _entries.Clear(); foreach (var entry in entries) _entries.AddLast(entry); _lastReceivedHostSeconds = last;
     }
 
     public TelemetrySample[] ToArray()

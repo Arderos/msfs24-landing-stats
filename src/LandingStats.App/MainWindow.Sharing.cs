@@ -18,6 +18,7 @@ public partial class MainWindow
     private Task _sharingStorageTail = Task.CompletedTask;
     private readonly object _sharingAdmissionGate = new object();
     private bool _sharingAccepting = true;
+    private TaskCompletionSource<bool>? _sharingRestartResume;
     private int _sharingPendingOperations;
     private string? _sharingStatusKey;
     private object[] _sharingStatusArguments = Array.Empty<object>();
@@ -75,12 +76,11 @@ public partial class MainWindow
     internal async Task ExportLandingAsync(string id, string destination)
     {
         Dispatcher.VerifyAccess();
-        ThrowIfSharingStopped();
-        _sharingPendingOperations++;
+        BeginSharingOperation();
         SetSharingStatus("Sharing.Exporting");
         try
         {
-            await ScheduleSharingStorage(() => { LandingShareArchive.Export(_repository, id, destination); return true; });
+            await ScheduleSharingStorage(() => { LandingShareArchive.Export(_repository, id, destination, _landingRepositoryGate); return true; });
             ThrowIfSharingStopped();
             SetSharingStatus("Sharing.ExportedFormat", null, Path.GetFileName(destination));
         }
@@ -91,7 +91,7 @@ public partial class MainWindow
             SetSharingStatus("Sharing.ExportFailed", error.Message);
             throw;
         }
-        finally { _sharingPendingOperations--; RefreshSharingPresentation(); }
+        finally { EndSharingOperation(); }
     }
 
     // File-open activation awaits this batch before acknowledging its durable
@@ -100,14 +100,13 @@ public partial class MainWindow
     internal async Task QueueLandingImports(IEnumerable<string> paths)
     {
         Dispatcher.VerifyAccess();
-        ThrowIfSharingStopped();
         var files = paths?.Where(path => !string.IsNullOrWhiteSpace(path)).ToArray() ?? throw new ArgumentNullException(nameof(paths));
         if (files.Length == 0) return;
-        _sharingPendingOperations++;
+        await BeginLandingImportAsync();
         SetSharingStatus("Sharing.ImportingFormat", null, files.Length);
         try
         {
-            var result = await ScheduleSharingStorage(() => LandingShareArchive.Import(_repository, files));
+            var result = await ScheduleSharingStorage(() => LandingShareArchive.Import(_repository, files, _landingRepositoryGate));
             ThrowIfSharingStopped();
             await LoadHistoryAsync();
             ThrowIfSharingStopped();
@@ -130,7 +129,42 @@ public partial class MainWindow
             SetSharingStatus("Sharing.ImportFailed", error.Message);
             throw;
         }
-        finally { _sharingPendingOperations--; RefreshSharingPresentation(); }
+        finally { EndSharingOperation(); }
+    }
+
+    private void BeginSharingOperation()
+    {
+        lock (_sharingAdmissionGate)
+        {
+            ThrowIfSharingStopped();
+            _sharingPendingOperations++;
+        }
+    }
+
+    private async Task BeginLandingImportAsync()
+    {
+        while (true)
+        {
+            Task resume;
+            lock (_sharingAdmissionGate)
+            {
+                // A restart preparation can still fail. Keep the shell's
+                // durable request pending until admission resumes or closes.
+                if (_sharingRestartResume == null || Volatile.Read(ref _isClosed) || Volatile.Read(ref _historyStopped))
+                {
+                    BeginSharingOperation();
+                    return;
+                }
+                resume = _sharingRestartResume.Task;
+            }
+            await resume;
+        }
+    }
+
+    private void EndSharingOperation()
+    {
+        lock (_sharingAdmissionGate) _sharingPendingOperations--;
+        RefreshSharingPresentation();
     }
 
     private Task<T> ScheduleSharingStorage<T>(Func<T> work)
@@ -142,7 +176,7 @@ public partial class MainWindow
             ThrowIfSharingStopped();
             var operation = _sharingStorageTail.ContinueWith(_ =>
             {
-                lock (_landingRepositoryGate) return work();
+                return work();
             }, CancellationToken.None, TaskContinuationOptions.None, TaskScheduler.Default);
             _sharingStorageTail = operation;
             TrackHistoryOperation(operation);
@@ -159,15 +193,21 @@ public partial class MainWindow
 
     private void StopAcceptingLandingSharing()
     {
-        lock (_sharingAdmissionGate) _sharingAccepting = false;
+        lock (_sharingAdmissionGate)
+        {
+            _sharingAccepting = false;
+            _sharingRestartResume?.TrySetCanceled();
+            _sharingRestartResume = null;
+        }
     }
 
     private bool TrySealSharingForRestart()
     {
         lock (_sharingAdmissionGate)
         {
-            if (SharingStopped || !_sharingStorageTail.IsCompleted) return false;
+            if (SharingStopped || _sharingPendingOperations != 0 || !_sharingStorageTail.IsCompleted) return false;
             _sharingAccepting = false;
+            _sharingRestartResume = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             return true;
         }
     }
@@ -175,7 +215,16 @@ public partial class MainWindow
     private void ResumeSharingAfterFailedRestart()
     {
         lock (_sharingAdmissionGate)
-            if (!Volatile.Read(ref _isClosed) && !Volatile.Read(ref _historyStopped)) _sharingAccepting = true;
+        {
+            if (_sharingRestartResume == null) return;
+            if (!Volatile.Read(ref _isClosed) && !Volatile.Read(ref _historyStopped))
+            {
+                _sharingAccepting = true;
+                _sharingRestartResume.TrySetResult(true);
+            }
+            else _sharingRestartResume.TrySetCanceled();
+            _sharingRestartResume = null;
+        }
     }
 
     private async Task WaitForSharingStorageAsync(CancellationToken cancellationToken)

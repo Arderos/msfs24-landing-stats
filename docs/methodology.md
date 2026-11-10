@@ -70,9 +70,12 @@ time. All fits and windows use simulation timestamps rather than sample indexes.
 Before analysis, duplicate timestamps within the same ground/air, physics and
 source-control state are collapsed by keeping the last message. This retains same-frame updates
 such as a touchdown latch that changes in a later message for the same simulation
-instant, while preserving discrete contact, freeze, release and unavailable-source
+instant, while preserving grounded position changes and discrete contact, freeze, release and unavailable-source
 boundaries. The recorder uses the same rule when coalescing deliveries. Paused
 numeric updates remain bounded while source-control transitions are retained.
+The public analyzer applies this rule before segmenting the timeline, so direct
+analysis of raw deliveries and analysis of stored frames use the same numeric
+observations for both contact eligibility and measurements.
 
 ## 3. Contact detection and bounces
 
@@ -89,6 +92,85 @@ airspeed, groundspeed, height or interval duration. Unknown or stale source data
 cannot release a known interruption; recordings without such evidence retain the
 ordinary contact rule. The guard survives pauses, segment boundaries and recorder
 recovery. Rejected transitions can remain available as diagnostic captures.
+
+A grounded pose change during an SDK-confirmed pause starts a new motion history.
+The first resumed airborne point cannot by itself establish a landing; a second
+distinct active airborne observation establishes an interval after the change.
+A teleport followed by a new approach can therefore be recorded without first
+returning to the ground. An unchanged pause preserves existing approach and bounce
+evidence. There are no minimum speed, altitude or elapsed-time gates for this rule.
+A resumed ground interval also establishes a new departure origin, so a previous
+pause cannot suppress a later short bounce after ground motion has resumed.
+Pre-roll retains both endpoints of each paused source state without letting a long
+pause evict the active history. Older archives which omitted pause rows use their
+raw/analysis clock offset and, when present, source observations inside the pause.
+The same rule applies in live recording, stored analysis and recorder recovery.
+
+Grounded position history also validates the departure that arms a contact, even
+when no freeze or slew observation is available. Given two distinct grounded
+observations, the analyzer compares a new displacement with the preceding
+interval's unexplained position change, measured speed and acceleration, and the
+existing channel-alignment allowance. A displacement beyond that combined support
+cannot establish a physical departure. This local check leaves the general 50 m
+flight-replacement uncertainty margin unchanged.
+When a later delivery corrects velocity or acceleration at the same simulation
+instant, the guard reevaluates the grounded position or first airborne frame
+against its original preceding grounded interval. Revisions can both establish
+and remove support for departure. Distinct grounded positions and source-control
+boundaries remain separate evidence. Recorder checkpoints retain the interval
+needed to apply a numeric correction after recovery.
+
+The same guard also checks accumulated motion from a grounded origin through its
+first airborne interval. Its history bound includes both cadence-rounded motion
+windows, their channel-alignment support and adjacent publication brackets, plus
+the current unfinished frame. With the accepted 250 ms maximum frame gap this
+requires 3.5 seconds and the preceding frame bracket, bounded by 4096 distinct
+timestamps. The same bound applies to restored checkpoints. Before recording starts, the
+recorder further restricts this evidence to its retained pre-roll. Repeated
+deliveries of one timestamp therefore have the same effect before and after
+numeric coalescing, and discarded pre-roll cannot supply missing evidence.
+A completed 500 ms interval is evaluated with the existing +/-250 ms channel
+alignment support and adjacent observed frame brackets at its endpoints. Its
+displacement is compared with the integrated observed speed envelope. Full
+orientation changes are compared with the integral of body angular-speed
+magnitude, including each observed suffix of the interval: earlier movement
+cannot supply an allowance for a later unsupported pose change. The preceding
+grounded interval's observed path supplies local uncertainty, including jitter
+that cancels between its endpoints. Linear comparisons also retain the same
+pose-comparison resolution used by source observations: 0.001 ft in altitude
+and 0.00000001 degrees in each horizontal coordinate. The horizontal distance
+allowance bounds their combined equatorial diagonal. Floating-point roundoff
+is an additional allowance; a quiet baseline cannot reduce measurement
+uncertainty to arithmetic precision. These are comparison tolerances, not a
+claim about absolute simulator measurement accuracy. Angular integration also includes the
+half-step area of observed rate changes, preserving uncertainty around a physical
+collision impulse between deliveries.
+
+Unknown position/velocity reference-point offsets can cause real displacement
+during rotation. Cumulative linear checks therefore require a stable observed
+pose; the angular check is independent of that offset and supports arbitrary
+bank and heading wrap. Missing channels disable their corresponding check.
+This history is measurement support, not a minimum flight duration or speed.
+Only completed timestamps are evaluated, so later same-time velocity updates
+produce the same decision during recording and stored analysis. Recorder
+checkpoints preserve the accumulated history; older checkpoints remain readable.
+Grounded cumulative evidence remains provisional until an airborne departure;
+it does not truncate measurements of an already accepted contact on its own.
+Evidence discarded from the bounded history cannot reject a later departure.
+New stable grounded observations replace provisional evidence. Unresolved
+ground noise never establishes that evidence or a rejected airborne run.
+
+If such a replacement starts an airborne run, subsequent airborne flags from
+settling cannot re-arm contact detection. Its ground endpoint remains diagnostic;
+a later physical departure can establish a new contact. An abrupt replacement still
+marked grounded requires another grounded interval before its following departure
+is trusted. Missing channels do not establish replacement evidence, and a capture
+that starts airborne retains the ordinary contact rule. The same state machine
+runs during recording and offline analysis, and its grounded history and rejected
+airborne run survive recorder recovery. Raw telemetry remains unchanged.
+The unsupported departure and its settling frames also end measurement support
+for an earlier accepted contact, so their compression, touchdown latch and G-load
+cannot alter that contact's result.
 
 Source-controlled frames also end compression, velocity, geometry, latch, G-load
 and impact measurement support. This preserves earlier accepted contacts without
@@ -133,8 +215,8 @@ aircraft_rate_fpm = -60 × VELOCITY_WORLD_Y_fps
 ```
 
 For the last approximately 0.20 seconds of a continuous airborne phase, the
-analyzer fits velocity against the actual timestamps and extrapolates that
-airborne trend to the estimated contact time. It intentionally does **not**
+analyzer estimates velocity at the contact time from the actual timestamps and
+airborne velocity observations. It intentionally does **not**
 interpolate through the first ground sample: that sample can already include
 deceleration from the landing-gear impact, which did not exist before contact.
 
@@ -151,6 +233,22 @@ poorly supported trends and endpoint spikes without clipping FPM or forbidding a
 real climb. These are model-admission checks, not calibrated physical confidence
 intervals. If any check fails, the raw last-airborne `VELOCITY WORLD Y` value is
 used and the UI marks it as a fallback.
+
+After these admission checks pass, the analyzer selects between the last observed
+velocity, a linear fit, and a quadratic fit. It compares their mean absolute errors
+when predicting already observed points: each prediction uses only the earlier
+points within the current 0.20-second window. All three models are evaluated on
+the same targets, with at least four preceding observations spanning 0.15 seconds
+and a prediction horizon no longer than that observed span. No older history or
+post-contact sample participates in this comparison.
+
+The model with the smallest error is applied to the estimated contact time.
+Numerical ties prefer the last observation, then the linear fit. If the window
+contains no comparable validation targets, the admitted linear fit is retained.
+Selecting the last observation marks the result as a raw last-airborne measurement;
+selecting either fitted model marks it as extrapolated. The decision journal
+records which model supplied the result. The 0.20-second window and all admission
+checks above apply unchanged.
 
 The dashboard presents signed motion in the conventional graph form: climb is
 positive and descent is negative. Thus an internal descent-positive value of
@@ -832,7 +930,7 @@ original sample within the selected contact's adaptive impact window. It is not
 an average, a velocity derivative, a vector magnitude including braking loads,
 or a maximum over the whole landing sequence.
 
-### Adaptive impact window (analysis version 1)
+### Adaptive impact window (analysis version 2)
 
 The window starts at the first observed on-ground frame of the accepted contact.
 It closes when the load response and vertical motion have settled, or immediately
@@ -859,7 +957,9 @@ These short intervals confirm a state, **not** a fixed deadline after touchdown.
 The impact can last longer. Smooth derotation can keep the window open; the
 algorithm does not claim an exact physical end time of a damped response.
 
-Native analysis uses simulation timestamps and keeps the last duplicate frame.
+Native analysis uses simulation timestamps and keeps the last duplicate frame
+when the simulation timestamp, on-ground state and `MotionSimulation` state
+match. Ground/air and paused/running transitions at the same timestamp are preserved.
 An interruption over 0.15 s, backward time, slew, missing required G/vertical
 velocity, an all-zero G window, or an unfinished recording cannot establish a
 complete result. Fully absent optional terrain/rate channels are supported;

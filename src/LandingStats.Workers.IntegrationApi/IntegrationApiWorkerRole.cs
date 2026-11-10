@@ -95,11 +95,21 @@ internal sealed class IntegrationApiWorkerRole : IWorkerRole
     internal static NamedPipeServerStream CreatePipe(string name, SecurityIdentifier user)
     {
         var security = new PipeSecurity();
+        security.SetOwner(user);
         security.SetAccessRuleProtection(true, false);
         security.AddAccessRule(new PipeAccessRule(new SecurityIdentifier(WellKnownSidType.NetworkSid, null), PipeAccessRights.FullControl, AccessControlType.Deny));
         security.AddAccessRule(new PipeAccessRule(user, PipeAccessRights.FullControl, AccessControlType.Allow));
-        return new NamedPipeServerStream(name, PipeDirection.InOut, IntegrationApiProtocol.MaximumClients,
+        var pipe = new NamedPipeServerStream(name, PipeDirection.InOut, IntegrationApiProtocol.MaximumClients,
             PipeTransmissionMode.Byte, PipeOptions.Asynchronous, 16384, 16384, security, HandleInheritability.None);
+        try
+        {
+            // NPFS keeps the first creator's security descriptor when another
+            // server instance joins this name. Validate every replacement slot.
+            if (!user.Equals(pipe.GetAccessControl().GetOwner(typeof(SecurityIdentifier))))
+                throw new UnauthorizedAccessException("The integration pipe belongs to another Windows user.");
+            return pipe;
+        }
+        catch { pipe.Dispose(); throw; }
     }
 
     private async Task ServeClientAsync(NamedPipeServerStream pipe, CancellationToken token)

@@ -196,12 +196,13 @@ internal static class UpdateActivationRegressionTests
         var name = "Local\\LandingStats.UpdateActivationTest-" + Guid.NewGuid().ToString("N");
         Check(GuardianInstance.TryAcquire(out var first, name), "Could not own the unique test instance.");
         using (first!)
-        using (var activated = EventWaitHandle.OpenExisting(name + ".Activate"))
+        using (var activated = new ManualResetEventSlim())
         {
-            Check(!GuardianInstance.TryAcquire(out var duplicate, name, activateExisting: false) && duplicate == null,
+            first!.StartActivation(() => { activated.Set(); return Task.FromResult(true); });
+            Check(!Task.Run(() => GuardianInstance.TryAcquire(out _, name, activateExisting: false)).GetAwaiter().GetResult(),
                 "A second background launcher acquired the existing instance.");
-            Check(!activated.WaitOne(0), "A background relaunch activated an existing instance.");
-            Check(!GuardianInstance.TryAcquire(out duplicate, name) && duplicate == null && activated.WaitOne(0),
+            Check(!activated.IsSet, "A background relaunch activated an existing instance.");
+            Check(!Task.Run(() => GuardianInstance.TryAcquire(out _, name)).GetAwaiter().GetResult() && activated.IsSet,
                 "An explicit user launch no longer activates the existing instance.");
         }
     }

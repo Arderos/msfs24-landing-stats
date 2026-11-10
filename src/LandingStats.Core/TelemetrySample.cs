@@ -10,6 +10,12 @@ public enum TelemetrySimulatorState
 
 public sealed class TelemetrySample
 {
+    internal void ValidateLifecycle()
+    {
+        if (SimulatorState < TelemetrySimulatorState.Legacy || SimulatorState > TelemetrySimulatorState.Inactive ||
+            double.IsInfinity(AnalysisTimeSeconds) || PauseFlags < -1 || FlightSegment < 0)
+            throw new System.IO.InvalidDataException("Invalid lifecycle telemetry values.");
+    }
     // SimConnect documents numeric contact-point indices in the inclusive 0-19 range.
     public const int CapturedContactPointCount = 20;
     public const int CapturedEngineCount = 4;
@@ -89,10 +95,17 @@ public sealed class TelemetrySample
     // simulator observation and is deliberately absent from the raw CSV schema.
     public TelemetryPositionDiscontinuity? AnalysisDiscontinuity { get; internal set; }
 
+    // Analysis normalizes SimulationTimeSeconds, but pause provenance still needs
+    // the original clock. These derived fields never change the capture schema.
+    internal double? RecordedSimulationTimeSeconds { get; set; }
+    internal bool AnalysisPauseReposition { get; set; }
+    internal bool AnalysisPauseEvaluated { get; set; }
+
     /// <summary>Analysis owns the scalar copy; its shared telemetry arrays are read-only.</summary>
     public TelemetrySample CopyForAnalysis()
     {
         var copy = (TelemetrySample)MemberwiseClone();
+        copy.RecordedSimulationTimeSeconds ??= SimulationTimeSeconds;
         if (!double.IsNaN(AnalysisTimeSeconds) && !double.IsInfinity(AnalysisTimeSeconds))
             copy.SimulationTimeSeconds = AnalysisTimeSeconds;
         return copy;

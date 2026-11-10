@@ -33,6 +33,8 @@ internal sealed class GuardianSignals : IDisposable
     // authenticated lifecycle signals, whose identities must never be reused.
     internal static EventWaitHandle CreateOrOpenActivationEvent(string name)
         => CreateEvent(name, EventResetMode.AutoReset, allowMediumIntegrity: true, allowExisting: true);
+    internal static EventWaitHandle CreateOrOpenAcknowledgementEvent(string name)
+        => CreateEvent(name, EventResetMode.ManualReset, allowMediumIntegrity: true, allowExisting: true);
     private static EventWaitHandle CreateEvent(string name, EventResetMode mode, bool allowMediumIntegrity, bool allowExisting)
     {
         var security = new EventWaitHandleSecurity(); security.SetAccessRuleProtection(true, false);
@@ -52,7 +54,7 @@ internal sealed class GuardianSignals : IDisposable
         catch { handle.Dispose(); throw; }
         return handle;
     }
-    private static void SetActivationIntegrity(EventWaitHandle handle)
+    internal static void SetActivationIntegrity(WaitHandle handle)
     {
         if (!ConvertStringSecurityDescriptorToSecurityDescriptor("S:(ML;;NW;;;ME)", 1, out var descriptor, out _))
             throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());

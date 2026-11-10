@@ -75,8 +75,10 @@ internal sealed class RawEffectStore
         }
     }
     internal static byte[] Encode(DurableRuntimeInput input, IReadOnlyList<object> effects, out CatalogBlob[] catalogs)
+        => Encode(input.Input.Id, input.Cursor, effects, out catalogs);
+    private static byte[] Encode(Guid id, JournalCursor cursor, IReadOnlyList<object> effects, out CatalogBlob[] catalogs)
     {
-        if (effects.Count > 8 || input.Input.Id == Guid.Empty) throw new InvalidDataException("Invalid RAW effect batch.");
+        if (effects.Count > 8 || id == Guid.Empty) throw new InvalidDataException("Invalid RAW effect batch.");
         var references = new Dictionary<string, CatalogBlob>(StringComparer.Ordinal);
         foreach (var effect in effects)
         {
@@ -94,7 +96,7 @@ internal sealed class RawEffectStore
         using var memory = new MemoryStream();
         using (var writer = new BinaryWriter(memory, System.Text.Encoding.UTF8, true))
         {
-            writer.Write(catalogs.Length == 0 ? Magic : ReferencedMagic); writer.Write(input.Input.Id.ToByteArray()); writer.Write(input.Cursor.Segment); writer.Write(input.Cursor.Sequence);
+            writer.Write(catalogs.Length == 0 ? Magic : ReferencedMagic); writer.Write(id.ToByteArray()); writer.Write(cursor.Segment); writer.Write(cursor.Sequence);
             if (catalogs.Length != 0) { writer.Write(catalogs.Length); foreach (var catalog in catalogs) RuntimeCheckpointCodec.WriteText(writer, catalog.Hash, 64); }
             void WriteReferencedSample(TelemetrySample value)
             {
@@ -149,7 +151,16 @@ internal sealed class RawEffectStore
         lock (_gate)
         {
             LoadIndex();
-            var fresh = pending.Where(p => (_collected == null || p.Cursor.CompareTo(_collected) >= 0) && !_locations.ContainsKey(p.Id)).ToArray();
+            var unique = new Dictionary<Guid, RawPendingEffect>();
+            foreach (var item in pending)
+            {
+                if (unique.TryGetValue(item.Id, out var prior) && !prior.Bytes.SequenceEqual(item.Bytes))
+                    throw new InvalidDataException("RAW input identity was reused with different effects.");
+                unique[item.Id] = item;
+            }
+            var fresh = unique.Values.Where(p => (_collected == null || p.Cursor.CompareTo(_collected) >= 0) && !_locations.ContainsKey(p.Id)).ToArray();
+            if (fresh.Select(p => (p.Cursor.Segment, p.Cursor.Sequence)).Distinct().Count() != fresh.Length)
+                throw new InvalidDataException("RAW effect cursors are ambiguous.");
             foreach (var p in pending.Where(p => _locations.ContainsKey(p.Id)))
                 if (!ReadBytes(p.Id).SequenceEqual(p.Bytes)) throw new InvalidDataException("RAW input identity was reused with different effects.");
             if (fresh.Length == 0) return;
@@ -231,7 +242,18 @@ internal sealed class RawEffectStore
             if (_locations.ContainsKey(id))
             {
                 if (!ReadBytes(id).SequenceEqual(source.ReadBytes(id)))
-                    throw new InvalidDataException("Recovered RAW input differs from its already committed effects.");
+                {
+                    var existing = Read(id);
+                    var effects = existing.Effects;
+                    // A live storage gap is not in the main journal. Preserve its
+                    // diagnostic prefix, but require every replayed effect to match.
+                    var skip = effects.Count > 0 && effects[0] is RawCaptureGap ? 1 : 0;
+                    if (skip == 1 && effects.Count > incoming.Effects.Count + 1 &&
+                        effects[1] is RawDebugCaptureStartedEventArgs start && start.InitialSamples.Count == 0) skip++;
+                    if (skip == 0 || !Encode(id, existing.Cursor, effects.Skip(skip).ToArray(), out _).SequenceEqual(source.ReadBytes(id)))
+                        throw new InvalidDataException("Recovered RAW input differs from its already committed effects.");
+                    System.Diagnostics.Debug.WriteLine("RAW recovery retained the committed storage gap for " + id);
+                }
                 return;
             }
             var references = source._locations[id].Catalogs;

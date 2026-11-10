@@ -19,7 +19,33 @@ namespace LandingStats.App.RegressionTests;
 
 internal static class IntegrationApiTransportRegressionTests
 {
-    public static void RunAll() => Task.Run(async () => { await Framing(); await Clients(); }).GetAwaiter().GetResult();
+    public static void RunAll() => Task.Run(async () => { RejectForeignPipeOwner(); await Framing(); await Clients(); }).GetAwaiter().GetResult();
+
+    private static void RejectForeignPipeOwner()
+    {
+        using var user = WindowsIdentity.GetCurrent();
+        var name = "ls-api-owner-" + Guid.NewGuid().ToString("N");
+        var security = new PipeSecurity(); security.SetOwner(user.User!);
+        security.SetAccessRuleProtection(true, false);
+        security.AddAccessRule(new PipeAccessRule(new SecurityIdentifier(WellKnownSidType.WorldSid, null), PipeAccessRights.FullControl, AccessControlType.Allow));
+        using var foreign = new NamedPipeServerStream(name, PipeDirection.InOut, IntegrationApiProtocol.MaximumClients,
+            PipeTransmissionMode.Byte, PipeOptions.Asynchronous, 4096, 4096, security);
+        foreach (var expected in Enumerable.Range(0, IntegrationApiProtocol.MaximumClients * 2).Select(i =>
+            i % 2 == 0 ? WellKnownSidType.LocalSystemSid : WellKnownSidType.BuiltinAdministratorsSid))
+        {
+            try
+            {
+                using var joined = IntegrationApiWorkerRole.CreatePipe(name, new SecurityIdentifier(expected, null));
+                throw new InvalidOperationException("API server joined a pipe owned by another identity.");
+            }
+            catch (UnauthorizedAccessException error)
+            { Check(error.Message.Contains("belongs to another Windows user"), "The fixture did not reach the pipe owner check."); }
+        }
+        // More rejections than the slot limit also prove that rejected handles are released.
+        // A separate endpoint checks legitimate ownership.
+        using var legitimate = IntegrationApiWorkerRole.CreatePipe(name + "-normal", user.User!);
+        Check(legitimate.GetAccessControl().GetOwner(typeof(SecurityIdentifier)).Equals(user.User), "Normal API owner changed.");
+    }
 
     private static async Task Framing()
     {

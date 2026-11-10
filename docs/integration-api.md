@@ -11,6 +11,8 @@ The API runs in a separate supervised worker process. A disconnected or slow
 client does not own the recording, analysis or archive lifecycle. Landing Stats
 and client applications can start and stop independently.
 
+The worker explicitly sets and verifies the pipe owner's Windows SID before serving each connection slot. Clients must authenticate the connected server process's token SID against their own user before sending or accepting messages; the Python example performs this check. A predictable pipe name alone does not authenticate a server.
+
 ## Enable or disable
 
 Open **Settings → Local API → Allow local applications to read landing data**.

@@ -4,7 +4,8 @@
   const NS = "http://www.w3.org/2000/svg";
   const A = "#68cbd9", B = "#ff8e61";
   const state = { catalog: null, a: null, b: null, impactA: null, impactB: null, land: null,
-    tab: "profiles", selected: null, flight: null, ids: [], generation: 0, playing: false, plots: [], replayPlots: [] };
+    tab: "profiles", selected: null, flight: null, ids: { a: [], b: [] }, generation: 0, catalogGeneration: 0, catalogPending: false, selection: null,
+    playing: false, animationFrame: null, plots: [], replayPlots: [] };
   const valid = value => typeof value === "number" && Number.isFinite(value);
   const fmt = (value, digits = 1) => valid(value) ? value.toLocaleString("en-GB", { maximumFractionDigits: digits }) : "—";
   const metric = {
@@ -52,7 +53,7 @@
     return response.json();
   }
   function get(path) {
-    if (!path.startsWith("/api/analytics/cohort?")) return request(path);
+    if (!/^\/api\/analytics\/cohort\?/.test(path)) return request(path);
     // The server intentionally admits one aggregate query at a time. Views in
     // this browser share that lane, including tab changes during a refresh.
     const job = (state.aggregateRequest || Promise.resolve()).then(() => request(path));
@@ -80,10 +81,11 @@
       }
     }
     if ($("individuals").checked) params.set("channels", profileKeys().join(","));
-    if (state.ids.length) params.set("ids", state.ids.join(","));
+    const ids = state.ids[cohortB ? "b" : "a"];
+    if (ids.length) params.set("ids", ids.join(","));
     return params;
   }
-  function cohortLabel(isB = false) {
+  function draftCohortLabel(isB = false) {
     const criterion = $("compare_by").value;
     const aircraft = $("aircraft").value || "All aircraft";
     if (["wind", "weight"].includes(criterion)) {
@@ -92,6 +94,7 @@
     }
     return isB ? $("compare_value").selectedOptions[0]?.textContent : `${aircraft}${["airport", "runway"].includes(criterion) ? ` · ${$("airport").value || "All airports"}/${$("runway").value || "All runways"}` : ""}`;
   }
+  function cohortLabel(isB = false) { return state.selection.labels[isB ? 1 : 0]; }
   function comparisonEnabled() { return ["wind", "weight"].includes($("compare_by").value) || Boolean($("compare_by").value && $("compare_value").value); }
   function profileKeys() { return sets[$("channel-set").value].map(key => key === "agl" && $("alignment").value === "agl" ? "gs" : key); }
   function date(value) {
@@ -100,36 +103,49 @@
     return Number.isFinite(d.getTime()) ? d.toLocaleString("en-GB", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }) : "Unknown time";
   }
   async function loadCatalog() {
+    const generation = ++state.catalogGeneration;
+    ++state.generation; state.catalogPending = true;
     error(""); $("reload").disabled = true;
+    $("flight-filters").classList.add("busy"); stop();
     try {
       const firstLoad = !state.catalog;
-      state.catalog = await get(`/api/analytics/catalog?days=${encodeURIComponent($("days").value)}`);
-      const records = state.catalog.landings;
-      options("aircraft", records.map(r => r.aircraft), "All aircraft");
-      if (firstLoad && records.length) {
-        const counts = new Map(); records.filter(r => r.contact === 1).forEach(r => counts.set(r.aircraft, (counts.get(r.aircraft) || 0) + 1));
-        $("aircraft").value = [...counts].sort((a, b) => b[1] - a[1])[0]?.[0] || "";
+      const days = encodeURIComponent($("days").value);
+      const catalog = await get(`/api/analytics/catalog?days=${days}&page_size=1`);
+      if (generation !== state.catalogGeneration) return;
+      state.catalog = catalog;
+      const filters = catalog.filters;
+      options("aircraft", filters.aircraft.map(([name]) => name), "All aircraft");
+      if (firstLoad) {
+        $("aircraft").value = [...filters.aircraft].filter(([, count]) => count > 0).sort((a, b) => b[1] - a[1])[0]?.[0] || "";
       }
-      options("airport", records.map(r => r.airport), "All airports");
-      options("creator", records.map(r => r.creator), "All recording app versions");
-      options("device", records.flatMap(r => r.devices), "All devices");
+      options("airport", filters.airports, "All airports");
+      options("creator", filters.creators, "All recording app versions");
+      options("device", filters.devices, "All devices");
       updateRunways(); updateComparison();
-      if (!records.length) {
+      if (!catalog.total) {
         $("flight-status").textContent = state.catalog.index.pending ? `Preparing flight analytics · ${state.catalog.index.indexed} archives indexed, ${state.catalog.index.pending} pending. Refresh to check progress.` : "No recordings with flight analytics in this period.";
       }
+      state.catalogPending = false;
       await loadCohorts();
-    } catch (e) { error(e.message); $("flight-status").textContent = "Recordings could not be refreshed."; }
-    finally { $("reload").disabled = false; }
+    } catch (e) {
+      if (generation === state.catalogGeneration) { error(e.message); $("flight-status").textContent = "Recordings could not be refreshed."; }
+    } finally {
+      if (generation === state.catalogGeneration) {
+        state.catalogPending = false; $("reload").disabled = false; $("flight-filters").classList.remove("busy");
+      }
+    }
   }
   function updateRunways() {
-    options("runway", (state.catalog?.landings || []).filter(r => !$("airport").value || r.airport === $("airport").value).map(r => r.runway), "All runways");
+    options("runway", (state.catalog?.filters?.runways || []).filter(([airport]) => !$("airport").value || airport === $("airport").value).map(([, runway]) => runway), "All runways");
   }
   function updateComparison() {
     const key = $("compare_by").value, previousValue = $("compare_value").value;
     const numeric = ["wind", "weight"].includes(key);
-    options("compare_value", !key || numeric ? [] : key === "device" ? state.catalog.landings.flatMap(r => r.devices) : state.catalog.landings.map(r => r[key]), "Select comparison");
+    const filters = state.catalog?.filters;
+    const choices = { aircraft: filters?.aircraft.map(([name]) => name), airport: filters?.airports, creator: filters?.creators, device: filters?.devices };
+    options("compare_value", choices[key] || [], "Select comparison");
     if (key === "runway") {
-      const pairs = [...new Set(state.catalog.landings.filter(r => r.airport && r.runway).map(r => JSON.stringify([r.airport, r.runway])))].sort();
+      const pairs = (filters?.runways || []).filter(([airport, runway]) => airport && runway).map(pair => JSON.stringify(pair)).sort();
       $("compare_value").replaceChildren(new Option("Select comparison", ""), ...pairs.map(value => new Option(JSON.parse(value).join(" / "), value)));
       if (pairs.includes(previousValue)) $("compare_value").value = previousValue;
     }
@@ -143,8 +159,10 @@
     }
   }
   async function loadCohorts() {
+    if (!state.catalog || state.catalogPending) return;
     const generation = ++state.generation;
     const queryA = query(), queryB = comparisonEnabled() ? query($("alignment").value, true) : null;
+    const selection = { queryA, queryB, labels: [draftCohortLabel(), draftCohortLabel(true)] };
     const previous = state.loading;
     let complete; state.loading = new Promise(resolve => { complete = resolve; });
     $("flight-status").textContent = "Calculating profiles from retained recordings…";
@@ -156,12 +174,12 @@
       if (generation !== state.generation) return;
       const b = queryB ? await get(`/api/analytics/cohort?${queryB}`) : null;
       if (generation !== state.generation) return;
-      state.a = a; state.b = b; state.impactA = null; state.impactB = null;
+      state.a = a; state.b = b; state.selection = selection; state.impactA = null; state.impactB = null;
       const scope = `${a.included} of ${a.matched} matching approaches${a.matched > a.limit ? ` · newest ${a.limit}` : ""}`;
       const other = b ? ` · B: ${b.included} of ${b.matched}` : "";
       const progress = a.index.pending ? ` · Indexing ${a.index.pending} remaining archives` : a.index.stale ? " · Metadata snapshot is stale" : "";
       $("flight-status").textContent = scope + other + progress + (state.catalog.analytics_errors ? ` · ${state.catalog.analytics_errors} archives have unavailable analytics` : "");
-      $("clear-selection").hidden = !state.ids.length;
+      $("clear-selection").hidden = !state.ids.a.length && !state.ids.b.length;
       renderKpis(); renderLegend(); populateFlights();
       await render();
     } catch (e) {
@@ -332,7 +350,7 @@
       const point = svg("circle", { cx: x(members[0].lon), cy: y(members[0].lat), r: Math.min(14, 3 + Math.sqrt(members.length)), class: "airport-dot", tabindex: 0, role: "button", "aria-label": `${airport}: ${members.length} approaches` });
       point.append(svg("title", {}, `${airport} · ${members.length} approaches`));
       point.addEventListener("pointerenter", () => { label.textContent = `${airport} · ${members.length} approaches · median ${fmt(median(members.map(m => m.fpm)))} ft/min`; });
-      const select = () => { if (members[0].airport) { $("airport").value = members[0].airport; updateRunways(); state.ids = []; loadCohorts(); } };
+      const select = () => { if (members[0].airport) { $("airport").value = members[0].airport; $("runway").value = ""; updateRunways(); state.ids = { a: [], b: [] }; return loadCohorts(); } };
       point.addEventListener("click", select); point.addEventListener("keydown", e => { if (e.key === "Enter") select(); }); root.append(point);
     }
     root.append(label); $("world-map").replaceChildren(root);
@@ -352,13 +370,13 @@
     node.addEventListener("click", action);
     node.addEventListener("keydown", event => { if (event.key === "Enter") action(); });
   }
-  function selectPoints(ids) { state.ids = ids; loadCohorts(); }
-  function heatCells(chart, cells, colourKey, bounds, population) {
+  function selectPoints(ids, cohort = "a") { state.ids[cohort] = ids; return loadCohorts(); }
+  function heatCells(chart, cells, colourKey, bounds, population, cohort) {
     for (const cell of cells) {
       const value = colourKey === "count" ? cell.count / population * 100 : cell.value;
       const rect = svg("rect", { x: chart.x(cell.x), y: chart.y(cell.y + cell.height), width: Math.max(1, chart.x(cell.x + cell.width) - chart.x(cell.x)), height: Math.max(1, chart.y(cell.y) - chart.y(cell.y + cell.height)), fill: colour(value, bounds), class: "density-cell", tabindex: 0, role: "button", "aria-label": `${cell.count} approaches in cell; select these flights` });
       rect.append(svg("title", {}, `${cell.count} approaches · ${fmt(cell.count / population * 100)}% of this view\n${colourKey === "count" ? "One vote per approach" : `Median ${fmt(cell.value, 2)} · ${cell.valueCount} valid observations`}`));
-      activate(rect, () => selectPoints(cell.ids)); chart.root.append(rect);
+      activate(rect, () => selectPoints(cell.ids, cohort)); chart.root.append(rect);
     }
   }
   function drawTrajectory(chart, track, colourKey, bounds) {
@@ -392,7 +410,7 @@
       if (backdrop) backdrop(chart);
       if (density) {
         const cells = FlightMath.density(display.map(track => ({ id: track.id, points: track.t.map((t, i) => ({ t, run: track.run[i], x: track.u[i], y: track.v[i], value: track[colourKey]?.[i] })) })), xDomain, yDomain);
-        heatCells(chart, cells, colourKey === "cohort" ? "count" : colourKey, colourKey === "cohort" ? [0, 100] : metricBounds, display.length);
+        heatCells(chart, cells, colourKey === "cohort" ? "count" : colourKey, colourKey === "cohort" ? [0, 100] : metricBounds, display.length, cohort);
       } else for (const track of display) drawTrajectory(chart, track, colourKey, metricBounds);
       const note = colourKey === "cohort" ? density ? "Colour: share of approaches crossing each cell · 0–100% · click a cell to filter" : "Cyan: A · orange: B · gold: selected flight" : `${state.catalog.channels[colourKey].label}: ${fmt(metricBounds[0])}–${fmt(metricBounds[1])} ${state.catalog.channels[colourKey].unit} · ${density ? "median per occupied cell" : "colour along each trajectory"}`;
       parent.append(element("p", "plot-footnote", note));
@@ -473,7 +491,7 @@
         if (!start) return; const p = chart.pointer(event), first = start; start = null; rectangle.remove();
         if (Math.abs(p.x - first.x) < 5 || Math.abs(p.y - first.y) < 5) return;
         const ids = usable.filter(m => chart.x(m[xKey]) >= Math.min(first.x, p.x) && chart.x(m[xKey]) <= Math.max(first.x, p.x) && chart.y(m[yKey]) >= Math.min(first.y, p.y) && chart.y(m[yKey]) <= Math.max(first.y, p.y)).map(m => m.id);
-        if (ids.length) { state.ids = ids; loadCohorts(); }
+        if (ids.length) selectPoints(ids);
       });
       chart.root.addEventListener("pointercancel", () => { start = null; rectangle?.remove(); });
     }
@@ -499,7 +517,7 @@
       }
       if ($("touch-display").value === "density") {
         const cells = FlightMath.density(members.map(member => ({ id: member.id, points: [{ x: member.along, y: member.cross, value: member[key] }] })), xDomain, yDomain, 48, 24, false);
-        heatCells(chart, cells, key, bounds, members.length);
+        heatCells(chart, cells, key, bounds, members.length, code);
       } else for (const member of members) {
         const dot = svg("circle", { cx: chart.x(member.along), cy: chart.y(member.cross), r: 5, fill: key === "count" ? group ? B : A : colour(member[key], bounds), class: `flight-point${member.id === state.selected ? " active" : ""}`, tabindex: 0, role: "button", "aria-label": `Inspect flight ${member.id}` });
         dot.append(svg("title", {}, `${member.aircraft} · ${member.airport}/${member.runway}\n${fmt(member.along)} m past threshold · ${fmt(member.cross)} m right of centreline${key === "count" ? "" : `\n${metric[key][0]}: ${fmt(member[key], 2)} ${metric[key][1]}`}`));
@@ -512,7 +530,9 @@
   async function renderImpact() {
     const generation = state.generation;
     if (!state.impactA) {
-      const a = state.a, b = state.b, queryA = query("t"), queryB = query("t", true);
+      const a = state.a, b = state.b;
+      const queryA = new URLSearchParams(state.selection.queryA), queryB = new URLSearchParams(state.selection.queryB);
+      queryA.set("axis", "t"); queryB.set("axis", "t");
       const channels = ["g", "latG", ...new Set([...Object.keys(a.bands), ...Object.keys(b?.bands || {})].filter(key => key.startsWith("gear_")))].slice(0, 8).join(",");
       if ($("individuals").checked) { queryA.set("channels", channels); queryB.set("channels", channels); }
       const impactA = a.axis === "t" && !$("individuals").checked ? a : await get(`/api/analytics/cohort?${queryA}`);
@@ -592,7 +612,7 @@
           const x = chart.x(low) + cohort / part * (chart.x(high) - chart.x(low));
           const bar = svg("rect", { x, y: chart.y(group.percentages[i]), width: Math.max(1, (chart.x(high) - chart.x(low)) / part - 1), height: chart.y(0) - chart.y(group.percentages[i]), class: `histogram-bar cohort-${code}`, tabindex: 0, role: "button", "aria-label": `${code.toUpperCase()}: ${ids.length} flights, ${fmt(low)} to ${fmt(high)} ${metric[key][1]}` });
           bar.append(svg("title", {}, `${code.toUpperCase()} · ${fmt(low, 2)}–${fmt(high, 2)} ${metric[key][1]}\n${ids.length} / ${group.n} · ${fmt(group.percentages[i])}% · select these flights`));
-          activate(bar, () => selectPoints(ids)); chart.root.append(bar);
+          activate(bar, () => selectPoints(ids, code)); chart.root.append(bar);
         });
         if (valid(group.median)) chart.root.append(svg("line", { x1: chart.x(group.median), x2: chart.x(group.median), y1: chart.margin.top, y2: chart.y(0), class: `distribution-median cohort-${code}` }));
       });
@@ -669,7 +689,11 @@
     ["stickP", "stickR", "stickY", "cmdP", "cmdR", "cmdY"].forEach((key, j) => root.append(svg("text", { x: 320, y: 45 + j * 29 }, `${state.catalog.channels[key].label}: ${fmt(series[key]?.[i])}%`)));
     $("control-state").replaceChildren(root);
   }
-  function stop() { state.playing = false; $("play").textContent = "Play"; }
+  function stop() {
+    state.playing = false; $("play").textContent = "Play";
+    if (state.animationFrame !== null) cancelAnimationFrame(state.animationFrame);
+    state.animationFrame = null;
+  }
   function play() {
     if (state.playing) { stop(); return; }
     if (!state.flight) return;
@@ -678,15 +702,16 @@
     state.playing = true; $("play").textContent = "Pause";
     const started = performance.now(), first = times[Number($("scrubber").value)], speed = Number($("play-speed").value);
     const tick = now => {
+      state.animationFrame = null;
       if (!state.playing) return;
       const target = first + (now - started) / 1000 * speed;
       let index = Number($("scrubber").value); while (index < times.length - 1 && times[index + 1] <= target) index++;
       $("scrubber").value = index; updateReplay();
-      if (index === times.length - 1) stop(); else requestAnimationFrame(tick);
-    }; requestAnimationFrame(tick);
+      if (index === times.length - 1) stop(); else state.animationFrame = requestAnimationFrame(tick);
+    }; state.animationFrame = requestAnimationFrame(tick);
   }
 
-  $("flight-filters").addEventListener("submit", e => { e.preventDefault(); state.ids = []; loadCohorts(); });
+  $("flight-filters").addEventListener("submit", e => { e.preventDefault(); state.ids = { a: [], b: [] }; loadCohorts(); });
   $("reload").addEventListener("click", loadCatalog); $("days").addEventListener("change", loadCatalog);
   $("airport").addEventListener("change", updateRunways); $("compare_by").addEventListener("change", () => { $("compare_min").value = ""; $("compare_max").value = ""; updateComparison(); });
   $("alignment").addEventListener("change", loadCohorts); $("channel-set").addEventListener("change", () => $("individuals").checked ? loadCohorts() : renderProfiles());
@@ -697,7 +722,7 @@
   $("corridor-mode").addEventListener("change", renderCorridor); $("touch-colour").addEventListener("change", renderFootprint);
   for (const id of ["corridor-display", "corridor-colour"]) $(id).addEventListener("change", () => { renderLocalMap(); renderCorridor(); });
   $("touch-display").addEventListener("change", renderFootprint);
-  $("clear-selection").addEventListener("click", () => { state.ids = []; loadCohorts(); });
+  $("clear-selection").addEventListener("click", () => { state.ids = { a: [], b: [] }; loadCohorts(); });
   document.querySelectorAll("[data-tab]").forEach(node => node.addEventListener("click", () => chooseTab(node.dataset.tab)));
   for (const id of ["scatter-x", "scatter-y", "scatter-colour"]) {
     $(id).replaceChildren(...Object.entries(metric).map(([key, value]) => new Option(`${value[0]} · ${value[1]}`, key)));

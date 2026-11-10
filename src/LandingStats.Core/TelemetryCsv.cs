@@ -46,6 +46,7 @@ public static class TelemetryCsv
 
     public static string Format(TelemetrySample sample)
     {
+        sample.ValidateLifecycle();
         var controllers = sample.HasLegacyControllerLayout ? string.Empty : Convert.ToBase64String(ControllerSampleCodec.Encode(sample));
         sample = sample.LegacyControllerProjection();
         var values = new List<string>

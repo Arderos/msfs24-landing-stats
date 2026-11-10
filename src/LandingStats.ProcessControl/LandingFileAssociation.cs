@@ -11,6 +11,14 @@ internal static class LandingFileAssociation
 {
     internal const string Extension = ".lslanding";
     internal const string ProgId = "MSFSLandingStats.Landing";
+    internal const string RegistrationErrorEnvironmentVariable = "MSFS_LANDING_STATS_FILE_ASSOCIATION_ERROR";
+
+    internal static string? TakeStartupError()
+    {
+        var error = Environment.GetEnvironmentVariable(RegistrationErrorEnvironmentVariable);
+        Environment.SetEnvironmentVariable(RegistrationErrorEnvironmentVariable, null);
+        return error;
+    }
 
     internal static bool Register(string executable)
     {

@@ -84,7 +84,17 @@ internal static class RecordingRuntimeStateRegressionTests
             var blob = reader.ReadBytes(reader.ReadInt32());
             if (i == 3)
             {
-                Check(BitConverter.ToInt32(blob, 0) == 0x3543454c, "Update the explicit legacy coordinator fixture.");
+                // Restore the actual recorder state and use its official writer;
+                // source annotations and normalized clocks belong to this blob.
+                blob = CumulativeGroundDepartureRegressionTests.RemoveCumulativeTail(blob);
+                // v6 retains the last two ground frames (11 and 12): two false
+                // rejection flags and two present 64-byte scalar observations.
+                const int groundContactTail = 4 + 2 * 64;
+                var groundOffset = blob.Length - groundContactTail;
+                Check(groundOffset >= sizeof(int) && blob[groundOffset] == 0 && blob[groundOffset + 1] == 0 &&
+                    blob[groundOffset + 2] == 1 && blob[groundOffset + 67] == 1,
+                    "Legacy fixture has unexpected grounded history.");
+                blob = blob.Take(blob.Length - groundContactTail).ToArray();
                 // v5 appends three false flags in this source-uncontrolled
                 // fixture: pending release, blocked source and release endpoint.
                 // Refuse to discard actual source-continuity evidence silently.

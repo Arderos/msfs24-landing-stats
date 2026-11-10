@@ -13,7 +13,7 @@ using Microsoft.Win32.SafeHandles;
 
 namespace LandingStats.App.Runtime;
 
-internal enum GuardianMessageKind : byte { Hello = 1, Status = 2, Stop = 3, Ack = 4, Activate = 5, PrepareRecovery = 6, RecoveryReady = 7, Update = 8, RecoveryDeferred = 9 }
+internal enum GuardianMessageKind : byte { Hello = 1, Status = 2, Stop = 3, Ack = 4, Activate = 5, PrepareRecovery = 6, RecoveryReady = 7, Update = 8, RecoveryDeferred = 9, ActivationResult = 10 }
 internal enum GuardianStopReason : byte { None, UserExit, SimulatorQuit, SessionEnd, Update }
 internal enum GuardianRecovery : byte { None, Presentation, Runtime }
 internal sealed class GuardianStatus
@@ -134,7 +134,7 @@ internal sealed class GuardianWire : IDisposable
                 case GuardianMessageKind.Stop:
                     if (packet.Stop == GuardianStopReason.None || !Enum.IsDefined(typeof(GuardianStopReason), packet.Stop)) throw new InvalidDataException("Missing stop intent.");
                     writer.Write((byte)packet.Stop); break;
-                case GuardianMessageKind.Ack: writer.Write(packet.Accepted); Text(writer, packet.Text, 256); break;
+                case GuardianMessageKind.ActivationResult: case GuardianMessageKind.Ack: writer.Write(packet.Accepted); Text(writer, packet.Text, 256); break;
                 case GuardianMessageKind.Update:
                     var update = packet.Update ?? throw new InvalidDataException("Missing update request.");
                     Text(writer, update.Executable, 4096); Text(writer, update.Target, 4096); Text(writer, update.Version, 64);
@@ -171,7 +171,7 @@ internal sealed class GuardianWire : IDisposable
                 var stop = (GuardianStopReason)reader.ReadByte();
                 if (stop == GuardianStopReason.None || !Enum.IsDefined(typeof(GuardianStopReason), stop)) throw new InvalidDataException("Invalid stop intent.");
                 packet = new GuardianPacket(kind, request, stop: stop); break;
-            case GuardianMessageKind.Ack: var accepted = Flag(reader); packet = new GuardianPacket(kind, request, Text(reader, 256), accepted: accepted); break;
+            case GuardianMessageKind.ActivationResult: case GuardianMessageKind.Ack: var accepted = Flag(reader); packet = new GuardianPacket(kind, request, Text(reader, 256), accepted: accepted); break;
             case GuardianMessageKind.Update:
                 packet = new GuardianPacket(kind, request, update: new GuardianUpdateRequest(Text(reader, 4096), Text(reader, 4096), Text(reader, 64),
                     Text(reader, 128), Text(reader, 128), reader.ReadInt64(), Text(reader, 64), reader.ReadInt64(), memory.Position < memory.Length && Flag(reader))); break;

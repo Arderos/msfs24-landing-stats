@@ -23,7 +23,7 @@ internal static class GeometryCatalogBackgroundRegressionTests
             {
                 var plane = Path.Combine(packages, name, "SimObjects", "Airplanes", name); Directory.CreateDirectory(plane);
                 File.WriteAllText(Path.Combine(plane, "aircraft.cfg"), "[FLTSIM.0]\ntitle=" + name + "\nisUserSelectable=1\n");
-                File.WriteAllText(Path.Combine(plane, "flight_model.cfg"), "[CONTACT_POINTS]\npoint.0=1,20,0,-3\npoint.1=1," + arm + ",-5,-3\npoint.2=1," + arm + ",5,-3\n");
+                File.WriteAllText(Path.Combine(plane, "flight_model.cfg"), "[CONTACT_POINTS]\npoint.0=1,20,0,-3\npoint.21=1," + arm + ",-5,-3\npoint.22=1," + arm + ",5,-3\n");
             }
             async Task Refresh() => await new FlightModelGeometryResolver(new[] { packages }, false, null, cache).WritePreparedCatalogAsync(ready);
             Aircraft("First", -10); Aircraft("Second", -20); await Refresh();

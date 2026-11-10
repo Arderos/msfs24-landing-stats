@@ -44,6 +44,7 @@ internal sealed partial class EpisodeTransactionStore
     private readonly ConcurrentDictionary<Guid, object> _gates = new ConcurrentDictionary<Guid, object>();
     private object Gate(Guid id) => _gates.GetOrAdd(id, _ => new object());
     private const int InputMagic = 0x31495045; // EPI1
+    internal const int MaximumManifestBytes = 32768;
     private const int MaximumMetadataBytes = 8 * 1024 * 1024;
     private const int MaximumFrames = 65536;
     private const long MaximumAnalysisBytes = 256L * 1024 * 1024;
@@ -69,9 +70,27 @@ internal sealed partial class EpisodeTransactionStore
     {
         lock (Gate(id)) return ReadOwned(id);
     }
+    internal EpisodeWorkManifest? ReadForRecovery(Guid id, out string[] pinnedEngines)
+    {
+        lock (Gate(id))
+        {
+            pinnedEngines = Array.Empty<string>();
+            try { return ReadOwned(id); }
+            catch (Exception error) when (error is FileNotFoundException || error is InvalidDataException || error is SerializationException)
+            {
+                // Publication and quarantine share the transaction lock. A live
+                // commit must not be mistaken for an abandoned partial commit.
+                var directory = DirectoryFor(id);
+                RuntimeScratchLease.RequireUnlinked(directory);
+                pinnedEngines = RuntimeMetadataFailure.Pin(directory, "manifest.json",
+                    Path.Combine(Path.GetDirectoryName(Root)!, "engines"), error);
+                return null;
+            }
+        }
+    }
     private EpisodeWorkManifest ReadOwned(Guid id)
     {
-        var value = DurableFile.ReadJson<EpisodeWorkManifest>(PathFor(id, "manifest.json"), 32768);
+        var value = DurableFile.ReadJson<EpisodeWorkManifest>(PathFor(id, "manifest.json"), MaximumManifestBytes);
         if (value.Version != 2 || value.Id != id || value.ArchiveId == Guid.Empty || !ValidHash(value.Engine) ||
             !Enum.IsDefined(typeof(EpisodeWorkStage), value.Stage) || value.PolicyRevision < 0 || value.FailureCount < 0 ||
             (value.Stage >= EpisodeWorkStage.InputsCommitted && !ValidHash(value.InputHash)) ||

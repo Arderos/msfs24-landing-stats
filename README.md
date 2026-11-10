@@ -24,7 +24,7 @@ behind them:
 | --- | --- | --- |
 | Landing rate | One FPM value | Aircraft vertical rate and surface closure rate, with explicit signs and definitions |
 | Sloped or uneven scenery | Can be folded into the displayed FPM | Local terrain contribution is measured and shown separately |
-| Simulator latch differences | Left unexplained | Experimental telemetry reconstruction separates effective timing, terrain, and pitch rotation with an explicit uncertainty band |
+| Simulator latch differences | Left unexplained | Telemetry reconstruction separates effective timing, terrain, and pitch rotation with an explicit uncertainty band |
 | Bounces | Often only the first or last contact survives | Every contact is analyzed and retained as its own event |
 | G-load | One value with an unspecified sampling window | An adaptive window isolates each contact's load response; SMOOTH / NORMAL / FIRM uses its recorded G peak, not descent rate |
 | Evidence | Summary values only | Synchronized black-box traces for motion, loads, controls, power, attitude, and gear |
@@ -43,10 +43,12 @@ data handling.
 
 - Automatic recording from the descending 500 ft AGL crossing through rollout.
 - Per-contact analysis for normal landings and bounces.
+- Adaptive touchdown-speed estimation within a 200 ms window, with measured,
+  linear, and quadratic estimates selected by their prediction quality.
 - Automatic nearest-airport resolution that remains available after MSFS exits.
 - Inertial vertical speed at contact and the raw MSFS surface-normal touchdown
   velocity remain separate headline measurements.
-- Experimental detail reconstructs the raw latch from effective timing, local
+- Detailed analysis reconstructs the raw latch from effective timing, local
   terrain motion, and pitch rotation around a gear arm read from the installed
   flight model when available. Readable wheel indices and per-wheel positions
   are used when they agree with live contact channels; complex or encrypted

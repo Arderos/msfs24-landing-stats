@@ -237,6 +237,15 @@ internal sealed partial class LandingEpisodeCoordinator
         if (!_sdkStateKnown) return; // Legacy replay/tests and SDK fallback retain conservative motion boundaries.
         sample.PauseFlags = _sdkPauseFlags;
         sample.FlightSegment = _flightSegment;
+        if (!IsFinite(sample.SimulationTimeSeconds))
+        {
+            // Retain the raw invalid clock for diagnostics without persisting an
+            // invalid derived lifecycle clock or advancing pause/flight anchors.
+            sample.AnalysisTimeSeconds = double.NaN;
+            sample.SimulatorState = TelemetrySimulatorState.Inactive;
+            sample.MotionSimulation = false;
+            return;
+        }
         sample.AnalysisTimeSeconds = sample.SimulationTimeSeconds - _pausedClockOffset;
         if (_flightBlock != FlightBlock.None || (_sdkSimRunning == false && !_sdkFlightSeen))
         {

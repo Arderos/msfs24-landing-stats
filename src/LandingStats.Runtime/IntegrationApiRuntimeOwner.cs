@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.IO;
@@ -20,6 +20,9 @@ internal sealed class IntegrationApiRuntimeOwner
     private readonly Action<string, long> _escalate;
     private readonly Action<SupervisionSnapshot> _health;
     private readonly Action<string> _failure;
+    private readonly Action? _recovered;
+    private readonly object _reconciliationGate = new object();
+    private readonly object _notificationGate = new object();
     private readonly Func<long, string?>? _fixture;
     private readonly ComponentRecoveryOptions _options;
     private readonly SemaphoreSlim _changes = new SemaphoreSlim(1, 1);
@@ -29,14 +32,17 @@ internal sealed class IntegrationApiRuntimeOwner
     private IntegrationApiData? _data;
     private ManagedComponentContext? _owner;
     private int _enabled, _stopping, _pending;
-    private long _nextReconcile, _generation;
+    private long _nextReconcile, _generation, _activation;
 
     public IntegrationApiRuntimeOwner(Func<IntegrationApiData> createData, string executable, Guid session, RuntimeClockEpoch clock,
         Action<string, long> escalate, Action<SupervisionSnapshot> health, Action<string> failure,
-        ComponentRecoveryOptions options, Func<long, string?>? fixture = null)
+        ComponentRecoveryOptions options, Func<long, string?>? fixture = null, Action? recovered = null)
     { _createData = createData; _executable = executable; _session = session; _clock = clock;
-        _escalate = escalate; _health = health; _failure = failure; _options = options; _fixture = fixture; }
+        _escalate = escalate; _health = health; _failure = failure; _options = options; _fixture = fixture; _recovered = recovered; }
 
+    public event Action<Guid, string>? WorkFailed;
+    public event Action<Guid>? WorkRecovered;
+    public event Action? Retired;
     public bool Enabled => Volatile.Read(ref _enabled) != 0;
     public SupervisionSnapshot Snapshot => Project(Volatile.Read(ref _supervisor)?.Snapshot);
     private SupervisionSnapshot Project(SupervisionSnapshot? state) => new SupervisionSnapshot("integration.api",
@@ -63,7 +69,8 @@ internal sealed class IntegrationApiRuntimeOwner
                 }, _ => Task.CompletedTask, (name, _) => _escalate(name, Interlocked.Read(ref _generation)), _options);
                 supervisor.Changed += state => _health(Project(state));
                 Volatile.Write(ref _supervisor, supervisor);
-                Volatile.Write(ref _enabled, 1); Interlocked.Exchange(ref _nextReconcile, 0);
+                lock (_notificationGate) { Interlocked.Increment(ref _activation); Volatile.Write(ref _enabled, 1); }
+                Interlocked.Exchange(ref _nextReconcile, 0);
                 supervisor.Start(); Volatile.Read(ref _owner)?.SignalWork();
             }
             else await DisableAsync().ConfigureAwait(false);
@@ -72,7 +79,9 @@ internal sealed class IntegrationApiRuntimeOwner
     }
     private async Task DisableAsync()
     {
-        Volatile.Write(ref _enabled, 0);
+        // Fence all callbacks from the retiring activation before clearing its
+        // notices. Disk work can finish later without reviving a disabled API.
+        lock (_notificationGate) { Volatile.Write(ref _enabled, 0); Interlocked.Increment(ref _activation); }
         Volatile.Read(ref _current)?.CancelRequests();
         var supervisor = Volatile.Read(ref _supervisor);
         if (supervisor != null)
@@ -81,6 +90,7 @@ internal sealed class IntegrationApiRuntimeOwner
             supervisor.Dispose(); Volatile.Write(ref _supervisor, null); Volatile.Write(ref _current, null);
         }
         while (_requests.TryDequeue(out _)) Interlocked.Decrement(ref _pending);
+        lock (_notificationGate) Retired?.Invoke();
         _health(Snapshot);
     }
     public async Task StopAsync()
@@ -93,11 +103,28 @@ internal sealed class IntegrationApiRuntimeOwner
 
     public void Publish(Guid episode, ProcessedEpisode result, bool metadataReady)
     {
+        var activation = Interlocked.Read(ref _activation);
         if (!Enabled) return;
-        try { Volatile.Read(ref _data)?.Publish(episode, result, metadataReady); }
-        catch (Exception)
-        { _failure("Integration event commit failed; durable analysis will be reconciled."); }
+        // Analysis is already durable. If reconciliation owns the projection,
+        // its bounded scans will publish this result; history must keep moving
+        // even when reconciliation's API disk I/O is stalled.
+        if (Monitor.TryEnter(_reconciliationGate))
+        {
+            try
+            {
+                if (!IsCurrent(activation)) return;
+                try { Volatile.Read(ref _data)?.Publish(episode, result, metadataReady); }
+                catch (Exception error)
+                { Trace.TraceWarning("Integration event commit: {0}", error); Notify(activation, () => WorkFailed?.Invoke(episode, error.GetType().Name)); }
+            }
+            finally { Monitor.Exit(_reconciliationGate); }
+        }
         Volatile.Read(ref _owner)?.SignalWork();
+    }
+    private bool IsCurrent(long activation) => Enabled && Interlocked.Read(ref _activation) == activation;
+    private void Notify(long activation, Action notification)
+    {
+        lock (_notificationGate) if (IsCurrent(activation)) notification();
     }
 
     public async Task RunAsync(ManagedComponentContext owner)
@@ -124,10 +151,22 @@ internal sealed class IntegrationApiRuntimeOwner
                 }
                 if (Enabled && Stopwatch.GetTimestamp() >= Interlocked.Read(ref _nextReconcile))
                 {
+                    var activation = Interlocked.Read(ref _activation);
                     owner.Progress(false, DependencyWait.Storage, oldestPendingQpc: Stopwatch.GetTimestamp(), operationId: Guid.NewGuid());
-                    try { _data!.ReconcileCommitted(owner.CancellationToken); }
-                    catch (Exception error) when (error is IOException || error is UnauthorizedAccessException || error is InvalidOperationException || error is IntegrationApiException)
-                    { _failure("Integration journal reconciliation will retry."); }
+                    // Serialize publication with each bounded reconciliation
+                    // batch. Its per-episode callbacks prove revision coverage.
+                    lock (_reconciliationGate)
+                    {
+                        try
+                        {
+                            if (IsCurrent(activation) && _data!.ReconcileCommitted(owner.CancellationToken,
+                                (id, error) => Notify(activation, () => WorkFailed?.Invoke(id, error)),
+                                id => Notify(activation, () => WorkRecovered?.Invoke(id))))
+                                Notify(activation, () => _recovered?.Invoke());
+                        }
+                        catch (Exception error) when (error is IOException || error is UnauthorizedAccessException || error is InvalidOperationException || error is IntegrationApiException)
+                        { Trace.TraceWarning("Integration reconciliation: {0}", error); Notify(activation, () => _failure(error.GetType().Name)); }
+                    }
                     Interlocked.Exchange(ref _nextReconcile, Stopwatch.GetTimestamp() + Stopwatch.Frequency);
                     worked = true;
                 }

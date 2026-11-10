@@ -9,21 +9,22 @@ namespace LandingStats.App.RegressionTests;
 
 internal static class RepeatedContactGeometryRegressionTests
 {
-    // Frozen pre-change full-capture results: time, inertial FPM, latch FPM, peak G.
+    // Full-capture results: time, adaptive inertial FPM, latch FPM, peak G.
+    // Contact time, latch and G retain the original geometry-regression values.
     private static readonly Dictionary<string, double[][]> OriginalMetrics = new Dictionary<string, double[][]>
     {
         ["13dc14ff"] = new[]
         {
-            new[] { 782.8211497677257, 117.68813754932727, 260.57464599609375, 1.4696526529962524 },
-            new[] { 783.6693163648015, 159.31990595437324, 126.42568588256836, 1.1073389615921374 },
+            new[] { 782.8211497677257, 121.5944705068486, 260.57464599609375, 1.4696526529962524 },
+            new[] { 783.6693163648015, 158.33549819824714, 126.42568588256836, 1.1073389615921374 },
             new[] { 784.3900808620965, 51.6247693377661, 23.214397430419922, 1.0971412506658715 },
         },
-        ["cb48a7b6"] = new[] { new[] { 747.6819473368814, 365.8650402397976, 306.39132499694824, 1.3404523816637797 } },
+        ["cb48a7b6"] = new[] { new[] { 747.6819473368814, 361.74739747261265, 306.39132499694824, 1.3404523816637797 } },
         ["e78d3f80"] = new[]
         {
-            new[] { 610.3312060747994, 386.15289940642646, 326.31285667419434, 1.4726561806785217 },
+            new[] { 610.3312060747994, 383.3602531348498, 326.31285667419434, 1.4726561806785217 },
             new[] { 610.992088924977, 40.57573771786469, 0.11839788872748613, 1.1021185506073554 },
-            new[] { 611.4343407748966, 118.9945345235198, 81.30869150161743, 1.0952964822896818 },
+            new[] { 611.4343407748966, 124.69837055169607, 81.30869150161743, 1.0952964822896818 },
         },
     };
 
@@ -62,7 +63,7 @@ internal static class RepeatedContactGeometryRegressionTests
             for (var index = 0; index < results.Count; index++)
             {
                 Near(original[index][0], results[index].SimulationTimeSeconds, "unchanged contact time");
-                Near(original[index][1], results[index].InertialVerticalFpm, "unchanged inertial");
+                Near(original[index][1], results[index].InertialVerticalFpm, "adaptive inertial");
                 Near(original[index][2], results[index].LatchedNormalFpm, "unchanged latch");
                 Near(original[index][3], results[index].PeakG, "unchanged G");
             }

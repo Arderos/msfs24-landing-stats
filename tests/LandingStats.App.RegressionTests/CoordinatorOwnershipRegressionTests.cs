@@ -10,6 +10,32 @@ namespace LandingStats.App.RegressionTests;
 
 internal static class CoordinatorOwnershipRegressionTests
 {
+    public static void NonfiniteClockCannotRetireLiveEpisode()
+    {
+        foreach (var invalid in new[] { double.NaN, double.PositiveInfinity, double.NegativeInfinity })
+        foreach (var paused in new[] { false, true })
+        {
+            var facilities = new EpisodeFacilityCoordinator(new Query());
+            var coordinator = new LandingEpisodeCoordinator(facilities, () => 10, () => Array.Empty<string>());
+            var completed = new List<LandingEpisodeEventArgs>();
+            coordinator.EpisodeCompleted += (_, episode) => completed.Add(episode);
+            coordinator.SetSdkSimRunning(true);
+            coordinator.ProcessSample(Frame(10, false)); coordinator.ProcessSample(Frame(10.1, false)); coordinator.ProcessSample(Frame(10.2, true));
+            Assert(coordinator.HasContact && coordinator.IsRecording, "Clock fixture did not establish a live contact.");
+            if (paused) coordinator.SetSdkPauseFlags(4);
+            var bad = Frame(10.3, true); bad.SimulationTimeSeconds = invalid;
+            coordinator.ProcessSample(bad);
+            Assert(coordinator.LastSimulationTime == 10.2 && double.IsNaN(bad.AnalysisTimeSeconds) && !bad.MotionSimulation,
+                "Invalid source time poisoned the durable clock anchor or entered active analysis.");
+            if (paused) coordinator.SetSdkPauseFlags(0);
+            coordinator.ProcessSample(Frame(10.4, true));
+            Assert(completed.Count == 0 && coordinator.HasContact && coordinator.IsRecording && coordinator.LastSimulationTime == 10.4,
+                "First finite frame after an invalid clock spuriously retired the contact episode.");
+            coordinator.Stop();
+            Assert(completed.Count == 1, "Clock recovery lost or duplicated its original contact.");
+        }
+    }
+
     public static void RunAll() => Task.Run(() =>
     {
         // No WPF dispatcher, SimConnect, WinMM or real filesystem is needed by these owners.

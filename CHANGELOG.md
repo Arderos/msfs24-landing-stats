@@ -2,22 +2,32 @@
 
 All notable changes to MSFS Landing Stats are documented in this file.
 
-## [Unreleased]
+## [1.0.0] - 2026-11-10
 
 ### Added
 
-- Share complete landings in a single `.lslanding` file, with multi-file import, drag and drop, and Windows file associations. Imported landings are marked separately and excluded from monthly averages.
-- Flight Explorer in the private telemetry dashboard, with linked flight profiles, maps, control and contact charts, cohort comparisons, and synchronized replay.
+- Share complete landings in a single extensible `.lslanding` file, including all contacts, charts and 3D replay. Open multiple files through the picker, drag and drop, or Windows file associations; imported landings are marked separately and excluded from monthly averages.
+- Group contacts from the same landing in history and delete the whole landing with one confirmation.
+- Restore diagnostic-report uploads from Settings when their signing key is unavailable, preserving prior consent and queued reports.
+- Flight Explorer in the private diagnostic dashboard, with linked flight profiles, maps, control and contact charts, cohort comparisons, and synchronized replay.
+
+### Improved
+
+- Select measured, linear or quadratic touchdown-speed estimates by their prediction quality within the existing 200 ms window, while retaining regression eligibility checks.
+- Recover interrupted recordings and report delivery more reliably, retaining damaged data for recovery while allowing healthy queued reports to proceed.
+- Explain the selected contact's surface-closure reconstruction directly in its detail card.
 
 ### Fixed
 
-- Keep background startup windows behind existing applications when a foreground splash screen closes, while preserving normal activation by the user.
-- Reject false contacts around frozen or slewing physics and require a released airborne interval before accepting a subsequent touchdown, including after recorder recovery.
-- Bound touchdown-rate extrapolation by its actual sample support and prediction quality; retain the measured fallback when the trend is unreliable.
-- Stop contact measurement windows at frozen physics and preserve earlier real contacts without borrowing later measurements.
-- Preserve discrete contact and source-control transitions when coalescing same-time telemetry or paused recordings.
-- Leave inferred physical throttle sources unresolved when repeated independent movements do not support a unique axis.
-- Correct physical throttle graph direction for saved MSFS profile assignments, so advancing the levers raises the trace and retarding them lowers it.
+- Reject false landings caused by ground repositioning, frozen physics or settling after a simulator pause, while preserving supported approaches, real contacts and short bounces.
+- Correct physical throttle graph direction for saved MSFS assignments and leave inferred axes unresolved when repeated independent movements cannot identify a unique source.
+- Keep background startup windows behind existing applications after a foreground splash screen closes.
+- Preserve final telemetry during normal worker shutdown and recover correctly when Windows session shutdown is cancelled.
+- Keep externally opened browsers and mail clients running after Landing Stats closes, including during Google Drive sign-in.
+- Keep recording available when diagnostic-upload identity metadata is unreadable, and preserve cloud settings when simulator auto-start configuration is unavailable.
+- Show deferred and rejected uploads separately from landing-processing failures and clear component errors after recovery.
+- Keep sparse chart zoom and engine RPM time axes aligned.
+- Verify local Integration API pipe ownership and recover update controls after installation-access failures.
 
 ## [0.9.9] - 2026-10-27
 

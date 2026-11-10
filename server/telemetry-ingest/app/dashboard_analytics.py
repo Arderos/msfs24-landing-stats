@@ -43,7 +43,7 @@ RAW = {
     'aoa': 'angle_of_attack_deg', 'beta': 'sideslip_deg', 'g': 'g_force',
     'cmdP': 'pilot_pitch_input_percent', 'cmdR': 'pilot_roll_input_percent', 'cmdY': 'rudder_pedal_input_percent',
     'elev': 'elevator_deflection_percent_over_100', 'ail': 'aileron_left_deflection_percent_over_100',
-    'rud': 'rudder_deflection_percent_over_100', 'flap': 'flaps_left_percent',
+    'rud': 'rudder_deflection_percent_over_100',
     'lat': 'latitude_deg', 'lon': 'longitude_deg', 'heading': 'heading_true_deg',
     'wind': 'ambient_wind_velocity_kt', 'wind_dir': 'ambient_wind_direction_deg',
 }
@@ -61,6 +61,20 @@ def number(value):
         return None
 
 
+def text(value):
+    # These fields come from an otherwise structurally valid result envelope.
+    # Keep valid display/identity strings intact; objects are not display text.
+    return value if isinstance(value, str) else None
+
+
+def contact_number(value):
+    return value if type(value) is int and value > 0 else None
+
+
+def episode_id(summary):
+    return text(summary.get('RecordingEpisodeId')) or text(summary.get('Id'))
+
+
 def at(columns, key, index):
     values = columns.get(key, [])
     return values[index] if isinstance(values, list) and index < len(values) else None
@@ -75,10 +89,18 @@ def angle(value):
     return (value + 180) % 360 - 180
 
 
+def object_value(value, field):
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError(f'{field} must be an object')
+    return value
+
+
 def runway_frame(summary):
-    geometry = summary.get('RunwayGeometry') or {}
-    runway = str(summary.get('Runway') or '').strip().upper()
-    primary, secondary = str(geometry.get('PrimaryName') or '').upper(), str(geometry.get('SecondaryName') or '').upper()
+    geometry = object_value(summary.get('RunwayGeometry'), 'RunwayGeometry')
+    runway = (text(summary.get('Runway')) or '').strip().upper()
+    primary, secondary = (text(geometry.get('PrimaryName')) or '').upper(), (text(geometry.get('SecondaryName')) or '').upper()
     fields = {key: number(geometry.get(key)) for key in ('LatitudeDegrees', 'LongitudeDegrees', 'HeadingTrueDegrees', 'LengthMeters', 'WidthMeters')}
     if any(v is None for v in fields.values()) or runway not in (primary, secondary) or not runway:
         return None
@@ -105,7 +127,7 @@ def project(lat, lon, frame):
             east * math.cos(heading) - north * math.sin(heading))
 
 
-def catalog_bindings(encoded):
+def catalog_bindings(encoded, mapping=(), axis_count=6):
     """Read only assignments/device labels; never expose profile XML or paths."""
     if not encoded:
         return {}, {}
@@ -137,7 +159,7 @@ def catalog_bindings(encoded):
             identity = payload[offset:offset + 16]; offset += 32
         offset += axes * 8
         if identity is not None:
-            devices[identity] = (slot, axes, mask)
+            devices.setdefault(identity, []).append((slot, axes, mask))
         labels[slot] = name
     bindings = {}
     if extended:
@@ -148,28 +170,47 @@ def catalog_bindings(encoded):
             offset += 26; text()
             if role > 2:
                 continue
-            # Keep an assigned-but-absent role authoritative too.
             bindings.setdefault(role, set())
-            device = devices.get(identity)
-            if device and axis < device[1] and device[2] & (1 << axis):
-                bindings[role].add((device[0] * device[1] + axis, -1 if inverted else 1))
-    return {role: next(iter(values)) if len(values) == 1 else None for role, values in bindings.items()}, labels
+            present = [device for device in devices.get(identity, [])
+                       if axis < device[1] and device[2] & (1 << axis)]
+            if present:
+                bindings[role].add((identity, axis, -1 if inverted else 1))
+    direct = {}
+    for role, candidates in bindings.items():
+        present = [(device[0] * axis_count + axis, polarity)
+                   for identity, axis, polarity in candidates if axis < axis_count
+                   for device in devices[identity] if axis < device[1] and device[2] & (1 << axis)]
+        recorded = [(source, polarity) for source, polarity in present if source in mapping]
+        # Missing assigned hardware/measurements retain a gap. Ambiguous attached
+        # bindings may use the client's recorded correlation decision instead.
+        if not recorded:
+            direct[role] = None
+        elif len(candidates) == 1 and len(present) == 1 and mapping.count(recorded[0][0]) == 1:
+            direct[role] = recorded[0]
+    conflicts = {value[0] for value in direct.values() if value is not None
+                 and sum(other is not None and other[0] == value[0] for other in direct.values()) > 1}
+    return {role: value for role, value in direct.items() if value is None or value[0] not in conflicts}, labels
 
 
 def physical_series(record, entries):
-    summary = record.get('summary', {})
-    series, inputs = record.get('series', {}), record.get('inputs') or {}
+    summary = object_value(record.get('summary'), 'summary')
+    series = object_value(record.get('series'), 'series')
+    inputs = object_value(record.get('inputs'), 'inputs')
     mapping = summary.get('RawControllerAxesSourceIndices') or []
-    timeline = record.get('controller_catalogs') or {}
+    # Labels are optional display metadata; preserve slot positions even when
+    # an individual name is malformed. A string/object is not a source list.
+    names = summary.get('ControlInputSources')
+    names = names if isinstance(names, list) else []
+    timeline = object_value(record.get('controller_catalogs'), 'controller_catalogs')
     catalogs = timeline.get('catalogs', [])
     transitions = timeline.get('transitions', [[0, -1]])
     if timeline and (timeline.get('version') != 1 or timeline.get('samples') != len(series.get('t', []))):
         return {}, []
-    decoded = [catalog_bindings(value) for value in catalogs]
+    decoded = [catalog_bindings(value, mapping, summary.get('ControllerAxisCount') or 6) for value in catalogs]
     selected = {}
     contact = summary.get('ContactNumber', 1)
     for entry in entries:
-        d = entry.get('details') or {}
+        d = object_value(entry.get('details'), 'decision details')
         if entry.get('component') != 'replay.inputs' or entry.get('code') != 'axis_selected' or d.get('contact_number', contact) != contact:
             continue
         role, source, correlation = d.get('role'), d.get('source_index'), number(d.get('correlation'))
@@ -199,10 +240,9 @@ def physical_series(record, entries):
                     if valid[column] is True and raw is not None and abs(raw) <= 100.001 and age is not None and 0 <= age <= MAX_AXIS_AGE:
                         value = raw * polarity
                         slot = source // (summary.get('ControllerAxisCount') or 6)
-                        label = devices.get(slot)
+                        label = text(devices.get(slot))
                         if not label:
-                            names = summary.get('ControlInputSources') or []
-                            label = names[slot] if slot < len(names) else None
+                            label = text(names[slot]) if slot < len(names) else None
                         if label:
                             labels.add(label)
             result[key].append(value)
@@ -281,7 +321,12 @@ def read_raw(archive):
             engines = int(number(row.get('number_of_engines')) or 0)
             for key, suffix in (('throttle', 'throttle_percent'), ('n1', 'n1_percent')):
                 p[key] = mean(number(row.get(f'engine_{i}_{suffix}')) for i in range(1, min(4, engines) + 1))
-            p['brake'] = mean(number(row.get(f'brake_{side}_position')) for side in ('left', 'right'))
+            # Raw positions are fractions; saved flap/deflection series are
+            # already percentages. Match the writer's mean of both flap sides.
+            flaps = [number(row.get(f'flaps_{side}_percent')) for side in ('left', 'right')]
+            p['flap'] = sum(flaps) * 50 if all(value is not None for value in flaps) else None
+            brake = mean(number(row.get(f'brake_{side}_position')) for side in ('left', 'right'))
+            p['brake'] = brake * 100 if brake is not None else None
             lateral = number(row.get('acceleration_body_x_fps2'))
             p['latG'] = lateral / 32.17404856 if lateral is not None else None
             if points and t == points[-1]['t']:
@@ -300,20 +345,30 @@ def interpolate(points, coordinate, grid, channels, descending=False):
     output = {key: [None] * len(grid) for key in channels}
     for a, b in zip(points, points[1:]):
         x, y = a.get(coordinate), b.get(coordinate)
-        if x is None or y is None or x == y or b['t'] <= a['t'] or b['t'] - a['t'] > MAX_GAP or a.get('run') != b.get('run'):
+        if x is None or y is None or x == y or b['t'] <= a['t']:
             continue
         if descending and (y >= x or a['t'] > 0 or b['t'] > 0 or a.get('ground') == 1 or b.get('ground') == 1):
             continue
         low, high = min(x, y), max(x, y)
+        continuous = b['t'] - a['t'] <= MAX_GAP and a.get('run') == b.get('run')
         for index in range(bisect.bisect_left(grid, low), bisect.bisect_right(grid, high)):
             fraction = (grid[index] - x) / (y - x)
             for key in channels:
-                if key.startswith('stick') and a.get('input_run') != b.get('input_run'):
-                    continue
                 first, last = a.get(key), b.get(key)
-                if first is not None and last is not None:
+                value = None
+                # Exact observations remain usable beside a missing sample or
+                # a catalog boundary; only interpolation needs both endpoints.
+                if fraction == 0:
+                    value = first
+                elif fraction == 1:
+                    value = last
+                elif (continuous and first is not None and last is not None and
+                      (not key.startswith('stick') or a.get('input_run') == b.get('input_run'))):
                     value = first + (last - first) * fraction
-                    output[key][index] = round(value, 5) if math.isfinite(value) else None
+                # Every channel belongs to the same final crossing, including
+                # unavailable channels or a physics gap; never retain an earlier
+                # crossing's data when its final crossing cannot be interpolated.
+                output[key][index] = round(value, 5) if value is not None and math.isfinite(value) else None
     return output
 
 
@@ -339,7 +394,12 @@ def build_analytics(archive, results, entries):
     raw = read_raw(archive)
     output = []
     for record in records:
-        summary, series = record.get('summary', record), record.get('series') or {}
+        summary = object_value(record.get('summary', record), 'summary')
+        series = object_value(record.get('series'), 'series')
+        pose = object_value(record.get('pose'), 'pose')
+        contacts = record.get('contacts', [])
+        if not isinstance(contacts, list) or any(not isinstance(contact, dict) for contact in contacts):
+            raise ValueError('contacts must contain objects')
         if not series.get('t'):
             continue
         contact_time = number(summary.get('EstimatedContactTimeSeconds'))
@@ -353,13 +413,10 @@ def build_analytics(archive, results, entries):
             if t is None:
                 continue
             p = {key: number(at(series, column, i)) for key, column in SERIES.items()}
-            p.update({key: number(at(record.get('pose') or {}, column, i)) for key, column in
+            p.update({key: number(at(pose, column, i)) for key, column in
                       (('lat', 'lat'), ('lon', 'lon'), ('heading', 'headingTrueDeg'))})
             if p['pitch'] is not None:
                 p['pitch'] *= -1
-            for key in ('elev', 'ail', 'rud'):
-                if p[key] is not None:
-                    p[key] *= 100
             while input_run + 1 < len(transitions) and transitions[input_run + 1][0] <= i:
                 input_run += 1
             p.update(t=t, input_run=input_run, ground=1 if at(series, 'ground', i) is True else 0,
@@ -416,7 +473,7 @@ def build_analytics(archive, results, entries):
         if not airborne:
             continue
         keys = list(CHANNELS)
-        for contact in record.get('contacts', []):
+        for contact in contacts:
             key = f"gear_{contact.get('n')}"
             source = [{'t': t, key: number(at(contact, 'c', i)), 'run': 0} for i, t in enumerate(contact.get('t', [])) if number(t) is not None]
             values = interpolate(source, 't', [p['t'] for p in points], [key])[key]
@@ -429,21 +486,21 @@ def build_analytics(archive, results, entries):
         along, cross = project(lat, lon, frame)
         # Contact metrics must be paired at t=0, not the closest available frame.
         zero = {key: values[300] for key, values in profiles['t'].items()}
-        episode = summary.get('RecordingEpisodeId') or summary.get('Id')
+        episode = episode_id(summary)
         events = []
         for candidate in records:
             other = candidate.get('summary', candidate)
-            if (other.get('RecordingEpisodeId') or other.get('Id')) != episode:
+            if not episode or episode_id(other) != episode:
                 continue
             other_time = number(other.get('EstimatedContactTimeSeconds'))
             if contact_time is not None and other_time is not None:
-                events.append({'contact': other.get('ContactNumber', 1), 't': other_time - contact_time,
+                events.append({'contact': contact_number(other.get('ContactNumber', 1)), 't': other_time - contact_time,
                                'g': number(other.get('ImpactPeakG')), 'window': number(other.get('ImpactWindowSeconds'))})
         events.sort(key=lambda event: event['t'])
-        metadata = {'id': summary.get('Id'), 'episode': summary.get('RecordingEpisodeId') or summary.get('Id'),
-                    'contact': summary.get('ContactNumber', 1), 'contacts': summary.get('ContactCount', 1),
-                    'aircraft': summary.get('AircraftTitle'), 'airport': summary.get('Airport'), 'runway': summary.get('Runway'),
-                    'simulator': summary.get('Simulator'), 'timestamp': summary.get('TimestampUtc'),
+        metadata = {'id': text(summary.get('Id')), 'episode': episode,
+                    'contact': contact_number(summary.get('ContactNumber', 1)), 'contacts': contact_number(summary.get('ContactCount', 1)),
+                    'aircraft': text(summary.get('AircraftTitle')), 'airport': text(summary.get('Airport')), 'runway': text(summary.get('Runway')),
+                    'simulator': text(summary.get('Simulator')), 'timestamp': text(summary.get('TimestampUtc')),
                     'lat': lat, 'lon': lon, 'along': along, 'cross': cross, 'frame': frame, 'devices': devices,
                     'fpm': number(summary.get('InertialFpm')), 'g': number(summary.get('ImpactPeakG')),
                     'weight': number(summary.get('WeightPounds')), 'flap': zero.get('flap'), 'ias': zero.get('ias'),
@@ -459,10 +516,10 @@ def build_analytics(archive, results, entries):
             # Decimation may remove measurements, but cannot hide an unavailable
             # interval and thereby draw a continuous line through it.
             for j in range(1, len(indices)):
-                if any(points[i].get(key) is None for i in range(indices[j - 1], indices[j])):
+                if columns[key][j - 1] is not None and any(points[i].get(key) is None for i in range(indices[j - 1] + 1, indices[j])):
                     columns[key][j] = None
         output.append({'meta': metadata, 'profiles': profiles, 'series': columns,
-                       'contact_states': [contact_intervals(contact, points) for contact in record.get('contacts', [])]})
+                       'contact_states': [contact_intervals(contact, points) for contact in contacts]})
     return output
 
 

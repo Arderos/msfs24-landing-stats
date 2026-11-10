@@ -60,7 +60,7 @@ internal sealed class DirectInputJoystickReader : IControllerReader
             var identity = _refreshDevices[_refreshIndex++];
             IDirectInputDevice? device = null;
             try { device = _api.Open(identity); }
-            catch (COMException error)
+            catch (Exception error) when (error is COMException || error is InvalidOperationException)
             { Trace.TraceWarning("DirectInput cannot open {0} ({1}): 0x{2:X8} {3}", identity.Name, identity.InstanceId, error.HResult, error.Message); }
             _refreshSlots.Add(new Slot(identity, device));
         }
@@ -247,7 +247,8 @@ internal sealed partial class NativeDirectInputApi : IDirectInputApi
                     if ((item.Type & 0xff) != 2) continue;
                     var axis = AxisIndex(item.TypeId, ref slider);
                     if (axis < 0) { Trace.TraceWarning("DirectInput axis {0} ({1}) has no standard positional mapping on {2}.", item.Name, item.TypeId, identity.Name); continue; }
-                    if (_axes[axis] != null) throw new InvalidOperationException("DirectInput returned duplicate standard axes.");
+                    if (_axes[axis] != null)
+                    { Trace.TraceWarning("DirectInput axis {0} duplicates positional slot {1} on {2}; retaining the first object.", item.Name, axis, identity.Name); continue; }
                     var range = new PropertyRange { Size = (uint)Marshal.SizeOf<PropertyRange>(), HeaderSize = 16, Object = item.Type, How = 2 };
                     // DIPROP_RANGE is MAKEDIPROP(4), a pseudo-GUID pointer.
                     var error = Method<GetRange>(device, 5)(device, new IntPtr(4), ref range);

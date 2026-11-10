@@ -23,7 +23,7 @@ legacy `Provided` value). Older v7 records without the string retain the prior
 boolean telemetry-provenance fallback.
 
 New recordings also include optional adaptive-impact summary members:
-`ImpactAnalysisVersion` (currently `1`), nullable `ImpactPeakG`,
+`ImpactAnalysisVersion` (currently `2`), nullable `ImpactPeakG`,
 `ImpactPeakOffsetSeconds`, `ImpactEndOffsetSeconds`, `ImpactWindowSeconds`, and `ImpactStatus`.
 Offsets use the same contact-relative origin as the saved series. Window duration
 is measured from the first observed on-ground frame, not from the earlier
@@ -38,6 +38,14 @@ Older records without these fields are not recalculated or migrated. The UI
 uses their existing `PeakG150Milliseconds` value. A missing or invalid adaptive
 result in a new record does not fall back to the legacy peak. The rebuildable
 summary index simply copies the saved adaptive members alongside other scalars.
+
+Version 2 changes impact validation while retaining the same result fields.
+Current readers display saved results from versions 1 and 2 without recalculation.
+Unknown analysis versions retain the landing and its data but display no impact
+category. Released client v0.9.9 recognizes only version 1: a version 2 landing
+synced to that client remains in history, with its adaptive G/category unavailable
+until the client is updated. This is an analysis-reader limitation, not a change
+to the landing-file layout.
 
 Series are stored column-wise. For example, `t`, `iv`, `vsi`, and `g` are parallel arrays for time, inertial vertical rate, indicated vertical rate, and vertical load. The complete key-to-property mapping is defined by the `DataMember(Name=...)` declarations in `LandingRecordFile.cs`.
 
@@ -63,6 +71,28 @@ preserve this provenance. The import uses local identities separate from native
 records; the package revision also separates different shared versions of an
 episode. These additions do not change the v7 series layout. See
 [landing sharing](landing-sharing.md) for duplicate and reimport behavior.
+
+Share imports retain an optional detail-root `share` member,
+represented in memory by `LandingRecord.ShareData`. It contains `coreChunks` and
+`blocks`; each block has `type`, integer `version`, boolean `required`, and
+`dataChunks`. The chunk arrays store Base64 of 24 KiB binary segments; only the
+last segment may be shorter, and an empty payload uses an empty array. Runtime
+storage keeps the binary segments and the history serializer converts one
+segment at a time. Earlier local details using whole-string `core` / `data` remain
+readable and are written as chunks when saved. Known and unknown
+optional payloads remain byte-exact through detail save/load, backup/restore and
+re-export. Local view enrichment does not rewrite this imported source data.
+
+`ShareData` belongs to the contact detail and is omitted from summary copies and
+the rebuildable history index. Records using the older object layout store the
+same optional field as `ShareData`. These additive members leave `layout: 7` and
+its numeric columns unchanged; older files omit them. The `.lslanding` exchange
+format versions its container independently of the history layout and original
+measurement version. Its container, frozen core and current feature schemas each
+use their own version 1 contracts.
+The uncompressed detail limit is 512 MiB, including the retained Base64 payloads
+and decoded view. See [landing sharing](landing-sharing.md#file-format) for the
+independently versioned exchange contract and its archive limits.
 
 ### Reproducible analysis geometry
 

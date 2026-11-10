@@ -128,6 +128,7 @@
     <Compile Remove="Models/LandingContactSeries.cs" />
     <Compile Remove="Models/LandingEngineSeries.cs" />
     <Compile Remove="Models/LandingRecord.cs" />
+    <Compile Remove="Models/LandingShareData.cs" />
     <Compile Remove="Models/LandingReplayContacts.cs" />
     <Compile Remove="Models/LandingReplayDiagnostics.cs" />
     <Compile Remove="Models/LandingReplayRunwayOffset.cs" />
@@ -185,6 +186,9 @@
     <Compile Remove="Storage/LandingReplayColumns.cs" />
     <Compile Remove="Storage/LandingRepository.cs" />
     <Compile Remove="Storage/LandingShareArchive.cs" />
+    <Compile Remove="Storage/LandingShareArchive.Contents.cs" />
+    <Compile Remove="Storage/LandingShareContent.cs" />
+    <Compile Remove="Storage/LandingShareReadBudget.cs" />
     <Compile Remove="Storage/LandingSiteMetadataPersistence.cs" />
     <Compile Remove="Storage/RawCaptureRepository.cs" />
     <Compile Remove="Storage/ReplaySourceArchive.cs" />
