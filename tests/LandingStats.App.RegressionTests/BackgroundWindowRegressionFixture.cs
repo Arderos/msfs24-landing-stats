@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Reflection;
+using System.Text;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Interop;
@@ -16,6 +17,7 @@ namespace LandingStats.App.RegressionTests;
 internal sealed class BackgroundWindowRegressionFixture : IDisposable
 {
     private readonly Process _process;
+    private readonly StreamWriter _commands;
     private readonly Task<string> _errors;
     public IntPtr Window { get; }
 
@@ -25,7 +27,11 @@ internal sealed class BackgroundWindowRegressionFixture : IDisposable
         {
             UseShellExecute = false, CreateNoWindow = true, WindowStyle = ProcessWindowStyle.Hidden,
             RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true,
+            StandardOutputEncoding = new UTF8Encoding(false), StandardErrorEncoding = new UTF8Encoding(false),
         }) ?? throw new InvalidOperationException("Could not start the background-window fixture.");
+        // Process.StandardInput inherits the console encoding on .NET Framework,
+        // including a UTF-8 preamble. The control channel has its own wire encoding.
+        _commands = new StreamWriter(_process.StandardInput.BaseStream, new UTF8Encoding(false)) { AutoFlush = true };
         _errors = _process.StandardError.ReadToEndAsync();
         try
         {
@@ -38,7 +44,7 @@ internal sealed class BackgroundWindowRegressionFixture : IDisposable
 
     public void CloseSplash()
     {
-        _process.StandardInput.WriteLine("close-splash"); _process.StandardInput.Flush();
+        _commands.WriteLine("close-splash");
         if (ReadReply() != "CLOSED") throw new InvalidDataException("Window fixture did not acknowledge splash closure.");
     }
 
@@ -54,9 +60,9 @@ internal sealed class BackgroundWindowRegressionFixture : IDisposable
     {
         try
         {
+            _commands.Dispose();
             if (!_process.HasExited)
             {
-                _process.StandardInput.Close();
                 if (!_process.WaitForExit(10000)) { _process.Kill(); _process.WaitForExit(); }
             }
         }
@@ -65,6 +71,8 @@ internal sealed class BackgroundWindowRegressionFixture : IDisposable
 
     public static int Run()
     {
+        Console.OutputEncoding = new UTF8Encoding(false);
+        using var commands = new StreamReader(Console.OpenStandardInput(), new UTF8Encoding(false, true));
         var application = new Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };
         var simulator = new Window { Width = 180, Height = 80, Left = -10000, Top = -10000, ShowInTaskbar = false };
         var splash = new Window { Width = 180, Height = 80, Left = -10000, Top = -10000, ShowInTaskbar = false };
@@ -79,7 +87,7 @@ internal sealed class BackgroundWindowRegressionFixture : IDisposable
             try
             {
                 string? command;
-                while ((command = Console.ReadLine()) != null)
+                while ((command = commands.ReadLine()) != null)
                 {
                     if (command != "close-splash") throw new InvalidDataException("Unknown window-fixture command.");
                     application.Dispatcher.Invoke(() => splash.Close());

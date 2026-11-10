@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
@@ -29,10 +30,26 @@ internal static class UpdateActivationRegressionTests
         BackgroundWindowDoesNotActivate(Array.Empty<string>(), update: true);
         BackgroundWindowDoesNotActivate(new[] { SimulatorAutoStartManager.LaunchArgument }, update: false);
         DuplicateBackgroundLaunchDoesNotActivate();
+        BackgroundWindowCommandsIgnoreConsoleEncoding();
         foreach (var update in new[] { false, true })
         foreach (var sourceInitialized in new[] { false, true })
         foreach (var taskbar in new[] { false, true })
             BackgroundWindowStaysBehindExistingWindows(update, sourceInitialized, taskbar);
+    }
+
+    private static void BackgroundWindowCommandsIgnoreConsoleEncoding()
+    {
+        var previous = Console.InputEncoding;
+        try
+        {
+            foreach (var encoding in new[] { Encoding.GetEncoding(437), Encoding.UTF8 })
+            {
+                Console.InputEncoding = encoding;
+                using var fixture = new BackgroundWindowRegressionFixture();
+                fixture.CloseSplash();
+            }
+        }
+        finally { Console.InputEncoding = previous; }
     }
 
     private static void BackgroundWindowStaysBehindExistingWindows(bool update, bool sourceInitialized, bool taskbar)
