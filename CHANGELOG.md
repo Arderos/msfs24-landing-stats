@@ -8,18 +8,18 @@ All notable changes to MSFS Landing Stats are documented in this file.
 
 ### Improved
 
-- Improved chart responsiveness and reduced stuttering during mouse interaction.
-- Refresh window contents after startup and activation, and keep localization resources available throughout language changes.
+- Chart responsiveness during mouse interaction.
+- Window rendering after startup and activation, and localization stability when switching languages.
 
 ### Fixed
 
-- Recover Google Drive synchronization when settings or landing metadata return to an earlier value and multiple backup revisions remain, preserving the latest revision instead of reporting a permanent conflict.
-- Report failed simulator auto-start updates without displaying a successful enabled status.
-- Preserve RAW frames released together after a stationary freeze, including export restart and cold recovery; optional RAW storage failures no longer block recovery of saved landings.
-- Keep invalidated elevator-event ages finite after flight boundaries; the telemetry server also accepts historical missing-age markers from older clients.
-- Accept highly compressed paused RAW telemetry on the server under the existing expanded-byte, row-count and field-size limits.
-- Reject malformed or unsupported compressed capture data with HTTP 422 and preserve it in quarantine, instead of retrying it as a server failure.
-- Exclude intentional missing telemetry values from the dashboard's NaN/Infinity error count and rebuild cached metrics.
+- Google Drive sync could get stuck when settings or landing metadata returned to an earlier value and older backup revisions remained.
+- Simulator auto-start was shown as enabled even when saving its configuration failed.
+- RAW frames released together after a stationary freeze could be lost during export restart or cold recovery. Failures in optional RAW storage could also block recovery of saved landings.
+- Missing elevator-event ages after flight boundaries could cause valid telemetry uploads to be rejected. The server now also accepts these missing-age markers from older clients.
+- Highly compressed RAW telemetry from simulator pauses was rejected despite meeting the expanded-size limits.
+- Server errors and repeated upload attempts when compressed captures were malformed or used unsupported compression.
+- Intentional missing telemetry values were counted as NaN/Infinity errors in the dashboard. Cached metrics are rebuilt automatically.
 
 ## [1.0.0] - 2026-11-10
 
