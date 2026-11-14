@@ -44,6 +44,100 @@ Changes should stay with the component that owns the state. File reads,
 SimConnect callbacks, controller polling and network requests must not be moved
 into WPF rendering or input handlers.
 
+The main window has an opaque background at both Window and root Grid level.
+`InitialWindowPresentation` requests one complete render and presentation after
+the first `ContentRendered` and actual native foreground ownership, in either
+order. `Window.IsActive` is insufficient: a background thread can have an active
+window while the simulator still owns the foreground. Window and application
+activation notifications wake a deferred check of `GetForegroundWindow()`;
+the application event also covers a window whose WPF active flag is already set.
+It redraws the
+existing full-size root Grid and invalidates the complete HWND client area.
+This isolates recovery from an incomplete initial WPF/DWM presentation; the
+original trigger remains unknown. Readiness is rechecked after the
+native activation handler unwinds. A window hidden, minimized or no longer in
+the foreground before the callback waits for its next foreground activation. Closing cancels the pending
+callback; completion removes all subscriptions. There are no redraw timers,
+focus changes, resize operations or DWM-policy overrides. Native invalidation
+failures are recorded in `crash.log` without stopping recording or startup.
+The existing bounded asynchronous `startup.log` records first content and the
+accepted refresh request. These milestones describe requests, not proof that
+the desktop compositor displayed their pixels.
+
+Localization keeps its existing slot in the merged application dictionaries.
+Applying the same cached dictionary leaves resources untouched; a language
+change replaces the slot in a single collection operation. Removing the old
+dictionary before adding its replacement temporarily cleared the dynamic
+`Window.Title`, even though the product name is unchanged across languages.
+On the installed Framework this caused WindowChrome to toggle native window
+visibility after the first content render. Continuous resource replacement
+removes that verified native transition while retaining later resource
+overrides and updating translated strings and cultures normally.
+
+## Chart presentation
+
+`LandingChartPanel` hosts one child HWND for the complete interactive chart
+block. `LandingStats.Graphics.Native` owns its Direct3D9Ex HAL device and
+FLIPEX swap chain. Chart hover, value flags, drag selection and the timeline
+readout are presented in that HWND; changing them does not invalidate the
+displayed WPF chart tree. This boundary addresses the presentation path that
+reproduced cross-application video stutter with native D3D9 COPY as well as
+WPF. The corresponding FLIPEX control stayed smooth. The Windows-session state
+that triggers the COPY behavior remains unidentified; this change does not
+assert a driver or competing-process cause.
+
+`LandingChart` still owns the recorded series, scales, nearest-sample lookup,
+curve geometry and hover formatting. Its typed offscreen surface contract
+returns an immutable drawing frame, rejects stale frames after data or layout
+changes, and accepts explicit text DPI. `ChartPanelScene` composes those frames
+with the existing `LandingTimeline` and lane labels. It rasterizes the static
+panel when data, options, layout, localization or DPI changes. Hover replaces
+only cropped premultiplied BGRA layers when the nearest sample changes;
+continuous pointer time remains available to synchronized replay. Selection
+updates independently of that sample cache. No displayed WPF labels or private
+framework reflection participate in this path.
+
+The existing WPF grid owns row sizing and supplies its actual lane heights to
+the scene. Replay retains its existing WPF view, with only the G lane and
+timeline in the chart HWND beneath it. While a WPF modal overlay is visible,
+the host replaces its child HWND with a frozen WPF image of the same scene.
+This preserves the chart background under the modal dimming layer while
+respecting native-window airspace. Layout, data and localization changes refresh
+that image; ordinary live hover never updates it. The last overlay's closure
+releases the image and presents the current scene through the native window.
+Input capture,
+capture cancellation, linked zoom and series isolation retain the chart's
+existing domain rules.
+
+The native backend chooses the adapter for the current monitor, retains layer
+pixels for device reconstruction, and handles size, DPI, display and device
+changes at presentation boundaries. Recovery runs on subsequent real input,
+paint, display or visibility notifications. During a temporary outage, retries
+are limited by a monotonic deadline: 250 ms, 500 ms, 1 s, then at most once every
+2 s. Incoming mouse and replay updates do not move that deadline or recreate
+the GPU device before it. One one-shot window timer permits recovery without
+additional input while the window is visible; hidden, minimized and healthy
+windows do not keep a recovery timer running.
+
+Temporary device loss, hung or removed devices and memory exhaustion keep the
+child HWND alive, including during initialization. GPU resources are reset or
+recreated as required; CPU layer pixels remain available. A failed layer
+submission makes the host resubmit the complete current scene on recovery.
+Before the first successful frame, the window paints the scene's background
+color. GDI painting is permanently disabled after the first successful FLIPEX
+presentation, so it is never mixed with an active flip surface. Unrecoverable
+errors are logged and shown explicitly; there is no automatic fallback to the
+COPY path. The native DLL is included in the verified runtime payload.
+
+Windows CI runs the native recovery state-machine tests and the managed host
+tests with injected presentation failures. These exercise recovery without
+resetting a machine's display driver. Actual D3D9Ex HAL/FLIPEX presentation is
+covered separately by the regression executable's
+`--chart-presentation-native-smoke` option, which requires a suitable desktop
+adapter. The standard hosted CI runner does not guarantee that hardware, so
+the hardware smoke remains an explicit local check rather than a silently
+skipped CI test.
+
 ## Controller values and assignments
 
 The Controllers worker selects game-controller collections by Raw Input HID
@@ -119,8 +213,38 @@ Older indexes acquire
 the fingerprint atomically before their first replacement import. This internal
 index metadata is omitted from portable landing details and backups.
 
-Diagnostic reporting and Google Drive backup are separate operations. Automatic
-diagnostics are enabled by default and can be disabled in Settings. Drive backup
+Diagnostic reporting and Google Drive backup are separate operations.
+
+RAW persistence accepts the coordinator's full bounded transaction when a
+stationary freeze releases retained frames, including the current frame and an
+optional storage-gap/capture-restart prefix. The writer, reader and export cursor
+share this bound; existing byte quotas and atomic input identities remain in
+force. Export can resume inside such a transaction without losing or duplicating
+frames. Cold replay and adoption treat RAW storage as optional: a failure ends
+the diagnostic fragment and records its gap in the durable recovery result,
+while required landing inputs and facilities still recover. Recovery continues
+to use the session's retained engine; updating the application does not rewrite
+old engines or their analysis provenance.
+
+Invalidated elevator events use the source's finite zero placeholders alongside
+`Valid=false` before entering RAW, checkpoints or landing episodes. The receiver
+also accepts older clients' NaN age only when that validity flag is false. It
+shares missing-value semantics with the dashboard instead of counting expected
+absence as corrupted telemetry. Highly compressible paused RAW is bounded by
+expanded bytes and CSV dimensions rather than rejected by compression ratio.
+
+Google Drive backup revisions use the Drive file ID as their identity and
+`baseFileId` to name the replaced file. SHA-256 remains the content-integrity
+check; `baseSha256` is retained for older clients. Returning to earlier settings
+or landing metadata therefore creates a distinct revision even when its bytes
+repeat. For legacy hash-only ancestry, server creation times restrict parent
+matches to earlier files. Concurrent leaves converge by creation time and then
+file ID; the selected copy's checksum is verified before superseded copies are
+moved to Drive trash. Creation time crosses the
+cloud worker boundary with the other file metadata. A failed predecessor cleanup
+can be retried from the remaining revisions without losing this ordering.
+
+Automatic diagnostics are enabled by default and can be disabled in Settings. Drive backup
 is optional and contains compact history, not raw diagnostic archives. The local
 API is separately opt-in. See [privacy](../PRIVACY.md).
 

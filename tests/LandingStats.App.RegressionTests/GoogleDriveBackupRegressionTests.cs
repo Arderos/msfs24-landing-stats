@@ -1374,6 +1374,8 @@ internal static partial class GoogleDriveBackupRegressionTests
         private bool _injectCompetingRootOnNextCreate;
         private string? _competingRootLandingId;
         private byte[]? _competingRootLandingBytes;
+        public bool RejectTrash { get; set; }
+        public bool LegacyRevisionMetadata { get; set; }
 
         public FakeGoogleDriveApi(string idPrefix = "")
         {
@@ -1527,12 +1529,16 @@ internal static partial class GoogleDriveBackupRegressionTests
         public Task TrashFileAsync(string fileId, CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            if (RejectTrash) throw new IOException("Injected predecessor cleanup failure.");
             _files[fileId].Trashed = true;
             return Task.CompletedTask;
         }
 
         public byte[] ActiveSettingsBytes() => _files.Values.Single(entry =>
             !entry.Trashed && entry.Property("kind") == "settings").Content.ToArray();
+
+        public void CorruptNewestSettings() => _files.Values.Where(entry => !entry.Trashed && entry.Property("kind") == "settings")
+            .OrderByDescending(entry => entry.CreatedUtc).First().Content = new byte[] { 1, 2, 3 };
 
         public int ActiveRootCount() => _files.Values.Count(entry =>
             !entry.Trashed && entry.Property("kind") == "root");
@@ -1738,12 +1744,14 @@ internal static partial class GoogleDriveBackupRegressionTests
             var entry = new Entry
             {
                 Id = _idPrefix + "file-" + (++_nextId),
+                CreatedUtc = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc).AddTicks(_nextId),
                 Name = name,
                 MimeType = mimeType,
                 Parents = parents.ToArray(),
                 Properties = Properties(appProperties),
                 Content = content.ToArray(),
             };
+            if (LegacyRevisionMetadata) entry.Properties.Remove("baseFileId");
             _files.Add(entry.Id, entry);
             return ToFile(entry);
         }
@@ -1761,7 +1769,8 @@ internal static partial class GoogleDriveBackupRegressionTests
             entry.MimeType,
             entry.Trashed,
             entry.Properties,
-            entry.Parents);
+            entry.Parents,
+            entry.CreatedUtc);
 
         private sealed class Entry
         {
@@ -1769,6 +1778,7 @@ internal static partial class GoogleDriveBackupRegressionTests
             public string Name { get; set; } = string.Empty;
             public string MimeType { get; set; } = string.Empty;
             public bool Trashed { get; set; }
+            public DateTime? CreatedUtc { get; set; }
             public Dictionary<string, string> Properties { get; set; } = new Dictionary<string, string>();
             public string[] Parents { get; set; } = Array.Empty<string>();
             public byte[] Content { get; set; } = Array.Empty<byte>();

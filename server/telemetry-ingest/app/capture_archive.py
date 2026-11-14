@@ -9,6 +9,7 @@ import io
 import struct
 import time
 import zipfile
+import zlib
 from dataclasses import dataclass
 
 import zstandard
@@ -20,6 +21,9 @@ MAXIMUM_BYTES = 256 * 1024 * 1024
 # Keep this archive contract aligned with CaptureArchiveFormat on the client.
 MAXIMUM_SESSION_METADATA_BYTES = 2 * 1024 * 1024
 LIMITS = {"session.txt": MAXIMUM_SESSION_METADATA_BYTES, "decisions.json": 4 * 1024 * 1024, "controller-catalogs.json": 8 * 1024 * 1024, "source-state.bin": 16 * 1024 * 1024}
+# Codec failures describe the immutable upload, not a retryable storage error.
+# Normalize at the reader boundary for both ingestion and retained-archive readers.
+FORMAT_ERRORS = (zipfile.BadZipFile, zlib.error, zstandard.ZstdError, NotImplementedError, EOFError)
 
 
 def _exact(stream, size):
@@ -168,8 +172,8 @@ class _Verified(io.RawIOBase):
         start = time.monotonic()
         try:
             data = self.source.read(min(65536, len(buffer)))
-        except zstandard.ZstdError as exc:
-            raise ValueError("invalid Zstd capture member") from exc
+        except FORMAT_ERRORS as exc:
+            raise ValueError("capture member is malformed or unsupported") from exc
         self.read_seconds += time.monotonic() - start
         if self.read_seconds > 10:
             raise TimeoutError("capture decoding exceeded its time budget")
@@ -238,8 +242,10 @@ class CaptureArchive:
                     raise ValueError("capture expands beyond its byte limit")
                 if "/" in entry.filename or "\\" in entry.filename or entry.filename.startswith("."):
                     raise ValueError("capture member path is unsafe")
-        except Exception:
+        except Exception as exc:
             self.close()
+            if isinstance(exc, FORMAT_ERRORS):
+                raise ValueError("capture archive is malformed or unsupported") from exc
             raise
 
     def _manifest(self):
@@ -294,15 +300,23 @@ class CaptureArchive:
         if mode != "r":
             raise ValueError("capture archives are immutable")
         member = self.getinfo(name)
-        if member.zstd:
-            with self.zip.open(member.physical) as framed:
-                _zstd_boundary(framed, member.file_size)
-        source = self.zip.open(member.physical)
-        if member.zstd:
-            # Backend forwards this value to ZSTD_DCtx_setMaxWindowSize (bytes).
-            # Framing was also checked independently above before allocation.
-            source = zstandard.ZstdDecompressor(max_window_size=128 * 1024 * 1024).stream_reader(source, read_across_frames=True, closefd=True)
-        return io.BufferedReader(_Verified(source, member), 65536)
+        source = None
+        try:
+            if member.zstd:
+                with self.zip.open(member.physical) as framed:
+                    _zstd_boundary(framed, member.file_size)
+            source = self.zip.open(member.physical)
+            if member.zstd:
+                # Backend forwards this value to ZSTD_DCtx_setMaxWindowSize (bytes).
+                # Framing was also checked independently above before allocation.
+                source = zstandard.ZstdDecompressor(max_window_size=128 * 1024 * 1024).stream_reader(source, read_across_frames=True, closefd=True)
+            return io.BufferedReader(_Verified(source, member), 65536)
+        except Exception as exc:
+            if source is not None:
+                source.close()
+            if isinstance(exc, FORMAT_ERRORS):
+                raise ValueError("capture member is malformed or unsupported") from exc
+            raise
 
     def read(self, name):
         with self.open(name) as source:

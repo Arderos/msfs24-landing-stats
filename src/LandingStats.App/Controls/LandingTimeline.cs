@@ -36,8 +36,26 @@ public sealed class LandingTimeline : FrameworkElement
     protected override void OnRender(DrawingContext context)
     {
         base.OnRender(context);
+        DrawSurface(context, RenderSize, VisualTreeHelper.GetDpi(this).PixelsPerDip);
+    }
+
+    internal DrawingGroup PrepareSurface(Size size, double pixelsPerDip)
+    {
+        VerifyAccess();
+        if (size.IsEmpty || double.IsNaN(size.Width) || double.IsInfinity(size.Width) ||
+            double.IsNaN(size.Height) || double.IsInfinity(size.Height) ||
+            double.IsNaN(pixelsPerDip) || double.IsInfinity(pixelsPerDip) || pixelsPerDip <= 0)
+            throw new ArgumentOutOfRangeException(nameof(size));
+        var drawing = new DrawingGroup();
+        using (var context = drawing.Open()) DrawSurface(context, size, pixelsPerDip);
+        drawing.Freeze();
+        return drawing;
+    }
+
+    private void DrawSurface(DrawingContext context, Size size, double pixelsPerDip)
+    {
         var points = _record?.Series;
-        if (points == null || points.Count < 2 || ActualWidth < 20)
+        if (points == null || points.Count < 2 || size.Width < 20)
         {
             return;
         }
@@ -52,7 +70,7 @@ public sealed class LandingTimeline : FrameworkElement
         for (var tick = first; tick <= maximum + 0.0001; tick += interval)
         {
             var fraction = (tick - minimum) / span;
-            var x = fraction * ActualWidth;
+            var x = fraction * size.Width;
             var last = tick + interval > maximum + 0.0001;
             var label = Math.Abs(tick) < 0.0001
                 ? "0"
@@ -62,17 +80,17 @@ public sealed class LandingTimeline : FrameworkElement
                 label += " " + LocalizationManager.Text("Unit.SecondSuffix");
             }
 
-            var formatted = Formatted(label, Math.Abs(tick) < 0.0001 ? ContactBrush : TextBrush);
+            var formatted = Formatted(label, Math.Abs(tick) < 0.0001 ? ContactBrush : TextBrush, pixelsPerDip);
             var left = fraction <= 0.001
                 ? 0
                 : last || fraction >= 0.999
-                    ? ActualWidth - formatted.Width
+                    ? size.Width - formatted.Width
                     : x - formatted.Width / 2.0;
             context.DrawText(formatted, new Point(Math.Max(0, left), 6));
         }
     }
 
-    private FormattedText Formatted(string text, Brush brush)
+    private static FormattedText Formatted(string text, Brush brush, double pixelsPerDip)
     {
         return new FormattedText(
             text,
@@ -81,7 +99,7 @@ public sealed class LandingTimeline : FrameworkElement
             new Typeface("Cascadia Mono"),
             10,
             brush,
-            VisualTreeHelper.GetDpi(this).PixelsPerDip);
+            pixelsPerDip);
     }
 
     private static Brush FrozenBrush(string color)

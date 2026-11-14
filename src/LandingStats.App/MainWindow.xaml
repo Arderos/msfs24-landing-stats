@@ -662,10 +662,10 @@
                     <RowDefinition Height="Auto" />
                     <RowDefinition Height="Auto" />
                     <RowDefinition Height="Auto" />
-                    <RowDefinition Height="50*" MaxHeight="560" />
-                    <RowDefinition Height="8*" MinHeight="62" MaxHeight="100" />
-                    <RowDefinition Style="{StaticResource NonReplayLaneRowStyle}" />
-                    <RowDefinition Height="26" />
+                    <RowDefinition x:Name="MainChartRow" Height="50*" MaxHeight="560" />
+                    <RowDefinition x:Name="GChartRow" Height="8*" MinHeight="62" MaxHeight="100" />
+                    <RowDefinition x:Name="AltitudeChartRow" Style="{StaticResource NonReplayLaneRowStyle}" />
+                    <RowDefinition x:Name="TimelineRow" Height="26" />
                 </Grid.RowDefinitions>
 
                 <Grid Grid.Row="0" Margin="24,18,24,0">
@@ -1096,50 +1096,18 @@
                     <Border Grid.ColumnSpan="5" Height="1" Background="{StaticResource BorderBrush}" VerticalAlignment="Bottom" Panel.ZIndex="-1" />
                 </Grid>
 
-                <Grid Grid.Row="4" Margin="0,12,24,6">
-                    <controls:LandingChart x:Name="MainChart" Mode="VerticalSpeed" ShowLegend="False" ShowXAxisLabels="False" />
-                    <Grid x:Name="ReplayPanel" Visibility="Collapsed" Margin="24,0,0,0">
-                        <controls:LandingReplayView x:Name="ReplayView" />
-                    </Grid>
-                    <TextBlock x:Name="ModeUnitText" Text="fpm" Foreground="{StaticResource LabelTextBrush}"
-                               FontFamily="Cascadia Mono, Consolas" FontSize="10"
-                               HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="24,0,0,8" />
+                <Grid x:Name="ReplayPanel" Grid.Row="4" Visibility="Collapsed" Margin="24,12,24,6">
+                    <controls:LandingReplayView x:Name="ReplayView" />
                 </Grid>
 
-                <Border Grid.Row="5" BorderBrush="#1A1917" BorderThickness="0,1,0,0" Margin="0,0,24,0">
-                    <Grid>
-                        <Grid.ColumnDefinitions><ColumnDefinition Width="96" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
-                        <StackPanel Margin="24,9,0,0">
-                            <TextBlock Text="{DynamicResource Chart.VerticalG}" Foreground="{StaticResource MutedTextBrush}" FontSize="11" />
-                        </StackPanel>
-                        <Grid Grid.Column="1" Margin="0,8,0,8">
-                            <controls:LandingChart x:Name="MiniGChart" Mode="LoadFactors" ShowLegend="False" ShowHoverTooltip="True" ShowXAxisLabels="False" CompactLane="True" />
-                            <TextBlock Text="0.8 – 1.6" HorizontalAlignment="Right" VerticalAlignment="Top" Foreground="{StaticResource LabelTextBrush}" FontFamily="Cascadia Mono, Consolas" FontSize="9" />
-                        </Grid>
-                    </Grid>
-                </Border>
-
-                <Border Grid.Row="6" Style="{StaticResource NonReplayPanelStyle}" BorderBrush="#1A1917" BorderThickness="0,1,0,0" Margin="0,0,24,0">
-                    <Grid>
-                        <Grid.ColumnDefinitions><ColumnDefinition Width="96" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
-                        <StackPanel Margin="24,9,0,0">
-                            <TextBlock Text="{DynamicResource Chart.HeightAboveGround}" ToolTip="{DynamicResource Chart.HeightAboveGroundHelp}" TextWrapping="Wrap" Margin="0,0,8,0" Foreground="{StaticResource MutedTextBrush}" FontSize="11" />
-                        </StackPanel>
-                        <Grid Grid.Column="1" Margin="0,8,0,8">
-                            <controls:LandingChart x:Name="MiniAltitudeChart" Mode="HeightAboveGround" ShowLegend="False" ShowHoverTooltip="True" ShowXAxisLabels="False" CompactLane="True" />
-                            <TextBlock Text="{DynamicResource Chart.UnitFeet}" HorizontalAlignment="Right" VerticalAlignment="Top" Foreground="{StaticResource LabelTextBrush}" FontFamily="Cascadia Mono, Consolas" FontSize="9" />
-                        </Grid>
-                    </Grid>
-                </Border>
-
-                <Border Grid.Row="7" BorderBrush="{StaticResource BorderBrush}" BorderThickness="0,1,0,0" Margin="0,0,24,0">
-                    <Grid>
-                        <Grid.ColumnDefinitions><ColumnDefinition Width="96" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
-                        <TextBlock x:Name="HoverTimeText" Text="0.00s" Margin="24,0,0,0" VerticalAlignment="Center"
-                                   FontFamily="Cascadia Mono, Consolas" FontSize="11" />
-                        <controls:LandingTimeline x:Name="Timeline" Grid.Column="1" />
-                    </Grid>
-                </Border>
+                <Image Grid.Row="{Binding (Grid.Row), ElementName=ChartPanel}"
+                       Grid.RowSpan="{Binding (Grid.RowSpan), ElementName=ChartPanel}"
+                       Margin="0,0,24,0" Stretch="Fill" IsHitTestVisible="False"
+                       Source="{Binding OverlaySnapshot, ElementName=ChartPanel}" />
+                <controls:LandingChartPanel x:Name="ChartPanel" Grid.Row="4" Grid.RowSpan="4" Margin="0,0,24,0" />
+                <TextBlock x:Name="ChartRenderingError" Grid.Row="4" Grid.RowSpan="4" Margin="24"
+                           Visibility="Collapsed" TextWrapping="Wrap" VerticalAlignment="Center"
+                           Foreground="{StaticResource MutedTextBrush}" />
             </Grid>
 
             <Grid x:Name="DetailLoadingPanel" Visibility="Collapsed">

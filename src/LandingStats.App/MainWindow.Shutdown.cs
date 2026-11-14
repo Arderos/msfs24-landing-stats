@@ -96,11 +96,8 @@ public partial class MainWindow
         _googleDriveAuthorizationCancellation?.Cancel();
         Loaded -= OnWindowLoaded;
         ReplayView.TimeChanged -= OnChartHoverTimeChanged;
-        foreach (var chart in _charts)
-        {
-            chart.HoverTimeChanged -= OnChartHoverTimeChanged;
-            chart.ZoomRangeSelected -= OnChartZoomRangeSelected;
-        }
+        ChartPanel.HoverTimeChanged -= OnChartHoverTimeChanged;
+        ChartPanel.ZoomRangeSelected -= OnChartZoomRangeSelected;
 
         try { _lifetimeCancellation.Cancel(); } catch (AggregateException error) { Debug.WriteLine(error); }
         var runtimeShutdown = StopRuntimeAsync();

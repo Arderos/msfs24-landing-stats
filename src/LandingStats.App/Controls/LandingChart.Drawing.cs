@@ -11,16 +11,18 @@ namespace LandingStats.App.Controls;
 
 public sealed partial class LandingChart
 {
-    private Rect PlotRect()
+    private Rect PlotRect() => PlotRect(RenderSize);
+
+    private Rect PlotRect(Size size)
     {
         if (CompactLane)
         {
-            return new Rect(0, 0, Math.Max(10, ActualWidth), Math.Max(10, ActualHeight));
+            return new Rect(0, 0, Math.Max(10, size.Width), Math.Max(10, size.Height));
         }
 
         var top = ShowLegend ? 31.0 : 0.0;
         var bottom = ShowXAxisLabels ? 30.0 : 0.0;
-        return new Rect(96, top, Math.Max(10, ActualWidth - 96), Math.Max(10, ActualHeight - top - bottom));
+        return new Rect(96, top, Math.Max(10, size.Width - 96), Math.Max(10, size.Height - top - bottom));
     }
 
     private void GetTimeRange(IReadOnlyList<LandingSeriesPoint> points, out double minimum, out double maximum)
@@ -36,10 +38,12 @@ public sealed partial class LandingChart
         }
     }
 
-    private void DrawSelection(DrawingContext context, Rect plot)
+    private void DrawSelection(DrawingContext context, Rect plot) => DrawSelection(context, plot, _selectionStart, _selectionCurrent);
+
+    private static void DrawSelection(DrawingContext context, Rect plot, Point start, Point current)
     {
-        var left = Math.Max(plot.Left, Math.Min(plot.Right, Math.Min(_selectionStart.X, _selectionCurrent.X)));
-        var right = Math.Max(plot.Left, Math.Min(plot.Right, Math.Max(_selectionStart.X, _selectionCurrent.X)));
+        var left = Math.Max(plot.Left, Math.Min(plot.Right, Math.Min(start.X, current.X)));
+        var right = Math.Max(plot.Left, Math.Min(plot.Right, Math.Max(start.X, current.X)));
         context.DrawRectangle(SelectionBrush, AccentPen, new Rect(left, plot.Top, Math.Max(1, right - left), plot.Height));
     }
 
@@ -886,7 +890,7 @@ public sealed partial class LandingChart
             new Typeface("Segoe UI"),
             size,
             brush,
-            VisualTreeHelper.GetDpi(this).PixelsPerDip);
+            _drawingDpi > 0 ? _drawingDpi : VisualTreeHelper.GetDpi(this).PixelsPerDip);
     }
 
     private FormattedText FormattedMono(string text, Brush brush, double size)
@@ -898,7 +902,7 @@ public sealed partial class LandingChart
             new Typeface("Cascadia Mono"),
             size,
             brush,
-            VisualTreeHelper.GetDpi(this).PixelsPerDip);
+            _drawingDpi > 0 ? _drawingDpi : VisualTreeHelper.GetDpi(this).PixelsPerDip);
     }
 
     private static Brush Brush(string color)

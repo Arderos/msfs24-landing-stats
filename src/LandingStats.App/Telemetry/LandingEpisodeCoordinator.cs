@@ -194,7 +194,9 @@ internal sealed partial class LandingEpisodeCoordinator
         if (sample.AxisElevatorSetValid && !double.IsNaN(_axisElevatorResetHostSeconds) &&
             sample.HostElapsedSeconds - sample.AxisElevatorSetAgeSeconds <= _axisElevatorResetHostSeconds + 0.000001)
         {
-            sample.AxisElevatorSetValid = false; sample.AxisElevatorSetPercent = 0; sample.AxisElevatorSetAgeSeconds = double.NaN;
+            // Validity carries absence; keep the same finite zero placeholders
+            // as the source so RAW, checkpoints and capture CSV share a contract.
+            sample.AxisElevatorSetValid = false; sample.AxisElevatorSetPercent = 0; sample.AxisElevatorSetAgeSeconds = 0;
         }
         if (_sdkStateKnown && IsFinite(sample.SimulationTimeSeconds) && IsFinite(_lastSimulationTime) &&
             sample.SimulationTimeSeconds < _lastSimulationTime - 0.001)

@@ -27,7 +27,7 @@ internal sealed class RawCaptureGap
 internal sealed class RawPendingEffect
 {
     public RawPendingEffect(DurableRuntimeInput input, IReadOnlyList<object> effects)
-    { Id = input.Input.Id; Cursor = input.Cursor; Bytes = RawEffectStore.Encode(input, effects, out var catalogs); Catalogs = catalogs; }
+    { Id = input.Input.Id; Cursor = input.Cursor; Bytes = RawEffectStore.Encode(input, effects, out var catalogs, RawBatchPersistence.MaximumPendingBytes); Catalogs = catalogs; }
     public Guid Id { get; }
     public JournalCursor Cursor { get; }
     public byte[] Bytes { get; }
@@ -113,5 +113,5 @@ internal sealed class RawBatchPersistence
             message.Length > 1024 ? message.Substring(0, 1024) : message, _lastCursor);
         Debug.WriteLine("RAW capture fragment ended: " + _gap.Reason);
     }
-    private static bool OptionalFailure(Exception error) => error is IOException || error is InvalidDataException || error is UnauthorizedAccessException || error is SerializationException;
+    internal static bool OptionalFailure(Exception error) => error is IOException || error is InvalidDataException || error is UnauthorizedAccessException || error is SerializationException;
 }

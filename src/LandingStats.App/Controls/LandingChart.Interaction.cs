@@ -8,6 +8,7 @@ namespace LandingStats.App.Controls;
 
 public sealed partial class LandingChart
 {
+    internal const double SelectionDragThreshold = 8;
     protected override HitTestResult? HitTestCore(PointHitTestParameters hitTestParameters)
     {
         return new Rect(RenderSize).Contains(hitTestParameters.HitPoint)
@@ -115,7 +116,7 @@ public sealed partial class LandingChart
         ReleaseMouseCapture();
         var plot = PlotRect();
         var selectedPixels = Math.Abs(_selectionCurrent.X - _selectionStart.X);
-        if (selectedPixels >= 8)
+        if (selectedPixels >= SelectionDragThreshold)
         {
             GetTimeRange(record.Series, out var minTime, out var maxTime);
             var left = Math.Max(plot.Left, Math.Min(plot.Right, Math.Min(_selectionStart.X, _selectionCurrent.X)));

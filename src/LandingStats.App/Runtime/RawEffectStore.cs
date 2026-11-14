@@ -22,6 +22,9 @@ internal sealed class RawEffectBatch
 /// effects are durable. Export is a separate owner and can restart from them.</summary>
 internal sealed class RawEffectStore
 {
+    // Optional storage recovery can prefix a producer transaction with a gap
+    // and an empty capture restart. Preserve the entire input atomically.
+    internal const int MaximumEffectsPerInput = LandingEpisodeCoordinator.MaximumRawSamplesPerInput + 2;
     private const int Magic = 0x31455752; // RWE1
     private const int ReferencedMagic = 0x33455752; // RWE3: content-addressed evidence catalogs.
     private static readonly ConditionalWeakTable<byte[], CatalogBlob> CatalogBlobs = new ConditionalWeakTable<byte[], CatalogBlob>();
@@ -74,11 +77,12 @@ internal sealed class RawEffectStore
             Add(input.Cursor, input.Input.Id, path, 0, bytes.Length, catalogs.Select(value => value.Hash).ToArray()); _bytes += bytes.Length; _catalogPublicationPending = false;
         }
     }
-    internal static byte[] Encode(DurableRuntimeInput input, IReadOnlyList<object> effects, out CatalogBlob[] catalogs)
-        => Encode(input.Input.Id, input.Cursor, effects, out catalogs);
-    private static byte[] Encode(Guid id, JournalCursor cursor, IReadOnlyList<object> effects, out CatalogBlob[] catalogs)
+    internal static byte[] Encode(DurableRuntimeInput input, IReadOnlyList<object> effects, out CatalogBlob[] catalogs, long maximumBytes = MaximumBytes)
+        => Encode(input.Input.Id, input.Cursor, effects, out catalogs, maximumBytes);
+    private static byte[] Encode(Guid id, JournalCursor cursor, IReadOnlyList<object> effects, out CatalogBlob[] catalogs, long maximumBytes = MaximumBytes)
     {
-        if (effects.Count > 8 || id == Guid.Empty) throw new InvalidDataException("Invalid RAW effect batch.");
+        if (maximumBytes < 1 || maximumBytes > MaximumBytes) throw new ArgumentOutOfRangeException(nameof(maximumBytes));
+        if (effects.Count > MaximumEffectsPerInput || id == Guid.Empty) throw new InvalidDataException("Invalid RAW effect batch.");
         var references = new Dictionary<string, CatalogBlob>(StringComparer.Ordinal);
         foreach (var effect in effects)
         {
@@ -93,7 +97,7 @@ internal sealed class RawEffectStore
         catalogs = references.Values.OrderBy(value => value.Hash, StringComparer.Ordinal).ToArray();
         if (catalogs.Length > 4096) throw new InvalidDataException("RAW evidence catalog count exceeds its bound.");
         var indices = catalogs.Select((value, index) => new { value.Hash, Index = index }).ToDictionary(value => value.Hash, value => value.Index);
-        using var memory = new MemoryStream();
+        using var memory = new LimitedMemoryStream(maximumBytes);
         using (var writer = new BinaryWriter(memory, System.Text.Encoding.UTF8, true))
         {
             writer.Write(catalogs.Length == 0 ? Magic : ReferencedMagic); writer.Write(id.ToByteArray()); writer.Write(cursor.Segment); writer.Write(cursor.Sequence);
@@ -128,8 +132,24 @@ internal sealed class RawEffectStore
                 else throw new InvalidDataException("Unsupported RAW effect.");
             }
         }
-        if (memory.Length > MaximumBytes) throw new InvalidDataException("RAW effect batch exceeds its bound.");
         return memory.ToArray();
+    }
+    // A released frame transaction may contain thousands of independently
+    // bounded samples. Enforce the transaction budget before growing its buffer.
+    private sealed class LimitedMemoryStream : MemoryStream
+    {
+        private readonly long _maximum;
+        internal LimitedMemoryStream(long maximum) { _maximum = maximum; }
+        public override void Write(byte[] buffer, int offset, int count)
+        {
+            if (count > _maximum - Position) throw new InvalidDataException("RAW effect batch exceeds its byte budget.");
+            base.Write(buffer, offset, count);
+        }
+        public override void WriteByte(byte value)
+        {
+            if (Position >= _maximum) throw new InvalidDataException("RAW effect batch exceeds its byte budget.");
+            base.WriteByte(value);
+        }
     }
     private readonly Dictionary<Guid, Location> _locations = new Dictionary<Guid, Location>();
     private sealed class Location
@@ -209,7 +229,7 @@ internal sealed class RawEffectStore
             }
             return value;
         }
-        var count = RuntimeCheckpointCodec.ReadCount(reader, 8); var effects = new List<object>();
+        var count = RuntimeCheckpointCodec.ReadCount(reader, MaximumEffectsPerInput); var effects = new List<object>();
         for (var i = 0; i < count; i++)
         {
             switch (reader.ReadByte())

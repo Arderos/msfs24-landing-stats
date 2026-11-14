@@ -59,7 +59,7 @@ internal sealed class GoogleDriveApiClient : IGoogleDriveApi, IDisposable
     private const string ApplicationPropertyKey = "application";
     private const string ApplicationPropertyValue = "msfs-landing-stats";
     private const string FileFields =
-        "id,name,mimeType,modifiedTime,trashed,appProperties,size,md5Checksum,parents";
+        "id,name,mimeType,createdTime,modifiedTime,trashed,appProperties,size,md5Checksum,parents";
     private readonly DriveService _driveService;
     private bool _disposed;
 
@@ -305,7 +305,8 @@ internal sealed class GoogleDriveApiClient : IGoogleDriveApi, IDisposable
             : new Dictionary<string, string>(resource.AppProperties, StringComparer.Ordinal),
         resource.Parents == null
             ? new List<string>()
-            : resource.Parents.ToList());
+            : resource.Parents.ToList(),
+        resource.CreatedTimeDateTimeOffset?.UtcDateTime);
 
     private static void EnsureUploadCompleted(IUploadProgress progress)
     {
@@ -400,7 +401,8 @@ internal sealed class GoogleDriveFile
         string mimeType,
         bool trashed,
         IReadOnlyDictionary<string, string> appProperties,
-        IReadOnlyList<string> parents)
+        IReadOnlyList<string> parents,
+        DateTime? createdUtc = null)
     {
         Id = id;
         Name = name;
@@ -408,6 +410,7 @@ internal sealed class GoogleDriveFile
         Trashed = trashed;
         AppProperties = appProperties;
         Parents = parents;
+        CreatedUtc = createdUtc;
     }
 
     public string Id { get; }
@@ -416,6 +419,7 @@ internal sealed class GoogleDriveFile
     public bool Trashed { get; }
     public IReadOnlyDictionary<string, string> AppProperties { get; }
     public IReadOnlyList<string> Parents { get; }
+    public DateTime? CreatedUtc { get; }
 
     public string? Property(string key) =>
         AppProperties.TryGetValue(key, out var value) ? value : null;

@@ -52,6 +52,12 @@ internal sealed class ApplicationSettingsOwner
                     LastAutoStartError = null;
                     return LastAutoStartResult;
                 }
+                catch (Exception error)
+                {
+                    LastAutoStartResult = null;
+                    LastAutoStartError = error.Message;
+                    throw;
+                }
                 finally
                 {
                     // Even a failed initial application must let subsequent
@@ -79,10 +85,29 @@ internal sealed class ApplicationSettingsOwner
                 if (baseline.AutomaticTelemetryUpload != target.AutomaticTelemetryUpload) merged.AutomaticTelemetryUpload = target.AutomaticTelemetryUpload;
                 if (baseline.IntegrationApiEnabled != target.IntegrationApiEnabled) merged.IntegrationApiEnabled = target.IntegrationApiEnabled;
                 var previousAutoStart = _current.StartWithSimulator;
-                var restore = baseline.StartWithSimulator != target.StartWithSimulator && rollback != null
+                var autoStartChanged = baseline.StartWithSimulator != target.StartWithSimulator;
+                var restore = autoStartChanged && rollback != null
                     ? () => _autoStart.SetEnabled(previousAutoStart == true) : rollback;
-                await SettingsPersistence.SaveAsync(_repository, merged, apply, restore).ConfigureAwait(false);
-                if (baseline.StartWithSimulator != target.StartWithSimulator) LastAutoStartError = null;
+                try
+                {
+                    await SettingsPersistence.SaveAsync(_repository, merged, apply, restore).ConfigureAwait(false);
+                }
+                catch (Exception error)
+                {
+                    if (autoStartChanged)
+                    {
+                        LastAutoStartResult = null;
+                        LastAutoStartError = error.Message;
+                    }
+                    throw;
+                }
+                if (autoStartChanged)
+                {
+                    // The local caller receives its own verified operation
+                    // result. Do not republish an older startup/cloud result.
+                    LastAutoStartResult = null;
+                    LastAutoStartError = null;
+                }
                 _current = merged; _readable = !_repository.GoogleDriveRestorePending; desired.CopyFrom(merged);
             }
             finally { _gate.Release(); }

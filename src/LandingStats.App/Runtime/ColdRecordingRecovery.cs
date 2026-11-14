@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Runtime.Serialization;
@@ -27,6 +28,7 @@ internal sealed class RecordingRecoveryBundle
     [DataMember(Order = 7)] public bool RecoveredTail { get; set; }
     [DataMember(Order = 8)] public RecoveryArtifact[] Facilities { get; set; } = Array.Empty<RecoveryArtifact>();
     [DataMember(Order = 9)] public RecoveryArtifact[] Raw { get; set; } = Array.Empty<RecoveryArtifact>();
+    [DataMember(Order = 10, EmitDefaultValue = false)] public RawCaptureGap? RawGap { get; set; }
 }
 
 /// <summary>Runs in the exact retained engine after the former app/job has
@@ -45,11 +47,26 @@ internal static class ColdRecordingRecovery
             throw new InvalidDataException("Recording checkpoint cursor differs from the journal marker.");
         var store = new EpisodeTransactionStore(Path.Combine(output, "episodes"), engine);
         var raw = new RawEffectStore(Path.Combine(output, "raw"));
+        RawCaptureGap? rawGap = null;
+        long rawInputCount = 0;
         var pending = new Dictionary<Guid, RuntimeFinalFacilities>();
         void Persist(DurableRuntimeInput input, RecordingRuntimeEffects effects)
         {
             if (effects.QuarantineReason != null) RecordingEffectPersistence.PersistQuarantine(Path.Combine(sessionRoot, "input-quarantine"), input, effects.QuarantineReason);
-            raw.Commit(input, effects.RawCapture);
+            if (effects.RawCapture.Count != 0)
+            {
+                rawInputCount++;
+                // RAW is diagnostic in both live recording and cold replay.
+                // After a failed write retain the durable prefix and explicitly
+                // end the fragment; later samples cannot be joined across loss.
+                if (rawGap != null) rawGap = ExtendRawGap(rawGap, input.Cursor, 1);
+                else
+                {
+                    try { raw.Commit(input, effects.RawCapture); }
+                    catch (Exception error) when (RawBatchPersistence.OptionalFailure(error))
+                    { rawGap = NewRawGap(error, input.Cursor, 1); }
+                }
+            }
             foreach (var capture in effects.Captures)
             {
                 store.CommitInputs(capture.Episode, capture.TimestampUtc, Array.Empty<AirportFacility>(), capture.AutomaticAllowed, capture.PolicyRevision);
@@ -89,10 +106,17 @@ internal static class ColdRecordingRecovery
             DurableFile.Write(Path.Combine(output, "facilities", final.Episode.ToString("N") + ".bin"), stream => stream.Write(memory.ToArray(), 0, (int)memory.Length));
         }
         if (episodes.Length > 4096) throw new InvalidDataException("Recovery episode count exceeds its bound.");
+        RecoveryArtifact[] rawArtifacts;
+        try { rawArtifacts = raw.Enumerate().Select(id => new RecoveryArtifact { Id = id, Hash = EpisodeTransactionStore.Hash(raw.PathFor(id)) }).ToArray(); }
+        catch (Exception error) when (RawBatchPersistence.OptionalFailure(error))
+        {
+            rawArtifacts = Array.Empty<RecoveryArtifact>();
+            rawGap = NewRawGap(error, boundary, Math.Max(1, rawInputCount) - (rawGap?.DroppedInputs ?? 0), rawGap);
+        }
         var bundle = new RecordingRecoveryBundle { Runtime = session.Runtime, Engine = engine,
             Episodes = episodes.Select(id => new RecoveryArtifact { Id = id, Hash = EpisodeTransactionStore.Hash(Path.Combine(store.Root, id.ToString("N"), "manifest.json")) }).ToArray(),
             Facilities = pending.Keys.Select(id => new RecoveryArtifact { Id = id, Hash = EpisodeTransactionStore.Hash(FacilityPath(output, id)) }).ToArray(),
-            Raw = raw.Enumerate().Select(id => new RecoveryArtifact { Id = id, Hash = EpisodeTransactionStore.Hash(raw.PathFor(id)) }).ToArray(),
+            Raw = rawArtifacts, RawGap = rawGap,
             LastSegment = last?.Segment ?? 1, LastSequence = last?.Sequence ?? 0, RecoveredTail = journal.RecoveredTail };
         Validate(bundle, session);
         DurableFile.WriteJson(Path.Combine(output, "result.json"), bundle); return bundle;
@@ -112,7 +136,7 @@ internal static class ColdRecordingRecovery
     }
     internal static void Validate(RecordingRecoveryBundle bundle, RuntimeSession session)
     {
-        if (bundle.Version != 1 || bundle.Runtime != session.Runtime || bundle.Engine != session.Engine || bundle.LastSegment < 1 || bundle.LastSequence < 0)
+        if (bundle.Version != 1 || bundle.Runtime != session.Runtime || bundle.Engine != session.Engine || bundle.LastSegment < 1 || bundle.LastSequence < 0 || bundle.LastSequence == long.MaxValue)
             throw new InvalidDataException("Recovery bundle differs from its original runtime.");
         void ValidateEntries(RecoveryArtifact[] entries, int limit)
         {
@@ -120,6 +144,10 @@ internal static class ColdRecordingRecovery
                 entries.Select(item => item.Id).Distinct().Count() != entries.Length) throw new InvalidDataException("Invalid recovery bundle artifacts.");
         }
         ValidateEntries(bundle.Episodes, 4096); ValidateEntries(bundle.Facilities, 4096); ValidateEntries(bundle.Raw, 262144);
+        if (bundle.RawGap != null && (bundle.RawGap.DroppedInputs < 1 || bundle.RawGap.Segment < 1 || bundle.RawGap.Sequence < 1 ||
+            bundle.RawGap.Reason == null || bundle.RawGap.Reason.Length > 1024 ||
+            bundle.RawGap.Cursor!.CompareTo(new JournalCursor(bundle.LastSegment, bundle.LastSequence + 1)) > 0))
+            throw new InvalidDataException("Invalid recovered RAW gap.");
     }
     internal static RecordingRecoveryBundle Import(string sessionRoot, string output, EpisodeTransactionStore destination)
     {
@@ -133,9 +161,45 @@ internal static class ColdRecordingRecovery
         }
         foreach (var item in bundle.Facilities) destination.CommitFacilities(ReadFacility(output, item));
         var raw = new RawEffectStore(Path.Combine(sessionRoot, "raw")); var recoveredRaw = new RawEffectStore(Path.Combine(output, "raw"));
-        foreach (var item in bundle.Raw) raw.Import(recoveredRaw, item.Id, item.Hash);
+        for (var index = 0; index < bundle.Raw.Length; index++)
+        {
+            var item = bundle.Raw[index];
+            try { raw.Import(recoveredRaw, item.Id, item.Hash); }
+            catch (Exception error) when (RawBatchPersistence.OptionalFailure(error))
+            {
+                // An unavailable optional RAW destination cannot hold recovered
+                // landings hostage. Stop at the first missing input and persist
+                // that loss in the mandatory recovery result as well as RAW's
+                // own diagnostic when its storage is writable.
+                var end = new JournalCursor(bundle.LastSegment, checked(bundle.LastSequence + 1));
+                bundle.RawGap = NewRawGap(error, end, bundle.Raw.Length - index, bundle.RawGap);
+                break;
+            }
+        }
+        if (bundle.RawGap != null)
+        {
+            try
+            {
+                var path = Path.Combine(raw.Root, "gap.json");
+                var existing = File.Exists(path) ? DurableFile.ReadJson<RawCaptureGap>(path, 8192) : null;
+                if (existing?.Cursor == null || existing.Cursor.CompareTo(bundle.RawGap.Cursor) < 0)
+                    DurableFile.WriteJson(path, bundle.RawGap);
+            }
+            catch (Exception error) when (RawBatchPersistence.OptionalFailure(error))
+            { Debug.WriteLine("Recovered RAW gap remains in recovered.json: " + error.Message); }
+        }
         // Each import above is idempotent. Only this final flushed marker permits
         // the session's old recording journal to be collected.
         DurableFile.WriteJson(Path.Combine(sessionRoot, "recovered.json"), bundle); return bundle;
     }
+    private static RawCaptureGap NewRawGap(Exception error, JournalCursor cursor, long count, RawCaptureGap? previous = null)
+    {
+        var failure = error.GetType().Name + ": " + error.Message;
+        var reason = previous == null ? failure : previous.Reason + " | " + failure;
+        Debug.WriteLine("Recovered RAW fragment ended: " + failure);
+        return new RawCaptureGap(Math.Min(long.MaxValue - count, previous?.DroppedInputs ?? 0) + count,
+            reason.Length > 1024 ? reason.Substring(0, 1024) : reason, cursor);
+    }
+    private static RawCaptureGap ExtendRawGap(RawCaptureGap gap, JournalCursor cursor, int count) =>
+        new RawCaptureGap(Math.Min(long.MaxValue - count, gap.DroppedInputs) + count, gap.Reason, cursor);
 }

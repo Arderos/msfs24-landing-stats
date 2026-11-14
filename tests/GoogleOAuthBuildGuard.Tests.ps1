@@ -118,8 +118,14 @@ try {
     $fakeRepository = Join-Path $testRoot 'package-repository'
     $fakeOutput = Join-Path $fakeRepository 'src\LandingStats.App\bin\Release\net48'
     $fakeArtifacts = Join-Path $fakeRepository 'artifacts'
-    New-Item -ItemType Directory -Path $fakeOutput, $fakeArtifacts -Force | Out-Null
+    $fakeNative = Join-Path $fakeRepository 'src\LandingStats.Graphics.Native'
+    New-Item -ItemType Directory -Path $fakeOutput, $fakeArtifacts, $fakeNative -Force | Out-Null
     Copy-Item -LiteralPath $build, $verifier -Destination $fakeRepository -Force
+    # Packaging validates the native renderer before OAuth metadata. Reuse the
+    # already-built DLL and real PE/ABI verifier so this fixture reaches the
+    # OAuth boundary without weakening or substituting native validation.
+    Copy-Item -LiteralPath (Join-Path $repository 'src\LandingStats.Graphics.Native\verify-native.ps1') -Destination $fakeNative -Force
+    Copy-Item -LiteralPath (Join-Path $repository 'src\LandingStats.App\bin\Release\net48\LandingStats.Graphics.Native.dll') -Destination $fakeOutput -Force
     Copy-Item -LiteralPath $missingFixture -Destination (Join-Path $fakeOutput 'LandingStats.Delivery.dll') -Force
     $previousPackage = Join-Path $fakeArtifacts 'MSFS-Landing-Stats.exe'
     [IO.File]::WriteAllText($previousPackage, 'previous-package-sentinel')

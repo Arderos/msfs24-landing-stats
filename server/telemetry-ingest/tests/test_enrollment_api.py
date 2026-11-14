@@ -19,6 +19,7 @@ from unittest import mock
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from fastapi.testclient import TestClient
+from test_capture_contract_regressions import corrupt_deflate_member
 
 
 MODULE_ROOT = tempfile.TemporaryDirectory()
@@ -119,7 +120,7 @@ class EnrollmentApiTests(unittest.TestCase):
 
     def _signed_capture(self, schema: int, session_schema: int | None = None,
                         automatic: bool = False, invalid_journal: bool = False,
-                        private=None, install_id=None, sample_sequence=1):
+                        private=None, install_id=None, sample_sequence=1, transform=None):
         private = private or rsa.generate_private_key(public_exponent=65537, key_size=2048)
         numbers = private.public_key().public_numbers()
         install_id = install_id or secrets.token_hex(16)
@@ -156,6 +157,8 @@ class EnrollmentApiTests(unittest.TestCase):
                 }))
             archive.writestr("session.txt", session)
         body = content.getvalue()
+        if transform is not None:
+            body = transform(body)
         digest = hashlib.sha256(body).hexdigest()
         sent = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
         nonce = secrets.token_urlsafe(16)
@@ -186,6 +189,20 @@ class EnrollmentApiTests(unittest.TestCase):
                     capture = connection.execute("SELECT schema_version FROM captures WHERE sha256=?",
                                                  (headers["X-Capture-SHA256"],)).fetchone()
                 self.assertEqual(schema, capture["schema_version"])
+
+    def test_signed_broken_deflate_is_rejected_and_original_bytes_are_quarantined(self):
+        with TestClient(service.app) as client:
+            for member in ("telemetry.csv", "session.txt"):
+                with self.subTest(member=member):
+                    body, headers = self._signed_capture(8, transform=lambda data: corrupt_deflate_member(data, member))
+                    response = client.post("/v1/captures", content=body, headers=headers)
+                    self.assertEqual(422, response.status_code, response.text)
+                    self.assertIn("malformed or unsupported", response.text)
+                    digest = headers["X-Capture-SHA256"]
+                    retained = Path(self.root.name) / "rejected" / f"{digest}.zip"
+                    self.assertEqual(body, retained.read_bytes())
+                    self.assertIsNone(self.store.capture_by_hash(digest))
+                    self.assertEqual([], list((Path(self.root.name) / "incoming").iterdir()))
 
     def test_signed_malformed_result_metadata_cannot_poison_shared_dashboard(self):
         private = rsa.generate_private_key(public_exponent=65537, key_size=2048)

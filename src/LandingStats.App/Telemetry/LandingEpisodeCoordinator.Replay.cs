@@ -6,6 +6,9 @@ namespace LandingStats.App.Telemetry;
 
 internal sealed partial class LandingEpisodeCoordinator
 {
+    // Releasing a stationary freeze can emit all retained frames plus the
+    // current frame in one recording transaction. Persistence shares this bound.
+    internal const int MaximumRawSamplesPerInput = PreRollMaximumSamples + 1;
     private ReplaySourceAssessor _replaySourceAssessor = new ReplaySourceAssessor();
     private ReplaySourceEvidence? _lastReplayEvidence;
     private bool _externalReplayActive;

@@ -18,6 +18,9 @@ internal static class AutoStartInitializationRegressionTests
         CloudPreferenceWithoutLocalSimulator();
         UndecidedPreferenceRemainsUndecided();
         InitializationFailureDoesNotBlockLaterChanges();
+        InitializationFailureDiscardsPreviousResult();
+        LocalFailureSurvivesUnrelatedSettingsChanges();
+        FailedApplyDoesNotPresentTheSavedPreferenceAsVerified();
     }
 
     private static void PreferenceChangeAndInitializationAgree(bool enabled, bool cloud, bool initializeFirst)
@@ -133,6 +136,90 @@ internal static class AutoStartInitializationRegressionTests
             Check(owner.LastAutoStartError == null && repository.Load().StartWithSimulator == false,
                 "Successful local disable did not clear the previous configuration error.");
         });
+    }
+
+    private static void InitializationFailureDiscardsPreviousResult()
+    {
+        WithFixture(true, (repository, manager, owner, root) =>
+        {
+            owner.InitializeAutoStartAsync().GetAwaiter().GetResult();
+            Check(owner.LastAutoStartResult?.Enabled == true, "Successful initialization did not retain its verified result.");
+            File.Delete(Path.Combine(root, "portable.exe"));
+            try
+            {
+                owner.InitializeAutoStartAsync().GetAwaiter().GetResult();
+                throw new InvalidOperationException("Initialization accepted a missing launcher.");
+            }
+            catch (FileNotFoundException) { }
+            Check(owner.AutoStartInitialized && owner.LastAutoStartResult == null &&
+                  !string.IsNullOrWhiteSpace(owner.LastAutoStartError) && repository.Load().StartWithSimulator == true,
+                "Failed initialization retained a stale success or altered the saved preference.");
+
+            var failure = owner.LastAutoStartError;
+            var notifiedWithFailure = false;
+            owner.Changed += () =>
+            {
+                notifiedWithFailure = owner.LastAutoStartResult == null && owner.LastAutoStartError == failure;
+            };
+            var baseline = owner.Read().Settings;
+            var desired = baseline.Clone(); desired.Language = baseline.Language == "en" ? "ru" : "en";
+            owner.SaveAsync(baseline, desired).GetAwaiter().GetResult();
+            Check(notifiedWithFailure && owner.LastAutoStartResult == null && owner.LastAutoStartError == failure,
+                "Unrelated settings cleared the initialization error.");
+        });
+    }
+
+    private static void LocalFailureSurvivesUnrelatedSettingsChanges()
+    {
+        WithFixture(true, (repository, manager, owner, root) =>
+        {
+            owner.InitializeAutoStartAsync().GetAwaiter().GetResult();
+            var baseline = owner.Read().Settings;
+            var desired = baseline.Clone(); desired.StartWithSimulator = false;
+            const string failure = "isolated auto-start apply failure";
+            try
+            {
+                owner.SaveAsync(baseline, desired, () => throw new IOException(failure)).GetAwaiter().GetResult();
+                throw new InvalidOperationException("A failed local apply was committed.");
+            }
+            catch (IOException error) when (error.Message == failure) { }
+            Check(owner.LastAutoStartResult == null && owner.LastAutoStartError == failure &&
+                  owner.Snapshot.Settings.StartWithSimulator == true && repository.Load().StartWithSimulator == true,
+                "Local failure retained stale success or changed the committed preference.");
+
+            baseline = owner.Read().Settings;
+            desired = baseline.Clone(); desired.AutomaticTelemetryUpload = !baseline.AutomaticTelemetryUpload;
+            owner.SaveAsync(baseline, desired).GetAwaiter().GetResult();
+            Check(owner.LastAutoStartResult == null && owner.LastAutoStartError == failure,
+                "Unrelated local settings cleared the apply error.");
+
+            baseline = owner.Read().Settings;
+            desired = baseline.Clone(); desired.StartWithSimulator = false;
+            owner.SaveAsync(baseline, desired, () => manager.SetEnabled(false)).GetAwaiter().GetResult();
+            Check(owner.LastAutoStartResult == null && owner.LastAutoStartError == null &&
+                  repository.Load().StartWithSimulator == false && !XmlEnabled(root),
+                "A successful local change retained an error or republished the old enabled result.");
+        });
+    }
+
+    private static void FailedApplyDoesNotPresentTheSavedPreferenceAsVerified()
+    {
+        try
+        {
+            foreach (var language in new[] { "en", "ru" })
+            {
+                LocalizationManager.Apply(language);
+                var unknown = LocalizationManager.Text("Settings.AutoStartUnverified");
+                Check(MainWindow.AutoStartStateText(true, 0, null) == unknown &&
+                      MainWindow.AutoStartStateText(true, 2, "apply failed") == unknown &&
+                      MainWindow.AutoStartStateText(false, 2, "apply failed") == unknown,
+                    "An unverified local state was presented as enabled or disabled.");
+                Check(MainWindow.AutoStartStateText(true, 2, null) == LocalizationManager.Format("Settings.AutoStartEnabledFormat", 2) &&
+                      MainWindow.AutoStartStateText(false, 0, null) == LocalizationManager.Text("Settings.AutoStartDisabled"),
+                    "Verified auto-start state lost its normal localized presentation.");
+            }
+        }
+        finally { LocalizationManager.Apply("en"); }
     }
 
     private static bool XmlEnabled(string root)
