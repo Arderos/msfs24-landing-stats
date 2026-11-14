@@ -8,7 +8,7 @@ All notable changes to MSFS Landing Stats are documented in this file.
 
 ### Improved
 
-- Keep chart interaction smooth while video plays, with flip-model presentation that preserves linked hover, zoom, replay, modal backgrounds and recovery from temporary GPU failures.
+- Improved chart responsiveness and reduced stuttering during mouse interaction.
 - Refresh window contents after startup and activation, and keep localization resources available throughout language changes.
 
 ### Fixed
