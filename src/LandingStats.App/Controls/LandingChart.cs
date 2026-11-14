@@ -345,15 +345,7 @@ public sealed partial class LandingChart : FrameworkElement
     protected override void OnRender(DrawingContext context)
     {
         base.OnRender(context);
-        var dpi = VisualTreeHelper.GetDpi(this).PixelsPerDip;
-        var language = LocalizationManager.Text("Chart.NoData");
-        if (_staticDrawing == null || _drawingSize != RenderSize || _drawingLanguage != language || _drawingDpi != dpi)
-        {
-            _drawingSize = RenderSize; _drawingLanguage = language; _drawingDpi = dpi;
-            _staticDrawing = new DrawingGroup();
-            using (var drawing = _staticDrawing.Open()) BuildStaticDrawing(drawing);
-            _staticDrawing.Freeze();
-        }
+        PrepareSurface(RenderSize, VisualTreeHelper.GetDpi(this).PixelsPerDip);
         context.DrawDrawing(_staticDrawing);
         var points = _record?.Series;
         if (!_drawingHasData || points == null) return;
@@ -366,9 +358,9 @@ public sealed partial class LandingChart : FrameworkElement
 
     private void BuildStaticDrawing(DrawingContext context)
     {
-        context.DrawRectangle(Brushes.Transparent, null, new Rect(RenderSize));
+        context.DrawRectangle(Brushes.Transparent, null, new Rect(_drawingSize));
         var points = _record?.Series;
-        _drawingHasData = points != null && points.Count >= 2 && ActualWidth >= 140 && ActualHeight >= (CompactLane ? 18 : 90);
+        _drawingHasData = points != null && points.Count >= 2 && _drawingSize.Width >= 140 && _drawingSize.Height >= (CompactLane ? 18 : 90);
         if (!_drawingHasData || points == null)
         { DrawText(context, LocalizationManager.Text("Chart.NoData"), new Point(18, 18), MutedBrush, 12); return; }
         GetTimeRange(points!, out _drawingMinTime, out _drawingMaxTime);
@@ -385,7 +377,7 @@ public sealed partial class LandingChart : FrameworkElement
             return;
         }
         PreparePowerScale(_drawingMinTime, _drawingMaxTime);
-        _drawingPlot = PlotRect();
+        _drawingPlot = PlotRect(_drawingSize);
         GetValueRange(visible, out _drawingMinValue, out _drawingMaxValue);
         if (ShowLegend && !CompactLane) DrawLegend(context); else _legendHitTargets.Clear();
         if (CompactLane) context.DrawLine(GridPen, new Point(_drawingPlot.Left, _drawingPlot.Bottom - .5), new Point(_drawingPlot.Right, _drawingPlot.Bottom - .5));

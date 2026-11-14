@@ -1,0 +1,23 @@
+<Project>
+  <PropertyGroup>
+    <ChartNativeDirectory>$(MSBuildThisFileDirectory)</ChartNativeDirectory>
+    <ChartNativeOutputDirectory>$(MSBuildThisFileDirectory)obj\$(Configuration)\x64</ChartNativeOutputDirectory>
+    <ChartNativeBinary>$(ChartNativeOutputDirectory)\LandingStats.Graphics.Native.dll</ChartNativeBinary>
+    <ChartNativePowerShell Condition="'$(ChartNativePowerShell)' == ''">$(SystemRoot)\System32\WindowsPowerShell\v1.0\powershell.exe</ChartNativePowerShell>
+  </PropertyGroup>
+  <!-- Content propagates to projects referencing the app (including tests),
+       and to publish output. No implicit build-directory DLL globbing. -->
+  <ItemGroup>
+    <Content Include="$(ChartNativeBinary)" Link="LandingStats.Graphics.Native.dll"
+             CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+  <Target Name="BuildChartNative" BeforeTargets="CoreCompile;GetCopyToOutputDirectoryItems"
+          Condition="'$(DesignTimeBuild)' != 'true'">
+    <Error Condition="'$(OS)' != 'Windows_NT'" Text="The native chart renderer requires Windows and the Visual Studio C++ x64 build tools." />
+    <Error Condition="'$(PlatformTarget)' != 'x64'" Text="The native chart renderer requires PlatformTarget=x64." />
+    <Exec Command="&quot;$(ChartNativePowerShell)&quot; -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;$(ChartNativeDirectory)build-native.ps1&quot; -Configuration &quot;$(Configuration)&quot; -OutputDirectory &quot;$(ChartNativeOutputDirectory)&quot; -MsvcToolsetVersion &quot;$(ChartNativeMsvcToolsetVersion)&quot; -WindowsSdkVersion &quot;$(ChartNativeWindowsSdkVersion)&quot;" />
+    <ItemGroup>
+      <FileWrites Include="$(ChartNativeOutputDirectory)\*" />
+    </ItemGroup>
+  </Target>
+</Project>

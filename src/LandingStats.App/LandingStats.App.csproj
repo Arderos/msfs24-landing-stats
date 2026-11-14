@@ -235,4 +235,5 @@
     </Copy>
   </Target>
 
+  <Import Project="../LandingStats.Graphics.Native/LandingStats.Graphics.Native.targets" />
 </Project>

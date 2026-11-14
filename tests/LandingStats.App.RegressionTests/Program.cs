@@ -58,6 +58,12 @@ internal static class Program
         {
             DirectInputControllerRegressionTests.RunNativeSmoke(); return 0;
         }
+        if (args.Length == 1 && args[0] == "--chart-presentation-native-smoke")
+        {
+            _ = new System.Windows.Application(); LocalizationManager.Apply("en");
+            Run("native chart FLIPEX presentation preserves hidden updates and disposal", LandingChartNativeSmokeTests.Run);
+            return _failures == 0 ? 0 : 1;
+        }
         if (args.Length == 1 && args[0] == "--directinput-source-soak")
         {
             DirectInputControllerRegressionTests.RunNativeSmoke(3000); return 0;
@@ -139,6 +145,8 @@ internal static class Program
         Run("update readiness cancellation cleans up prepared files", UpdateReadinessRegressionTests.WaitingUpdateCancelsAndCleansUp);
         Run("update readiness rejects changed prepared files", UpdateReadinessRegressionTests.WaitingUpdateRejectsChangedFile);
         Run("altitude lane renders recorded terrain AGL with gaps, zoom and hover", AltitudeChartRegressionTests.RunAll);
+        Run("chart presentation preserves frames, hover, zoom and DPI", LandingChartPresentationRegressionTests.RunAll);
+        Run("chart presentation recovers temporary device failures without a restart", LandingChartRecoveryRegressionTests.RunAll);
         Run("integration API settings remain local and opt-in", IntegrationApiSettingsRegressionTests.RunAll);
         Run("integration API transport isolates clients and replays subscriptions", IntegrationApiTransportRegressionTests.RunAll);
         Run("integration API telemetry distinguishes stale guard and full observations", IntegrationTelemetryRegressionTests.RunAll);
@@ -155,11 +163,14 @@ internal static class Program
         Run("App guardian observes real runtime escalation and production recovery budgets", GuardianApplicationRegressionTests.RunAll);
         Run("automatic report lifetime preserves shutdown captures and honors later opt-out", EpisodeReportLifecycleRegressionTests.RunAll);
         Run("capture archives negotiate format and preserve immutable retry bytes", CaptureArchiveRegressionTests.RunAll);
+        Run("paused RAW archives preserve all observations in both receiver formats", PausedRawArchiveRegressionTests.RunAll);
         Run("legacy engines cannot bypass shared storage quotas", LegacyEngineQuotaRegressionTests.RunAll);
         Run("retained legacy engine enforces shared storage quotas", LegacyEngineQuotaRegressionTests.RunRetained);
         Run("source evidence preserves legacy formats and scopes external control", ReplaySourceCoreRegressionTests.RunAll);
         Run("source evidence survives recording recovery and legacy delivery", ReplaySourcePersistenceRegressionTests.RunAll);
         Run("source evidence failures recover without stopping required telemetry", SourceObservationIsolationRegressionTests.RunAll);
+        Run("initial window presentation redraws the complete surface once after content and activation", InitialWindowPresentationRegressionTests.RunAll);
+        Run("localization changes preserve window visibility and continuous resources", LocalizationWindowRegressionTests.RunAll);
         Run("window startup loads local history while runtime is unavailable", WindowStartupRegressionTests.RunAll);
         Run("loading indicators stop their hidden animation clocks", LoadingIndicatorRegressionTests.RunAll);
         Run("guardian recovers application failures, defers UI recovery and honors acknowledged exits", GuardianRegressionTests.RunAll);
@@ -239,6 +250,7 @@ internal static class Program
         Run("cold recording recovery retains accepted contacts, RAW and original engine across adoption retries", ColdRecordingRecoveryRegressionTests.RunAll);
         Run("RAW export recovers publication and mid-pre-roll checkpoints without duplicate delivery", RawExportRecoveryRegressionTests.RunAll);
         Run("RAW batches isolate optional failures and preserve replay and consent", ReviewRawBatchRegressionTests.RunAll);
+        Run("stationary freeze RAW preserves batched frames and optional cold recovery", StationaryFreezeRawRegressionTests.RunAll);
         Run("isolated uploads restart hung HTTP, fence opt-out and drain accepted parent callbacks", UploadWorkerRegressionTests.RunAll);
         Run("isolated cloud API recovers hangs and fences credential epochs without owning local history", CloudWorkerRegressionTests.RunAll);
         Run("cloud runtime resumes lost remote replies and preserves parent history, deletion and acquisition", CloudRuntimeRegressionTests.RunAll);
@@ -463,6 +475,13 @@ internal static class Program
         Run("Google Drive concurrent settings edits converge", GoogleDriveBackupRegressionTests.ConcurrentSettingsEditsAreRejectedWithoutLoss);
         Run("Google Drive settings changed during download are preserved", GoogleDriveBackupRegressionTests.SettingsChangedDuringDownloadArePreserved);
         Run("Google Drive future settings remain untouched", GoogleDriveBackupRegressionTests.FutureSettingsRemainUntouched);
+        Run("Google Drive repeated settings recover from cleanup failure", GoogleDriveBackupRegressionTests.RepeatedSettingsRecoverFromCleanupFailure);
+        Run("Google Drive legacy settings cycles recover across devices", GoogleDriveBackupRegressionTests.LegacySettingsCyclesRecoverAcrossDevices);
+        Run("Google Drive repeated landing revisions recover from cleanup failure", GoogleDriveBackupRegressionTests.RepeatedLandingRevisionsRecoverFromCleanupFailure);
+        Run("Google Drive revision identity survives repeated contents and missing predecessors", GoogleDriveBackupRegressionTests.RevisionIdentitySurvivesRepeatedContents);
+        Run("Google Drive revision metadata preserves real ancestry errors", GoogleDriveBackupRegressionTests.InvalidRevisionAncestryIsRejected);
+        Run("Google Drive creation timestamps survive the worker boundary", GoogleDriveBackupRegressionTests.CreationTimeSurvivesWorkerBoundary);
+        Run("Google Drive revision recovery verifies retained contents before cleanup", GoogleDriveBackupRegressionTests.RevisionRecoveryVerifiesRetainedContents);
         Run("Google Drive unchanged landings use a lightweight fingerprint", GoogleDriveBackupRegressionTests.UnchangedLandingSyncUsesLightweightFingerprint);
         Run("application lifetime rejects a second instance", ApplicationLifetimeRejectsSecondInstance);
         Run("simulator auto-start preserves every foreign byte", SimulatorAutoStartPreservesForeignBytes);

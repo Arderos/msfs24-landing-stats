@@ -143,7 +143,7 @@ public partial class App : Application
         WriteCrashLog("app-domain", eventArgs.ExceptionObject as Exception);
     }
 
-    private static void WriteCrashLog(string source, Exception? exception)
+    internal static void WriteCrashLog(string source, Exception? exception)
     {
         try
         {

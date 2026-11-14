@@ -25,10 +25,11 @@ from pathlib import Path
 from .capture_archive import CaptureArchive, MAXIMUM_SESSION_METADATA_BYTES
 from .validation import MAXIMUM_RESULT_BYTES as MAX_RESULTS_BYTES
 from .validation import MAXIMUM_DECISION_JOURNAL_BYTES, MAXIMUM_DECISION_ENTRIES, _validate_controller_timeline, _validate_source_timeline, _validate_controller_samples
+from .validation import is_unavailable_telemetry_value
 from .dashboard_analytics import build_analytics, CHANNELS, MAX_COHORT, profile_display_channels, quantiles
 
 
-INDEX_VERSION = 13
+INDEX_VERSION = 14
 # LandingRecord.NonFiniteStorageSentinel / LandingRecordFile.Restore use exact
 # equality, not a magnitude threshold. Other finite values remain measurable.
 NONFINITE_STORAGE_SENTINEL = -1.7976931348623157E308
@@ -138,6 +139,7 @@ def _telemetry(archive):
             raise ValueError("telemetry simulation clock is missing")
         quality_channels = ("g_force", "agl_ft", "ground_speed_kt", "airspeed_indicated_kt", "velocity_world_y_fps", "pitch_deg", "bank_deg", "simulation_delta_s")
         controller_column = columns.get("controller_data_v2")
+        elevator_validity_column = columns.get("axis_elevator_set_valid")
         validity = [(name[:-6], index) for name, index in columns.items() if re.fullmatch(r"controller_\d+_raw_[xyzruv]_valid", name)]
         for row in reader:
             count += 1
@@ -162,7 +164,9 @@ def _telemetry(archive):
                     malformed += 1
                     value = None
                 if value is not None and not math.isfinite(value):
-                    nonfinite += 1
+                    elevator_valid = row[elevator_validity_column] if elevator_validity_column is not None else None
+                    if not is_unavailable_telemetry_value(header[index], value, elevator_valid):
+                        nonfinite += 1
                     value = None
                 parsed.append(value)
             current = parsed[columns["simulation_time_s"]]

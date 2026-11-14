@@ -2,6 +2,25 @@
 
 All notable changes to MSFS Landing Stats are documented in this file.
 
+## [Unreleased]
+
+## [1.0.1] - 2026-11-15
+
+### Improved
+
+- Keep chart interaction smooth while video plays, with flip-model presentation that preserves linked hover, zoom, replay, modal backgrounds and recovery from temporary GPU failures.
+- Refresh window contents after startup and activation, and keep localization resources available throughout language changes.
+
+### Fixed
+
+- Recover Google Drive synchronization when settings or landing metadata return to an earlier value and multiple backup revisions remain, preserving the latest revision instead of reporting a permanent conflict.
+- Report failed simulator auto-start updates without displaying a successful enabled status.
+- Preserve RAW frames released together after a stationary freeze, including export restart and cold recovery; optional RAW storage failures no longer block recovery of saved landings.
+- Keep invalidated elevator-event ages finite after flight boundaries; the telemetry server also accepts historical missing-age markers from older clients.
+- Accept highly compressed paused RAW telemetry on the server under the existing expanded-byte, row-count and field-size limits.
+- Reject malformed or unsupported compressed capture data with HTTP 422 and preserve it in quarantine, instead of retrying it as a server failure.
+- Exclude intentional missing telemetry values from the dashboard's NaN/Infinity error count and rebuild cached metrics.
+
 ## [1.0.0] - 2026-11-10
 
 ### Added

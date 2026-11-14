@@ -17,6 +17,7 @@ internal sealed class GoogleDriveBackupService : IDisposable
     private const string LandingIdProperty = "landingId";
     private const string HashProperty = "sha256";
     private const string BaseHashProperty = "baseSha256";
+    private const string BaseFileIdProperty = "baseFileId";
     private const string DeletedByApplicationProperty = "deletedByApplication";
     private const string RootKind = "root";
     private const string LandingsFolderKind = "landings-folder";
@@ -531,8 +532,13 @@ internal sealed class GoogleDriveBackupService : IDisposable
         GoogleDriveFile canonical,
         CancellationToken cancellationToken)
     {
-        foreach (var duplicate in files.Where(file =>
-                     !string.Equals(file.Id, canonical.Id, StringComparison.Ordinal)))
+        var duplicates = files.Where(file => !string.Equals(file.Id, canonical.Id, StringComparison.Ordinal)).ToArray();
+        if (duplicates.Length == 0) return;
+        // Resolving a revision graph is not a content check. Verify the retained
+        // copy before retiring any alternative, including during legacy recovery.
+        var bytes = await _drive.DownloadFileAsync(canonical.Id, cancellationToken).ConfigureAwait(false);
+        VerifyHash(bytes, canonical.Property(HashProperty)!, canonical.Name);
+        foreach (var duplicate in duplicates)
         {
             await _drive.TrashFileAsync(duplicate.Id, cancellationToken).ConfigureAwait(false);
         }
@@ -692,7 +698,7 @@ internal sealed class GoogleDriveBackupService : IDisposable
                             remotePair.Key + ".landing.json.gz",
                             "application/gzip",
                             landingsFolderId,
-                            RevisionProperties(LandingKind, remotePair.Key, localHash, expectedRemoteHash),
+                            RevisionProperties(LandingKind, remotePair.Key, localHash, expectedRemoteHash, remote.Id),
                             localBackup.Bytes!,
                             cancellationToken).ConfigureAwait(false);
                         await _drive.TrashFileAsync(remote.Id, cancellationToken).ConfigureAwait(false);
@@ -898,7 +904,7 @@ internal sealed class GoogleDriveBackupService : IDisposable
             landingId + ".landing.json.gz",
             "application/gzip",
             landingsFolderId,
-            RevisionProperties(LandingKind, landingId, mergedHash, remoteHash),
+            RevisionProperties(LandingKind, landingId, mergedHash, remoteHash, remote.Id),
             mergedBytes,
             cancellationToken).ConfigureAwait(false);
         await _drive.TrashFileAsync(remote.Id, cancellationToken).ConfigureAwait(false);
@@ -1181,7 +1187,7 @@ internal sealed class GoogleDriveBackupService : IDisposable
                 "settings.json",
                 "application/json",
                 rootId,
-                RevisionProperties(SettingsKind, null, localHash, expectedRemoteHash),
+                RevisionProperties(SettingsKind, null, localHash, expectedRemoteHash, remote.Id),
                 localBytes,
                 cancellationToken).ConfigureAwait(false);
             await _drive.TrashFileAsync(remote.Id, cancellationToken).ConfigureAwait(false);
@@ -1214,7 +1220,7 @@ internal sealed class GoogleDriveBackupService : IDisposable
             "settings.json",
             "application/json",
             rootId,
-            RevisionProperties(SettingsKind, null, localHash, expectedRemoteHash),
+            RevisionProperties(SettingsKind, null, localHash, expectedRemoteHash, remote.Id),
             localBytes,
             cancellationToken).ConfigureAwait(false);
         await _drive.TrashFileAsync(remote.Id, cancellationToken).ConfigureAwait(false);
@@ -1319,46 +1325,60 @@ internal sealed class GoogleDriveBackupService : IDisposable
             throw new InvalidDataException("Google Drive contains conflicting " + label + " backup files.");
         }
 
-        var byHash = values
-            .GroupBy(file => file.Property(HashProperty)!, StringComparer.OrdinalIgnoreCase)
-            .ToDictionary(
-                group => group.Key,
-                group => group.First(),
-                StringComparer.OrdinalIgnoreCase);
-        if (byHash.Count == 1)
-        {
-            return values[0];
-        }
-
-        var childrenByBase = byHash.Values
-            .Where(file => !string.IsNullOrWhiteSpace(file.Property(BaseHashProperty)))
-            .GroupBy(file => file.Property(BaseHashProperty)!, StringComparer.OrdinalIgnoreCase)
+        // Drive file IDs identify immutable uploaded revisions. A content hash
+        // repeats when preferences return to an earlier value; it is not a clock.
+        var byId = values.ToDictionary(file => file.Id, StringComparer.Ordinal);
+        var byHash = values.GroupBy(file => file.Property(HashProperty)!, StringComparer.OrdinalIgnoreCase)
             .ToDictionary(group => group.Key, group => group.ToArray(), StringComparer.OrdinalIgnoreCase);
-
-        var leaves = byHash
-            .Where(pair => !childrenByBase.ContainsKey(pair.Key))
-            .Select(pair => pair.Key)
-            .ToArray();
-        if (leaves.Length == 0) throw new InvalidDataException("Google Drive contains a cyclic " + label + " revision graph.");
-        // Converge independently on every device. Losing complete revisions go
-        // to Drive trash through TrashNonCanonicalAsync and remain recoverable.
-        if (leaves.Length > 1) return byHash[leaves.OrderBy(value => value, StringComparer.OrdinalIgnoreCase).First()];
-
-        var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var current = leaves[0];
-        while (visited.Add(current))
+        var parents = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var file in values)
         {
-            var parent = byHash[current].Property(BaseHashProperty);
-            if (string.IsNullOrWhiteSpace(parent) || !byHash.ContainsKey(parent!))
+            var parentId = file.Property(BaseFileIdProperty);
+            var parentHash = file.Property(BaseHashProperty);
+            if (!string.IsNullOrWhiteSpace(parentId))
             {
-                break;
+                if (byId.TryGetValue(parentId!, out var parent))
+                {
+                    if (!string.Equals(parentHash, parent.Property(HashProperty), StringComparison.OrdinalIgnoreCase))
+                        throw new InvalidDataException("Google Drive contains inconsistent " + label + " revision ancestry.");
+                    parents.Add(file.Id, parent.Id);
+                }
+                // A missing predecessor was already cleaned up. Do not attach
+                // this revision to a different file with the same old contents.
+                continue;
             }
-            current = parent!;
-        }
-        if (visited.Count != byHash.Count) return byHash[leaves[0]];
+            if (string.IsNullOrWhiteSpace(parentHash) || !byHash.TryGetValue(parentHash!, out var matches)) continue;
 
-        return byHash[leaves[0]];
+            // Legacy clients stored only the predecessor's content hash. Server
+            // creation times disambiguate A -> B -> A without inventing an edge
+            // from an old file to a later repetition of the same contents.
+            var preceding = matches.Where(parent => parent.Id != file.Id &&
+                (!file.CreatedUtc.HasValue || !parent.CreatedUtc.HasValue || parent.CreatedUtc < file.CreatedUtc));
+            var legacyParent = OrderRevisions(preceding).FirstOrDefault();
+            if (legacyParent != null) parents.Add(file.Id, legacyParent.Id);
+        }
+
+        var checkedIds = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var file in values)
+        {
+            var path = new HashSet<string>(StringComparer.Ordinal);
+            var current = file.Id;
+            while (!checkedIds.Contains(current))
+            {
+                if (!path.Add(current)) throw new InvalidDataException("Google Drive contains a cyclic " + label + " revision graph.");
+                if (!parents.TryGetValue(current, out var parent)) break;
+                current = parent;
+            }
+            checkedIds.UnionWith(path);
+        }
+        var superseded = new HashSet<string>(parents.Values, StringComparer.Ordinal);
+        // Concurrent leaves converge using server time, then immutable file ID.
+        // Superseded complete files remain recoverable in Drive trash.
+        return OrderRevisions(values.Where(file => !superseded.Contains(file.Id))).First();
     }
+
+    private static IOrderedEnumerable<GoogleDriveFile> OrderRevisions(IEnumerable<GoogleDriveFile> files) =>
+        files.OrderByDescending(file => file.CreatedUtc ?? DateTime.MinValue).ThenBy(file => file.Id, StringComparer.Ordinal);
 
     private static bool IsLandingFailure(Exception error) => !(error is Runtime.CloudApiException remote && remote.Transient) &&
         (error is IOException || error is InvalidDataException || error is System.Runtime.Serialization.SerializationException || error is UnauthorizedAccessException);
@@ -1416,7 +1436,8 @@ internal sealed class GoogleDriveBackupService : IDisposable
         string kind,
         string? landingId,
         string hash,
-        string? baseHash)
+        string? baseHash,
+        string? baseFileId = null)
     {
         var additional = new List<KeyValuePair<string, string>>
         {
@@ -1429,6 +1450,10 @@ internal sealed class GoogleDriveBackupService : IDisposable
         if (!string.IsNullOrWhiteSpace(baseHash))
         {
             additional.Add(new KeyValuePair<string, string>(BaseHashProperty, baseHash!));
+        }
+        if (!string.IsNullOrWhiteSpace(baseFileId))
+        {
+            additional.Add(new KeyValuePair<string, string>(BaseFileIdProperty, baseFileId!));
         }
         return Properties(kind, additional.ToArray());
     }

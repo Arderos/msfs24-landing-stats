@@ -80,6 +80,10 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 $applicationOutput = Join-Path $repositoryRoot "src\LandingStats.App\bin\$Configuration\net48"
+# Reject a missing/wrong-architecture native renderer before replacing a prior
+# package. Verification reads PE metadata without loading the DLL or opening UI.
+& (Join-Path $repositoryRoot 'src\LandingStats.Graphics.Native\verify-native.ps1') `
+    -Path (Join-Path $applicationOutput 'LandingStats.Graphics.Native.dll') | Out-Null
 if ($requireGoogleOAuth) {
     # Verify the actual runtime owner, before replacing any previous package or
     # spending a signing operation. UI assembly metadata is not used by Drive.

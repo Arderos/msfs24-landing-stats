@@ -52,6 +52,10 @@ class CacheProbe {
   type.GetMethod("ExtractArchive",flags).Invoke(null,new object[]{payload,directory});
   var verify=type.GetMethod("RuntimeMatchesPayload",flags);
   if(!(bool)verify.Invoke(null,new object[]{directory,payload,files}))throw new Exception("Extracted runtime differs");
+  var native=Path.Combine(directory,"LandingStats.Graphics.Native.dll");var nativeOriginal=File.ReadAllBytes(native);
+  var nativeCorrupt=(byte[])nativeOriginal.Clone();nativeCorrupt[nativeCorrupt.Length-1]^=1;File.WriteAllBytes(native,nativeCorrupt);
+  if((bool)verify.Invoke(null,new object[]{directory,payload,files}))throw new Exception("Same-length native renderer corruption accepted");
+  File.WriteAllBytes(native,nativeOriginal);
   var path=Path.Combine(directory,"LandingStats.WorkerHost.exe"); var original=File.ReadAllBytes(path);
   var corrupt=(byte[])original.Clone();corrupt[corrupt.Length-1]^=1;File.WriteAllBytes(path,corrupt);
   if((bool)verify.Invoke(null,new object[]{directory,payload,files}))throw new Exception("Same-length corruption accepted");
@@ -86,7 +90,7 @@ class CacheProbe {
     if ($LASTEXITCODE -ne 0) { throw 'Runtime cache verification probe did not compile.' }
     & $probeExe ([IO.Path]::GetFullPath($PackagePath)) $probePayload (Join-Path $root 'cache')
     if ($LASTEXITCODE -ne 0) { throw 'Runtime cache verification failed.' }
-    foreach ($case in @('valid','missing-host','missing-host-config','missing-contracts','missing-archive-reader','missing-zstd','unexpected-exe','unexpected-dll','nested-file')) {
+    foreach ($case in @('valid','missing-host','missing-host-config','missing-contracts','missing-archive-reader','missing-zstd','missing-native-renderer','unexpected-exe','unexpected-dll','nested-file')) {
         $payload = [IO.MemoryStream]::new()
         $zip = [IO.Compression.ZipArchive]::new($payload, [IO.Compression.ZipArchiveMode]::Create, $true)
         try {
@@ -95,6 +99,7 @@ class CacheProbe {
                     ($case -eq 'missing-host-config' -and $name -eq 'LandingStats.WorkerHost.exe.config') -or
                     ($case -eq 'missing-contracts' -and $name -eq 'LandingStats.Runtime.Contracts.dll') -or
                     ($case -eq 'missing-archive-reader' -and $name -eq 'LandingStats.Archives.dll') -or
+                    ($case -eq 'missing-native-renderer' -and $name -eq 'LandingStats.Graphics.Native.dll') -or
                     ($case -eq 'missing-zstd' -and $name -eq 'ZstdSharp.dll')) { continue }
                 $entry = $zip.CreateEntry($name); $output = $entry.Open()
                 try { $output.Write($entries[$name], 0, $entries[$name].Length) } finally { $output.Dispose() }
@@ -128,4 +133,4 @@ class CacheProbe {
     $temporary = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\') + '\'
     if ($resolved.StartsWith($temporary, [StringComparison]::OrdinalIgnoreCase)) { Remove-Item -LiteralPath $resolved -Recurse -Force }
 }
-Write-Host 'Guardian bundle: valid topology; missing helper/config/contracts/archive codec and unexpected executables rejected as expected.'
+Write-Host 'Guardian bundle: valid topology; missing helper/config/contracts/archive codec/native renderer and unexpected executables rejected as expected.'

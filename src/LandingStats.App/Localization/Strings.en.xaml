@@ -106,6 +106,8 @@
     <system:String x:Key="Chart.UnitFeet">ft</system:String>
     <system:String x:Key="Chart.MainGear">Main gear</system:String>
     <system:String x:Key="Chart.NoData">No chart data</system:String>
+    <system:String x:Key="Chart.RenderingFailedFormat">Charts could not be displayed: {0}</system:String>
+    <system:String x:Key="Chart.RenderingUnavailable">Graphics device temporarily unavailable</system:String>
     <system:String x:Key="Chart.Aircraft">aircraft</system:String>
     <system:String x:Key="Chart.VsiLagged">VSI (lagged)</system:String>
     <system:String x:Key="Chart.SurfaceClosure">surface closure</system:String>
@@ -192,6 +194,7 @@
     <system:String x:Key="Settings.AutoStartToggle">Start Landing Stats with MSFS 2024</system:String>
     <system:String x:Key="Settings.AutoStartEnabledFormat">Enabled · {0} MSFS 2024 installation(s)</system:String>
     <system:String x:Key="Settings.AutoStartDisabled">Disabled</system:String>
+    <system:String x:Key="Settings.AutoStartUnverified">Auto-start status could not be verified</system:String>
     <system:String x:Key="Settings.IntegrationApiTitle">LOCAL API</system:String>
     <system:String x:Key="Settings.IntegrationApiToggle">Allow local applications to read landing data</system:String>
     <system:String x:Key="Settings.IntegrationApiBody">Provides read-only access to landing results, history and runtime status for applications running under your Windows account. No internet access. Off by default; changes take effect immediately on this computer.</system:String>

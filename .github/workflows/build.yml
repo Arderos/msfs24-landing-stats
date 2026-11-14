@@ -163,19 +163,26 @@ jobs:
           }
           .\build-app.ps1 @arguments
 
+      # This exercises the production C++ recovery state machine on every run.
+      # windows-latest has no guaranteed D3D9Ex desktop adapter; the separate
+      # --chart-presentation-native-smoke command validates actual HAL/FLIPEX.
+      - name: Test native chart device recovery without a GPU
+        shell: pwsh
+        run: .\src\LandingStats.Graphics.Native\build-native.ps1 -Configuration Release -TestRecovery
+
       - name: Run regression tests
         shell: pwsh
         run: |
           $fixtures = Join-Path $env:GITHUB_WORKSPACE 'artifacts\receiver-contract'
           New-Item -ItemType Directory -Path $fixtures -Force | Out-Null
-          foreach ($kind in @('ARCHIVE','PROVENANCE','SOURCE','DYNAMIC_CONTROLLER')) {
+          foreach ($kind in @('ARCHIVE','PROVENANCE','SOURCE','DYNAMIC_CONTROLLER','AXIS_BOUNDARY','PAUSED_RAW')) {
             $path = Join-Path $fixtures ($kind.ToLowerInvariant() + '.zip')
             [Environment]::SetEnvironmentVariable("MSFSLS_${kind}_FIXTURE", $path)
             "MSFSLS_${kind}_FIXTURE=$path" >> $env:GITHUB_ENV
           }
           & .\tests\LandingStats.App.RegressionTests\bin\Release\net48\LandingStats.App.RegressionTests.exe
           if ($LASTEXITCODE -ne 0) { throw 'Application regressions failed.' }
-          foreach ($kind in @('ARCHIVE','PROVENANCE','SOURCE','DYNAMIC_CONTROLLER')) {
+          foreach ($kind in @('ARCHIVE','PROVENANCE','SOURCE','DYNAMIC_CONTROLLER','AXIS_BOUNDARY','PAUSED_RAW')) {
             if (-not (Test-Path -LiteralPath ([Environment]::GetEnvironmentVariable("MSFSLS_${kind}_FIXTURE")) -PathType Leaf)) {
               throw "Required receiver contract fixture was not emitted: $kind"
             }

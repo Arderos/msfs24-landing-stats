@@ -42,6 +42,12 @@ records, and bounds nesting at 64 levels, values at 32 million and containers at
 arrays in full-size reports; it does not allocate those arrays on the receiver.
 Auxiliary journal/controller JSON is checked before object allocation with a
 600,000-value / 100,000-container budget, in addition to its 4/8 MiB byte limits.
+Highly compressible telemetry (for example, paused RAW frames) is accepted in
+both archive formats under the same expanded-byte, row-count and field-size
+limits. Compression ratio alone does not reject `telemetry.csv`. Unsupported
+ZIP extraction features and malformed compressed data are permanent validation
+failures (HTTP 422); authenticated original bytes are retained in quarantine.
+Storage read failures remain retryable.
 One archive validation runs at a time in the single-worker ingress process;
 waiting uploads retain their already received files on disk. Rejections still
 preserve authenticated, hash-verified original bytes in quarantine.
@@ -79,6 +85,12 @@ loads, teleports, replay, or separate flights. An unexplained `motion_simulation
 remains a physical discontinuity. Recorder lifecycle decisions describe the clock
 adjustments, suspension, resumption, and partial-capture completion. Deploy this
 receiver before a v7 client; queued schema-v5/v6 uploads remain supported.
+
+Unavailable numeric values have explicit semantics: `analysis_time_s=NaN` is
+permitted, and legacy clients may send `axis_elevator_set_age_s=NaN` only with
+`axis_elevator_set_valid=0`. These missing-value markers are excluded from the
+dashboard's non-finite telemetry count. Infinity and other non-finite numeric
+fields remain invalid; retained upload bytes are never normalized or rewritten.
 
 Schema v8 appends `controller_data_v2`: a base64-encoded, versioned binary
 field carrying every captured device and its six legacy or eight DirectInput

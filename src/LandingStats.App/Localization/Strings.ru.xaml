@@ -106,6 +106,8 @@
     <system:String x:Key="Chart.UnitFeet">фт</system:String>
     <system:String x:Key="Chart.MainGear">Основные стойки</system:String>
     <system:String x:Key="Chart.NoData">Нет данных для графика</system:String>
+    <system:String x:Key="Chart.RenderingFailedFormat">Не удалось отобразить графики: {0}</system:String>
+    <system:String x:Key="Chart.RenderingUnavailable">Графическое устройство временно недоступно</system:String>
     <system:String x:Key="Chart.Aircraft">самолёт</system:String>
     <system:String x:Key="Chart.VsiLagged">вариометр (с задержкой)</system:String>
     <system:String x:Key="Chart.SurfaceClosure">сближение с поверхностью</system:String>
@@ -192,6 +194,7 @@
     <system:String x:Key="Settings.AutoStartToggle">Запускать Landing Stats вместе с MSFS 2024</system:String>
     <system:String x:Key="Settings.AutoStartEnabledFormat">Включено · установок MSFS 2024: {0}</system:String>
     <system:String x:Key="Settings.AutoStartDisabled">Выключено</system:String>
+    <system:String x:Key="Settings.AutoStartUnverified">Состояние автозапуска не подтверждено</system:String>
     <system:String x:Key="Settings.IntegrationApiTitle">ЛОКАЛЬНЫЙ API</system:String>
     <system:String x:Key="Settings.IntegrationApiToggle">Разрешить локальным приложениям читать данные посадок</system:String>
     <system:String x:Key="Settings.IntegrationApiBody">Предоставляет доступ только для чтения к результатам посадок, истории и состоянию трекера приложениям под вашей учётной записью Windows. Доступ через интернет отсутствует. По умолчанию выключен; изменение действует сразу и только на этом компьютере.</system:String>

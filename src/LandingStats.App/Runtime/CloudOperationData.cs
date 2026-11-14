@@ -51,15 +51,18 @@ internal sealed class CloudFileData
     [DataMember(Order = 4)] public bool Trashed { get; set; }
     [DataMember(Order = 5)] public Dictionary<string, string> Properties { get; set; } = new Dictionary<string, string>();
     [DataMember(Order = 6)] public string[] Parents { get; set; } = Array.Empty<string>();
+    [DataMember(Order = 7)] public long CreatedUtcTicks { get; set; }
     public static CloudFileData From(GoogleDriveFile file) => new CloudFileData
-    { Id = file.Id, Name = file.Name, Mime = file.MimeType, Trashed = file.Trashed, Properties = file.AppProperties.ToDictionary(pair => pair.Key, pair => pair.Value), Parents = file.Parents.ToArray() };
+    { Id = file.Id, Name = file.Name, Mime = file.MimeType, Trashed = file.Trashed, Properties = file.AppProperties.ToDictionary(pair => pair.Key, pair => pair.Value), Parents = file.Parents.ToArray(), CreatedUtcTicks = file.CreatedUtc?.Ticks ?? 0 };
     public void Validate()
     {
         CloudApiRequest.Text(Id, 1024); CloudApiRequest.Text(Name, 4096); CloudApiRequest.Text(Mime, 256); CloudApiRequest.ValidateProperties(Properties);
         if (Id.Length == 0 || Parents == null || Parents.Length > 16) throw new InvalidDataException("Invalid cloud file metadata.");
+        if (CreatedUtcTicks < 0 || CreatedUtcTicks > DateTime.MaxValue.Ticks) throw new InvalidDataException("Invalid cloud file creation time.");
         foreach (var parent in Parents) CloudApiRequest.Text(parent, 1024);
     }
-    public GoogleDriveFile Restore() { Validate(); return new GoogleDriveFile(Id, Name, Mime, Trashed, Properties, Parents); }
+    public GoogleDriveFile Restore() { Validate(); return new GoogleDriveFile(Id, Name, Mime, Trashed, Properties, Parents,
+        CreatedUtcTicks == 0 ? (DateTime?)null : new DateTime(CreatedUtcTicks, DateTimeKind.Utc)); }
 }
 [DataContract]
 internal sealed class CloudApiResponse

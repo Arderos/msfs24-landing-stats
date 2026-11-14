@@ -13,6 +13,7 @@ public static class RuntimePayload
         "LandingStats.WorkerHost.exe",
         "LandingStats.WorkerHost.exe.config",
         "LandingStats.Core.dll",
+        "LandingStats.Graphics.Native.dll",
         "LandingStats.Archives.dll",
         "LandingStats.Runtime.Contracts.dll",
         "LandingStats.Runtime.dll",

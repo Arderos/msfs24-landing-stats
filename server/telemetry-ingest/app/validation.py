@@ -48,6 +48,13 @@ class CaptureFacts:
     capture_kind: str
 
 
+def is_unavailable_telemetry_value(column: str, value: float, axis_elevator_valid: str | None = None) -> bool:
+    """NaN markers with explicit missing-data semantics in supported schemas."""
+    return math.isnan(value) and (column == "analysis_time_s" or (
+        column == "axis_elevator_set_age_s" and axis_elevator_valid == "0"
+    ))
+
+
 @dataclass(frozen=True)
 class _ReplaySample:
     time: float
@@ -494,10 +501,11 @@ def _validate_capture_archive(path: Path, expected_header: str, maximum_uncompre
             if info.filename == "landing-results.json" and info.file_size > MAXIMUM_RESULT_BYTES:
                 raise ValueError("bug report results are too large")
             maximum_ratio = 100 if info.filename == "landing-results.json" else 25
-            # Repeated decisions legitimately compress very well. Their strict
-            # 4 MiB expanded bound above limits allocation independently of ratio.
+            # Paused telemetry and repeated diagnostic metadata legitimately
+            # compress very well. Expanded byte limits remain enforced by the
+            # archive reader; streamed CSV also has row and field-size bounds.
             if archive.format == 1 and (info.compress_size == 0 or (
-                info.filename not in {"decisions.json", "controller-catalogs.json", "source-state.bin"} and info.file_size / info.compress_size > maximum_ratio
+                info.filename not in {"telemetry.csv", "decisions.json", "controller-catalogs.json", "source-state.bin"} and info.file_size / info.compress_size > maximum_ratio
             )):
                 raise ValueError("archive compression ratio exceeds policy")
 
@@ -606,7 +614,9 @@ def _validate_capture_archive(path: Path, expected_header: str, maximum_uncompre
                         numeric = float(value)
                     except ValueError as exc:
                         raise ValueError(f"{column} is not numeric") from exc
-                    if not math.isfinite(numeric) and not (column == "analysis_time_s" and math.isnan(numeric)):
+                    if not math.isfinite(numeric) and not is_unavailable_telemetry_value(
+                        column, numeric, row[index["axis_elevator_set_valid"]]
+                    ):
                         raise ValueError(f"{column} is not finite")
 
                 simulator_state = int(row[index["simulator_state"]]) if expected_schema >= 7 else 0

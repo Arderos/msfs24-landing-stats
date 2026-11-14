@@ -68,13 +68,14 @@ internal static class LocalizationManager
         var resources = Application.Current?.Resources;
         if (resources != null)
         {
-            if (_activeDictionary != null)
-            {
-                resources.MergedDictionaries.Remove(_activeDictionary);
-            }
-
-            // WPF resolves duplicate keys from the last merged dictionary.
-            resources.MergedDictionaries.Add(dictionary);
+            var dictionaries = resources.MergedDictionaries;
+            var index = _activeDictionary == null ? -1 : dictionaries.IndexOf(_activeDictionary);
+            if (index < 0) dictionaries.Add(dictionary);
+            // Replace the owned slot in one resource-change notification.
+            // Remove/Add temporarily clears DynamicResource values, including
+            // Window.Title, and makes WindowChrome toggle native visibility.
+            // Keep later resource overrides in their existing precedence order.
+            else if (!ReferenceEquals(_activeDictionary, dictionary)) dictionaries[index] = dictionary;
             _activeDictionary = dictionary;
         }
 

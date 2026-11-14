@@ -200,7 +200,7 @@ internal sealed class RawExportOwner
         // Sources use the same dynamic catalog metadata budget as recording checkpoints.
         var state = File.Exists(_checkpoint) ? DurableFile.ReadJson<RawExportCheckpoint>(_checkpoint, 8 * 1024 * 1024) : new RawExportCheckpoint();
         if (state.Version != 1 || state.Segment < 0 || state.Sequence < 0 || (state.Segment == 0) != (state.Sequence == 0) ||
-            (state.Segment == 0) != (state.Input == Guid.Empty) || state.NextEffect < 0 || state.NextEffect > 8 || state.NextSample < 0 || state.NextSample > 65536 ||
+            (state.Segment == 0) != (state.Input == Guid.Empty) || state.NextEffect < 0 || state.NextEffect > RawEffectStore.MaximumEffectsPerInput || state.NextSample < 0 || state.NextSample > 65536 ||
             state.Chunk < 1 || (state.Capture == Guid.Empty) != (state.Metadata == null)) throw new InvalidDataException("Invalid RAW export checkpoint.");
         state.Metadata?.Validate(); _state = state; ClearChunk(); _readCursor = state.Cursor; _resume = state.Cursor != null;
         if (state.Cursor != null) _inputs.CollectBefore(state.Cursor);

@@ -46,7 +46,6 @@ public partial class MainWindow : Window
     private IReadOnlyList<LandingRecord> _landings = Array.Empty<LandingRecord>();
     private IReadOnlyList<AirportFacility> _airportFacilities = Array.Empty<AirportFacility>();
     private readonly Dictionary<string, LandingRecord> _loadedDetails = new Dictionary<string, LandingRecord>(StringComparer.Ordinal);
-    private LandingChart[] _charts = Array.Empty<LandingChart>();
     private bool _showFullApproach;
     private bool _showReplay;
     private int? _mainIsolatedSeriesIndex;
@@ -100,25 +99,22 @@ public partial class MainWindow : Window
         services.Settings.Changed += OnCommittedSettingsChanged;
         LocalizationManager.Apply(_settings.Language);
         InitializeComponent();
+        InitialWindowPresentation.Configure(this, (UIElement)Content, phase => _startupTimeline?.Mark(phase));
         var assembly = typeof(MainWindow).Assembly;
         var version = assembly.GetName().Version;
         var company = assembly.GetCustomAttribute<AssemblyCompanyAttribute>()?.Company ?? "Evgeniy Zaytsev";
         VersionAuthorRun.Text = $"v{version?.Major ?? 0}.{version?.Minor ?? 0}.{version?.Build ?? 0} · {company}";
         _versionAuthorBase = VersionAuthorRun.Text;
-        _charts = new[] { MainChart, MiniGChart, MiniAltitudeChart };
         ReplayView.TimeChanged += OnChartHoverTimeChanged;
-        foreach (var chart in _charts)
-        {
-            chart.HoverTimeChanged += OnChartHoverTimeChanged;
-            chart.ZoomRangeSelected += OnChartZoomRangeSelected;
-        }
+        ChartPanel.HoverTimeChanged += OnChartHoverTimeChanged;
+        ChartPanel.ZoomRangeSelected += OnChartZoomRangeSelected;
+        InitializeChartPresentation();
 
         VerticalRateTab.IsChecked = true;
-        MainChart.Mode = LandingChartMode.VerticalSpeed;
+        ChartPanel.Mode = LandingChartMode.VerticalSpeed;
         _mainIsolatedSeriesIndex = null;
-        MainChart.SetIsolatedSeries(null);
+        ChartPanel.SetIsolatedSeries(null);
         MainChartDescription.Text = LocalizationManager.Text("Chart.DescriptionVertical");
-        ModeUnitText.Text = "fpm";
         UpdateMainLegend(LandingChartMode.VerticalSpeed);
         RefreshHistoryLoadingPresentation();
 
@@ -245,19 +241,15 @@ public partial class MainWindow : Window
         }
 
         DataContext = detail;
-        MainChart.Record = detail;
+        ChartPanel.Record = detail;
         ReplayView.SetRecord(detail, replayContacts);
         UpdateControlTab(ReplayView.IsPlaybackAvailable, ReconstructionTab, ControlsTab);
-        MiniGChart.Record = detail;
-        MiniAltitudeChart.Record = detail;
-        Timeline.Record = detail;
         if (!sameRecord)
         {
-        MiniGChart.SetIsolatedSeries(0);
         _mainIsolatedSeriesIndex = null;
-        MainChart.SetIsolatedSeries(null);
-        UpdateMainLegend(MainChart.Mode);
-        UpdateChartDescription(MainChart.Mode);
+        ChartPanel.SetIsolatedSeries(null);
+        UpdateMainLegend(ChartPanel.Mode);
+        UpdateChartDescription(ChartPanel.Mode);
         ApplyZoom(_showFullApproach ? null : -6, _showFullApproach ? null : 8);
         }
         else if (!sameDetail)
@@ -268,7 +260,7 @@ public partial class MainWindow : Window
             ApplyZoom(_zoomStartSeconds ?? (_showFullApproach ? (double?)null : -6),
                 _zoomEndSeconds ?? (_showFullApproach ? (double?)null : 8));
         }
-        UpdateLaneReadouts(detail, sameRecord ? ReplayView.CurrentTimeSeconds : 0);
+        if (_showReplay) ChartPanel.SetHoverTime(ReplayView.CurrentTimeSeconds);
         if (Interlocked.Exchange(ref _firstDetailPresented, 1) == 0) _startupTimeline?.Mark("first_detail_presented");
     }
 
@@ -279,15 +271,7 @@ public partial class MainWindow : Window
         {
             if (!ReferenceEquals(sender, ReplayView)) ReplayView.SetTime(time.Value);
         }
-        foreach (var chart in _charts)
-        {
-            chart.SetHoverTime(time);
-        }
-
-        if (DataContext is LandingRecord record)
-        {
-            UpdateLaneReadouts(record, time ?? 0);
-        }
+        ChartPanel.SetHoverTime(time);
     }
 
     private void OnChartZoomRangeSelected(object? sender, LandingChartZoomEventArgs eventArgs)
@@ -303,12 +287,7 @@ public partial class MainWindow : Window
         LandingChart.NormalizeZoomRange((DataContext as LandingRecord)?.Series, ref startSeconds, ref endSeconds);
         _zoomStartSeconds = startSeconds;
         _zoomEndSeconds = endSeconds;
-        foreach (var chart in _charts)
-        {
-            chart.SetZoomRange(_showReplay ? null : startSeconds, _showReplay ? null : endSeconds);
-        }
-
-        Timeline.SetZoomRange(_showReplay ? null : startSeconds, _showReplay ? null : endSeconds);
+        ChartPanel.SetZoomRange(_showReplay ? null : startSeconds, _showReplay ? null : endSeconds);
         ChartWindowButton.IsEnabled = DataContext is LandingRecord chartRecord && chartRecord.Series.Count > 1;
         if (startSeconds.HasValue && endSeconds.HasValue)
         {
@@ -432,12 +411,9 @@ public partial class MainWindow : Window
     {
         _presentedReplayContacts = Array.Empty<LandingRecord>();
         DataContext = null;
-        MainChart.Record = null;
+        ChartPanel.Record = null;
         ReplayView.Record = null;
         UpdateControlTab(false, ReconstructionTab, ControlsTab);
-        MiniGChart.Record = null;
-        MiniAltitudeChart.Record = null;
-        Timeline.Record = null;
         ApplyZoom(null, null);
     }
 
@@ -537,8 +513,7 @@ public partial class MainWindow : Window
             }
             return;
         }
-        SettingsErrorText.Text = string.Empty;
-        SettingsErrorText.Visibility = Visibility.Collapsed;
+        RefreshAutoStartErrorPresentation();
         QueueGoogleDriveSync();
     }
 
@@ -642,6 +617,15 @@ public partial class MainWindow : Window
         return string.IsNullOrWhiteSpace(currentError)
             ? legacyCleanupError
             : legacyCleanupError + " " + currentError;
+    }
+
+    internal static string AutoStartStateText(bool? preference, int profileCount, string? error)
+    {
+        if (!string.IsNullOrWhiteSpace(error) || preference == true && profileCount <= 0)
+            return LocalizationManager.Text("Settings.AutoStartUnverified");
+        return preference == true
+            ? LocalizationManager.Format("Settings.AutoStartEnabledFormat", profileCount)
+            : LocalizationManager.Text("Settings.AutoStartDisabled");
     }
 
     private async Task<bool> ApplyAutoStartPreferenceAsync(bool enabled)
@@ -767,9 +751,7 @@ public partial class MainWindow : Window
         RefreshIntegrationApiSettingsPresentation();
         SettingsAutoStartStateText.Text = !_autoStartInitialized
             ? (showLoading ? LocalizationManager.Text("Settings.Loading") : string.Empty)
-            : _settings.StartWithSimulator == true
-            ? LocalizationManager.Format("Settings.AutoStartEnabledFormat", _autoStartProfileCount)
-            : LocalizationManager.Text("Settings.AutoStartDisabled");
+            : AutoStartStateText(_settings.StartWithSimulator, _autoStartProfileCount, _autoStartErrorDetail);
         RefreshGoogleDrivePresentation();
         RefreshAutoStartErrorPresentation();
         RefreshSettingsOperationPresentation();
@@ -1159,9 +1141,9 @@ public partial class MainWindow : Window
 
         UpdateHistoryPresentation(LandingHistoryList.Items.Count);
         ReplayView.RefreshLocalization();
-        UpdateChartDescription(MainChart.Mode);
-        UpdateModeUnit(MainChart.Mode);
-        UpdateMainLegend(MainChart.Mode);
+        ChartPanel.RefreshLocalization();
+        UpdateChartDescription(ChartPanel.Mode);
+        UpdateMainLegend(ChartPanel.Mode);
         ApplyZoom(_zoomStartSeconds, _zoomEndSeconds);
         UpdateRecorderPresentation(_lastRecorderState);
         SetConnectionStatusCore(
@@ -1170,7 +1152,7 @@ public partial class MainWindow : Window
             _connectionStatusIsWarning);
         SetUploadStatusCore(_uploadStatusKey, _uploadStatusArguments, _uploadStatusIsError);
         RefreshAutoStartErrorPresentation();
-        if (DataContext is LandingRecord current) UpdateLaneReadouts(current, ReplayView.CurrentTimeSeconds);
+        RefreshChartVisibility();
 
         if (_pendingDeleteRecord != null)
         {
@@ -1193,7 +1175,7 @@ public partial class MainWindow : Window
         if (sender is not RadioButton button ||
             button.IsChecked != true ||
             button.Tag is not string modeName ||
-            MainChart == null)
+            ChartPanel == null)
         {
             return;
         }
@@ -1202,36 +1184,29 @@ public partial class MainWindow : Window
         if (!replay && !Enum.TryParse(modeName, out LandingChartMode _)) return;
         _showReplay = replay;
         ReplayPanel.Visibility = replay ? Visibility.Visible : Visibility.Collapsed;
-        MainChart.Visibility = replay ? Visibility.Collapsed : Visibility.Visible;
-        ModeUnitText.Visibility = replay ? Visibility.Collapsed : Visibility.Visible;
+        ChartPanel.SetReplayVisible(replay);
+        Grid.SetRow(ChartPanel, replay ? 5 : 4);
+        Grid.SetRowSpan(ChartPanel, replay ? 3 : 4);
+        Grid.SetRow(ChartRenderingError, replay ? 5 : 4);
+        Grid.SetRowSpan(ChartRenderingError, replay ? 3 : 4);
         ChartWindowButton.Visibility = replay ? Visibility.Collapsed : Visibility.Visible;
-        var mode = replay ? MainChart.Mode : (LandingChartMode)Enum.Parse(typeof(LandingChartMode), modeName);
-        MainChart.Mode = mode;
-        MainChart.SetIsolatedSeries(null);
+        var mode = replay ? ChartPanel.Mode : (LandingChartMode)Enum.Parse(typeof(LandingChartMode), modeName);
+        ChartPanel.Mode = mode;
+        ChartPanel.SetIsolatedSeries(null);
         _mainIsolatedSeriesIndex = null;
         UpdateChartDescription(mode);
-        UpdateModeUnit(mode);
         UpdateMainLegend(mode);
         ApplyZoom(_zoomStartSeconds, _zoomEndSeconds);
         if (replay) OnChartHoverTimeChanged(ReplayView, new LandingChartHoverEventArgs(ReplayView.CurrentTimeSeconds));
     }
 
-    private void UpdateModeUnit(LandingChartMode mode)
-    {
-        ModeUnitText.Text = mode switch
-        {
-            LandingChartMode.VerticalSpeed => "fpm",
-            LandingChartMode.LoadFactors => "G",
-            LandingChartMode.FlightControls => LocalizationManager.Text("Chart.UnitTravel"),
-            LandingChartMode.Attitude => LocalizationManager.Text("Chart.UnitDegrees"),
-            LandingChartMode.Power => "%",
-            LandingChartMode.Gear => LocalizationManager.Text("Chart.UnitStroke"),
-            _ => string.Empty,
-        };
-    }
-
     private void UpdateChartDescription(LandingChartMode mode)
     {
+        if (!_chartPresentationAvailable)
+        {
+            MainChartDescription.Text = LocalizationManager.Text("Chart.RenderingUnavailable");
+            return;
+        }
         if (_showReplay)
         {
             MainChartDescription.Text = string.Empty;
@@ -1267,8 +1242,8 @@ public partial class MainWindow : Window
         _mainIsolatedSeriesIndex = _mainIsolatedSeriesIndex == seriesIndex
             ? null
             : seriesIndex;
-        MainChart.SetIsolatedSeries(_mainIsolatedSeriesIndex);
-        UpdateMainLegend(MainChart.Mode);
+        ChartPanel.SetIsolatedSeries(_mainIsolatedSeriesIndex);
+        UpdateMainLegend(ChartPanel.Mode);
     }
 
     private void UpdateMainLegend(LandingChartMode mode)
@@ -1544,19 +1519,6 @@ public partial class MainWindow : Window
         _uploadStatusIsError = isError;
         UploadStatusText.Text = LocalizationManager.Format(key, _uploadStatusArguments);
         UploadStatusText.Foreground = isError ? Brush("#FF8A6A") : Brush("#AEB8C2");
-    }
-
-    private void UpdateLaneReadouts(LandingRecord record, double timeSeconds)
-    {
-        if (record.Series.Count == 0)
-        {
-            HoverTimeText.Text = "—";
-            return;
-        }
-
-        var point = record.Series[ClosestSeriesPointIndex(record.Series, timeSeconds)];
-        HoverTimeText.Text =
-            $"{point.TimeSeconds:+0.00;-0.00;0.00}{LocalizationManager.Text("Unit.SecondSuffix")}";
     }
 
     internal static int ClosestSeriesPointIndex(IReadOnlyList<LandingSeriesPoint> points, double targetTime)
