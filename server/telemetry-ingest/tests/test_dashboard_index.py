@@ -176,6 +176,10 @@ class DashboardIndexTests(unittest.TestCase):
             connection.execute('UPDATE archive_index SET version=8 WHERE sha256=?', (digest,))
             connection.execute('UPDATE flight_analytics SET payload=? WHERE sha256=?',
                                (zlib.compress(json.dumps([stale]).encode()), digest))
+            # Legacy caches did not have independent component revisions.
+            connection.execute('DROP TABLE analytics_revision')
+        self.index = DashboardIndex(self.root, self.cache)
+        self.index._initialize_cache()
         with patch('app.dashboard_index._index_archive', wraps=_index_archive) as index_archive:
             self.index._refresh()
             self.assertEqual(1, index_archive.call_count)
@@ -310,7 +314,7 @@ class DashboardIndexTests(unittest.TestCase):
             self.index._refresh()
         self.assertEqual(self.index.summary()["totals"]["captures"], 3)
 
-    def test_catalog_releases_old_rows_and_metadata_at_each_index_publication(self):
+    def test_catalog_releases_rows_and_metadata_after_source_retention(self):
         class TrackedDict(dict):
             pass
 
@@ -318,7 +322,7 @@ class DashboardIndexTests(unittest.TestCase):
                   'series': {'t': [-.5, 0], 'agl': [20, 5], 'ground': [False, True]}}
         self.archive(records=[record])
         self.index._refresh()
-        for _ in range(3):
+        for generation in range(3):
             row = TrackedDict(self.index._rows[0])
             meta = TrackedDict(row['analysis_metadata'][0])
             row['analysis_metadata'] = [meta]
@@ -326,6 +330,12 @@ class DashboardIndexTests(unittest.TestCase):
             row_ref, meta_ref = weakref.ref(row), weakref.ref(meta)
             del row, meta
             self.assertEqual(1, self.index.analytics_catalog()['total'])
+            # Unchanged retained rows are deliberately reused. Retirement is a
+            # source deletion, not merely the next periodic refresh.
+            self.db.execute('DELETE FROM captures')
+            self.db.commit()
+            self.archive(f'new-{generation}', records=[{
+                **record, 'summary': {'Id': f'new-{generation}', 'ContactNumber': 1}}])
             self.index._refresh()
             gc.collect()
             self.assertIsNone(row_ref(), 'catalog must not pin the old complete row')
@@ -358,6 +368,8 @@ class DashboardIndexTests(unittest.TestCase):
             reader = workers.submit(self.index.analytics_catalog)
             try:
                 self.assertTrue(entered.wait(5), 'catalog reader did not start')
+                self.db.execute('DELETE FROM captures WHERE capture_id=?', ('one',))
+                self.db.commit()
                 self.archive('new', records=[{**record, 'summary': {'Id': 'new', 'ContactNumber': 1}}])
                 # Publication must complete without waiting for catalog work.
                 workers.submit(self.index._refresh).result(timeout=5)
@@ -367,7 +379,7 @@ class DashboardIndexTests(unittest.TestCase):
             self.assertEqual(['flight'], [meta['id'] for meta in reader.result(timeout=5)['landings']])
         gc.collect()
         self.assertIsNone(retired(), 'completed reader must not reattach retired rows')
-        self.assertEqual(2, self.index.analytics_catalog()['total'])
+        self.assertEqual(['new'], [meta['id'] for meta in self.index.analytics_catalog()['landings']])
 
     def test_version_eleven_metadata_is_rebuilt_without_changing_retained_capture(self):
         record = {'summary': {'Id': 'flight', 'AircraftTitle': ['x'], 'RecordingEpisodeId': ['episode'],
@@ -382,6 +394,9 @@ class DashboardIndexTests(unittest.TestCase):
             compact = json.loads(cached['compact'])
             compact['analysis_metadata'][0].update(aircraft=['x'], episode=['episode'])
             connection.execute('UPDATE archive_index SET version=11,compact=?', (json.dumps(compact),))
+            connection.execute('DROP TABLE analytics_revision')
+        self.index = DashboardIndex(self.root, self.cache)
+        self.index._initialize_cache()
         with patch('app.dashboard_index._index_archive', wraps=_index_archive) as reindex:
             self.index._refresh()
             reindex.assert_called_once()
@@ -437,6 +452,7 @@ class DashboardIndexTests(unittest.TestCase):
                                    (json.dumps(payload), json.dumps(compact), cached['sha256']))
                 connection.execute('UPDATE flight_analytics SET payload=? WHERE sha256=?',
                                    (zlib.compress(json.dumps(analytics).encode()), cached['sha256']))
+            connection.execute('DROP TABLE analytics_revision')
         # Simulate restart: no published view can hide poisoned persisted metadata.
         self.index = DashboardIndex(self.root, self.cache)
         self.index._initialize_cache()

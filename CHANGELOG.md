@@ -4,6 +4,10 @@ All notable changes to MSFS Landing Stats are documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- Dashboard reindexing repeatedly read large cached reports and paused while work remained queued. Valid summaries and flight analytics are now reused independently when only one component needs updating.
+
 ## [1.0.1] - 2026-11-15
 
 ### Improved

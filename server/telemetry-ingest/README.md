@@ -341,8 +341,18 @@ header in the original `session.txt`; a missing or malformed header stays unknow
 `app_version` response field, `version` filter and `versions` breakdown retain
 their uploader meaning for existing API clients. The UI uses the explicit fields.
 The dashboard shares the receiver's 64 MiB expanded result-member limit.
-An index-format update rebuilds its private cache, including earlier size errors,
-without rewriting archives or receiver metadata.
+Summary and flight-analysis revisions describe their computation contracts, not
+application releases or storage layout. Summary revision 14 and analytics revision
+13 are tracked independently: an update to one component reuses the other. Legacy
+index 13 already has current analytics; older analytics must be rebuilt because
+their recorded controls and metadata used earlier interpretation rules. Cache
+upgrades preserve current results and never rewrite archives or receiver metadata.
+
+Each refresh scans a covering metadata index and reuses decoded summaries whose
+persisted revision has not changed. Large cached report payloads are read only for
+an individual detail request or component rebuild. Backfill batches account only
+for rebuild work against their ten-second budget, then refresh source metadata
+before continuing; the 30-second polling wait applies when the queue is empty.
 Flight Explorer metadata accepts string identifiers, display fields and device
 labels, and positive integer contact counters. Non-string device labels and
 non-list `ControlInputSources` remain unavailable without discarding valid axis
