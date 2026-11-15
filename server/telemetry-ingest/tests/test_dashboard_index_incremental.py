@@ -3,6 +3,7 @@
 import json
 import sqlite3
 import unittest
+import weakref
 import zlib
 from contextlib import contextmanager
 from unittest.mock import patch
@@ -192,6 +193,112 @@ class DashboardIndexIncrementalTests(unittest.TestCase):
         with self.index._connect_cache() as connection:
             self.assertEqual(dashboard_index.ANALYTICS_VERSION,
                              connection.execute('SELECT version FROM analytics_revision').fetchone()[0])
+
+    def legacy_cache(self, version, *, capture='one', counter=0, invalid_shape=False):
+        self.archive(capture, records=[self.record(capture)])
+        self.index._refresh()
+        digest = self.db.execute('SELECT sha256 FROM captures WHERE capture_id=?', (capture,)).fetchone()[0]
+        with self.index._connect_cache() as connection:
+            stored = connection.execute('SELECT payload,compact FROM archive_index WHERE sha256=?', (digest,)).fetchone()
+            payload, compact = json.loads(stored['payload']), json.loads(stored['compact'])
+            for value in (payload, compact):
+                if counter == 'absent':
+                    value['telemetry'].pop('nonfinite_values')
+                else:
+                    value['telemetry']['nonfinite_values'] = counter
+            if invalid_shape:
+                payload['journal'].pop('entries')
+            connection.execute('UPDATE archive_index SET version=?,payload=?,compact=? WHERE sha256=?',
+                               (version, json.dumps(payload), json.dumps(compact), digest))
+            if version < dashboard_index.ANALYTICS_VERSION:
+                stored = connection.execute('SELECT payload FROM flight_analytics WHERE sha256=?', (digest,)).fetchone()
+                stale = json.loads(zlib.decompress(stored['payload']))
+                stale[0]['profiles']['t']['elev'][300] = 2500
+                connection.execute('UPDATE flight_analytics SET payload=? WHERE sha256=?',
+                                   (zlib.compress(json.dumps(stale).encode()), digest))
+            connection.execute('DROP TABLE analytics_revision')
+        self.restart()
+
+    def test_version_eight_zero_nonfinite_summary_is_reused_while_stale_analytics_rebuild(self):
+        self.legacy_cache(8)
+        with patch('app.dashboard_index._telemetry', side_effect=AssertionError('compatible summary rescanned')), \
+                patch('app.dashboard_index.build_analytics', wraps=dashboard_index.build_analytics) as build:
+            self.index._refresh()
+        build.assert_called_once()
+        self.assertEqual(1, self.index.summary()['index']['indexed'])
+        self.assertEqual(25, self.index.analytics_landing('one')['profiles']['t']['elev'][300])
+        with self.index._connect_cache() as connection:
+            self.assertEqual(dashboard_index.INDEX_VERSION,
+                             connection.execute('SELECT version FROM archive_index').fetchone()[0])
+            self.assertEqual(dashboard_index.ANALYTICS_VERSION,
+                             connection.execute('SELECT version FROM analytics_revision').fetchone()[0])
+
+    def test_version_thirteen_zero_nonfinite_keeps_both_compatible_components(self):
+        self.legacy_cache(13)
+        analytics_before = self.cache_rows()[1]
+        with patch('app.dashboard_index._telemetry', side_effect=AssertionError('compatible summary rescanned')), \
+                patch('app.dashboard_index.build_analytics', side_effect=AssertionError('compatible analytics rebuilt')):
+            self.index._refresh()
+        self.assertEqual(1, self.index.summary()['index']['indexed'])
+        self.assertEqual(analytics_before, self.cache_rows()[1])
+        self.assertEqual(25, self.index.analytics_landing('one')['profiles']['t']['elev'][300])
+
+    def test_legacy_nonzero_missing_or_invalid_nonfinite_count_requires_full_summary(self):
+        for index, counter in enumerate((7, 'absent', None, False, '0')):
+            with self.subTest(counter=counter):
+                self.legacy_cache(8, capture=f'counter-{index}', counter=counter)
+                with patch('app.dashboard_index._telemetry', wraps=dashboard_index._telemetry) as telemetry:
+                    self.index._refresh()
+                telemetry.assert_called_once()
+                self.assertEqual(0, self.index.capture(f'counter-{index}')['telemetry']['nonfinite_values'])
+                self.assertEqual(25, self.index.analytics_landing(f'counter-{index}')['profiles']['t']['elev'][300])
+
+    def test_unproven_summary_revision_or_invalid_payload_shape_is_rebuilt(self):
+        for version, invalid_shape in ((12, False), (8, True)):
+            capture = f'version-{version}'
+            with self.subTest(version=version, invalid_shape=invalid_shape):
+                self.legacy_cache(version, capture=capture, invalid_shape=invalid_shape)
+                with patch('app.dashboard_index._telemetry', wraps=dashboard_index._telemetry) as telemetry:
+                    self.index._refresh()
+                telemetry.assert_called_once()
+                self.assertEqual(0, self.index.summary()['index']['errors'])
+                self.assertEqual(25, self.index.analytics_landing(capture)['profiles']['t']['elev'][300])
+
+    def test_legacy_summary_compatibility_does_not_extend_to_future_format_changes(self):
+        self.legacy_cache(8)
+        with patch('app.dashboard_index.INDEX_VERSION', 15), \
+                patch('app.dashboard_index._telemetry', wraps=dashboard_index._telemetry) as telemetry:
+            self.index._refresh()
+        telemetry.assert_called_once()
+        self.assertEqual(0, self.index.summary()['index']['errors'])
+
+    def test_previous_archive_working_data_is_released_before_next_rebuild(self):
+        class Journal(dict):
+            pass
+
+        class Analytics(list):
+            pass
+
+        self.archive('first', records=[self.record('first')], offset=-10)
+        self.archive('second', records=[self.record('second')])
+        references = []
+        original = dashboard_index._index_archive
+
+        def track(*args, **kwargs):
+            self.assertTrue(all(reference() is None for reference in references),
+                            'previous archive working data overlaps the next rebuild')
+            payload = original(*args, **kwargs)
+            payload['journal'] = Journal(payload['journal'])
+            payload['analytics'] = Analytics(payload['analytics'])
+            references.extend((weakref.ref(payload['journal']), weakref.ref(payload['analytics'])))
+            return payload
+
+        with patch('app.dashboard_index._index_archive', side_effect=track) as build, \
+                patch('app.dashboard_index.BACKFILL_SECONDS', float('inf')):
+            self.index._refresh()
+        self.assertEqual(2, build.call_count)
+        self.assertEqual(2, self.index.summary()['index']['indexed'])
+        self.assertTrue(all(reference() is None for reference in references))
 
     def test_pending_backfill_continues_without_periodic_scan_sleep(self):
         index = self.index

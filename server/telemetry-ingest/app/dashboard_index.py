@@ -149,7 +149,8 @@ def _telemetry(archive):
             count += 1
             if count > MAX_ROWS:
                 raise ValueError("telemetry row limit exceeded")
-            if len(row) != len(header) or sum(len(cell) for index, cell in enumerate(row) if index != controller_column) > 16384:
+            if (len(row) != len(header) or
+                    sum(map(len, row)) - (len(row[controller_column]) if controller_column is not None else 0) > 16384):
                 raise ValueError("invalid telemetry row width or size")
             dynamic_controllers = controller_column is not None and bool(row[controller_column])
             if dynamic_controllers:
@@ -157,22 +158,36 @@ def _telemetry(archive):
                 axis_count = _validate_controller_samples(row[controller_column], observed_axes)
                 axis_names = ("x", "y", "z", "rx", "ry", "rz", "slider0", "slider1") if axis_count == 8 else tuple("xyzruv")
                 axes.update(f"controller_{slot}_raw_{axis_names[axis]}" for slot, axis in observed_axes)
-            parsed = []
-            for index, cell in enumerate(row):
-                if index == controller_column:
-                    parsed.append(None)
-                    continue
-                try:
-                    value = float(cell)
-                except (ValueError, OverflowError):
-                    malformed += 1
-                    value = None
-                if value is not None and not math.isfinite(value):
-                    elevator_valid = row[elevator_validity_column] if elevator_validity_column is not None else None
-                    if not is_unavailable_telemetry_value(header[index], value, elevator_valid):
-                        nonfinite += 1
-                    value = None
-                parsed.append(value)
+            # Most recordings contain entirely numeric rows. Let the built-in
+            # iterators convert/check those without a Python loop per cell;
+            # malformed rows still retain the individual diagnostic counts.
+            try:
+                numeric_row = (row if controller_column is None else
+                               row[:controller_column] + ["0"] + row[controller_column + 1:])
+                parsed = list(map(float, numeric_row))
+                finite = all(map(math.isfinite, parsed))
+            except (ValueError, OverflowError):
+                parsed = []
+                finite = False
+                for index, cell in enumerate(row):
+                    if index == controller_column:
+                        parsed.append(None)
+                        continue
+                    try:
+                        value = float(cell)
+                    except (ValueError, OverflowError):
+                        malformed += 1
+                        value = None
+                    parsed.append(value)
+            if not finite:
+                for index, value in enumerate(parsed):
+                    if value is not None and not math.isfinite(value):
+                        elevator_valid = row[elevator_validity_column] if elevator_validity_column is not None else None
+                        if not is_unavailable_telemetry_value(header[index], value, elevator_valid):
+                            nonfinite += 1
+                        parsed[index] = None
+            if controller_column is not None:
+                parsed[controller_column] = None
             current = parsed[columns["simulation_time_s"]]
             motion = parsed[columns["motion_simulation"]] if "motion_simulation" in columns else None
             motion_active += motion == 1
@@ -566,6 +581,21 @@ class DashboardIndex:
         self._decoded_cache[cached['sha256']] = (identity, compact)
         return compact
 
+    @staticmethod
+    def _compatible_legacy_summary(serialized, version):
+        # Published revisions 8 and 13 have identical summary/validator code.
+        # Revision 14 only stops counting supported missing-value NaNs. A zero
+        # old count therefore proves the complete summary remains unchanged.
+        # Other revisions and malformed derived data must be rebuilt normally.
+        if (version, INDEX_VERSION) not in ((8, 14), (13, 14)):
+            return None
+        try:
+            summary = _reused_archive_summary(json.loads(serialized))
+        except (TypeError, ValueError):
+            return None
+        count = summary['telemetry'].get('nonfinite_values')
+        return summary if type(count) is int and count == 0 else None
+
     def _refresh(self):
         rows = self._source_rows()  # No source transaction remains open during indexing.
         now = time.time()
@@ -607,15 +637,25 @@ class DashboardIndex:
                 started = time.monotonic()
                 rebuilt += 1
                 did_rebuild = True
+                # Large journals and analytic tracks belong to one rebuild.
+                # Release the previous archive before constructing the next,
+                # rather than retaining both while its right-hand side runs.
+                payload = analytics = reuse = stored = compatible = None
                 try:
                     path = (self.root / row['relative_path']).resolve()
                     if not path.is_relative_to(accepted) or not path.is_file():
                         raise ValueError('retained archive missing or outside accepted directory')
                     reuse = {}
                     with self._connect_cache() as connection:
-                        if summary_current:
+                        legacy_summary = bool(cached and not cached['error'] and cached['version'] in (8, 13))
+                        if summary_current or legacy_summary:
                             stored = connection.execute('SELECT payload FROM archive_index WHERE sha256=?', (digest,)).fetchone()
-                            reuse['summary'] = json.loads(stored['payload'])
+                            if summary_current:
+                                reuse['summary'] = json.loads(stored['payload'])
+                            else:
+                                compatible = self._compatible_legacy_summary(stored['payload'], cached['version'])
+                                if compatible is not None:
+                                    reuse['summary'] = compatible
                         if analytics_current:
                             stored = connection.execute('SELECT payload FROM flight_analytics WHERE sha256=?', (digest,)).fetchone()
                             old_compact = self._cached_compact(cached, analytics_version)

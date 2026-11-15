@@ -7,6 +7,8 @@ All notable changes to MSFS Landing Stats are documented in this file.
 ### Fixed
 
 - Dashboard reindexing repeatedly read large cached reports and paused while work remained queued. Valid summaries and flight analytics are now reused independently when only one component needs updating.
+- Background archive indexing left spare CPU capacity unused during rebuilds. It now uses idle CPU with lower scheduling priority than telemetry ingestion.
+- Dashboard indexing could restart repeatedly after exhausting its memory allocation. Intermediate archive data is released earlier, and the dashboard has more memory available for active calculations.
 
 ## [1.0.1] - 2026-11-15
 

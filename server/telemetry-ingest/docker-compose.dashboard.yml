@@ -30,8 +30,9 @@ services:
     security_opt:
       - no-new-privileges:true
     pids_limit: 64
-    cpus: 0.50
-    mem_limit: 384m
+    # Let backfills use idle CPU while yielding to the receiver under contention.
+    cpu_shares: 256
+    mem_limit: 512m
     logging:
       driver: json-file
       options:

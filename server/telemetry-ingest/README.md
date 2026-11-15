@@ -234,9 +234,11 @@ pitch and roll/yaw channel sets. Individual detail includes its cached profiles,
 so overlays use the same height/time/distance alignment as the aggregate bands.
 
 The background indexer prepares flight analytics in the dashboard's own cache.
-Historical backfill gets a 10-second work budget per 30-second refresh cycle
-(an in-progress archive finishes). Previous summaries stay visible during a
-format upgrade, and new arrivals are reconsidered before older pending archives.
+Historical backfill runs in consecutive batches with a 10-second work budget
+(an in-progress archive finishes). Source metadata is refreshed between batches;
+the 30-second polling wait applies only when no work remains. Previous summaries
+stay visible during a format upgrade, and new arrivals are reconsidered before
+older pending archives.
 Analytics with an older eligibility format are withheld until rebuilt; ordinary
 archive summaries remain visible.
 HTTP requests never unpack retained archives or access the receiver database.
@@ -309,7 +311,9 @@ docker compose -f docker-compose.yml -f docker-compose.dashboard.yml up -d --no-
 There are two isolated companion containers:
 
 - `telemetry-dashboard`: read-only archive and metadata mounts; its own writable
-  hash-keyed index cache; a background indexer; 0.5 CPU and 384 MiB limit. The HTTP
+  hash-keyed index cache; a background indexer; 512 MiB memory limit. Its CPU weight
+  is lower than the receiver's, so backfills can use idle CPU while yielding under
+  contention instead of stopping at a fixed half-core quota. The HTTP
   listener binds to `DASHBOARD_BIND_ADDRESS:8091` and accepts actual socket peers
   in `DASHBOARD_ALLOWED_NETWORKS`. Host validation and a self-only CSP are enabled;
   forwarded headers are not trusted. It provides no mutation or archive download
@@ -347,6 +351,10 @@ application releases or storage layout. Summary revision 14 and analytics revisi
 index 13 already has current analytics; older analytics must be rebuilt because
 their recorded controls and metadata used earlier interpretation rules. Cache
 upgrades preserve current results and never rewrite archives or receiver metadata.
+Compatible summaries from revisions 8 and 13 with no non-finite measurements
+also remain valid for revision 14, whose only summary change concerns missing-value
+accounting. They are reused after validation; their stale analytics still rebuild.
+Unknown revisions and summaries affected by that change are recomputed.
 
 Each refresh scans a covering metadata index and reuses decoded summaries whose
 persisted revision has not changed. Large cached report payloads are read only for
