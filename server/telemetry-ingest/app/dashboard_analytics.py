@@ -301,8 +301,24 @@ def read_raw(archive):
     points, states = [], source_states(archive)
     row_count = 0
     with archive.open('telemetry.csv') as stream:
-        reader = csv.DictReader(io.TextIOWrapper(stream, encoding='utf-8-sig', newline=''))
-        for row_index, row in enumerate(reader):
+        reader = csv.reader(io.TextIOWrapper(stream, encoding='utf-8-sig', newline=''))
+        header = next(reader, [])
+        needed = set(RAW.values()) | {
+            'analysis_time_s', 'simulation_time_s', 'on_ground', 'flight_segment',
+            'motion_simulation', 'simulator_state', 'pause_flags', 'number_of_engines',
+            'flaps_left_percent', 'flaps_right_percent', 'brake_left_position',
+            'brake_right_position', 'acceleration_body_x_fps2'}
+        needed.update(f'engine_{i}_{suffix}' for i in range(1, 5)
+                      for suffix in ('throttle_percent', 'n1_percent'))
+        # Match DictReader's last duplicate column, missing cells and ignored
+        # excess cells, without allocating a dictionary for every device field.
+        columns = {name: index for index, name in enumerate(header) if name in needed}
+        for fields in reader:
+            if not fields:  # DictReader also skips empty physical CSV records.
+                continue
+            size = len(fields)
+            row = {name: fields[index] if index < size else None for name, index in columns.items()}
+            row_index = row_count
             row_count += 1
             source = states[row_index] if states is not None and row_index < len(states) else None
             t = number(row.get('analysis_time_s'))
